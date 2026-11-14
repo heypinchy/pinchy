@@ -33,6 +33,8 @@ import {
   cancelFileOnlyFollowUp,
   fileOnlyDeliveryPending,
   settleFileOnlyDelivery,
+  trackConfigWrite,
+  configWriteInFlight,
 } from "./push-state";
 
 /** Atomic write: tmp file + rename to prevent OpenClaw reading a truncated config */
@@ -364,6 +366,18 @@ const MAX_SHRINK_STEPS = 8;
 const MAX_ROSTER_REMOVAL_ROUNDS = 3;
 
 /**
+ * How long a push waits for another push's config write to be answered before
+ * it reads OpenClaw's config and sends its own (trackConfigWrite in
+ * push-state.ts says why it waits at all). A hot reload is answered within a
+ * few seconds; what outlasts this is an apply 2026.9 will not answer until the
+ * next write arrives (UNANSWERED_APPLY_ERROR_FRAGMENTS) — no reload is running
+ * behind it, and this push's write is the one that releases it. Without the
+ * bound, every change behind such an apply would wait out the 30 s request
+ * timeout.
+ */
+const CONFIG_WRITE_MAX_WAIT_MS = 15_000;
+
+/**
  * How OpenClaw 2026.9's agents.delete words its refusal of the agent the
  * others inherit auth profiles from (agents.defaults.authInheritance).
  */
@@ -521,6 +535,33 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
     let rosterRemoval: string[] | undefined;
     let rosterRemovalRounds = 0;
     let placeholderRetired = false;
+    // The roster bridge persisted without an answer: the next round goes
+    // straight to agents.delete (see the catch below).
+    let bridgeUnanswered = false;
+    // A write this push stopped waiting for (CONFIG_WRITE_MAX_WAIT_MS).
+    let outwaited: Promise<void> | undefined;
+    const waitForOtherConfigWrite = async () => {
+      for (
+        let write = configWriteInFlight();
+        write !== undefined && write !== outwaited;
+        write = configWriteInFlight()
+      ) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const timedOut = await Promise.race([
+          write.then(() => false),
+          new Promise<boolean>((resolve) => {
+            timer = setTimeout(() => resolve(true), CONFIG_WRITE_MAX_WAIT_MS);
+          }),
+        ]);
+        clearTimeout(timer);
+        if (timedOut) {
+          outwaited = write;
+          console.warn(
+            `[openclaw-config] push gen=${String(generation)}: another push's config write is still unanswered after ${String(CONFIG_WRITE_MAX_WAIT_MS)}ms; sending anyway`
+          );
+        }
+      }
+    };
     const shrinkKnown = () => options.expectsProviderShrink === true || shrink !== undefined;
     // Hand a shrink that stopped short of its target to one follow-up full
     // regenerate (see MAX_SHRINK_STEPS) — and, should that one be stranded
@@ -720,6 +761,12 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
     assertNoPlaintextSecrets(JSON.parse(newContent), readSecretBaseline);
 
     for (let i = 0; i < backoffsMs.length; i++) {
+      // One config write at a time, process-wide: an apply that lands while
+      // another one's reload is still running costs a gateway restart
+      // (trackConfigWrite). Waiting here, before config.get, also coalesces a
+      // burst: every push that queued behind the write finds itself superseded
+      // below, and only the newest one sends.
+      await waitForOtherConfigWrite();
       // Check before each attempt — a newer pushConfigInBackground call
       // may have started while we were sleeping.
       if (generation !== getCurrentConfigPushGeneration()) {
@@ -922,12 +969,13 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
               null,
               2
             );
-            // Held already — by the runtime, or by openclaw.json once an
-            // earlier round's bridge persisted without an answer (see
+            // Held already — by the runtime, by openclaw.json, or sent by the
+            // previous round and left without an answer (see
             // UNANSWERED_APPLY_ERROR_FRAGMENTS): applying it again is a no-op
             // apply, which 2026.9 never answers.
             const onDisk = readCurrentContent();
             const bridgeHeld =
+              bridgeUnanswered ||
               configsAreEquivalentUpToOpenClawMetadata(
                 JSON.stringify(current.config ?? {}, null, 2),
                 bridge
@@ -936,19 +984,24 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
             if (!bridgeHeld) {
               lastSent = bridge;
               lastSentKind = "bridge";
-              await client.config.apply(bridge, current.hash, {
-                note: `pinchy: keep ${ids.join(", ")} until agents.delete removes it`,
-              });
+              await trackConfigWrite(
+                client.config.apply(bridge, current.hash, {
+                  note: `pinchy: keep ${ids.join(", ")} until agents.delete removes it`,
+                })
+              );
               if (isShrinkStep && shrink) {
                 shrinkSteps++;
                 shrink.ocBaselineBytes = utf8Bytes(bridge) + shrink.offset;
               }
             }
+            bridgeUnanswered = false;
             let roleRepinned = false;
             for (const agentId of ids) {
               if (agentId === PLACEHOLDER_AGENT_ID) continue;
               try {
-                await client.request("agents.delete", { agentId, deleteFiles: true });
+                await trackConfigWrite(
+                  client.request("agents.delete", { agentId, deleteFiles: true })
+                );
               } catch (err) {
                 const m = err instanceof Error ? err.message : String(err);
                 // Already gone: the next apply tells whether OpenClaw agrees.
@@ -979,9 +1032,11 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
 
         lastSent = payload;
         lastSentKind = isShrinkStep ? "step" : "target";
-        await client.config.apply(payload, current.hash, {
-          note: "pinchy: regenerateOpenClawConfig",
-        });
+        await trackConfigWrite(
+          client.config.apply(payload, current.hash, {
+            note: "pinchy: regenerateOpenClawConfig",
+          })
+        );
         // OpenClaw is running and promotes its own write to last-known-good.
         clearLastGoodBound();
         if (isShrinkStep && shrink) {
@@ -1033,24 +1088,32 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
 
         // OpenClaw persisted what this push sent and left it unanswered. A
         // re-send would hang the same way — 2026.9 answers no apply whose
-        // config it already holds — so read the file instead: if it holds what
-        // was sent, the bridge is in place for agents.delete, or the target is
-        // delivered (its reload is OpenClaw's own, on that file). Not for a
-        // provider-deletion step: its budget accounting stays with the retry.
+        // config it already holds. A bridge goes on to agents.delete without a
+        // second look at the file: what OpenClaw persists need not match the
+        // bridge byte for byte (staging, 2026-11-14: it never did, and three
+        // re-sent bridges hung 30 s each without one agents.delete). Nothing
+        // rides on the bridge having landed: agents.delete checks its own
+        // preconditions (the inherited-auth owner is refused, and the next
+        // round re-sends the bridge), and the target apply that follows
+        // carries everything else the bridge did. A target counts
+        // as delivered only when the file holds it: its reload is then
+        // OpenClaw's own, on that file. Not for a provider-deletion step: its
+        // budget accounting stays with the retry.
         if (
           lastSent !== undefined &&
           (lastSentKind === "bridge" || lastSentKind === "target") &&
           UNANSWERED_APPLY_ERROR_FRAGMENTS.some((f) => message.includes(f))
         ) {
+          if (lastSentKind === "bridge") {
+            console.log(
+              `[openclaw-config] push gen=${String(generation)}: roster bridge left without an answer (${message}); removing via agents.delete`
+            );
+            bridgeUnanswered = true;
+            i--;
+            continue;
+          }
           const onDisk = readCurrentContent();
           if (onDisk !== undefined && configsAreEquivalentApartFromMeta(onDisk, lastSent)) {
-            if (lastSentKind === "bridge") {
-              console.log(
-                `[openclaw-config] push gen=${String(generation)}: roster bridge persisted without an answer (${message}); removing via agents.delete`
-              );
-              i--;
-              continue;
-            }
             console.log(
               `[openclaw-config] push gen=${String(generation)}: config.apply persisted without an answer (${message}); openclaw.json holds the target, OpenClaw's reload owns it`
             );

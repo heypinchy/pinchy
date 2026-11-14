@@ -77,6 +77,16 @@ class FakeOpenClaw209 {
   watcherWins?: (apply: number) => boolean;
   /** config.get calls (1-based) that fail transiently, each costing a backoff slot. */
   getFails?: (call: number) => boolean;
+  /**
+   * What OpenClaw's writer adds to a config on its way to disk, so the file
+   * holds more than the payload that was sent.
+   */
+  normalize?: (config: Json) => Json;
+  /** How long an apply that changes the config takes to answer (its reload). */
+  reloadMs = 0;
+  /** Writes (config.apply, agents.delete) in flight now, and the most at once. */
+  private writesInFlight = 0;
+  maxWritesInFlight = 0;
   private gets = 0;
   private writes = 0;
   private hung: ((err: Error) => void)[] = [];
@@ -110,10 +120,22 @@ class FakeOpenClaw209 {
         if (this.getFails?.(++this.gets) === true) throw new Error("socket hang up");
         return this.snapshot();
       }),
-      apply: vi.fn(async (raw: string) => this.apply(raw)),
+      apply: vi.fn(async (raw: string) => this.tracked(() => this.apply(raw))),
     },
-    request: vi.fn(async (method: string, params: Json) => this.request(method, params)),
+    request: vi.fn(async (method: string, params: Json) =>
+      this.tracked(() => this.request(method, params))
+    ),
   };
+
+  private async tracked<T>(write: () => Promise<T>): Promise<T> {
+    this.writesInFlight++;
+    this.maxWritesInFlight = Math.max(this.maxWritesInFlight, this.writesInFlight);
+    try {
+      return await write();
+    } finally {
+      this.writesInFlight--;
+    }
+  }
 
   private snapshot() {
     return {
@@ -144,8 +166,9 @@ class FakeOpenClaw209 {
   }
 
   private async apply(raw: string) {
-    const next = JSON.parse(raw) as Json;
-    this.applies.push(next);
+    const sent = JSON.parse(raw) as Json;
+    this.applies.push(sent);
+    const next = this.normalize ? this.normalize(sent) : sent;
     const kept = new Set(this.roster(next));
     const dropped = this.roster().filter((id) => !kept.has(id));
     if (dropped.length > 0) {
@@ -159,6 +182,7 @@ class FakeOpenClaw209 {
     if (overtaken) this.runtime = next;
     if (!unchanged && !overtaken) {
       this.runtime = next;
+      if (this.reloadMs > 0) await new Promise((r) => setTimeout(r, this.reloadMs));
       return { ok: true };
     }
     // Persisted; the reload hangs until the next write — or until the
@@ -342,6 +366,125 @@ describe("pushConfigInBackground: OpenClaw 2026.9's hanging config.apply", () =>
     expect(oc.deletes).toEqual([{ agentId: "c", deleteFiles: true }]);
     expect(configFileWrites()).toHaveLength(0);
     expect(fileOnlyDeliveryPending()).toBe(false);
+  });
+
+  it("sends no write while an older push's apply is still reloading, and only the newest push's", async () => {
+    // A burst of agent creates: each starts a push while the previous apply's
+    // reload is still running. A second apply on top of a running reload
+    // supersedes its prepared model runtime publication, and OpenClaw 2026.9
+    // books that as a failed hot reload: "recovery deferred to the newer
+    // config" — a gateway restart the next accepted reload pays, dropping every
+    // running chat (staging, 2026-11-14).
+    const config = (ids: string[]) => ({
+      gateway,
+      models: { providers },
+      agents: { ownership: "explicit", entries: Object.fromEntries(ids.map((id) => [id, {}])) },
+    });
+    const oc = new FakeOpenClaw209(config(["a"]));
+    oc.reloadMs = 5_000;
+    mockGetClient.mockReturnValue(oc.client);
+    const applied = [vi.fn(), vi.fn(), vi.fn()];
+
+    pushConfigInBackground(serialize(config(["a", "b"])), { onChangeApplied: applied[0] });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(oc.applies).toHaveLength(1);
+    pushConfigInBackground(serialize(config(["a", "b", "c"])), { onChangeApplied: applied[1] });
+    pushConfigInBackground(serialize(config(["a", "b", "c", "d"])), {
+      onChangeApplied: applied[2],
+    });
+    await settle();
+
+    expect(oc.maxWritesInFlight).toBe(1);
+    // The middle push is superseded while it waits: the burst costs two applies.
+    expect(oc.applies).toHaveLength(2);
+    expect(oc.file).toEqual(config(["a", "b", "c", "d"]));
+    expect(applied.map((f) => f.mock.calls.length)).toEqual([1, 0, 1]);
+    expect(configFileWrites()).toHaveLength(0);
+  });
+
+  it("sends a newer push's apply neither during the roster bridge's reload nor during its agents.delete", async () => {
+    // The bridge's answer takes its reload's time, and a newer push queued
+    // behind it wakes when it is answered — just as this push goes on to
+    // agents.delete, which reloads as well.
+    const config = (ids: string[]) => ({
+      gateway,
+      models: { providers },
+      agents: { ownership: "explicit", entries: Object.fromEntries(ids.map((id) => [id, {}])) },
+    });
+    const oc = new FakeOpenClaw209(config(["a", "b", "c"]));
+    oc.reloadMs = 5_000;
+    mockGetClient.mockReturnValue(oc.client);
+
+    pushConfigInBackground(serialize(config(["a", "b"])));
+    // Apply 1 is the target, refused for dropping "c"; apply 2 the bridge.
+    for (let t = 0; t < 50 && oc.applies.length < 2; t++) await vi.advanceTimersByTimeAsync(10);
+    expect(oc.applies).toHaveLength(2);
+    pushConfigInBackground(serialize(config(["a", "b", "d"])));
+    await settle();
+
+    expect(oc.maxWritesInFlight).toBe(1);
+    expect(oc.deletes).toEqual([{ agentId: "c", deleteFiles: true }]);
+    expect(oc.file).toEqual(config(["a", "b", "d"]));
+  });
+
+  it("does not wait out the request timeout behind an apply OpenClaw will never answer", async () => {
+    // An apply whose config the runtime already holds hangs until the next
+    // write; a newer push is that write. Waiting for it to settle would add the
+    // full 30 s request timeout to every change behind it.
+    const config = (ids: string[]) => ({
+      gateway,
+      models: { providers },
+      agents: { ownership: "explicit", entries: Object.fromEntries(ids.map((id) => [id, {}])) },
+    });
+    const oc = new FakeOpenClaw209(config(["a"]));
+    mockGetClient.mockReturnValue(oc.client);
+    noteFileOnlyDelivery();
+
+    pushConfigInBackground(serialize(config(["a"])));
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(oc.applies).toHaveLength(1);
+    pushConfigInBackground(serialize(config(["a", "b"])));
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(oc.applies).toHaveLength(2);
+    expect(oc.file).toEqual(config(["a", "b"]));
+    await settle();
+  });
+
+  it("removes the agent after one unanswered bridge, even when openclaw.json is not byte-for-byte the bridge", async () => {
+    // OpenClaw's writer adds to what it persists, so the file never equals the
+    // bridge Pinchy sent, and the re-sent bridge is a no-op apply that hangs
+    // again. Staging, 2026-11-14: three rounds of 30 s, no agents.delete, and
+    // the target written into openclaw.json past OpenClaw's roster guard.
+    // A plugin entry Pinchy writes without a `config` gains an empty one.
+    const plugins = { entries: { "llama-cpp": { enabled: true } } };
+    const normalized = { entries: { "llama-cpp": { enabled: true, config: {} } } };
+    const before = {
+      gateway,
+      models: { providers },
+      plugins: normalized,
+      agents: { ownership: "explicit", entries: { a: {}, b: {}, c: {} } },
+    };
+    const oc = new FakeOpenClaw209(before);
+    oc.normalize = (c) => ({ ...c, plugins: normalized });
+    oc.watcherWins = (apply) => apply === 2;
+    mockGetClient.mockReturnValue(oc.client);
+    const onChangeApplied = vi.fn();
+    const target = {
+      gateway,
+      models: { providers },
+      plugins,
+      agents: { ownership: "explicit", entries: { a: {}, b: {} } },
+    };
+
+    pushConfigInBackground(serialize(target), { onChangeApplied });
+    const took = await settle();
+
+    expect(oc.deletes).toEqual([{ agentId: "c", deleteFiles: true }]);
+    expect((oc.file.agents as Json).entries as Json).toEqual({ a: {}, b: {} });
+    expect(configFileWrites()).toHaveLength(0);
+    expect(onChangeApplied).toHaveBeenCalledTimes(1);
+    expect(took).toBeLessThanOrEqual(31_000);
   });
 
   it("keeps a file-only delivery pending when OpenClaw answers that its reload failed", async () => {
