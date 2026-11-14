@@ -964,6 +964,20 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
           }
         }
 
+        // Live agents a stale payload drops (rosterKeep) stay — in every
+        // attempt, a shrink step's and a bridge's included, and in the file a
+        // fallback writes (lastSupplemented).
+        if (rosterKeep.size > 0) {
+          supplemented = JSON.stringify(
+            keepRosterEntries(
+              JSON.parse(supplemented) as Record<string, unknown>,
+              lastOcConfig ?? {},
+              [...rosterKeep]
+            ),
+            null,
+            2
+          );
+        }
         lastSupplemented = supplemented;
         let payload = supplemented;
         let isShrinkStep = false;
@@ -982,16 +996,6 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
           payload = plan.payload;
           isShrinkStep = plan.isStep;
         }
-        if (rosterKeep.size > 0) {
-          payload = JSON.stringify(
-            keepRosterEntries(JSON.parse(payload) as Record<string, unknown>, lastOcConfig ?? {}, [
-              ...rosterKeep,
-            ]),
-            null,
-            2
-          );
-        }
-
         // OpenClaw 2026.9 refused the previous attempt for dropping agents from
         // its roster. Only agents.delete may remove one, and it refuses the sole
         // agent and the one others inherit auth from — so first apply this

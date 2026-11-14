@@ -79,6 +79,8 @@ class FakeOpenClaw {
   applies: Json[] = [];
   deletes: Json[] = [];
   private writes = 0;
+  /** Makes config.apply fail a call (1-based) with the returned message. */
+  applyFailure?: (call: number) => string | undefined;
   /** Makes agents.delete refuse a call (1-based) with the returned message. */
   deleteFailure?: (call: number) => string | undefined;
   /**
@@ -121,6 +123,8 @@ class FakeOpenClaw {
       apply: vi.fn(async (raw: string) => {
         const next = JSON.parse(raw) as Json;
         this.applies.push(next);
+        const failure = this.applyFailure?.(this.applies.length);
+        if (failure) throw new Error(failure);
         if (this.redactsSecrets && JSON.stringify(next) === JSON.stringify(this.file)) {
           return new Promise((_, reject) => this.hungApplies.push(reject));
         }
@@ -283,6 +287,42 @@ describe("pushConfigInBackground: a roster change OpenClaw refuses as dropping a
       },
     });
     expect(configFileWrites()).toHaveLength(0);
+  });
+
+  it("keeps the live agent in the file it falls back to when every later apply fails", async () => {
+    // A stale copy of openclaw.json drops live agent "c"; the push keeps "c",
+    // then its applies fail until the retries run out and it writes the file.
+    const oc = new FakeOpenClaw({
+      gateway,
+      agents: {
+        ownership: "explicit",
+        entries: { a: { name: "A" }, b: { name: "B" }, c: { name: "C" } },
+      },
+    });
+    mockGetClient.mockReturnValue(oc.client);
+    oc.applyFailure = (call) => (call >= 2 ? "gateway internal error" : undefined);
+    liveInDb.add("a").add("b").add("c");
+    const stale = {
+      gateway,
+      channels: { telegram: { enabled: true } },
+      agents: { ownership: "explicit", entries: { a: { name: "A" }, b: { name: "B" } } },
+    };
+
+    vi.useFakeTimers();
+    try {
+      pushConfigInBackground(serialize(stale));
+      for (let t = 0; t < 600 && getPendingConfigPushCount() > 0; t++) {
+        await vi.advanceTimersByTimeAsync(100);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+    await settle();
+
+    expect(configFileWrites()).toHaveLength(1);
+    expect(oc.deletes).toEqual([]);
+    expect(Object.keys((oc.file.agents as Json).entries as Json).sort()).toEqual(["a", "b", "c"]);
+    expect(oc.file.channels).toEqual(stale.channels);
   });
 
   it("deletes no agent while the database cannot say which are live", async () => {
