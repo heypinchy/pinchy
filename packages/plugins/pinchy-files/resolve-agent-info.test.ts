@@ -83,9 +83,10 @@ describe("resolveAgentInfo", () => {
   });
 
   it("reads the agent from OpenClaw 2026.9's keyed agents.entries", () => {
-    // 2026.9 moved agents.list to agents.entries, keyed by id. Reading only
-    // the old list left vision without its fallback model and every usage
-    // row with the raw id instead of the agent's name.
+    // 2026.9 stores agents under agents.entries, keyed by id. Its runtime
+    // config still attaches a non-enumerable agents.list projection, but any
+    // copy of the config (a spread, a JSON round trip) loses it, so the keyed
+    // roster is the one to read.
     const cfg = {
       agents: {
         entries: {

@@ -508,6 +508,7 @@ describe("pinchy_read PDF integration", { timeout: PDF_INTEGRATION_SUITE_TIMEOUT
     agentModel: string;
     visionModelOverride?: string;
     configAccessor?: "current" | "loadConfig";
+    roster?: "entries" | "list";
     resolveApiKeyImpl?: (params: Record<string, unknown>) => Promise<{ apiKey: string } | null>;
     fetchJson: () => Promise<unknown>;
   }): Promise<{ result: any; mockResolveApiKey: ReturnType<typeof vi.fn> }> {
@@ -536,9 +537,13 @@ describe("pinchy_read PDF integration", { timeout: PDF_INTEGRATION_SUITE_TIMEOUT
           }),
       },
       config: {
-        // The 2026.9 shape: agents keyed by id under agents.entries.
+        // 2026.9 keys agents by id under agents.entries; earlier versions
+        // carried them as agents.list.
         [opts.configAccessor ?? "current"]: () => ({
-          agents: { entries: { "agent-1": { name: "Agent One", model: opts.agentModel } } },
+          agents:
+            opts.roster === "list"
+              ? { list: [{ id: "agent-1", name: "Agent One", model: opts.agentModel }] }
+              : { entries: { "agent-1": { name: "Agent One", model: opts.agentModel } } },
         }),
       },
     };
@@ -637,6 +642,7 @@ describe("pinchy_read PDF integration", { timeout: PDF_INTEGRATION_SUITE_TIMEOUT
     const { result } = await runScannedPdfVision({
       agentModel: "anthropic/claude-haiku-4-5-20251001",
       configAccessor: "loadConfig",
+      roster: "list",
       fetchJson: async () => ({
         content: [{ type: "text", text: "Vision extracted: HWB 234 kWh/m²a" }],
       }),
