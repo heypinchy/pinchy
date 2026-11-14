@@ -41,7 +41,14 @@ export interface ImapAdapterOptions {
   // nothing, and the adapter refuses to connect (outside the mail-mock seam).
   imapTarget?: PinnedTarget;
   smtpTarget?: PinnedTarget;
+  // Why Pinchy has no addresses for a host, when its lookup failed: the
+  // refusal to connect then tells the agent whether to retry or to fix the
+  // name. Absent on an older Pinchy that does not send the reason.
+  lookupFailures?: MailLookupFailures;
 }
+
+export type MailLookupFailure = "no-answer" | "temporary";
+export type MailLookupFailures = Partial<Record<"imapHost" | "smtpHost", MailLookupFailure>>;
 
 export interface ImapMailbox {
   path: string;
@@ -300,11 +307,29 @@ interface ResolvedConnection {
 
 const CONNECTION_TIMEOUT_MS = 10_000;
 
-function requireTarget(target: PinnedTarget | undefined, field: string, host: string) {
+function requireTarget(
+  target: PinnedTarget | undefined,
+  field: string,
+  host: string,
+  failure: MailLookupFailure | undefined
+) {
   if (target) return target;
+  const refusal = `so the email tools will not connect to ${field} "${host}".`;
+  if (failure === "temporary") {
+    throw new Error(
+      `pinchy-email: Pinchy's DNS lookup for ${field} "${host}" failed for a moment, ` +
+        `${refusal} Try again shortly.`
+    );
+  }
+  if (failure === "no-answer") {
+    throw new Error(
+      `pinchy-email: ${field} "${host}" does not resolve for Pinchy, ${refusal} ` +
+        "Check the host name in the connection's settings."
+    );
+  }
   throw new Error(
-    `pinchy-email: Pinchy could not check where ${field} "${host}" points, so the email ` +
-      "tools will not connect to it. Check that the host name still resolves."
+    `pinchy-email: Pinchy could not check where ${field} "${host}" points, ${refusal} ` +
+      "Check that the host name still resolves."
   );
 }
 
@@ -393,7 +418,12 @@ export class ImapAdapter implements EmailAdapter {
       secure: mode.secure,
       // undefined (not false) keeps STARTTLS opportunistic where it is not required.
       doSTARTTLS: mode.requireTLS ? true : undefined,
-      target: requireTarget(this.opts.imapTarget, "the IMAP host", this.opts.imapHost),
+      target: requireTarget(
+        this.opts.imapTarget,
+        "the IMAP host",
+        this.opts.imapHost,
+        this.opts.lookupFailures?.imapHost
+      ),
     };
   }
 
@@ -419,7 +449,12 @@ export class ImapAdapter implements EmailAdapter {
       host: this.opts.smtpHost,
       port: this.opts.smtpPort,
       ...tlsModeForPort(this.opts.smtpPort, this.opts.security),
-      target: requireTarget(this.opts.smtpTarget, "the SMTP host", this.opts.smtpHost),
+      target: requireTarget(
+        this.opts.smtpTarget,
+        "the SMTP host",
+        this.opts.smtpHost,
+        this.opts.lookupFailures?.smtpHost
+      ),
     };
   }
 

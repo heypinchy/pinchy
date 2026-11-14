@@ -1,4 +1,4 @@
-import { resolveExternalUrlTarget } from "@/lib/integrations/url-validation";
+import { NO_ANSWER_CODES, resolveExternalUrlTarget } from "@/lib/integrations/url-validation";
 import type { PinnedTarget } from "@/lib/pinned-connection";
 import { resolveAllowedMailHost, MailHostBlockedError } from "@/lib/integrations/mail-host-guard";
 
@@ -24,9 +24,12 @@ import { resolveAllowedMailHost, MailHostBlockedError } from "@/lib/integrations
  * Same opt-ins as at save time, deliberately: a connection that may be saved
  * may be used, and one that may not, may not.
  *
- * A name that does not resolve is refused, like any other refused destination.
- * A lookup that FAILED (timeout, SERVFAIL) is not: it comes back `transient`,
- * and the caller answers "try again" instead of "blocked".
+ * An Odoo URL whose name does not resolve is refused, like any other refused
+ * destination; a lookup that FAILED (timeout, SERVFAIL) is not: it comes back
+ * `transient`, and the caller answers "try again" instead of "blocked". A mail
+ * host is never refused for its lookup: it is allowed without checked
+ * addresses, and `lookupFailures` says whether the name had no answer or the
+ * lookup failed for the moment, so whoever would connect can say which.
  *
  * The check hands back the addresses it classified (`checked`, per field),
  * and every consumer connects to those instead of resolving the name again —
@@ -36,6 +39,9 @@ import { resolveAllowedMailHost, MailHostBlockedError } from "@/lib/integrations
  * the credentials route hands them to the plugin as `checkedAddresses`, and
  * pinchy-odoo and pinchy-email pin to those (their `pinned-target.ts`).
  */
+
+/** Why a stored mail host has no checked addresses. */
+export type LookupFailure = "no-answer" | "temporary";
 
 /** Which stored credential field held the refused destination. */
 export type StoredDestinationField = "url" | "imapHost" | "smtpHost";
@@ -51,10 +57,17 @@ export type StoredDestinationCheck =
       pin?: { origin: string; target: PinnedTarget };
       /**
        * Per destination field, every address the guard classified. A field is
-       * absent when there is nothing to check or the name did not resolve; a
-       * consumer that connects must then refuse rather than resolve it itself.
+       * absent when there is nothing to check or its lookup failed (see
+       * `lookupFailures`); a consumer that connects must then refuse rather
+       * than resolve the name itself.
        */
       checked?: Partial<Record<StoredDestinationField, PinnedTarget>>;
+      /**
+       * Mail hosts the guard could not look up: `no-answer` when the name does
+       * not resolve, `temporary` when the lookup itself failed and a retry may
+       * succeed. Absent when every stored host resolved.
+       */
+      lookupFailures?: Partial<Record<StoredDestinationField, LookupFailure>>;
     }
   | {
       allowed: false;
@@ -123,6 +136,7 @@ export async function checkStoredDestination(
     // Both: the inbox sweep reads over IMAP, and the agent's send tool connects
     // to SMTP with the very same credentials.
     const checked: Partial<Record<StoredDestinationField, PinnedTarget>> = {};
+    const lookupFailures: Partial<Record<StoredDestinationField, LookupFailure>> = {};
     for (const field of ["imapHost", "smtpHost"] as const) {
       const host = credentials[field];
       if (typeof host !== "string") continue;
@@ -132,15 +146,31 @@ export async function checkStoredDestination(
         if (err instanceof MailHostBlockedError) {
           return { allowed: false, field, message: err.message };
         }
-        // The name did not resolve. Not a refusal — no address means no
-        // connection, and the commonest cause is a typo the mail client's own
-        // error names (as `assertMailHostAllowed` has always let it pass). The
-        // field simply gets no checked addresses, and a consumer that would
-        // connect to it refuses instead of resolving it on its own.
+        // Not a refusal: no address means no connection, and the commonest
+        // cause is a typo the mail client's own error names (as
+        // `assertMailHostAllowed` has always let it pass). The field gets no
+        // checked addresses, so a consumer that would connect to it refuses
+        // instead of resolving it on its own — and says which of the two it was.
+        lookupFailures[field] = classifyLookupFailure(err);
       }
     }
-    return { allowed: true, checked };
+    return {
+      allowed: true,
+      checked,
+      ...(Object.keys(lookupFailures).length > 0 ? { lookupFailures } : {}),
+    };
   }
 
   return { allowed: true };
+}
+
+/**
+ * A resolver error read the way the Odoo check reads it (`NO_ANSWER_CODES`):
+ * the name has no answer, or the lookup failed and says nothing about the name.
+ * An error without a resolver code is not a DNS failure at all, and is thrown on.
+ */
+function classifyLookupFailure(err: unknown): LookupFailure {
+  const code = (err as { code?: unknown } | null)?.code;
+  if (typeof code !== "string") throw err;
+  return NO_ANSWER_CODES.has(code) ? "no-answer" : "temporary";
 }

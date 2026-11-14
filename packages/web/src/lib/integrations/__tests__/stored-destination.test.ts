@@ -1,13 +1,41 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
+import { lookup } from "node:dns/promises";
 import { checkStoredDestination } from "../stored-destination";
 
-// Every host here is an IP literal: `validateExternalUrl` classifies those from
-// the string alone, and `dns.lookup` answers a literal with itself, so no test
-// in this file depends on a resolver or the network.
+// Hosts here are IP literals, which the guards classify from the string alone.
+// The tests that need a name resolve it through this mock, never the network.
+vi.mock("node:dns/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:dns/promises")>();
+  return { ...actual, lookup: vi.fn(actual.lookup) };
+});
+
+const mockedLookup = vi.mocked(lookup) as unknown as {
+  mockImplementation(fn: (host: string) => Promise<unknown>): void;
+  mockReset(): void;
+};
+
+/** A resolver error as `dns.lookup` raises it. */
+function dnsError(code: string, host: string): Error {
+  return Object.assign(new Error(`getaddrinfo ${code} ${host}`), { code, hostname: host });
+}
+
+/** Answers `answers` per host name; any other name fails with `failures[host]`. */
+function resolveNames(
+  answers: Record<string, { address: string; family: 4 | 6 }[]>,
+  failures: Record<string, Error> = {}
+) {
+  mockedLookup.mockImplementation(async (host: string) => {
+    if (host in failures) throw failures[host];
+    if (host in answers) return answers[host];
+    throw dnsError("ENOTFOUND", host);
+  });
+}
 
 describe("checkStoredDestination", () => {
-  afterEach(() => {
+  afterEach(async () => {
     vi.unstubAllEnvs();
+    const actual = await vi.importActual<typeof import("node:dns/promises")>("node:dns/promises");
+    mockedLookup.mockImplementation(actual.lookup as never);
   });
 
   describe("odoo", () => {
@@ -104,14 +132,95 @@ describe("checkStoredDestination", () => {
     // is a typo the plugin's own error names. The E2E mail mock relies on it
     // too — it stores names that never resolve and redirects the connection.
     // The plugin refuses to connect to a host without checked addresses.
-    it("allows a host that does not resolve, with no checked addresses for it", async () => {
+    it.each(["ENOTFOUND", "ENODATA", "EAI_FAIL"])(
+      "allows a host with no answer (%s), with no checked addresses and a no-answer note",
+      async (code) => {
+        resolveNames(
+          { "imap.example.com": [{ address: "93.184.216.34", family: 4 }] },
+          { "smtp.example.com": dnsError(code, "smtp.example.com") }
+        );
+        const result = await checkStoredDestination(
+          "imap",
+          imap("imap.example.com", "smtp.example.com")
+        );
+        expect(result).toEqual({
+          allowed: true,
+          checked: { imapHost: [{ address: "93.184.216.34", family: 4 }] },
+          lookupFailures: { smtpHost: "no-answer" },
+        });
+      }
+    );
+
+    // A lookup that failed says nothing about the name. It must not read as
+    // "the host does not resolve", and it must not refuse the connection
+    // either — the next fetch may well succeed.
+    it.each(["EAI_AGAIN", "ETIMEOUT", "ESERVFAIL", "ECONNREFUSED"])(
+      "marks a host whose lookup failed (%s) as temporary, not as missing",
+      async (code) => {
+        resolveNames(
+          { "imap.example.com": [{ address: "93.184.216.34", family: 4 }] },
+          { "smtp.example.com": dnsError(code, "smtp.example.com") }
+        );
+        const result = await checkStoredDestination(
+          "imap",
+          imap("imap.example.com", "smtp.example.com")
+        );
+        expect(result).toEqual({
+          allowed: true,
+          checked: { imapHost: [{ address: "93.184.216.34", family: 4 }] },
+          lookupFailures: { smtpHost: "temporary" },
+        });
+      }
+    );
+
+    it("reports both hosts when both lookups failed", async () => {
+      resolveNames(
+        {},
+        {
+          "imap.example.com": dnsError("EAI_AGAIN", "imap.example.com"),
+          "smtp.example.com": dnsError("ENOTFOUND", "smtp.example.com"),
+        }
+      );
       const result = await checkStoredDestination(
         "imap",
-        imap("93.184.216.34", "smtp.does-not-exist.invalid")
+        imap("imap.example.com", "smtp.example.com")
       );
       expect(result).toEqual({
         allowed: true,
-        checked: { imapHost: [{ address: "93.184.216.34", family: 4 }] },
+        checked: {},
+        lookupFailures: { imapHost: "temporary", smtpHost: "no-answer" },
+      });
+    });
+
+    it("rethrows an error that is not a DNS failure", async () => {
+      mockedLookup.mockImplementation(async () => {
+        throw new TypeError("resolver exploded");
+      });
+      await expect(
+        checkStoredDestination("imap", imap("imap.example.com", "93.184.216.34"))
+      ).rejects.toThrow("resolver exploded");
+    });
+
+    it("pins a resolved name to every address it answered with", async () => {
+      resolveNames({
+        "imap.example.com": [
+          { address: "93.184.216.34", family: 4 },
+          { address: "2606:4700:4700::1111", family: 6 },
+        ],
+      });
+      const result = await checkStoredDestination(
+        "imap",
+        imap("imap.example.com", "93.184.216.35")
+      );
+      expect(result).toEqual({
+        allowed: true,
+        checked: {
+          imapHost: [
+            { address: "93.184.216.34", family: 4 },
+            { address: "2606:4700:4700::1111", family: 6 },
+          ],
+          smtpHost: [{ address: "93.184.216.35", family: 4 }],
+        },
       });
     });
 

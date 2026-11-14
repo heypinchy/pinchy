@@ -30,6 +30,7 @@ import {
   trackMutations,
 } from "./credential-client.js";
 import { checkedTarget, type PinnedTarget } from "./pinned-target.js";
+import type { MailLookupFailure, MailLookupFailures } from "./imap-adapter.js";
 
 // Filesystem convention shared with pinchy-odoo's odoo_attach_file: every
 // agent's uploads land in the same per-agent directory so a downloaded email
@@ -676,6 +677,24 @@ export function assertImapCredentialsShape(creds: unknown): asserts creds is Ima
   }
 }
 
+const LOOKUP_FAILURES: ReadonlySet<unknown> = new Set(["no-answer", "temporary"]);
+
+/**
+ * Why Pinchy has no checked addresses for a mail host, keyed by field. Only
+ * used to word the refusal, so a reason this version does not know is dropped
+ * rather than refused — the refusal itself does not depend on it.
+ */
+function lookupFailuresOf(data: unknown): { lookupFailures?: MailLookupFailures } {
+  const raw = (data as { lookupFailures?: unknown } | null)?.lookupFailures;
+  if (typeof raw !== "object" || raw === null) return {};
+  const failures: MailLookupFailures = {};
+  for (const field of ["imapHost", "smtpHost"] as const) {
+    const reason = (raw as Record<string, unknown>)[field];
+    if (LOOKUP_FAILURES.has(reason)) failures[field] = reason as MailLookupFailure;
+  }
+  return Object.keys(failures).length > 0 ? { lookupFailures: failures } : {};
+}
+
 async function fetchCredentials(
   apiBaseUrl: string,
   gatewayToken: string,
@@ -684,7 +703,11 @@ async function fetchCredentials(
 ): Promise<{
   type: string;
   credentials: EmailCredentials;
-  targets: { imapTarget?: PinnedTarget; smtpTarget?: PinnedTarget };
+  targets: {
+    imapTarget?: PinnedTarget;
+    smtpTarget?: PinnedTarget;
+    lookupFailures?: MailLookupFailures;
+  };
 }> {
   const data = await requestCredentials({
     apiBaseUrl,
@@ -714,6 +737,7 @@ async function fetchCredentials(
       targets: {
         imapTarget: checkedTarget(data, "imapHost"),
         smtpTarget: checkedTarget(data, "smtpHost"),
+        ...lookupFailuresOf(data),
       },
     };
   }
@@ -846,10 +870,17 @@ const plugin = {
           `The ${type} email integration failed to initialize (a required module could not be loaded): ${err instanceof Error ? err.message : String(err)}`
         );
       }
-      cache.set(cacheKey, {
-        adapter,
-        expiresAt: Date.now() + CREDENTIALS_TTL_MS,
-      });
+      // An IMAP adapter that lacks a checked address can only refuse to
+      // connect. Keeping it would hold that refusal for the cache's lifetime,
+      // even when Pinchy's lookup failed only for a moment — so the next call
+      // asks Pinchy again instead.
+      const complete = type !== "imap" || (targets.imapTarget && targets.smtpTarget);
+      if (complete) {
+        cache.set(cacheKey, {
+          adapter,
+          expiresAt: Date.now() + CREDENTIALS_TTL_MS,
+        });
+      }
       return adapter;
     }
 
@@ -886,12 +917,14 @@ const plugin = {
      * failures: getOrCreateClient can throw a CredentialsFetchError with
      * status 503 when the credentials route detects OAuth settings are
      * missing entirely (OAuthSettingsMissingError) and there is no token to
-     * even attempt a call with. That's gated strictly on status 503 — the
-     * credentials route emits 503 exclusively for the settings-missing case,
-     * so treating it as an auth failure is safe. Any OTHER status (a
-     * transient 5xx, a network error, etc.) must NOT flip the connection to
-     * auth_failed — those are retried/surfaced like before, without touching
-     * connection health.
+     * even attempt a call with. The route also answers 503 when it cannot
+     * check an Odoo connection's address for a moment, but never for an email
+     * connection — a mail host it could not look up comes back as a 200 with
+     * `lookupFailures` instead — so for this plugin a 503 still means the
+     * settings are missing, and treating it as an auth failure is safe. Any
+     * OTHER status (a transient 5xx, a network error, etc.) must NOT flip the
+     * connection to auth_failed — those are retried/surfaced like before,
+     * without touching connection health.
      */
     async function withAuthRetry<T>(
       agentId: string,

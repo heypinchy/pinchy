@@ -105,7 +105,7 @@ const transientError = (host: string) =>
  * else `dns.lookup` yields (EAI_AGAIN, EAI_MEMORY, EAI_SYSTEM) or a code we do
  * not know says nothing about the name and is reported as temporary.
  */
-const NO_ANSWER_CODES = new Set(["ENOTFOUND", "ENODATA", "EAI_FAIL"]);
+export const NO_ANSWER_CODES: ReadonlySet<string> = new Set(["ENOTFOUND", "ENODATA", "EAI_FAIL"]);
 
 const PRIVATE_NETWORK_ERROR =
   "Blocked: this URL targets a private network address. " +

@@ -2384,7 +2384,7 @@ Returns the decrypted credentials for a connection, auto-refreshing an expired O
 
 **The stored destination is checked before credentials leave.** An Odoo connection's URL and an IMAP connection's IMAP and SMTP hosts are run through the same address check as when the connection was saved ([Odoo on your own network](/guides/connect-odoo/#odoo-on-your-own-network), [Mail servers on your own network](/guides/connect-email-imap/#mail-servers-on-your-own-network)), under the rules and switches as they are now. A refusal is a `403` whose `error` names the field and the fix — deliberately not a `401`, which the plugins would retry for several seconds before surfacing this final refusal.
 
-**A `200` also carries the addresses the check looked up**, in `checkedAddresses`, so the plugin connects to exactly those instead of looking the name up again — a DNS answer that changes in between (DNS rebinding) can't redirect it. It is keyed by the checked field (`url` for Odoo, `imapHost` and `smtpHost` for IMAP), each an array of IP addresses, and is `{}` for a connection with nothing to check (OAuth mailboxes, web search). A mail host whose name did not resolve has no entry, and `pinchy-email` refuses to connect to it rather than look it up itself.
+**A `200` also carries the addresses the check looked up**, in `checkedAddresses`, so the plugin connects to exactly those instead of looking the name up again — a DNS answer that changes in between (DNS rebinding) can't redirect it. It is keyed by the checked field (`url` for Odoo, `imapHost` and `smtpHost` for IMAP), each an array of IP addresses, and is `{}` for a connection with nothing to check (OAuth mailboxes, web search). A mail host whose lookup failed has no entry there; `lookupFailures` says why, keyed the same way: `"no-answer"` when the name has no address (a typo, a deleted record) and `"temporary"` when the resolver failed for the moment. It is `{}` when every lookup answered. Either way the answer stays a `200` — never a `503`, which `pinchy-email` reads as missing OAuth settings — and `pinchy-email` refuses to connect to that host rather than look it up itself. It tells the agent to try again shortly or to fix the host name, and it does not cache the refusal: the next call asks again.
 
 ```json
 {
@@ -2397,7 +2397,8 @@ Returns the decrypted credentials for a connection, auto-refreshing an expired O
   "checkedAddresses": {
     "imapHost": ["93.184.216.34"],
     "smtpHost": ["93.184.216.35", "2606:2800:220:1::25"]
-  }
+  },
+  "lookupFailures": {}
 }
 ```
 

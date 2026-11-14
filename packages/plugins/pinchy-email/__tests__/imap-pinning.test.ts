@@ -195,6 +195,30 @@ describe("IMAP connection pinning", () => {
   });
 });
 
+describe("why Pinchy checked no address", () => {
+  it("says a lookup that failed for a moment is worth retrying", async () => {
+    await listen("smtp");
+    await expect(
+      adapter({ smtpTarget: undefined, lookupFailures: { smtpHost: "temporary" } }).send({
+        to: "someone@example.com",
+        subject: "s",
+        body: "b",
+      })
+    ).rejects.toThrow(/failed for a moment.*try again/i);
+    expect(fake.seen).toHaveLength(0);
+  });
+
+  it("says a name with no DNS record needs fixing in the connection's settings", async () => {
+    await listen("imap");
+    await expect(
+      adapter({ imapTarget: undefined, lookupFailures: { imapHost: "no-answer" } }).list({
+        folder: "INBOX",
+      })
+    ).rejects.toThrow(/does not resolve.*connection's settings/i);
+    expect(fake.seen).toHaveLength(0);
+  });
+});
+
 describe("SMTP connection pinning", () => {
   it("connects to the address Pinchy checked, and still names the host in TLS", async () => {
     await listen("smtp");

@@ -159,7 +159,12 @@ export async function GET(
         target.map(({ address }) => address),
       ])
     );
-    return NextResponse.json({ ...resolved, checkedAddresses });
+    // A mail host whose lookup failed travels here, not as an error status:
+    // pinchy-email reads a 503 as "OAuth settings missing" and would flag a
+    // healthy connection. The plugin refuses to connect to that host and says
+    // whether to fix the name or just try again.
+    const lookupFailures = destination.lookupFailures ?? {};
+    return NextResponse.json({ ...resolved, checkedAddresses, lookupFailures });
   } catch (err) {
     if (err instanceof ConnectionNotFoundError) {
       // The plugins surface this body.error into the agent's tool error, so a bare
