@@ -221,7 +221,7 @@ before answering`), retried on the next run. Once `soffice` has exited, the
 
 - `catdoc`/`catppt` (the independent word-count oracles) still run in the web
   container. They are small C parsers of the same untrusted input and would be
-  the next candidate for the sidecar; out of scope here, noted as follow-up.
+  the next candidate for the sidecar; out of scope here, tracked in #1456.
 - pdfjs reads the produced PDF in the web process, as before.
 
 ### What the converter can still see

@@ -200,8 +200,10 @@ function formatDate(raw: string | undefined): string | null {
   return `${d.toISOString().slice(0, 16).replace("T", " ")} UTC`;
 }
 
-const HTML_BLOCK_BOUNDARY_RE =
-  /<\/?(?:p|div|br|tr|li|ul|ol|h[1-6]|table|thead|tbody|blockquote|section|article|pre|hr)\b[^>]*>/gi;
+// Tested against one whole tag at a time (see `removeTags`), so it is anchored
+// at both ends and cannot scan beyond the tag.
+const HTML_BLOCK_TAG_RE =
+  /^<\/?(?:p|div|br|tr|li|ul|ol|h[1-6]|table|thead|tbody|blockquote|section|article|pre|hr)\b[^>]*>$/i;
 
 const HTML_ENTITIES: Record<string, string> = {
   nbsp: " ",
@@ -214,16 +216,89 @@ const HTML_ENTITIES: Record<string, string> = {
 };
 
 /**
- * An HTML mail body as readable text. The same reduction `pinchy-email` applies
- * to mail it reads (`email-adapter.ts`); a copy, because a plugin and the web
- * app cannot share a module (each plugin is mounted standalone).
+ * Drops script/style elements, comments and tags in ONE linear pass: a block
+ * tag becomes a newline, anything else a space. A mail body is untrusted, and
+ * the lazy-regex form of this (`<(script)[^>]*>[\s\S]*?<\/\1>`, `<!--[\s\S]*?-->`,
+ * `<[^>]+>`) rescans the rest of the input from every unclosed opener, so
+ * N openers cost N^2. Here a search that finds nothing is remembered (nothing
+ * later can find it either), and one that finds something moves past it, so
+ * every character is scanned a bounded number of times.
+ *
+ * A `<` that cannot start a tag (not followed by a letter, `/`, `!` or `?`,
+ * as in the HTML tokenizer) is text. This function is duplicated in
+ * `packages/plugins/pinchy-email/email-adapter.ts` (bundle isolation);
+ * `remove-tags-drift.test.ts` pins the two bodies together.
  */
-function stripHtml(html: string): string {
-  return html
-    .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, " ")
-    .replace(/<!--[\s\S]*?-->/g, " ")
-    .replace(HTML_BLOCK_BOUNDARY_RE, "\n")
-    .replace(/<[^>]+>/g, " ")
+function removeTags(html: string): string {
+  // ASCII-only lowering keeps indices aligned with `html`: `toLowerCase()`
+  // turns U+0130 into two code units, which would shift every later index.
+  const lower = html.replace(/[A-Z]+/g, (s) => s.toLowerCase());
+  const out: string[] = [];
+  let i = 0;
+  let noMoreGt = false;
+  const noCloser = new Set<string>();
+  let noCommentEnd = false;
+
+  while (i < html.length) {
+    const lt = html.indexOf("<", i);
+    if (lt === -1) {
+      out.push(html.slice(i));
+      break;
+    }
+    out.push(html.slice(i, lt));
+    i = lt;
+
+    if (!/[A-Za-z/!?]/.test(html[lt + 1] ?? "")) {
+      out.push("<");
+      i = lt + 1;
+      continue;
+    }
+
+    if (!noCommentEnd && html.startsWith("<!--", lt)) {
+      const end = html.indexOf("-->", lt + 4);
+      if (end !== -1) {
+        out.push(" ");
+        i = end + 3;
+        continue;
+      }
+      noCommentEnd = true;
+    }
+
+    const gt = noMoreGt ? -1 : html.indexOf(">", lt + 1);
+    if (gt === -1) {
+      noMoreGt = true;
+      out.push("<");
+      i = lt + 1;
+      continue;
+    }
+
+    const element = /^<(script|style)/.exec(lower.slice(lt, lt + 7))?.[1];
+    if (element && !noCloser.has(element)) {
+      const closer = `</${element}>`;
+      const close = lower.indexOf(closer, gt + 1);
+      if (close !== -1) {
+        out.push(" ");
+        i = close + closer.length;
+        continue;
+      }
+      noCloser.add(element);
+    }
+
+    out.push(HTML_BLOCK_TAG_RE.test(html.slice(lt, gt + 1)) ? "\n" : " ");
+    i = gt + 1;
+  }
+  return out.join("");
+}
+
+/**
+ * An HTML mail body as readable text. Tag removal (`removeTags`) is a
+ * drift-guarded copy of what `pinchy-email` applies to mail it reads
+ * (`email-adapter.ts`), because a plugin and the web app cannot share a module
+ * (each plugin is mounted standalone). The entity table and this function are
+ * pinned the same way by `remove-tags-drift.test.ts`.
+ */
+export function stripHtml(html: string): string {
+  return removeTags(html)
     .replace(/&(nbsp|amp|lt|gt|quot|apos|#39);/gi, (m, name: string) => {
       return HTML_ENTITIES[name.toLowerCase()] ?? m;
     })
