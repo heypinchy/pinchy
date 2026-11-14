@@ -581,7 +581,9 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
       noteUndeliveredConfigChange(regenerateSeq);
       if (!resumeStrandedShrink) return;
       console.warn(
-        `[openclaw-config] push gen=${String(generation)}: shrink delivery (provider deletion in steps, or an agent deletion) stopped after ${String(shrinkSteps)} step(s) (${why}); queueing a follow-up regenerate to finish it`
+        shrinkKnown() || options.handsOverProvider === true
+          ? `[openclaw-config] push gen=${String(generation)}: shrink delivery (provider deletion in steps, or an agent deletion) stopped after ${String(shrinkSteps)} step(s) (${why}); queueing a follow-up regenerate to finish it`
+          : `[openclaw-config] push gen=${String(generation)}: full regenerate ${why}; queueing a follow-up regenerate to deliver it`
       );
       scheduleShrinkResume(resumeStrandedShrink, regenerateSeq);
     };
@@ -605,12 +607,16 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
       if (transient || shrinkSteps > 0) resumeShrink(why);
     };
     // Superseded before a provider handover finished — a shrink, or any other
-    // push that deletes a provider or re-keys one (`handsOverProvider`).
-    // Queued even when a full regenerate supersedes: that one cancels the
-    // follow-up only once it has reached OpenClaw, and a partial writer can
-    // still supersede it first.
+    // push that deletes a provider or re-keys one (`handsOverProvider`) — or
+    // before a full regenerate reached OpenClaw at all. A partial writer that
+    // supersedes a regenerate pushes its copy of openclaw.json, which predates
+    // the regenerate's change (a created agent, say), so nothing else would
+    // deliver that change before the next one. Queued even when a full
+    // regenerate supersedes: that one cancels the follow-up once it has reached
+    // OpenClaw, and a partial writer can still supersede it first. The
+    // follow-up regenerate passes no follow-up of its own, so this ends with it.
     const onSuperseded = () => {
-      if (shrinkKnown() || options.handsOverProvider === true) {
+      if (shrinkKnown() || options.handsOverProvider === true || options.fullRegenerate === true) {
         resumeShrink("superseded before it finished");
       }
     };

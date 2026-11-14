@@ -451,6 +451,39 @@ describe("pushConfigInBackground: OpenClaw 2026.9's hanging config.apply", () =>
     await settle();
   });
 
+  it("still delivers a full regenerate's agent when a partial writer supersedes it while it waits for another write", async () => {
+    // A regenerate that adds agent "b" queues behind an apply OpenClaw does not
+    // answer. A partial writer (the Telegram channel) supersedes it meanwhile
+    // with its copy of openclaw.json, which predates "b". Nothing but the
+    // regenerate knew about "b".
+    const config = (ids: string[], extra: Json = {}) => ({
+      gateway,
+      models: { providers },
+      agents: { ownership: "explicit", entries: Object.fromEntries(ids.map((id) => [id, {}])) },
+      ...extra,
+    });
+    const telegram = { channels: { telegram: { enabled: true } } };
+    const oc = new FakeOpenClaw209(config(["a"]));
+    mockGetClient.mockReturnValue(oc.client);
+    noteFileOnlyDelivery();
+
+    pushConfigInBackground(serialize(config(["a"])));
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(oc.applies).toHaveLength(1);
+    pushConfigInBackground(serialize(config(["a", "b"])), {
+      fullRegenerate: true,
+      resumeStrandedShrink: () =>
+        pushConfigInBackground(serialize(config(["a", "b"], telegram)), { fullRegenerate: true }),
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    pushConfigInBackground(serialize(config(["a"], telegram)));
+    await settle();
+    await vi.advanceTimersByTimeAsync(10_000);
+    await settle();
+
+    expect(oc.file).toEqual(config(["a", "b"], telegram));
+  });
+
   it("removes the agent after one unanswered bridge, even when openclaw.json is not byte-for-byte the bridge", async () => {
     // OpenClaw's writer adds to what it persists, so the file never equals the
     // bridge Pinchy sent, and the re-sent bridge is a no-op apply that hangs
