@@ -43,14 +43,41 @@ let root: string;
 let stateDir: string;
 let binDir: string;
 let callLog: string;
+let pkillLog: string;
 let identities: string;
 let templates: string;
 
-type Identity = "valid" | "missing" | "mismatched";
+// "mismatched" is memory-core's configuration-owned mismatch (the index was
+// built for another embedding model — only `openclaw memory index` rebuilds
+// it). "stale-format" is an openclaw-owned one (provenance or chunking
+// version), which the gateway's own sync rebuilds.
+type Identity = "valid" | "missing" | "mismatched" | "stale-format";
 
 // The shape `openclaw memory status --json` prints (OpenClaw 2026.9.2), cut
 // down to what the helper reads plus enough siblings to look real.
 function statusEntry(agentId: string, identity: Identity) {
+  const indexIdentity = {
+    valid: { status: "valid" },
+    missing: {
+      status: "missing",
+      reason: "index metadata is missing",
+      code: "metadata_missing",
+      owner: "openclaw",
+    },
+    mismatched: {
+      status: "mismatched",
+      reason:
+        "index was built for model fts-only, expected /opt/embedding-models/embeddinggemma-300m-qat-Q8_0.gguf",
+      code: "model",
+      owner: "configuration",
+    },
+    "stale-format": {
+      status: "mismatched",
+      reason: "index was built with an older chunking version",
+      code: "chunking_version",
+      owner: "openclaw",
+    },
+  }[identity];
   return {
     agentId,
     status: {
@@ -59,50 +86,54 @@ function statusEntry(agentId: string, identity: Identity) {
       chunks: identity === "missing" ? 0 : 3,
       dirty: identity !== "valid",
       provider: "local",
-      custom: {
-        searchMode: "hybrid",
-        indexIdentity:
-          identity === "valid"
-            ? { status: "valid" }
-            : identity === "missing"
-              ? {
-                  status: "missing",
-                  reason: "index metadata is missing",
-                  code: "metadata_missing",
-                  owner: "openclaw",
-                }
-              : {
-                  status: "mismatched",
-                  reason:
-                    "index was built for model fts-only, expected /opt/embedding-models/embeddinggemma-300m-qat-Q8_0.gguf",
-                  code: "model",
-                  owner: "configuration",
-                },
-      },
+      custom: { searchMode: "hybrid", indexIdentity },
     },
     scan: { totalFiles: 1, issues: [] },
   };
 }
 
-// A stub `openclaw` that logs argv, answers `memory status --json` from the
-// identities file, and — unless told otherwise — marks an agent valid when
-// `memory index --agent <id>` runs for it, as the real rebuild does.
-// `rawStatus` replaces the generated status document entirely.
-function stubOpenclaw(
-  opts: {
-    indexHeals?: boolean;
-    statusExit?: number;
-    statusPrefix?: string;
-    rawStatus?: string;
-  } = {}
-) {
-  const { indexHeals = true, statusExit = 0, statusPrefix = "", rawStatus } = opts;
+type StubOptions = {
+  /** `memory index` marks the agent valid, as a working rebuild does. */
+  indexHeals?: boolean | string[];
+  /** Exit code of `memory index`. */
+  indexExit?: number;
+  /** `memory index` becomes a sleep of this many seconds (exec'd, so a kill lands on it). */
+  indexSleeps?: number;
+  /** `memory index` reads its stdin to the end, as a CLI that prompts might. */
+  indexReadsStdin?: boolean;
+  /** `memory status` exits with this code before printing anything. */
+  statusExit?: number;
+  /** `memory status` prints its document, then exits with this code. */
+  statusExitAfterPrint?: number;
+  statusPrefix?: string;
+  /** Replaces the generated status document entirely. */
+  rawStatus?: string;
+};
+
+// A stub `openclaw` that logs argv, answers `memory status [--agent <id>]
+// --json` from the identities file, and — unless told otherwise — marks an
+// agent valid when `memory index --agent <id>` runs for it, as the real
+// rebuild does.
+function stubOpenclaw(opts: StubOptions = {}) {
+  const {
+    indexHeals = true,
+    indexExit = 0,
+    indexSleeps,
+    indexReadsStdin = false,
+    statusExit = 0,
+    statusExitAfterPrint = 0,
+    statusPrefix = "",
+    rawStatus,
+  } = opts;
+  const healing = indexHeals === true ? "*" : indexHeals === false ? "" : indexHeals.join(" ");
   const bin = join(binDir, "openclaw");
   writeFileSync(
     bin,
     `#!/bin/bash
 node -e 'require("fs").appendFileSync(process.argv[1], JSON.stringify(process.argv.slice(2))+"\\n")' '${callLog}' "$@"
-if [ "$1 $2 $3" = "memory status --json" ]; then
+if [ "$1 $2" = "memory status" ]; then
+  agent=""
+  [ "$3" = "--agent" ] && agent="$4"
   [ ${statusExit} -eq 0 ] || exit ${statusExit}
   echo "[plugins] pinchy-files failed during register" >&2
   printf '%b' '${statusPrefix}'
@@ -111,13 +142,17 @@ if [ "$1 $2 $3" = "memory status --json" ]; then
 const fs = require("fs");
 const ids = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
 const templates = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
-console.log(JSON.stringify(Object.entries(ids).map(([id, s]) => ({ ...templates[s], agentId: id })), null, 2));
-' '${identities}' '${templates}'
-  exit 0
+const only = process.argv[3];
+const entries = Object.entries(ids).filter(([id]) => !only || id === only);
+console.log(JSON.stringify(entries.map(([id, s]) => ({ ...templates[s], agentId: id })), null, 2));
+' '${identities}' '${templates}' "$agent"
+  exit ${statusExitAfterPrint}
 fi
 if [ "$1 $2 $3" = "memory index --agent" ]; then
+  ${indexReadsStdin ? "cat >/dev/null" : ""}
+  ${indexSleeps === undefined ? "" : `exec sleep ${indexSleeps}`}
   echo "Memory index updated ($4)."
-  if [ "${indexHeals}" = "true" ]; then
+  if [ "${healing}" = "*" ] || [[ " ${healing} " == *" $4 "* ]]; then
     node -e '
 const fs = require("fs");
 const ids = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
@@ -125,12 +160,34 @@ ids[process.argv[2]] = "valid";
 fs.writeFileSync(process.argv[1], JSON.stringify(ids));
 ' '${identities}' "$4"
   fi
-  exit 0
+  exit ${indexExit}
 fi
 exit 0
 `
   );
   chmodSync(bin, 0o755);
+}
+
+// pkill is always stubbed: the real one would reach the developer's own
+// processes.
+function stubPkill() {
+  const bin = join(binDir, "pkill");
+  writeFileSync(
+    bin,
+    `#!/bin/bash
+node -e 'require("fs").appendFileSync(process.argv[1], JSON.stringify(process.argv.slice(2))+"\\n")' '${pkillLog}' "$@"
+exit 1
+`
+  );
+  chmodSync(bin, 0o755);
+}
+
+function pkillCalls(): string[][] {
+  if (!existsSync(pkillLog)) return [];
+  return readFileSync(pkillLog, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => JSON.parse(l) as string[]);
 }
 
 function setIdentities(ids: Record<string, Identity>): void {
@@ -171,6 +228,7 @@ beforeEach(() => {
   stateDir = join(root, "state");
   binDir = join(root, "bin");
   callLog = join(root, "calls.jsonl");
+  pkillLog = join(root, "pkill.jsonl");
   identities = join(root, "identities.json");
   mkdirSync(stateDir, { recursive: true });
   mkdirSync(binDir, { recursive: true });
@@ -181,10 +239,12 @@ beforeEach(() => {
       valid: statusEntry("template", "valid"),
       missing: statusEntry("template", "missing"),
       mismatched: statusEntry("template", "mismatched"),
+      "stale-format": statusEntry("template", "stale-format"),
     })
   );
   writeFileSync(join(stateDir, "openclaw.json"), "{}");
   stubOpenclaw();
+  stubPkill();
 });
 
 afterEach(() => {
@@ -270,6 +330,21 @@ describe("heal_memory_indexes", () => {
     expect(output).toContain("Time budget of 0s used up");
     expect(output).toContain("FAILED");
   });
+
+  it.each([["OPENCLAW_MEMORY_HEAL_BUDGET"], ["OPENCLAW_MEMORY_STATUS_TIMEOUT"]])(
+    "falls back to the default when %s is not a whole number of seconds",
+    (name) => {
+      // "15m" in $(( )) is a syntax error, and start-openclaw.sh runs under
+      // `set -e`: the container would restart-loop over a typo in an env var.
+      setIdentities({ kb: "mismatched" });
+
+      const output = run({ [name]: "15m" });
+
+      expect(output).toContain(`${name}="15m" is not a whole number of seconds`);
+      expect(indexCalls()).toEqual([["memory", "index", "--agent", "kb"]]);
+      expect(output).toMatch(/Memory indexes rebuilt in \d+s/);
+    }
+  );
 
   it("does nothing before Pinchy has written a config", () => {
     rmSync(join(stateDir, "openclaw.json"));

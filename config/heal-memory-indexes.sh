@@ -87,8 +87,20 @@ query_mismatched_memory_indexes() {
     printf '%s\n' "$out" | list_mismatched_memory_indexes
 }
 
+# Resets the named variable to its default unless it holds whole seconds. A
+# value like "15m" would be a syntax error in $(( )), and under the caller's
+# `set -e` that ends the container start.
+require_memory_heal_seconds() {
+    local name="$1" default="$2"
+    [[ "${!name}" =~ ^[0-9]+$ ]] && return 0
+    echo "[memory-heal] WARNING: $name=\"${!name}\" is not a whole number of seconds; using $default."
+    printf -v "$name" '%s' "$default"
+}
+
 heal_memory_indexes() {
     [ -f "$OPENCLAW_STATE_DIR/openclaw.json" ] || return 0
+    require_memory_heal_seconds OPENCLAW_MEMORY_HEAL_BUDGET 900
+    require_memory_heal_seconds OPENCLAW_MEMORY_STATUS_TIMEOUT 120
 
     local mismatched
     mismatched="$(query_mismatched_memory_indexes)" || {
