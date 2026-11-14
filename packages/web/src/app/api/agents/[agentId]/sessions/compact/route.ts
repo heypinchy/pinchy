@@ -38,7 +38,7 @@ export const POST = withAuth<RouteContext>(async (request, { params }, session) 
   // on /chat/<agentId>/<chatId>; omitting it compacts the default per-user
   // session. OpenClaw validates that the agentId in the key matches the agentId
   // argument — see MEMORY.md "OpenClaw Sessions API".
-  const sessionKey = directSessionKey(agentId, session.user.id!, parsed.data.chatId ?? undefined);
+  const sessionKey = directSessionKey(agentId, session.user.id!, parsed.data.chatId);
 
   // Throttle repeated compactions of the same session. The UI debounces via a
   // disabled button; this guards direct API spamming from fanning out

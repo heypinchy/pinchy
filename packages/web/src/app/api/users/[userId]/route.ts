@@ -14,6 +14,7 @@ import { getActiveRunsSingleton } from "@/server/active-runs-singleton";
 import { getOpenClawClient } from "@/server/openclaw-client";
 import { abortRunsOfUser, followUpDepsFor } from "@/server/abort-runs";
 import { deferAuditLog } from "@/lib/audit-deferred";
+import { auditChatId } from "@/lib/session-key";
 
 export async function PATCH(
   request: NextRequest,
@@ -172,10 +173,11 @@ export async function DELETE(
       resource: `agent:${aborted.agent.id}`,
       // No `sessionKey`: a web-chat key is `agent:<id>:direct:<userId>`, the
       // deactivated user's raw id, and `detail` is out of crypto-erasure's
-      // reach (#824). The agent and the runId identify the run; the user is
-      // the `resource` of this request's `user.deleted` row.
+      // reach (#824). The agent, the chat and the runId identify the run; the
+      // user is the `resource` of this request's `user.deleted` row.
       detail: {
         agent: aborted.agent,
+        chatId: auditChatId(aborted.sessionKey),
         // Null while pending: the trail must not point at a runId the gateway
         // never issued.
         runId: aborted.runId ?? null,

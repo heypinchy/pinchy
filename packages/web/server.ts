@@ -598,8 +598,7 @@ const startup = app.prepare().then(async () => {
       },
       broadcastNoFirstChunk: (run) => {
         // B-1: a run the backend accepted but never streamed within the
-        // first-chunk timeout. Send a RETRYABLE error frame (no `runTimedOut`
-        // flag — that's the terminal 15-min path). The client auto-classifies
+        // first-chunk timeout. Send a RETRYABLE error frame. The client auto-classifies
         // a `providerError` frame with no prior chunk as `send_failure`, so the
         // user gets an inline "retry" affordance instead of an endless spinner.
         const payload = JSON.stringify({
