@@ -17,9 +17,11 @@
 # and any transient embedding failure can produce it again.
 #
 # What it does: asks `openclaw memory status --json` which agents' indexes are
-# "mismatched" and runs `openclaw memory index --agent <id>` for exactly those.
-# A "missing" index is left alone — the gateway's own sync builds it — so an
-# upgraded install's first full index never delays the gateway start here.
+# "mismatched" with owner "configuration" and runs
+# `openclaw memory index --agent <id>` for exactly those. A "missing" index and
+# a mismatch OpenClaw owns (provenance or chunking version) are left alone —
+# the gateway's own sync rebuilds those — so they never delay the gateway
+# start here.
 #
 # Why before the gateway: the CLI starts its own llama-server on the provider's
 # loopback port and stops it when it exits. A gateway running beside it would
@@ -41,8 +43,9 @@ OPENCLAW_MEMORY_HEAL_BUDGET="${OPENCLAW_MEMORY_HEAL_BUDGET:-900}"
 OPENCLAW_MEMORY_STATUS_TIMEOUT="${OPENCLAW_MEMORY_STATUS_TIMEOUT:-120}"
 
 # Reads `openclaw memory status --json` on stdin and prints the id of every
-# agent whose index is mismatched, one per line. Exits non-zero when stdin is
-# not the status array — a format change must be loud, not read as "healthy".
+# agent whose index is mismatched by configuration, one per line. Exits
+# non-zero when stdin is not the status array — a format change must be loud,
+# not read as "healthy".
 list_mismatched_memory_indexes() {
     node -e '
 let raw = "";
@@ -69,7 +72,10 @@ process.stdin.on("end", () => {
       console.error("unrecognised agent entry in `openclaw memory status --json` output");
       process.exit(2);
     }
-    if (identity.status === "mismatched") console.log(id);
+    // Only the configuration-owned mismatch (built for another embedding
+    // model) waits for the CLI. One OpenClaw owns (provenance or chunking
+    // version) is rebuilt by the gateway itself.
+    if (identity.status === "mismatched" && identity.owner === "configuration") console.log(id);
   }
 });
 '

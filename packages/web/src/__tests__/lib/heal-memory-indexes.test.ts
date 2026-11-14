@@ -273,6 +273,16 @@ describe("heal_memory_indexes", () => {
     expect(output).toMatch(/Memory indexes rebuilt in \d+s/);
   });
 
+  it("leaves mismatches OpenClaw owns to the gateway", () => {
+    // owner "openclaw" (provenance or chunking version) is rebuilt by the
+    // gateway's own sync; rebuilding it here would only hold the start back.
+    setIdentities({ kb: "mismatched", old: "stale-format" });
+
+    run();
+
+    expect(indexCalls()).toEqual([["memory", "index", "--agent", "kb"]]);
+  });
+
   it("gives the rebuild no stdin, so it cannot swallow the agents still to come", () => {
     setIdentities({ kb: "mismatched", odoo: "mismatched" });
     stubOpenclaw({ indexReadsStdin: true });
