@@ -955,6 +955,33 @@ describe("assertNoCrossCompanyRefs", () => {
       ).toThrow(/cross-company/i);
     });
 
+    it("rejects a cross-company ref in a bare id list (Odoo reads it as [6, 0, list])", () => {
+      expect(() =>
+        assertNoCrossCompanyRefs({
+          company_id: tagged("res.company", 1, 1, "GmbH A"),
+          tax_ids: [tagged("account.tax", 5, 2, "GmbH B")],
+        })
+      ).toThrow(/cross-company/i);
+    });
+
+    it("rejects a cross-company ref in a bare id list nested inside a [0,0,{...}] line", () => {
+      expect(() =>
+        assertNoCrossCompanyRefs({
+          company_id: tagged("res.company", 1, 1, "GmbH A"),
+          invoice_line_ids: [[0, 0, { tax_ids: [tagged("account.tax", 5, 2, "GmbH B")] }]],
+        })
+      ).toThrow(/cross-company/i);
+    });
+
+    it("does not throw for a bare id list in the same company", () => {
+      expect(() =>
+        assertNoCrossCompanyRefs({
+          company_id: tagged("res.company", 1, 1, "GmbH A"),
+          tax_ids: [tagged("account.tax", 5, 1, "GmbH A"), 7],
+        })
+      ).not.toThrow();
+    });
+
     it("does not throw for nested tuples with no cross-company refs", () => {
       expect(() =>
         assertNoCrossCompanyRefs({

@@ -1522,6 +1522,14 @@ function assertNoCrossCompanyValue(
     return;
   }
   if (!Array.isArray(value)) return;
+  // Odoo reads a bare id list as `[6, 0, list]` (see `canonicalizeX2manyValue`):
+  // check each element exactly like a code-6 id list.
+  if (isBareX2manyList(value)) {
+    value.forEach((id, j) => {
+      assertNoCrossCompanyValue(id, intended, intendedLabel, `${path}[${j}]`, depth + 1);
+    });
+    return;
+  }
   value.forEach((tuple, i) => {
     if (!Array.isArray(tuple)) return;
     // Odoo Command tuple: [code, ...]. 0 (create) and 1 (update) carry a
@@ -1861,6 +1869,23 @@ const MAX_X2MANY_DEPTH = 2;
  * (integer code 0..6; Python would also read `true` as 1) is refused instead
  * of being passed on unchecked.
  */
+/** A non-empty x2many list whose first item is not a command tuple. */
+function isBareX2manyList(value: unknown[]): boolean {
+  return value.length > 0 && !Array.isArray(value[0]);
+}
+
+/** The shapes `resolveCommandTargetId` accepts in an id position. */
+function isIdLike(value: unknown): boolean {
+  if (typeof value === "number" || typeof value === "string") return true;
+  if (value === false || value == null) return true;
+  return (
+    isRecord(value) &&
+    (typeof value.ref === "string" ||
+      typeof value._pinchy_ref === "string" ||
+      isRecord(value.lookup))
+  );
+}
+
 function canonicalizeX2manyValue(fieldName: string, value: unknown): unknown[] {
   const bad = (): never => {
     throw new Error(
@@ -1871,7 +1896,15 @@ function canonicalizeX2manyValue(fieldName: string, value: unknown): unknown[] {
   if (value === false || value == null) return [[5]];
   if (!Array.isArray(value)) return bad();
   if (value.length === 0) return value;
-  if (!Array.isArray(value[0])) return [[6, 0, value]];
+  if (isBareX2manyList(value)) {
+    if (value.every(isIdLike)) return [[6, 0, value]];
+    if (value.some((v) => isRecord(v) && !isIdLike(v))) {
+      throw new Error(
+        `Invalid value for "${fieldName}": to add new lines, wrap each one as [0, 0, {…}].`
+      );
+    }
+    return bad();
+  }
   for (const cmd of value) {
     if (!Array.isArray(cmd) || !Number.isInteger(cmd[0]) || cmd[0] < 0 || cmd[0] > 6) bad();
   }

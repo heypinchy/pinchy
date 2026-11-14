@@ -568,6 +568,22 @@ describe("normalizeMany2OneValues — x2many command tuples inside a line's valu
       );
     });
 
+    it("reports a shape error, not a grant error, for plain line dicts without a command wrapper", async () => {
+      const { client } = makeClient();
+      const err = await writeMove(
+        client,
+        [{ name: "Coffee", quantity: 2, price_unit: 4.3 }],
+        MOVE_ONLY
+      ).then(
+        () => null,
+        (e: Error) => e
+      );
+      expect(err?.message).toMatch(
+        /Invalid value for "invoice_line_ids": to add new lines, wrap each one as \[0, 0, \{…\}\]/
+      );
+      expect(err?.message).not.toMatch(/grant/);
+    });
+
     it("rejects a tuple whose command code is not an integer 0..6 ([true, 7, {}])", async () => {
       const { client } = makeClient();
       await expect(writeMove(client, [[true, 7, {}]], PERMS)).rejects.toThrow(
