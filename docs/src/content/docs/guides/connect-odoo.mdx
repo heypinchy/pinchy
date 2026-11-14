@@ -270,9 +270,9 @@ The same check runs everywhere a URL is accepted — adding a connection, editin
 Developing against an Odoo on your own machine? On OrbStack, `host.docker.internal` — and `ollama.local`, which our `docker-compose.yml` maps to the same host gateway — resolves to `0.250.250.254`, inside `0.0.0.0/8`, and is refused whatever you set: use the Odoo container's name or your machine's LAN address. Docker Desktop and Linux's `host-gateway` answer with a private address, where the flag is enough.
 
 :::note
-Two gaps remain, and we'd rather name them.
+Two things to know about how the check and the connection after it fit together.
 
-- **DNS rebinding.** Whenever Pinchy contacts your Odoo itself — listing databases, testing credentials, previewing and syncing the schema, **Test connection** — it sends the request to the address it just checked, so a DNS server that answers differently the second time can't redirect it. The agent's Odoo tools run in the agent runtime and still resolve the stored name when they connect. If that matters for your network, use an IP address or a name your own DNS controls.
+- **DNS rebinding is covered.** Whenever Pinchy contacts your Odoo itself — listing databases, testing credentials, previewing and syncing the schema, **Test connection** — it sends the request to the address it just checked, so a DNS server that answers differently the second time can't redirect it. The agent's Odoo tools do the same: each time they fetch the connection, Pinchy hands them the addresses it checked, and they connect only to those.
 - **A name only the agent runtime knows.** Pinchy runs the check in its own container; the Odoo tools connect from the agent runtime's (`openclaw`). Our `docker-compose.yml` gives both containers the same extra host names, so `ollama.local` — the Docker host — is checked as the Docker host's address. If you add `extra_hosts` entries of your own to the `openclaw` service, add them to `pinchy` too: the check refuses a name it can't resolve, and a saved connection that fails it stops working.
   :::
 

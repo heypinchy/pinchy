@@ -26,11 +26,13 @@ import { Agent, fetch as undiciFetch } from "undici";
 // An operator's egress proxy would vanish from every plain fetch in Pinchy.
 // pinned-connection-global-dispatcher.test.ts holds that line.
 //
-// What this does NOT reach: the connections that matter most at runtime are
-// made from the OpenClaw container — inference against a custom provider's
-// base URL (OpenClaw), Odoo JSON-RPC and IMAP/SMTP (pinchy-odoo, pinchy-email).
-// Those resolve the stored name themselves, so a rebinding resolver still has
-// its window there. Pinchy can only pin the probes it makes itself.
+// The agent's own Odoo JSON-RPC and IMAP/SMTP connections are made from the
+// OpenClaw container, where this module cannot reach. They are pinned too: the
+// credentials route hands pinchy-odoo and pinchy-email the addresses
+// `checkStoredDestination` classified (`checkedAddresses`), and each plugin
+// pins to them with its own copy of this shape (`pinned-target.ts`, guarded by
+// plugin-pinned-target-drift.test.ts). What is still NOT pinned: inference
+// against a custom provider's base URL, which OpenClaw resolves itself.
 
 /** An IP address an SSRF guard has classified, with its family. */
 export interface PinnedAddress {

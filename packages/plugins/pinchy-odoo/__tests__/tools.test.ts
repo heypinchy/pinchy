@@ -164,7 +164,11 @@ const fetchMock = vi.fn(async (_input: string | URL, _init?: RequestInit) => ({
   ok: true,
   status: 200,
   statusText: "OK",
-  json: async () => ({ type: "odoo", credentials: testCredentials }),
+  json: async () => ({
+    type: "odoo",
+    credentials: testCredentials,
+    checkedAddresses: { url: ["203.0.113.10"] },
+  }),
 }));
 // Vitest typing dance: cast through unknown for mock fetch
 globalThis.fetch = fetchMock as unknown as typeof fetch;
@@ -4229,7 +4233,11 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
       ok: true,
       status: 200,
       statusText: "OK",
-      json: async () => ({ type: "odoo", credentials: testCredentials }),
+      json: async () => ({
+        type: "odoo",
+        credentials: testCredentials,
+        checkedAddresses: { url: ["203.0.113.10"] },
+      }),
     } as unknown as Response);
   });
 
@@ -4254,6 +4262,25 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
     expect(fetchMock).toHaveBeenCalledTimes(1);
     // OdooClient constructor called exactly once (cached client reused)
     expect(OdooClient).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses to connect when Pinchy sent no checked address, and says why", async () => {
+    // The route refuses an Odoo URL it cannot check (403/503), so a 200
+    // without the addresses comes from a Pinchy that predates them.
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: async () => ({ type: "odoo", credentials: testCredentials }),
+    } as unknown as Response);
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const readTool = findTool(tools, "odoo_read", agentId)!;
+    const result = await readTool.execute("call-1", { model: "sale.order", filters: [] });
+
+    expect(result.content[0].text).toMatch(/same Pinchy release/);
+    expect(result.content[0].text).not.toMatch(/still resolves/);
+    expect(mockSearchRead).not.toHaveBeenCalled();
   });
 
   it("fetches credentials separately for different agents (no cross-agent leakage)", async () => {
@@ -4312,6 +4339,7 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
       statusText: "OK",
       json: async () => ({
         type: "odoo",
+        checkedAddresses: { url: ["203.0.113.10"] },
         // Exactly the broken shape from staging: an unresolved SecretRef.
         credentials: {
           source: "file",
@@ -4440,7 +4468,11 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
       ok: true,
       status: 200,
       statusText: "OK",
-      json: async () => ({ type: "odoo", credentials: testCredentials }),
+      json: async () => ({
+        type: "odoo",
+        credentials: testCredentials,
+        checkedAddresses: { url: ["203.0.113.10"] },
+      }),
     } as unknown as Response);
 
     mockSearchRead
@@ -4541,7 +4573,11 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
       ok: true,
       status: 200,
       statusText: "OK",
-      json: async () => ({ type: "odoo", credentials: testCredentials }),
+      json: async () => ({
+        type: "odoo",
+        credentials: testCredentials,
+        checkedAddresses: { url: ["203.0.113.10"] },
+      }),
     } as unknown as Response);
 
     mockSearchRead.mockRejectedValueOnce(new Error("HTTP 503 Service Unavailable"));
@@ -4609,7 +4645,11 @@ describe("odoo_attach_file", () => {
       ok: true,
       status: 200,
       statusText: "OK",
-      json: async () => ({ type: "odoo", credentials: testCredentials }),
+      json: async () => ({
+        type: "odoo",
+        credentials: testCredentials,
+        checkedAddresses: { url: ["203.0.113.10"] },
+      }),
     });
   });
 

@@ -194,7 +194,7 @@ The same check runs when the connection is saved, and again every time the saved
 
 **Test connection** connects to the address the check just looked up, with the hostname still used to verify the server's certificate. So a DNS answer that changes a moment later (DNS rebinding) can't send the test somewhere else, and a hostname that doesn't resolve isn't contacted at all — the test says it couldn't resolve the host.
 
-Two gaps remain. The agent's email tools resolve the hostname again when they connect, so DNS rebinding isn't caught there. And the check runs in Pinchy's container while the mail tools connect from the agent runtime's (`openclaw`): our `docker-compose.yml` gives both the same extra host names, but if you add `extra_hosts` entries of your own to `openclaw`, add them to `pinchy` too — a name the check can't resolve is let through.
+The agent's email tools work the same way: each time they fetch the connection, Pinchy hands them the addresses the check just looked up, and they connect only to those, again with the hostname for the certificate. One thing follows from that. The check runs in Pinchy's container while the mail tools connect from the agent runtime's (`openclaw`), so a name only `openclaw` can resolve has no checked address, and the email tools say they can't connect to it. Our `docker-compose.yml` gives both containers the same extra host names; if you add `extra_hosts` entries of your own to `openclaw`, add them to `pinchy` too.
 
 On OrbStack, `host.docker.internal` and `ollama.local` (which our `docker-compose.yml` maps to the same host gateway) resolve to `0.250.250.254` and are refused whatever you set; use the mail container's name or your machine's LAN address when developing.
 

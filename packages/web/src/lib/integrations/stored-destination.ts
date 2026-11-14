@@ -1,6 +1,6 @@
-import { resolveExternalUrlTarget } from "@/lib/integrations/url-validation";
+import { NO_ANSWER_CODES, resolveExternalUrlTarget } from "@/lib/integrations/url-validation";
 import type { PinnedTarget } from "@/lib/pinned-connection";
-import { assertMailHostAllowed, MailHostBlockedError } from "@/lib/integrations/mail-host-guard";
+import { resolveAllowedMailHost, MailHostBlockedError } from "@/lib/integrations/mail-host-guard";
 
 /**
  * Re-checks the destination a STORED connection points at, at the moment
@@ -24,15 +24,24 @@ import { assertMailHostAllowed, MailHostBlockedError } from "@/lib/integrations/
  * Same opt-ins as at save time, deliberately: a connection that may be saved
  * may be used, and one that may not, may not.
  *
- * A name that does not resolve is refused, like any other refused destination.
- * A lookup that FAILED (timeout, SERVFAIL) is not: it comes back `transient`,
- * and the caller answers "try again" instead of "blocked".
+ * An Odoo URL whose name does not resolve is refused, like any other refused
+ * destination; a lookup that FAILED (timeout, SERVFAIL) is not: it comes back
+ * `transient`, and the caller answers "try again" instead of "blocked". A mail
+ * host is never refused for its lookup: it is allowed without checked
+ * addresses, and `lookupFailures` says whether the name had no answer or the
+ * lookup failed for the moment, so whoever would connect can say which.
  *
- * What this does NOT close is DNS rebinding between this check and the
- * plugin's own connect: the plugin resolves the name again. Pinchy's own
- * connections (the "Test connection" button, the probe) pin to the `pin` an
- * Odoo check hands back.
+ * The check hands back the addresses it classified (`checked`, per field),
+ * and every consumer connects to those instead of resolving the name again —
+ * otherwise a resolver the name points at could answer this check with a
+ * public address and the connect with 127.0.0.1 (DNS rebinding). Pinchy's own
+ * connections (the "Test connection" button, the probe) pin to them directly;
+ * the credentials route hands them to the plugin as `checkedAddresses`, and
+ * pinchy-odoo and pinchy-email pin to those (their `pinned-target.ts`).
  */
+
+/** Why a stored mail host has no checked addresses. */
+export type LookupFailure = "no-answer" | "temporary";
 
 /** Which stored credential field held the refused destination. */
 export type StoredDestinationField = "url" | "imapHost" | "smtpHost";
@@ -46,6 +55,19 @@ export type StoredDestinationCheck =
        * resolving the name again. Absent for the other connection types.
        */
       pin?: { origin: string; target: PinnedTarget };
+      /**
+       * Per destination field, every address the guard classified. A field is
+       * absent when there is nothing to check or its lookup failed (see
+       * `lookupFailures`); a consumer that connects must then refuse rather
+       * than resolve the name itself.
+       */
+      checked?: Partial<Record<StoredDestinationField, PinnedTarget>>;
+      /**
+       * Mail hosts the guard could not look up: `no-answer` when the name does
+       * not resolve, `temporary` when the lookup itself failed and a retry may
+       * succeed. Absent when every stored host resolved.
+       */
+      lookupFailures?: Partial<Record<StoredDestinationField, LookupFailure>>;
     }
   | {
       allowed: false;
@@ -103,24 +125,53 @@ export async function checkStoredDestination(
         ...(result.transient ? { transient: true as const } : {}),
       };
     }
-    return { allowed: true, pin: { origin: result.url, target: result.target } };
+    return {
+      allowed: true,
+      pin: { origin: result.url, target: result.target },
+      checked: { url: result.target },
+    };
   }
 
   if (type === "imap") {
     // Both: the inbox sweep reads over IMAP, and the agent's send tool connects
     // to SMTP with the very same credentials.
+    const checked: Partial<Record<StoredDestinationField, PinnedTarget>> = {};
+    const lookupFailures: Partial<Record<StoredDestinationField, LookupFailure>> = {};
     for (const field of ["imapHost", "smtpHost"] as const) {
       const host = credentials[field];
       if (typeof host !== "string") continue;
       try {
-        await assertMailHostAllowed(host);
+        checked[field] = await resolveAllowedMailHost(host);
       } catch (err) {
-        if (!(err instanceof MailHostBlockedError)) throw err;
-        return { allowed: false, field, message: err.message };
+        if (err instanceof MailHostBlockedError) {
+          return { allowed: false, field, message: err.message };
+        }
+        // Not a refusal: no address means no connection, and the commonest
+        // cause is a typo the mail client's own error names (as
+        // `assertMailHostAllowed` has always let it pass). The field gets no
+        // checked addresses, so a consumer that would connect to it refuses
+        // instead of resolving it on its own — and says which of the two it was.
+        lookupFailures[field] = classifyLookupFailure(err);
       }
     }
-    return { allowed: true };
+    return {
+      allowed: true,
+      checked,
+      ...(Object.keys(lookupFailures).length > 0 ? { lookupFailures } : {}),
+    };
   }
 
   return { allowed: true };
+}
+
+/**
+ * A resolver error read exactly the way the Odoo check reads it
+ * (`NO_ANSWER_CODES`): the name has no answer, or the lookup failed and says
+ * nothing about the name — which includes an error without a resolver code.
+ * Thrown on, such an error would reach "Test connection" as a failed login and
+ * flag a healthy connection as needing new credentials.
+ */
+function classifyLookupFailure(err: unknown): LookupFailure {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === "string" && NO_ANSWER_CODES.has(code) ? "no-answer" : "temporary";
 }

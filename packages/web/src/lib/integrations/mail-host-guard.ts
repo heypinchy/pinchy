@@ -43,10 +43,11 @@ import { pinnedLookup, toPinnedTarget, type PinnedTarget } from "@/lib/pinned-co
  * between check and connect (rebinding) has nothing to change. `assertMailHostAllowed` stays for callers that only check a value
  * and connect to nothing.
  *
- * Not covered: pinchy-email, in the OpenClaw container, resolves the stored
- * host itself for every real IMAP/SMTP session, and `stored-destination.ts`'s
- * re-check at credential fetch is again check-then-someone-else-connects.
- * Pinchy can pin only the sockets it opens.
+ * The agent's own IMAP/SMTP sessions run in pinchy-email, in the OpenClaw
+ * container. `stored-destination.ts` re-checks the stored hosts with
+ * `resolveAllowedMailHost` when the plugin fetches credentials, and the
+ * credentials route hands the plugin those addresses (`checkedAddresses`);
+ * pinchy-email connects to them the same way, never resolving the name again.
  */
 
 export class MailHostBlockedError extends Error {
