@@ -540,7 +540,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
       noteUndeliveredConfigChange(regenerateSeq);
       if (!resumeStrandedShrink) return;
       console.warn(
-        `[openclaw-config] push gen=${String(generation)}: provider deletion stopped after ${String(shrinkSteps)} step(s) (${why}); queueing a follow-up regenerate to finish it`
+        `[openclaw-config] push gen=${String(generation)}: shrink delivery (provider deletion in steps, or an agent deletion) stopped after ${String(shrinkSteps)} step(s) (${why}); queueing a follow-up regenerate to finish it`
       );
       scheduleShrinkResume(resumeStrandedShrink, regenerateSeq);
     };
@@ -548,14 +548,18 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
     // retries, OpenClaw unreachable) — the deletion still has to land, so a
     // follow-up is queued even if no step did. Otherwise only once a step
     // landed: OpenClaw then sits on a stub nothing else would finish.
+    // Known gap: only provider deletions are stepped. An agent deletion whose
+    // roster bridge is still under half of OpenClaw's file (the agent's plugin
+    // config, Telegram account and bindings dominate) is refused by OpenClaw's
+    // own size-drop check and lands here as non-transient; it stays undelivered.
     const dropShrink = (why: string, { transient }: { transient: boolean }) => {
       const what = lastSizeDrop
         ? `OpenClaw refused this config as a size drop (${lastSizeDrop})`
-        : `this config deletes a provider and is under half of openclaw.json`;
+        : `this config deletes a provider or agent and is under half of openclaw.json`;
       console.error(
         `[openclaw-config] push gen=${String(generation)}: ${what} and ${why}. ` +
           `NOT writing openclaw.json directly — that would bypass OpenClaw's clobber guard, and OpenClaw restores .bak over it on its next start. ` +
-          `Only a deleted provider is delivered in steps; anything else is the #311/#314 stale-payload shape.`
+          `Only a deleted provider is delivered in steps (an agent-only deletion, or an agent's non-roster content dominating the shrink, is not, #1461); a shrink no step explains may also be the #311/#314 stale-payload shape.`
       );
       if (transient || shrinkSteps > 0) resumeShrink(why);
     };
@@ -1111,7 +1115,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
             offset: sizeDrop.toBytes - utf8Bytes(lastSent),
           };
           console.warn(
-            `[openclaw-config] push gen=${String(generation)}: config.apply refused a size drop (${String(sizeDrop.fromBytes)}->${String(sizeDrop.toBytes)} bytes); delivering the provider deletion in steps`
+            `[openclaw-config] push gen=${String(generation)}: config.apply refused a size drop (${String(sizeDrop.fromBytes)}->${String(sizeDrop.toBytes)} bytes); delivering the shrink in steps where a provider deletion explains it`
           );
           i--;
           continue;

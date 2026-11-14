@@ -1321,7 +1321,7 @@ describe("a superseded key slot outlives the config apply that moves OpenClaw of
       await new Promise((r) => setTimeout(r, 5));
     }
     expect(warn.mock.calls.flat().join(" ")).toMatch(
-      /provider deletion stopped after 0 step\(s\) \(superseded before it finished\); queueing a follow-up regenerate/
+      /shrink delivery \(provider deletion in steps, or an agent deletion\) stopped after 0 step\(s\) \(superseded before it finished\); queueing a follow-up regenerate/
     );
     for (
       let i = 0;
