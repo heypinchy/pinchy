@@ -18,7 +18,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createRequire } from "module";
 import { createServer, type Server } from "http";
-import { AddressInfo } from "net";
+import { AddressInfo, isIP } from "net";
 import plugin from "../index";
 import { encodeRef } from "../integration-ref";
 
@@ -118,7 +118,16 @@ beforeAll(async () => {
       return;
     }
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ type: "odoo", credentials }));
+    // Like the real route, answer the addresses the URL's host was checked
+    // against. Every URL here is an address literal, which is its own answer.
+    const host = new URL(String((credentials as { url?: unknown }).url ?? "http://x")).hostname;
+    res.end(
+      JSON.stringify({
+        type: "odoo",
+        credentials,
+        checkedAddresses: isIP(host) ? { url: [host] } : {},
+      })
+    );
   });
   await new Promise<void>((resolve) => mockPinchy.listen(0, "127.0.0.1", resolve));
   mockPinchyPort = (mockPinchy.address() as AddressInfo).port;

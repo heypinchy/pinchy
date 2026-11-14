@@ -43,6 +43,7 @@ const fetchMock = vi.fn(async () => ({
   statusText: "OK",
   json: async () => ({
     type: "odoo",
+    checkedAddresses: { url: ["203.0.113.10"] },
     credentials: { url: "http://odoo-test:8069", db: "testdb", uid: 2, apiKey: "k" },
   }),
 }));

@@ -2134,7 +2134,7 @@ Remove Telegram from every agent at once. **Admin only.** This is the backend fo
 
 External system integrations — **Odoo**, **email** (Gmail and Microsoft 365 via OAuth), and **Web Search**. See [Integrations](/concepts/integrations/) for the conceptual overview, [Connect Odoo](/guides/connect-odoo/) for the Odoo setup guide, and [Connect Email](/guides/connect-email/) for the email setup guide.
 
-Every route below that accepts an Odoo URL — create, update, sync, `test-credentials`, `list-databases` and `sync-preview` — runs the same SSRF guard. An address literal is classified as it stands; a hostname is resolved first and **every** address it answers with is classified, so a name pointing at an internal address is refused exactly like the address itself. A name that does not resolve is refused with `400` and `Could not resolve the host name "<host>". Check the URL for a typo.` (from `sync` and the connection test, the same text in the `error` field of a `200`), and nothing is contacted. A DNS lookup that fails for the moment (resolver unreachable, `EAI_AGAIN`) is not a refusal of the name: every route that accepts an Odoo URL — create, update, `list-databases`, `test-credentials` and `sync-preview` — answers `503` with `The DNS lookup for "<host>" failed temporarily. Try again in a moment.`, and the internal credentials route answers `503` without an audit row. (`sync` and the connection test report it in the `error` field of a `200`, as for an unresolvable name.) Every request Pinchy makes to the Odoo server itself (`list-databases`, `test-credentials`, `sync-preview`, the schema sync and the connection test) goes to the address the guard just checked rather than looking the name up again. `ALLOW_PRIVATE_URLS=1` additionally allows the [private ranges](/reference/network-address-checks/#private-ranges) — RFC 1918, Tailscale's `100.64.0.0/10`, IPv6 unique-local and the rest — for an on-premise Odoo; loopback, link-local, cloud-metadata and reserved addresses stay refused either way. See [Odoo on your own network](/guides/connect-odoo/#odoo-on-your-own-network). An Odoo URL longer than 2048 characters is rejected with `400`.
+Every route below that accepts an Odoo URL — create, update, sync, `test-credentials`, `list-databases` and `sync-preview` — runs the same SSRF guard. An address literal is classified as it stands; a hostname is resolved first and **every** address it answers with is classified, so a name pointing at an internal address is refused exactly like the address itself. A name that does not resolve is refused with `400` and `Could not resolve the host name "<host>". Check the URL for a typo.` (from `sync` and the connection test, the same text in the `error` field of a `200`), and nothing is contacted. A DNS lookup that fails for the moment (resolver unreachable, `EAI_AGAIN`) is not a refusal of the name: every route that accepts an Odoo URL — create, update, `list-databases`, `test-credentials` and `sync-preview` — answers `503` with `The DNS lookup for "<host>" failed temporarily. Try again in a moment.`, and the internal credentials route answers `503` without an audit row. (`sync` and the connection test report it in the `error` field of a `200`, as for an unresolvable name.) Every request Pinchy makes to the Odoo server itself (`list-databases`, `test-credentials`, `sync-preview`, the schema sync and the connection test) goes to the address the guard just checked rather than looking the name up again, and so do the agent's Odoo tools, through the `checkedAddresses` of the [internal credentials route](#get-apiinternalintegrationsconnectionidcredentials). `ALLOW_PRIVATE_URLS=1` additionally allows the [private ranges](/reference/network-address-checks/#private-ranges) — RFC 1918, Tailscale's `100.64.0.0/10`, IPv6 unique-local and the rest — for an on-premise Odoo; loopback, link-local, cloud-metadata and reserved addresses stay refused either way. See [Odoo on your own network](/guides/connect-odoo/#odoo-on-your-own-network). An Odoo URL longer than 2048 characters is rejected with `400`.
 
 ### `GET /api/integrations`
 
@@ -2372,17 +2372,35 @@ Returns the decrypted credentials for a connection, auto-refreshing an expired O
 | --------------- | -------- | ------------------------------------------ |
 | `agentId`       | yes      | The agent the calling plugin is acting for |
 
-| Status | Meaning                                                                                                                                        |
-| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `200`  | Credentials returned                                                                                                                           |
-| `400`  | `agentId` missing, longer than 128 characters, or containing anything but letters, digits, `-` and `_` (no audit row: malformed, not denied)   |
-| `401`  | Gateway token missing or wrong; the plugins retry it for about 3.75 s before giving up                                                         |
-| `403`  | The agent is not granted this connection, the connection is still `pending`, or its stored Odoo URL / IMAP / SMTP host fails the address check |
-| `404`  | The connection no longer exists — the body says so in words an admin can act on, because plugins surface it into the tool error                |
-| `500`  | The stored credentials could not be decrypted under the current encryption key                                                                 |
-| `503`  | An OAuth access token expired and the app's OAuth settings are gone, so it cannot be refreshed. Deliberately not a `200` carrying stale tokens |
+| Status | Meaning                                                                                                                                                                                                                                                                                      |
+| ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `200`  | Credentials returned                                                                                                                                                                                                                                                                         |
+| `400`  | `agentId` missing, longer than 128 characters, or containing anything but letters, digits, `-` and `_` (no audit row: malformed, not denied)                                                                                                                                                 |
+| `401`  | Gateway token missing or wrong; the plugins retry it for about 3.75 s before giving up                                                                                                                                                                                                       |
+| `403`  | The agent is not granted this connection, the connection is still `pending`, or its stored Odoo URL / IMAP / SMTP host fails the address check                                                                                                                                               |
+| `404`  | The connection no longer exists — the body says so in words an admin can act on, because plugins surface it into the tool error                                                                                                                                                              |
+| `500`  | The stored credentials could not be decrypted under the current encryption key                                                                                                                                                                                                               |
+| `503`  | An OAuth access token expired and the app's OAuth settings are gone, so it cannot be refreshed (deliberately not a `200` carrying stale tokens); or the DNS lookup for an Odoo connection's URL failed for the moment, with no audit row — never for a mail host, see `lookupFailures` below |
 
 **The stored destination is checked before credentials leave.** An Odoo connection's URL and an IMAP connection's IMAP and SMTP hosts are run through the same address check as when the connection was saved ([Odoo on your own network](/guides/connect-odoo/#odoo-on-your-own-network), [Mail servers on your own network](/guides/connect-email-imap/#mail-servers-on-your-own-network)), under the rules and switches as they are now. A refusal is a `403` whose `error` names the field and the fix — deliberately not a `401`, which the plugins would retry for several seconds before surfacing this final refusal.
+
+**A `200` also carries the addresses the check looked up**, in `checkedAddresses`, so the plugin connects to exactly those instead of looking the name up again — a DNS answer that changes in between (DNS rebinding) can't redirect it. It is keyed by the checked field (`url` for Odoo, `imapHost` and `smtpHost` for IMAP), each an array of IP addresses, and is `{}` for a connection with nothing to check (OAuth mailboxes, web search). A mail host whose lookup failed has no entry there; `lookupFailures` says why, keyed the same way: `"no-answer"` when the name has no address (a typo, a deleted record) and `"temporary"` when the resolver failed for the moment. It is `{}` when every lookup answered. Either way the answer stays a `200` — never a `503`, which `pinchy-email` reads as missing OAuth settings — and `pinchy-email` refuses to connect to that host rather than look it up itself. It tells the agent to try again shortly or to fix the host name, and it does not cache the refusal: the next call asks again.
+
+```json
+{
+  "type": "imap",
+  "credentials": {
+    "imapHost": "imap.example.com",
+    "smtpHost": "smtp.example.com",
+    "...": "..."
+  },
+  "checkedAddresses": {
+    "imapHost": ["93.184.216.34"],
+    "smtpHost": ["93.184.216.35", "2606:2800:220:1::25"]
+  },
+  "lookupFailures": {}
+}
+```
 
 A refusal for a missing grant or a refused destination writes an `integration.credentials_denied` audit row naming the agent and the connection — see [Audit Trail](/concepts/audit-trail/). A successful fetch is not audited: plugins re-fetch on every cache miss, so a row per success would be volume without signal.
 

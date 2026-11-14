@@ -462,6 +462,59 @@ describe("GET /api/internal/integrations/:connectionId/credentials", () => {
       });
     });
 
+    it("hands the plugin the addresses the guard checked, per field, so it connects to those", async () => {
+      // The plugin pins its connection to these instead of resolving the
+      // stored name again (DNS rebinding) — pinned-target.ts in the plugins.
+      vi.mocked(checkStoredDestination).mockResolvedValue({
+        allowed: true,
+        checked: {
+          imapHost: [
+            { address: "203.0.113.10", family: 4 },
+            { address: "2001:db8::10", family: 6 },
+          ],
+          smtpHost: [{ address: "203.0.113.11", family: 4 }],
+        },
+      });
+
+      const res = await GET(makeRequest("conn-1"), makeParams("conn-1"));
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.checkedAddresses).toEqual({
+        imapHost: ["203.0.113.10", "2001:db8::10"],
+        smtpHost: ["203.0.113.11"],
+      });
+    });
+
+    it("answers an empty checkedAddresses and lookupFailures when the guard checked nothing", async () => {
+      const res = await GET(makeRequest("conn-1"), makeParams("conn-1"));
+
+      const data = await res.json();
+      expect(data.checkedAddresses).toEqual({});
+      expect(data.lookupFailures).toEqual({});
+    });
+
+    // A mail host whose lookup failed is not refused: it travels as a 200 with
+    // no checked addresses, plus why — so the plugin can say "try again" for a
+    // DNS hiccup instead of "the host does not resolve". Never a 503: the
+    // email plugin reads a 503 as "OAuth settings missing" and flags the
+    // connection auth_failed.
+    it("tells the plugin which mail hosts it could not look up, and why", async () => {
+      vi.mocked(checkStoredDestination).mockResolvedValue({
+        allowed: true,
+        checked: { imapHost: [{ address: "203.0.113.10", family: 4 }] },
+        lookupFailures: { smtpHost: "temporary" },
+      });
+
+      const res = await GET(makeRequest("conn-1"), makeParams("conn-1"));
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.checkedAddresses).toEqual({ imapHost: ["203.0.113.10"] });
+      expect(data.lookupFailures).toEqual({ smtpHost: "temporary" });
+      expect(deferAuditLog).not.toHaveBeenCalled();
+    });
+
     it("does not audit an allowed fetch", async () => {
       const res = await GET(makeRequest("conn-1"), makeParams("conn-1"));
 

@@ -36,6 +36,10 @@ const opts: ImapAdapterOptions = {
   username: "user@example.com",
   password: "app-pw",
   security: "tls",
+  // The addresses Pinchy checked for the two hosts (pinned-target.ts) — the
+  // adapter refuses to connect without them outside the mail-mock seam.
+  imapTarget: [{ address: "203.0.113.10", family: 4 }],
+  smtpTarget: [{ address: "203.0.113.11", family: 4 }],
 };
 
 // Shared mock ImapFlow client. Each test configures list/search/fetch return

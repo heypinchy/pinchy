@@ -667,6 +667,158 @@ describe("credential fetching", () => {
     expect(mockList).toHaveBeenCalledTimes(1);
   });
 
+  it("hands the ImapAdapter the addresses Pinchy checked for each host", async () => {
+    // Without them the adapter would resolve the stored names again — the
+    // DNS-rebinding gap pinned-target.ts closes.
+    const imapCredentials = {
+      imapHost: "imap.example.com",
+      imapPort: 993,
+      smtpHost: "smtp.example.com",
+      smtpPort: 587,
+      username: "user@example.com",
+      password: "app-password",
+      security: "tls" as const,
+    };
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        type: "imap",
+        credentials: imapCredentials,
+        checkedAddresses: {
+          imapHost: ["203.0.113.10", "2001:db8::10"],
+          smtpHost: ["203.0.113.11"],
+        },
+      }),
+    });
+    mockList.mockResolvedValue([]);
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_list", agentId)!;
+
+    const result = await tool.execute("call-1", {});
+
+    expect(result.isError).toBeFalsy();
+    expect(ImapAdapter).toHaveBeenCalledWith({
+      ...imapCredentials,
+      imapTarget: [
+        { address: "203.0.113.10", family: 4 },
+        { address: "2001:db8::10", family: 6 },
+      ],
+      smtpTarget: [{ address: "203.0.113.11", family: 4 }],
+    });
+  });
+
+  it("asks Pinchy again on the next call after a DNS lookup failed for a moment", async () => {
+    // A transient resolver failure on Pinchy's side must not lock the email
+    // tools for the credentials cache's lifetime.
+    const imapCredentials = {
+      imapHost: "imap.example.com",
+      imapPort: 993,
+      smtpHost: "smtp.example.com",
+      smtpPort: 587,
+      username: "user@example.com",
+      password: "app-password",
+      security: "tls" as const,
+    };
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          type: "imap",
+          credentials: imapCredentials,
+          checkedAddresses: { imapHost: ["203.0.113.10"] },
+          lookupFailures: { smtpHost: "temporary" },
+        }),
+      })
+      .mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          type: "imap",
+          credentials: imapCredentials,
+          checkedAddresses: { imapHost: ["203.0.113.10"], smtpHost: ["203.0.113.11"] },
+          lookupFailures: {},
+        }),
+      });
+    mockList.mockResolvedValue([]);
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_list", agentId)!;
+
+    expect((await tool.execute("call-1", {})).isError).toBeFalsy();
+    expect(ImapAdapter).toHaveBeenLastCalledWith({
+      ...imapCredentials,
+      imapTarget: [{ address: "203.0.113.10", family: 4 }],
+      smtpTarget: undefined,
+      lookupFailures: { smtpHost: "temporary" },
+    });
+
+    expect((await tool.execute("call-2", {})).isError).toBeFalsy();
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    // A complete adapter is cached again: the third call does not refetch.
+    expect((await tool.execute("call-3", {})).isError).toBeFalsy();
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(ImapAdapter).toHaveBeenLastCalledWith({
+      ...imapCredentials,
+      imapTarget: [{ address: "203.0.113.10", family: 4 }],
+      smtpTarget: [{ address: "203.0.113.11", family: 4 }],
+    });
+  });
+
+  it("ignores a lookup failure reason it does not know", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        type: "imap",
+        credentials: {
+          imapHost: "imap.example.com",
+          imapPort: 993,
+          smtpHost: "smtp.example.com",
+          smtpPort: 587,
+          username: "user@example.com",
+          password: "app-password",
+          security: "tls",
+        },
+        checkedAddresses: { imapHost: ["203.0.113.10"] },
+        lookupFailures: { smtpHost: "cosmic-rays", imapHost: 7 },
+      }),
+    });
+    mockList.mockResolvedValue([]);
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_list", agentId)!;
+
+    expect((await tool.execute("call-1", {})).isError).toBeFalsy();
+    expect(vi.mocked(ImapAdapter).mock.lastCall?.[0]).not.toHaveProperty("lookupFailures");
+  });
+
+  it("refuses a credentials answer whose checked addresses are not addresses", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        type: "imap",
+        credentials: {
+          imapHost: "imap.example.com",
+          imapPort: 993,
+          smtpHost: "smtp.example.com",
+          smtpPort: 587,
+          username: "user@example.com",
+          password: "app-password",
+          security: "tls",
+        },
+        checkedAddresses: { imapHost: ["imap.example.com"] },
+      }),
+    });
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_list", agentId)!;
+
+    const result = await tool.execute("call-1", {});
+
+    expect(result.isError).toBe(true);
+    expect(ImapAdapter).not.toHaveBeenCalled();
+    expect(mockList).not.toHaveBeenCalled();
+  });
+
   it("rejects an imap credentials payload missing imapHost with a field-naming error", async () => {
     mockFetch.mockResolvedValue({
       ok: true,

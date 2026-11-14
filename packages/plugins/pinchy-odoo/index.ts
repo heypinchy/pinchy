@@ -18,12 +18,15 @@ import {
   trackMutations,
 } from "./credential-client";
 import { describeOdooError } from "./odoo-error";
+import { checkedTarget, type PinnedTarget } from "./pinned-target";
+import { pinOdooClient } from "./pinned-fetch";
 
 const WORKSPACE_ROOT = "/root/.openclaw/workspaces";
 
 // The two Pinchy-internal calls this plugin makes (credentials fetch,
 // auth-failure report) are bounded inside credential-client.ts. The Odoo
-// calls themselves go through odoo-node, not fetch() here.
+// calls themselves go through odoo-node, pinned to the addresses Pinchy
+// checked (pinned-fetch.ts).
 
 // 25 MB matches Odoo's default `web.max_file_upload_size` setting. Keeps the
 // plugin process from OOMing on a single attachment (readFile + base64 string
@@ -215,7 +218,7 @@ async function fetchCredentials(
   gatewayToken: string,
   connectionId: string,
   agentId: string
-): Promise<OdooCredentials> {
+): Promise<{ creds: OdooCredentials; target: PinnedTarget }> {
   const data = await requestCredentials({
     apiBaseUrl,
     gatewayToken,
@@ -224,16 +227,28 @@ async function fetchCredentials(
     label: "Odoo",
   });
   assertCredentialsShape(data.credentials);
-  return data.credentials;
+  // Pinchy answers the addresses it checked the URL's host against. Without
+  // them there is nothing to pin to, and resolving the name here would be
+  // exactly the second lookup a rebinding resolver waits for — so refuse.
+  // The route answers an Odoo URL it cannot check with a 403 or 503, never a
+  // 200, so a 200 without them comes from a Pinchy older than this plugin.
+  const target = checkedTarget(data, "url");
+  if (!target) {
+    throw new Error(
+      "pinchy-odoo: Pinchy did not send the addresses it checked for this connection's Odoo URL, so the Odoo tools will not connect to it. Pinchy and its agent runtime (the openclaw container) are most likely on different versions — run both from the same Pinchy release."
+    );
+  }
+  return { creds: data.credentials, target };
 }
 
-function createClient(creds: OdooCredentials): OdooClient {
-  return new OdooClient({
+function createClient(creds: OdooCredentials, target: PinnedTarget): OdooClient {
+  const client = new OdooClient({
     url: creds.url,
     db: creds.db,
     uid: creds.uid,
     apiKey: creds.apiKey,
   });
+  return pinOdooClient(client, creds.url, target);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -3165,8 +3180,13 @@ const plugin = {
       const key = credentialCacheKey(agentId, config.connectionId);
       const hit = cache.get(key);
       if (hit && hit.expiresAt > Date.now()) return hit.client;
-      const creds = await fetchCredentials(apiBaseUrl, gatewayToken, config.connectionId, agentId);
-      const client = createClient(creds);
+      const { creds, target } = await fetchCredentials(
+        apiBaseUrl,
+        gatewayToken,
+        config.connectionId,
+        agentId
+      );
+      const client = createClient(creds, target);
       cache.set(key, {
         client,
         expiresAt: Date.now() + CREDENTIALS_TTL_MS,
