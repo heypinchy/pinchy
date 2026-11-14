@@ -1522,14 +1522,6 @@ function assertNoCrossCompanyValue(
     return;
   }
   if (!Array.isArray(value)) return;
-  // Odoo reads a bare id list as `[6, 0, list]` (see `canonicalizeX2manyValue`):
-  // check each element exactly like a code-6 id list.
-  if (isBareX2manyList(value)) {
-    value.forEach((id, j) => {
-      assertNoCrossCompanyValue(id, intended, intendedLabel, `${path}[${j}]`, depth + 1);
-    });
-    return;
-  }
   value.forEach((tuple, i) => {
     if (!Array.isArray(tuple)) return;
     // Odoo Command tuple: [code, ...]. 0 (create) and 1 (update) carry a
@@ -1861,54 +1853,36 @@ async function resolveRelationValue(
 const MAX_X2MANY_DEPTH = 2;
 
 /**
- * Odoo rewrites an x2many value into commands before applying it: `false` /
- * `null` clears the field (code 5) and a bare list of ids becomes
- * `[6, 0, list]`. Those rewritten shapes are gated by the per-code grant check
- * exactly like the commands they turn into, so every x2many value is brought
- * into command form HERE and anything that is not a well-formed command
- * (integer code 0..6; Python would also read `true` as 1) is refused instead
- * of being passed on unchecked.
+ * An x2many value must be explicit command tuples (or empty). Odoo would
+ * silently rewrite shorthand — `false` into a clear (code 5), a bare id list
+ * into `[6, 0, list]`, a boolean code into 0/1 — and each rewrite can destroy
+ * data (a bare list of lines unlinks every other line) while skipping the
+ * per-code grant check. So nothing is rewritten here: anything that is not a
+ * well-formed command list is refused with a hint at the right tuple.
  */
-/** A non-empty x2many list whose first item is not a command tuple. */
-function isBareX2manyList(value: unknown[]): boolean {
-  return value.length > 0 && !Array.isArray(value[0]);
-}
-
-/** The shapes `resolveCommandTargetId` accepts in an id position. */
-function isIdLike(value: unknown): boolean {
-  if (typeof value === "number" || typeof value === "string") return true;
-  if (value === false || value == null) return true;
-  return (
-    isRecord(value) &&
-    (typeof value.ref === "string" ||
-      typeof value._pinchy_ref === "string" ||
-      isRecord(value.lookup))
-  );
-}
-
-function canonicalizeX2manyValue(fieldName: string, value: unknown): unknown[] {
-  const bad = (): never => {
-    throw new Error(
-      `Invalid value for "${fieldName}": use command tuples such as [[6, 0, [ids]]] ` +
-        `(or [[5]] to clear), not a bare value.`
-    );
+function assertX2manyCommands(fieldName: string, value: unknown): unknown[] {
+  const invalid = (hint: string): never => {
+    throw new Error(`Invalid value for "${fieldName}": ${hint}`);
   };
-  if (value === false || value == null) return [[5]];
-  if (!Array.isArray(value)) return bad();
-  if (value.length === 0) return value;
-  if (isBareX2manyList(value)) {
-    if (value.every(isIdLike)) return [[6, 0, value]];
-    if (value.some((v) => isRecord(v) && !isIdLike(v))) {
-      throw new Error(
-        `Invalid value for "${fieldName}": to add new lines, wrap each one as [0, 0, {…}].`
+  if (Array.isArray(value)) {
+    if (value.length === 0) return value;
+    if (value.every((c) => Array.isArray(c) && Number.isInteger(c[0]) && c[0] >= 0 && c[0] <= 6)) {
+      return value;
+    }
+    if (!Array.isArray(value[0])) {
+      if (value.some(isRecord)) {
+        return invalid(
+          "wrap each new line as [0, 0, {…}], or edit an existing one with [1, ref, {…}]."
+        );
+      }
+      return invalid(
+        "to replace the linked records, use [[6, 0, [ids]]]; to link one, use [[4, id]]."
       );
     }
-    return bad();
+  } else if (value === false || value == null) {
+    return invalid("to clear it, use [[5]].");
   }
-  for (const cmd of value) {
-    if (!Array.isArray(cmd) || !Number.isInteger(cmd[0]) || cmd[0] < 0 || cmd[0] > 6) bad();
-  }
-  return value;
+  return invalid("use command tuples such as [[6, 0, [ids]]] (or [[5]] to clear).");
 }
 
 export async function normalizeMany2OneValues(
@@ -1939,12 +1913,12 @@ export async function normalizeMany2OneValues(
   }
 
   // Past the walk's depth nothing is checked, so nothing may pass: refuse any
-  // x2many that would canonicalize to commands BEFORE spending lookups.
+  // x2many that holds commands (or an invalid shape) BEFORE spending lookups.
   if (depth >= MAX_X2MANY_DEPTH) {
     for (const field of fields) {
       if (field.type !== "one2many" && field.type !== "many2many") continue;
       if (!(field.name in values)) continue;
-      if (canonicalizeX2manyValue(field.name, values[field.name]).length === 0) continue;
+      if (assertX2manyCommands(field.name, values[field.name]).length === 0) continue;
       throw new Error(
         `x2many commands nested deeper than ${MAX_X2MANY_DEPTH} levels are not supported ` +
           `(found commands for "${field.name}" on ${model}). Save this record first, then set ` +
@@ -2014,7 +1988,7 @@ export async function normalizeMany2OneValues(
         field.type === "one2many" ? "one2many" : field.type === "many2many" ? "many2many" : null;
       if (kind === null || !field.relation) continue;
       if (!(field.name in normalized)) continue;
-      const commands = canonicalizeX2manyValue(field.name, normalized[field.name]);
+      const commands = assertX2manyCommands(field.name, normalized[field.name]);
       normalized[field.name] = await normalizeCommandTuples(
         client,
         connectionId,

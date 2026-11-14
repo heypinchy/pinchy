@@ -549,39 +549,65 @@ describe("normalizeMany2OneValues — x2many command tuples inside a line's valu
     ).rejects.toThrow(/nested deeper than 2 levels/);
   });
 
-  describe("shapes Odoo rewrites into commands are gated like the commands they become", () => {
+  describe("x2many values must be explicit command tuples (no shorthand rewriting)", () => {
     const writeMove = (c: OdooClient, value: unknown, perms: Record<string, string[]>) =>
       normalizeMany2OneValues(c, "conn-1", "account.move", { invoice_line_ids: value }, perms);
     const MOVE_ONLY = { "account.move": ["write"] };
-
-    it("treats a bare id list as code 6 (needs delete on the line model)", async () => {
-      const { client } = makeClient();
-      await expect(writeMove(client, [12, 13], MOVE_ONLY)).rejects.toThrow(
-        /missing delete grant on account\.move\.line \(nested via invoice_line_ids command 6\)/
-      );
-    });
-
-    it("treats false as code 5 (needs delete on the line model)", async () => {
-      const { client } = makeClient();
-      await expect(writeMove(client, false, MOVE_ONLY)).rejects.toThrow(
-        /missing delete grant on account\.move\.line \(nested via invoice_line_ids command 5\)/
-      );
-    });
-
-    it("reports a shape error, not a grant error, for plain line dicts without a command wrapper", async () => {
-      const { client } = makeClient();
-      const err = await writeMove(
-        client,
-        [{ name: "Coffee", quantity: 2, price_unit: 4.3 }],
-        MOVE_ONLY
-      ).then(
+    const errOf = (p: Promise<unknown>) =>
+      p.then(
         () => null,
-        (e: Error) => e
+        (e: Error) => e.message
       );
-      expect(err?.message).toMatch(
-        /Invalid value for "invoice_line_ids": to add new lines, wrap each one as \[0, 0, \{…\}\]/
+
+    it("rejects a bare id list with a hint for [6, 0, [ids]] / [4, id], not a grant error", async () => {
+      const { client } = makeClient();
+      const msg = await errOf(writeMove(client, [12, 13], MOVE_ONLY));
+      expect(msg).toMatch(
+        /Invalid value for "invoice_line_ids": to replace the linked records, use \[\[6, 0, \[ids\]\]\]; to link one, use \[\[4, id\]\]\./
       );
-      expect(err?.message).not.toMatch(/grant/);
+      expect(msg).not.toMatch(/grant/);
+    });
+
+    it("rejects false and null with a hint for [[5]]", async () => {
+      const { client } = makeClient();
+      for (const v of [false, null]) {
+        const msg = await errOf(writeMove(client, v, MOVE_ONLY));
+        expect(msg).toMatch(/Invalid value for "invoice_line_ids": to clear it, use \[\[5\]\]\./);
+      }
+    });
+
+    it("rejects plain line dicts without a command wrapper, not as a grant error", async () => {
+      const { client } = makeClient();
+      const msg = await errOf(
+        writeMove(client, [{ name: "Coffee", quantity: 2, price_unit: 4.3 }], MOVE_ONLY)
+      );
+      expect(msg).toMatch(
+        /Invalid value for "invoice_line_ids": wrap each new line as \[0, 0, \{…\}\], or edit an existing one with \[1, ref, \{…\}\]\./
+      );
+      expect(msg).not.toMatch(/grant/);
+    });
+
+    it("rejects a ref-bearing dict list ({_pinchy_ref, qty}) before any client call", async () => {
+      const { client, calls } = makeClient();
+      const msg = await errOf(
+        writeMove(client, [{ _pinchy_ref: ref("account.move.line", 5), product_uom_qty: 5 }], PERMS)
+      );
+      expect(msg).toMatch(/\[1, ref, \{…\}\]/);
+      expect(calls).toEqual([]);
+    });
+
+    it("rejects a bare ref list (incl. a ref from another company) with the shape error", async () => {
+      const { client } = makeClient();
+      const msg = await errOf(run(client, [ref("account.tax", 7, "conn-other")]));
+      expect(msg).toMatch(/to replace the linked records, use \[\[6, 0, \[ids\]\]\]/);
+    });
+
+    it("keeps accepting an empty list and explicit tuples", async () => {
+      const { client } = makeClient();
+      const r = await writeMove(client, [], PERMS);
+      expect(r.values.invoice_line_ids).toEqual([]);
+      const r2 = await run(client, [[6, 0, [ref("account.tax", 7)]]]);
+      expect(taxIdsOf(r2)).toEqual([[6, 0, [7]]]);
     });
 
     it("rejects a tuple whose command code is not an integer 0..6 ([true, 7, {}])", async () => {
@@ -589,12 +615,6 @@ describe("normalizeMany2OneValues — x2many command tuples inside a line's valu
       await expect(writeMove(client, [[true, 7, {}]], PERMS)).rejects.toThrow(
         /use command tuples such as \[\[6, 0, \[ids\]\]\]/
       );
-    });
-
-    it("resolves a bare list of refs like a code-6 list when the grant exists", async () => {
-      const { client } = makeClient();
-      const r = await run(client, [ref("account.tax", 7), ref("account.tax", 8)]);
-      expect(taxIdsOf(r)).toEqual([[6, 0, [7, 8]]]);
     });
 
     it("rejects a bare id list and false at the depth limit", async () => {
@@ -614,7 +634,7 @@ describe("normalizeMany2OneValues — x2many command tuples inside a line's valu
           normalizeMany2OneValues(client, "conn-1", "res.partner", values, {
             "res.partner": ["create"],
           })
-        ).rejects.toThrow(/nested deeper than 2 levels|use command tuples/);
+        ).rejects.toThrow(/nested deeper than 2 levels|Invalid value for "bank_ids"/);
       }
     });
 
