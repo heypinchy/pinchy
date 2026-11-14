@@ -81,8 +81,13 @@ export const LLAMA_SERVER_PORT = 19432;
  * embedded, the provider was marked degraded, and memory_search fell back to
  * keyword-only.
  *
- * 2048 covers the byte cap (a token is at least one byte) and equals the
- * model's context. Router-mode global args are inherited by the model child.
+ * 2048 is as far as raising it helps: it equals the model's context, so a
+ * larger batch would only move the failure from the batch to the context. A
+ * token is at least one byte, so a capped input is at most 2048 tokens of text
+ * — but the tokenizer adds BOS/EOS on top, so an input that spends a whole
+ * token on nearly every byte can still end up a token or two over. Real memory
+ * text is far from that ratio. Router-mode global args are inherited by the
+ * model child.
  */
 export const LLAMA_SERVER_EMBEDDING_BATCH_TOKENS = 2048;
 
