@@ -533,6 +533,7 @@ describe("reAbortStartedRun", () => {
           outcome: "success",
           detail: {
             agent: { id: "agent-1", name: "Agent agent-1" },
+            chatId: null,
             runId: "run-real",
             reason: "account_deactivated",
             followUp: "aborted_by_run_id",
@@ -565,6 +566,7 @@ describe("reAbortStartedRun", () => {
           // raw id in the verbatim detail would survive crypto-erasure (#824).
           detail: {
             agent: { id: "agent-1", name: "Agent agent-1" },
+            chatId: null,
             runId: "run-real",
           },
         }),
@@ -802,6 +804,7 @@ describe("auditStoppedBeforeDispatch", () => {
         resource: "agent:agent-1",
         detail: {
           agent: { id: "agent-1", name: "Agent agent-1" },
+          chatId: null,
           runId: null,
           reason: "user_request",
           followUp: "stopped_before_dispatch",
@@ -973,7 +976,7 @@ describe("the rows the follow-up writes (#824)", () => {
   // row that crypto-erasure cannot reach, so these rows carry the agent and
   // the runId, never the key. The actor is on the row, pseudonymized.
   const userId = "usr-leaving-42";
-  const sessionKey = `agent:agent-1:direct:${userId}`;
+  const sessionKey = `agent:agent-1:direct:${userId}:c-1`;
 
   async function stoppedPendingRun(
     request: AbortRequest = { actorId: userId, reason: "user_request" }
@@ -993,6 +996,7 @@ describe("the rows the follow-up writes (#824)", () => {
     expect(rows.length).toBeGreaterThan(0);
     for (const row of rows) {
       expect(row.detail).not.toHaveProperty("sessionKey");
+      expect(row.detail).toHaveProperty("chatId", "c-1");
       expect(JSON.stringify(row.detail)).not.toContain(userId);
     }
   }

@@ -37,6 +37,7 @@ import { createMediaDirectiveFilter } from "@/server/media-directive";
 import { and, eq } from "drizzle-orm";
 import { appendAuditLog, safeProviderError } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
+import { auditChatId } from "@/lib/session-key";
 import { maybeSelfHealOnModelError } from "@/server/model-self-heal";
 
 // Browsers and intermediate proxies close idle WebSockets after ~30-60s of
@@ -909,7 +910,7 @@ export class StreamPipe {
           // mirrored into the verbatim `detail` (#824).
           detail: {
             agent: { id: agent.id, name: agent.name },
-            sessionKey,
+            chatId: auditChatId(sessionKey),
             runId: activeRunId!,
           },
           outcome: "success" as const,

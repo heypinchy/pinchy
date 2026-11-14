@@ -26,11 +26,10 @@ export interface ActiveRun {
   sessionKey: string;
   agentId: string;
   /**
-   * Owner of the run. Snapshotted at registration so the watchdog can include
-   * `user.id` in the `chat.run_no_first_chunk` audit row even though the
-   * watchdog itself acts as `system / watchdog`. PII rules forbid email/name
-   * here — operators join against the users table when they need a
-   * human-readable name.
+   * Owner of the run. Snapshotted at registration so a system-initiated abort
+   * (account deactivation, the watchdog) can find the user's runs and attribute
+   * the resulting audit row. PII rules forbid email/name here, and the id must
+   * not be copied into an audit `detail` (#824) — the row's actor carries it.
    */
   userId: string;
   agentName: string;
