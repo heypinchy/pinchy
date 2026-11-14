@@ -18,10 +18,13 @@
 #
 # What it does: asks `openclaw memory status --json` which agents' indexes are
 # "mismatched" with owner "configuration" and runs
-# `openclaw memory index --agent <id>` for exactly those. A "missing" index and
-# a mismatch OpenClaw owns (provenance or chunking version) are left alone —
-# the gateway's own sync rebuilds those — so they never delay the gateway
-# start here.
+# `openclaw memory index --agent <id>` for exactly those. A "missing" index is
+# left alone: the gateway's own sync builds it. So is a mismatch OpenClaw owns,
+# though the gateway rebuilds only one kind of those by itself, a chunking
+# version mismatch; one about provenance alone stays paused too. Skipping them
+# is safe today because an index an upgraded install built under 2026.7.x
+# carries no chunking version at all, so it takes the chunking path. Neither
+# delays the gateway start here.
 #
 # Why before the gateway: the CLI starts its own llama-server on the provider's
 # loopback port and stops it when it exits. A gateway running beside it would
@@ -81,8 +84,9 @@ process.stdin.on("end", () => {
       process.exit(2);
     }
     // Only the configuration-owned mismatch (built for another embedding
-    // model) waits for the CLI. One OpenClaw owns (provenance or chunking
-    // version) is rebuilt by the gateway itself.
+    // model) is rebuilt here. Of the ones OpenClaw owns, the gateway rebuilds
+    // a chunking version mismatch itself, which is what every index built
+    // under 2026.7.x has (no chunking version); see the header.
     if (identity.status === "mismatched" && identity.owner === "configuration") console.log(id);
   }
   if (expected && !agents.some((entry) => entry.agentId === expected)) {

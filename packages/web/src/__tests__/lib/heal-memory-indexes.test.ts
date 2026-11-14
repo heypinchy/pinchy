@@ -49,8 +49,9 @@ let templates: string;
 
 // "mismatched" is memory-core's configuration-owned mismatch (the index was
 // built for another embedding model — only `openclaw memory index` rebuilds
-// it). "stale-format" is an openclaw-owned one (provenance or chunking
-// version), which the gateway's own sync rebuilds.
+// it). "stale-format" is an openclaw-owned chunking version mismatch, the one
+// kind the gateway's own sync rebuilds (and the one every index built under
+// 2026.7.x has).
 type Identity = "valid" | "missing" | "mismatched" | "stale-format";
 
 // The shape `openclaw memory status --json` prints (OpenClaw 2026.9.2), cut
@@ -291,7 +292,7 @@ describe("heal_memory_indexes", () => {
   });
 
   it("leaves mismatches OpenClaw owns to the gateway", () => {
-    // owner "openclaw" (provenance or chunking version) is rebuilt by the
+    // A chunking version mismatch (owner "openclaw") is rebuilt by the
     // gateway's own sync; rebuilding it here would only hold the start back.
     setIdentities({ kb: "mismatched", old: "stale-format" });
 
