@@ -112,6 +112,11 @@ type StubOptions = {
   rawStatus?: string;
   /** Ignores SIGTERM (inherited through exec), as a stuck child can. */
   ignoresTerm?: boolean;
+  /**
+   * `memory status --agent <id>` prints `[]` and exits with this code, as
+   * OpenClaw does when that agent's memory manager fails to open.
+   */
+  agentStatusEmpty?: number;
 };
 
 // A stub `openclaw` that logs argv, answers `memory status [--agent <id>]
@@ -130,6 +135,7 @@ function stubOpenclaw(opts: StubOptions = {}) {
     statusPrefix = "",
     rawStatus,
     ignoresTerm = false,
+    agentStatusEmpty,
   } = opts;
   const healing = indexHeals === true ? "*" : indexHeals === false ? "" : indexHeals.join(" ");
   const bin = join(binDir, "openclaw");
@@ -141,6 +147,7 @@ ${ignoresTerm ? "trap '' TERM" : ""}
 if [ "$1 $2" = "memory status" ]; then
   agent=""
   [ "$3" = "--agent" ] && agent="$4"
+  ${agentStatusEmpty === undefined ? "" : `[ -z "$agent" ] || { echo "[]"; exit ${agentStatusEmpty}; }`}
   [ ${statusExit} -eq 0 ] || exit ${statusExit}
   ${statusSleeps === undefined ? "" : `exec sleep ${statusSleeps}`}
   echo "[plugins] pinchy-files failed during register" >&2
@@ -316,6 +323,22 @@ describe("heal_memory_indexes", () => {
     expect(indexCalls()).toEqual([["memory", "index", "--agent", "kb"]]);
     expect(output).toContain("FAILED");
     expect(output).toContain("[memory-heal]   kb");
+    expect(output).not.toContain("rebuilt in");
+  });
+
+  it.each([
+    ["exits 1", 1],
+    ["exits 0", 0],
+  ])("does not read an empty re-check that %s as healed", (_label, code) => {
+    // When the agent's memory manager fails to open, `memory status --agent`
+    // prints `[]` and exits 1: no entry is not the same as no mismatch.
+    setIdentities({ kb: "mismatched" });
+    stubOpenclaw({ agentStatusEmpty: code });
+
+    const output = run();
+
+    expect(output).toContain("Could not re-read the memory index status of agent kb");
+    expect(output).toContain("[memory-heal]   kb\n");
     expect(output).not.toContain("rebuilt in");
   });
 

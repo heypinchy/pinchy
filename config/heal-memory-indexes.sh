@@ -51,9 +51,11 @@ OPENCLAW_LLAMA_SERVER_STOP_TIMEOUT="${OPENCLAW_LLAMA_SERVER_STOP_TIMEOUT:-15}"
 # Reads `openclaw memory status --json` on stdin and prints the id of every
 # agent whose index is mismatched by configuration, one per line. Exits
 # non-zero when stdin is not the status array — a format change must be loud,
-# not read as "healthy".
+# not read as "healthy" — and, given an agent id, when the array has no entry
+# for it: OpenClaw prints `[]` for an agent whose memory manager fails to open.
 list_mismatched_memory_indexes() {
     node -e '
+const expected = process.argv[1];
 let raw = "";
 process.stdin.on("data", (d) => (raw += d));
 process.stdin.on("end", () => {
@@ -83,8 +85,12 @@ process.stdin.on("end", () => {
     // version) is rebuilt by the gateway itself.
     if (identity.status === "mismatched" && identity.owner === "configuration") console.log(id);
   }
+  if (expected && !agents.some((entry) => entry.agentId === expected)) {
+    console.error("no entry for agent " + expected + " in `openclaw memory status --json` output");
+    process.exit(2);
+  }
 });
-'
+' "${1:-}"
 }
 
 # Prints the mismatched agent ids of the current install (or, given `--agent
@@ -99,7 +105,8 @@ process.stdin.on("end", () => {
 # (memory_heal_deadline, a local there and visible here through bash's dynamic
 # scoping), and returns 124 like a timed-out command once it has passed.
 query_mismatched_memory_indexes() {
-    local limit=() out rc seconds="$OPENCLAW_MEMORY_STATUS_TIMEOUT" left
+    local limit=() out rc seconds="$OPENCLAW_MEMORY_STATUS_TIMEOUT" left expected=""
+    [ "${1:-}" != "--agent" ] || expected="${2:-}"
     if [ -n "${memory_heal_deadline:-}" ]; then
         left=$(( memory_heal_deadline - $(date +%s) ))
         [ "$left" -gt 0 ] || return 124
@@ -110,7 +117,7 @@ query_mismatched_memory_indexes() {
     # stderr carries OpenClaw's plugin and provider logs; only stdout is data.
     out="$("${limit[@]}" openclaw memory status "$@" --json 2>/dev/null)"
     rc=$?
-    if ! printf '%s\n' "$out" | list_mismatched_memory_indexes; then
+    if ! printf '%s\n' "$out" | list_mismatched_memory_indexes "$expected"; then
         [ "$rc" -ne 0 ] || rc=2
         return "$rc"
     fi
