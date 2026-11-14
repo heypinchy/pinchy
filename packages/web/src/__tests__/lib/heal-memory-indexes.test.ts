@@ -452,8 +452,9 @@ describe("heal_memory_indexes", () => {
     ["OPENCLAW_MEMORY_STATUS_TIMEOUT"],
     ["OPENCLAW_LLAMA_SERVER_STOP_TIMEOUT"],
   ])("falls back to the default when %s is not a whole number of seconds", (name) => {
-    // "15m" in $(( )) is a syntax error, and start-openclaw.sh runs under
-    // `set -e`: the container would restart-loop over a typo in an env var.
+    // "15m" in $(( )) is a syntax error, which discards the whole
+    // heal_memory_indexes command: a typo in an env var would skip the heal
+    // on every start without a word.
     setIdentities({ kb: "mismatched" });
 
     const output = run({ [name]: "15m" });
@@ -462,6 +463,30 @@ describe("heal_memory_indexes", () => {
     expect(indexCalls()).toEqual([["memory", "index", "--agent", "kb"]]);
     expect(output).toMatch(/Memory indexes rebuilt in \d+s/);
   });
+
+  it("reads a leading zero as decimal, not as an octal error", () => {
+    // `$(( 0900 ))` is "value too great for base" in bash: the heal would be
+    // skipped silently, and "010" would quietly mean 8 seconds.
+    setIdentities({ kb: "mismatched" });
+
+    const output = run({ OPENCLAW_MEMORY_HEAL_BUDGET: "0900" });
+
+    expect(output).not.toContain("WARNING");
+    expect(indexCalls()).toEqual([["memory", "index", "--agent", "kb"]]);
+    expect(output).toMatch(/Memory indexes rebuilt in \d+s/);
+  });
+
+  it.each([["OPENCLAW_MEMORY_STATUS_TIMEOUT"], ["OPENCLAW_LLAMA_SERVER_STOP_TIMEOUT"]])(
+    "does not accept 0 for %s, which `timeout 0` would read as no limit",
+    (name) => {
+      setIdentities({ kb: "mismatched" });
+
+      const output = run({ [name]: "0" });
+
+      expect(output).toContain(`${name}="0" is not a whole number of seconds of at least 1`);
+      expect(indexCalls()).toEqual([["memory", "index", "--agent", "kb"]]);
+    }
+  );
 
   it("does nothing before Pinchy has written a config", () => {
     rmSync(join(stateDir, "openclaw.json"));

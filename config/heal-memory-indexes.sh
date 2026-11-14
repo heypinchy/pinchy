@@ -116,13 +116,23 @@ query_mismatched_memory_indexes() {
     return 0
 }
 
-# Resets the named variable to its default unless it holds whole seconds. A
-# value like "15m" would be a syntax error in $(( )), and under the caller's
-# `set -e` that ends the container start.
+# Resets the named variable to its default unless it holds whole seconds of at
+# least <min>, and normalises it to plain decimal. A value like "15m" is a
+# syntax error in $(( )), and so is "0900" (a leading zero means octal) — an
+# arithmetic error discards the whole heal_memory_indexes command, so the heal
+# would be skipped without a word; "010" would quietly mean 8 seconds. A
+# timeout of 0 is `timeout 0`, which means no limit at all.
 require_memory_heal_seconds() {
-    local name="$1" default="$2"
-    [[ "${!name}" =~ ^[0-9]+$ ]] && return 0
-    echo "[memory-heal] WARNING: $name=\"${!name}\" is not a whole number of seconds; using $default."
+    local name="$1" default="$2" min="$3" value="${!1}" at_least=""
+    if [[ "$value" =~ ^[0-9]+$ ]]; then
+        value=$((10#$value))
+        if [ "$value" -ge "$min" ]; then
+            printf -v "$name" '%s' "$value"
+            return 0
+        fi
+    fi
+    [ "$min" -eq 0 ] || at_least=" of at least $min"
+    echo "[memory-heal] WARNING: $name=\"${!name}\" is not a whole number of seconds${at_least}; using $default."
     printf -v "$name" '%s' "$default"
 }
 
@@ -152,9 +162,9 @@ stop_leftover_llama_server() {
 
 heal_memory_indexes() {
     [ -f "$OPENCLAW_STATE_DIR/openclaw.json" ] || return 0
-    require_memory_heal_seconds OPENCLAW_MEMORY_HEAL_BUDGET 900
-    require_memory_heal_seconds OPENCLAW_MEMORY_STATUS_TIMEOUT 120
-    require_memory_heal_seconds OPENCLAW_LLAMA_SERVER_STOP_TIMEOUT 15
+    require_memory_heal_seconds OPENCLAW_MEMORY_HEAL_BUDGET 900 0
+    require_memory_heal_seconds OPENCLAW_MEMORY_STATUS_TIMEOUT 120 1
+    require_memory_heal_seconds OPENCLAW_LLAMA_SERVER_STOP_TIMEOUT 15 1
 
     # One clock for everything below: query_mismatched_memory_indexes reads
     # this deadline too, so the status queries cannot add their own timeouts
