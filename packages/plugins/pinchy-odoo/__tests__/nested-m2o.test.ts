@@ -1,6 +1,8 @@
 // @vitest-environment node
 import { describe, it, expect, vi } from "vitest";
 import { normalizeMany2OneValues } from "../index";
+import { encodeRef } from "../integration-ref";
+import { afterEach, beforeEach } from "vitest";
 
 // Mock odoo-node so importing the plugin doesn't pull the real client.
 vi.mock("odoo-node", () => ({ OdooClient: vi.fn() }));
@@ -135,30 +137,47 @@ describe("normalizeMany2OneValues — nested one2many command tuples (#615)", ()
     expect(result.line_ids).toEqual([[1, 77, { account_id: 5, credit: 50 }]]);
   });
 
-  it("does not recurse beyond one nesting level", async () => {
-    // A one2many inside a line (depth 1) is left untouched — its m2o values
-    // pass through verbatim. Bounds recursion through self-referential models.
+  it("does not recurse beyond two nesting levels", async () => {
+    // Odoo needs two levels (line -> its x2many). A third level is left
+    // verbatim, which bounds recursion through self-referential models.
     const { client, calls } = makeMockClient();
     FIELDS["account.move.line"].tax_ids = {
       type: "one2many",
       relation: "account.tax",
     };
-    FIELDS["account.tax"] = { name: { type: "char" } };
+    FIELDS["account.tax"] = {
+      name: { type: "char" },
+      children: { type: "one2many", relation: "account.tax" },
+      parent_id: { type: "many2one", relation: "account.tax" },
+    };
 
     const values = {
-      line_ids: [[0, 0, { account_id: "Main Bank", tax_ids: [[0, 0, { name: "VAT" }]] }]],
+      line_ids: [
+        [
+          0,
+          0,
+          {
+            account_id: "Main Bank",
+            tax_ids: [[0, 0, { name: "VAT", children: [[0, 0, { parent_id: "Deep" }]] }]],
+          },
+        ],
+      ],
     };
 
     const result = (
-      await normalizeMany2OneValues(client, "conn-1", "account.move", values, FULL_LINE_PERMISSIONS)
+      await normalizeMany2OneValues(client, "conn-1", "account.move", values, {
+        ...FULL_LINE_PERMISSIONS,
+        "account.tax": ["create", "write", "delete"],
+      })
     ).values as { line_ids: unknown[] };
 
     // Top-level line's account_id resolved.
     const line = result.line_ids[0] as [number, number, Record<string, unknown>];
     expect(line[2].account_id).toBe(5);
-    // The nested tax_ids tuple is left verbatim (name NOT resolved/looked up).
-    expect(line[2].tax_ids).toEqual([[0, 0, { name: "VAT" }]]);
-    // No account.tax lookup happened.
+    // The third level (children of the tax) is left verbatim, no lookup.
+    expect(line[2].tax_ids).toEqual([
+      [0, 0, { name: "VAT", children: [[0, 0, { parent_id: "Deep" }]] }],
+    ]);
     expect(calls.find((c) => c.relation === "account.tax")).toBeUndefined();
 
     delete FIELDS["account.move.line"].tax_ids;
@@ -405,5 +424,122 @@ describe("normalizeMany2OneValues — nested-permission gating (governance prior
     await expect(
       normalizeMany2OneValues(client, "conn-1", "account.move", values, NO_LINE_PERMISSIONS)
     ).rejects.toThrow(/Agent missing delete grant on account\.move\.line/);
+  });
+});
+
+describe("normalizeMany2OneValues — x2many command tuples inside a line's values dict", () => {
+  const SCHEMA: Record<string, Record<string, unknown>> = {
+    "account.move": {
+      company_id: { type: "many2one", relation: "res.company" },
+      invoice_line_ids: { type: "one2many", relation: "account.move.line" },
+    },
+    "account.move.line": {
+      account_id: { type: "many2one", relation: "account.account" },
+      tax_ids: { type: "many2many", relation: "account.tax" },
+    },
+    "res.company": { name: { type: "char" } },
+    "account.account": { name: { type: "char" } },
+    "account.tax": { name: { type: "char" } },
+  };
+  const PERMS = { "account.move.line": ["create", "write", "delete"] };
+
+  function makeClient(schema = SCHEMA) {
+    const calls: { relation: string; domain: unknown }[] = [];
+    const c = {
+      async fields(model: string) {
+        return schema[model] ?? {};
+      },
+      async searchRead(relation: string, domain: unknown) {
+        calls.push({ relation, domain });
+        if (relation === "account.tax") {
+          return [{ id: 9, name: "0% Imports", display_name: "0% Imports" }];
+        }
+        return [];
+      },
+    };
+    return { client: c as unknown as OdooClient, calls };
+  }
+
+  const ref = (model: string, id: number, connectionId = "conn-1") =>
+    encodeRef({ integrationType: "odoo", connectionId, model, id, label: "x" });
+
+  beforeEach(() => {
+    vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const run = (c: OdooClient, tax: unknown, perms: Record<string, string[]> = PERMS) =>
+    normalizeMany2OneValues(
+      c,
+      "conn-1",
+      "account.move",
+      { invoice_line_ids: [[0, 0, { name: "Cloud Server", tax_ids: tax }]] },
+      perms
+    );
+  const taxIdsOf = (r: { values: Record<string, unknown> }) =>
+    (r.values.invoice_line_ids as [number, number, { tax_ids: unknown }][])[0][2].tax_ids;
+
+  it("decodes a ref in a nested code-6 id list to the numeric id", async () => {
+    const { client } = makeClient();
+    const r = await run(client, [[6, 0, [ref("account.tax", 7)]]]);
+    expect(taxIdsOf(r)).toEqual([[6, 0, [7]]]);
+  });
+
+  it("decodes a ref in a nested code-4 id position", async () => {
+    const { client } = makeClient();
+    const r = await run(client, [[4, ref("account.tax", 7)]]);
+    expect(taxIdsOf(r)).toEqual([[4, 7]]);
+  });
+
+  it("resolves a nested name lookup string", async () => {
+    const { client, calls } = makeClient();
+    const r = await run(client, [[6, 0, ["0% Imports"]]]);
+    expect(taxIdsOf(r)).toEqual([[6, 0, [9]]]);
+    expect(calls.some((x) => x.relation === "account.tax")).toBe(true);
+  });
+
+  it("passes raw numeric nested ids through unchanged", async () => {
+    const { client } = makeClient();
+    const r = await run(client, [[6, 0, [4]]]);
+    expect(taxIdsOf(r)).toEqual([[6, 0, [4]]]);
+  });
+
+  it("rejects a nested ref minted for another connection", async () => {
+    const { client } = makeClient();
+    await expect(run(client, [[6, 0, [ref("account.tax", 7, "conn-other")]]])).rejects.toThrow(
+      /connection/i
+    );
+  });
+
+  it("rejects a nested ref of the wrong model", async () => {
+    const { client } = makeClient();
+    await expect(run(client, [[6, 0, [ref("res.partner", 7)]]])).rejects.toThrow(
+      /expected account\.tax, got res\.partner/
+    );
+  });
+
+  it("applies the per-code grant check to the nested relation model", async () => {
+    const { client } = makeClient();
+    await expect(run(client, [[1, ref("account.tax", 7), { name: "x" }]])).rejects.toThrow(
+      /missing write grant on account\.tax \(nested via tax_ids command 1\)/
+    );
+  });
+
+  it("allows the nested code-1 when the grant exists", async () => {
+    const { client } = makeClient();
+    const r = await run(client, [[1, ref("account.tax", 7), { name: "x" }]], {
+      ...PERMS,
+      "account.tax": ["write"],
+    });
+    expect(taxIdsOf(r)).toEqual([[1, 7, { name: "x" }]]);
+  });
+
+  it("fails loud when the line schema is empty and a nested x2many carries a ref", async () => {
+    const { client } = makeClient({ ...SCHEMA, "account.move.line": {} });
+    await expect(run(client, [[6, 0, [ref("account.tax", 7)]]])).rejects.toThrow(
+      /Cannot resolve references/
+    );
   });
 });

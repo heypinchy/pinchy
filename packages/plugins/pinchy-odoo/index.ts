@@ -1847,6 +1847,11 @@ async function resolveRelationValue(
   return resolveReferenceFromRecords(field, lookup, getSearchReadRecords(result));
 }
 
+// How many command-tuple levels `normalizeMany2OneValues` descends: the
+// parent's x2many (level 1) and the x2many fields inside its line values
+// (level 2). Odoo realistically needs no more.
+const MAX_X2MANY_DEPTH = 2;
+
 export async function normalizeMany2OneValues(
   client: OdooClient,
   connectionId: string,
@@ -1911,7 +1916,14 @@ export async function normalizeMany2OneValues(
   // command tuples can nest arbitrarily, but one level covers the
   // account.move line_ids case; deeper nesting is left to a future change to
   // avoid unbounded recursion through self-referential models.
-  if (depth < 1) {
+  //
+  // Two levels in total (MAX_X2MANY_DEPTH): a line's own x2many fields —
+  // `invoice_line_ids: [[0, 0, { tax_ids: [[6, 0, [ref]]] }]]` — are walked
+  // too, with the same per-code grant checks against THEIR relation model
+  // (account.tax here), because the walk re-enters `normalizeCommandTuples`.
+  // Stopping at one level shipped the ref/name verbatim to Odoo ("invalid
+  // input syntax for type integer"). A third level stays verbatim.
+  if (depth < MAX_X2MANY_DEPTH) {
     for (const field of fields) {
       const kind =
         field.type === "one2many" ? "one2many" : field.type === "many2many" ? "many2many" : null;
@@ -2030,6 +2042,19 @@ function commandTuplesNeedResolution(tuples: unknown[]): boolean {
     const code = tuple[0];
     if ((code === 0 || code === 1) && isRecord(tuple[2])) {
       if (Object.values(tuple[2]).some(isRefShaped)) return true;
+      // A nested x2many command list inside the values dict
+      // (`tax_ids: [[6, 0, [ref]]]`) is not ref-shaped itself — look inside.
+      if (
+        Object.values(tuple[2]).some(
+          (v) =>
+            Array.isArray(v) &&
+            v.length > 0 &&
+            v.every(Array.isArray) &&
+            commandTuplesNeedResolution(v)
+        )
+      ) {
+        return true;
+      }
     }
     if (code === 6 && Array.isArray(tuple[2])) {
       return (tuple[2] as unknown[]).some(idNeedsResolution);
