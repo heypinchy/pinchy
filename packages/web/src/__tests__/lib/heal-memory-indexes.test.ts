@@ -328,6 +328,22 @@ describe("heal_memory_indexes", () => {
     expect(output).toContain("could not read the memory index status");
   });
 
+  it("heals what a failing status still reports", () => {
+    // One agent whose memory manager throws makes the whole command exit
+    // non-zero, while the array it printed is complete for everyone else.
+    // Skipping every agent over one would leave all of them broken.
+    setIdentities({ kb: "mismatched", odoo: "mismatched" });
+    stubOpenclaw({ statusExitAfterPrint: 1 });
+
+    const output = run();
+
+    expect(indexCalls()).toEqual([
+      ["memory", "index", "--agent", "kb"],
+      ["memory", "index", "--agent", "odoo"],
+    ]);
+    expect(output).not.toContain("could not read the memory index status");
+  });
+
   it.each([
     ["an entry without an index identity", '[{"agentId":"kb","status":{}}]\\n'],
     ["no JSON at all", "Memory search disabled.\\n"],

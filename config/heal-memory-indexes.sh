@@ -83,14 +83,23 @@ process.stdin.on("end", () => {
 
 # Prints the mismatched agent ids of the current install. Non-zero exit when
 # the status could not be read.
+#
+# A non-zero exit from the status command alone is not "unreadable": when one
+# agent's memory manager throws, the command still prints the array for every
+# other agent and then exits non-zero. Whatever parses is used; only output
+# that does not parse counts as a failure.
 query_mismatched_memory_indexes() {
     local limit=() out rc
     command -v timeout >/dev/null 2>&1 && limit=(timeout "$OPENCLAW_MEMORY_STATUS_TIMEOUT")
     # stderr carries OpenClaw's plugin and provider logs; only stdout is data.
     out="$("${limit[@]}" openclaw memory status --json 2>/dev/null)"
     rc=$?
-    [ "$rc" -eq 0 ] || return "$rc"
-    printf '%s\n' "$out" | list_mismatched_memory_indexes
+    if ! printf '%s\n' "$out" | list_mismatched_memory_indexes; then
+        [ "$rc" -ne 0 ] || rc=2
+        return "$rc"
+    fi
+    [ "$rc" -eq 0 ] || echo "[memory-heal] 'openclaw memory status' exited $rc; using the status it did print." >&2
+    return 0
 }
 
 # Resets the named variable to its default unless it holds whole seconds. A
