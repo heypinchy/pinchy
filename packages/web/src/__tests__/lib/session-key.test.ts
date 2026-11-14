@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 
 import {
+  auditChatId,
   directSessionChatId,
   directSessionKey,
   directSessionUserId,
@@ -61,5 +62,20 @@ describe("directSessionChatId", () => {
   it("is undefined for a key that is not a direct session", () => {
     expect(directSessionChatId("agent:a:inbox:ledger-1")).toBeUndefined();
     expect(directSessionChatId(undefined)).toBeUndefined();
+  });
+});
+
+describe("auditChatId", () => {
+  it("is null for the default chat and the chat id for a per-chat session", () => {
+    expect(auditChatId("agent:a:direct:user-9")).toBeNull();
+    expect(auditChatId(directSessionKey("a", "user-9", "chat-2"))).toBe("chat-2");
+  });
+
+  it("is null for a key that is not a direct session", () => {
+    expect(auditChatId("agent:a:inbox:ledger-1")).toBeNull();
+  });
+
+  it("never carries the user segment", () => {
+    expect(String(auditChatId(directSessionKey("a", "user-9", "chat-2")))).not.toContain("user-9");
   });
 });

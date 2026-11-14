@@ -92,11 +92,13 @@ That bubble lives in the conversation, so a reload — or a reconnect during a l
 
 The banner is scoped to you and the agent you're chatting with, so you only ever see the error that's actually yours. Dismissing it clears it for good — it won't reappear on the next reload.
 
-## Long-running responses time out
+## Replies that never start
 
-A single response can't run forever. A server-side watchdog caps each run at about 15 minutes of wall-clock time. If a reply hasn't finished by then, Pinchy aborts it and shows a **"timed out after 15m — please retry"** error bubble with a **Retry** button so you can send the same message again.
+Pinchy doesn't cap how long a reply may take: a genuinely long task is allowed to run. Once a reply is streaming, OpenClaw, the agent runtime, watches it and stops one that has gone idle or stuck.
 
-This cap is independent of the connection-state indicator above: the connection can be perfectly healthy and the agent still hit the limit on a genuinely long task. The timeout is per response, not per conversation — retrying starts a fresh run with the full 15-minute budget.
+What Pinchy does watch is the start. If OpenClaw never acknowledges a message (no first chunk within about three minutes), Pinchy stops waiting, aborts that run and shows an error bubble with a **Retry** button so you can send the same message again. The audit trail records it as `chat.run_no_first_chunk`.
+
+This is independent of the connection-state indicator above: the connection can be perfectly healthy while one message never gets picked up.
 
 ---
 

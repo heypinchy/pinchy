@@ -4391,11 +4391,17 @@ describe("ClientRouter", () => {
           outcome: "success",
           detail: expect.objectContaining({
             agent: { id: "agent-1", name: "Smithers" },
-            sessionKey: "agent:agent-1:direct:user-1",
+            chatId: null,
             reason: "send_failure",
           }),
         })
       );
+      // #824: no raw users.id in the verbatim detail (the session key embeds it).
+      const retryEntry = mockAppendAuditLog.mock.calls
+        .map((c) => c[0])
+        .find((e) => e.eventType === "chat.retry_triggered");
+      expect(retryEntry.detail).not.toHaveProperty("sessionKey");
+      expect(JSON.stringify(retryEntry.detail)).not.toContain("user-1");
     });
 
     it("appends audit log with explicit reason 'orphan'", async () => {
@@ -5523,6 +5529,9 @@ describe("ClientRouter", () => {
       expect(audit.detail.agentModel).toBe("zhipu/glm-5.1");
       expect(audit.detail.fallbackModel).toBe("zhipu/glm-4v");
       expect(audit.outcome).toBe("success");
+      // #824: no raw users.id in the verbatim detail (the session key embeds it).
+      expect(audit.detail).not.toHaveProperty("sessionKey");
+      expect(JSON.stringify(audit.detail)).not.toContain("user-1");
     });
 
     it("does not route a tool-using agent's image turn to a tools-blocked preview model — picks the next usable same-provider vision model", async () => {

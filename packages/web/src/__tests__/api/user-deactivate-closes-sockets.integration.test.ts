@@ -181,7 +181,7 @@ describe("DELETE /api/users/:id with the user's chat open", () => {
     const { closed, frames, serverSide } = await openChat(member.id);
 
     const runs = getActiveRunsSingleton();
-    const leaving = directSessionKey("agent-ops", member.id);
+    const leaving = directSessionKey("agent-ops", member.id, "c-1");
     const staying = directSessionKey("agent-ops", colleague.id);
     runs.registerPending({
       runId: "provisional-1",
@@ -250,6 +250,7 @@ describe("DELETE /api/users/:id with the user's chat open", () => {
       // user's raw id in a verbatim row crypto-erasure cannot reach (#824).
       expect(rows[0].detail).toEqual({
         agent: { id: "agent-ops", name: "Ops Agent" },
+        chatId: "c-1",
         runId: "gateway-run-1",
         reason: "account_deactivated",
       });
@@ -326,11 +327,13 @@ describe("DELETE /api/users/:id with the user's chat open", () => {
       expect(rows).toHaveLength(2);
       expect(byOutcome.failure.detail).toEqual({
         agent: { id: "agent-late", name: "Late Agent" },
+        chatId: null,
         runId: "gateway-run-3",
         reason: "account_deactivated",
       });
       expect(byOutcome.success.detail).toEqual({
         agent: { id: "agent-late", name: "Late Agent" },
+        chatId: null,
         runId: "gateway-run-3",
         reason: "account_deactivated",
         followUp: "aborted_by_run_id",

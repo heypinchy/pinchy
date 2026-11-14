@@ -2,6 +2,7 @@ import type { AgentWaitResult, OpenClawClient, ProtocolResponse } from "openclaw
 import type { ActiveRun, ActiveRuns } from "@/server/active-runs";
 import { appendAuditLog } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
+import { auditChatId } from "@/lib/session-key";
 
 /** The gateway's abort RPC, as `OpenClawClient.chatAbort` exposes it. */
 export type ChatAbort = (sessionKey: string, runId?: string) => Promise<unknown>;
@@ -491,10 +492,10 @@ async function runEnded(deps: FollowUpDeps, runId: string): Promise<AgentWaitRes
 
 /*
  * The rows below carry no `sessionKey`: a web-chat key is
- * `agent:<agentId>:direct:<userId>`, the run's user's raw id, and `detail` is
- * stored verbatim in an immutable, HMAC-chained row crypto-erasure cannot
- * reach (#824). The agent and the runId identify the run; the actor is on the
- * row, pseudonymized on write.
+ * `agent:<agentId>:direct:<userId>[:<chatId>]`, the run's user's raw id, and
+ * `detail` is stored verbatim in an immutable, HMAC-chained row crypto-erasure
+ * cannot reach (#824). The agent, the chat and the runId identify the run; the
+ * actor is on the row, pseudonymized on write.
  */
 
 async function auditFollowUpAbort(run: ActiveRun, runId: string) {
@@ -506,6 +507,7 @@ async function auditFollowUpAbort(run: ActiveRun, runId: string) {
     resource: `agent:${run.agentId}`,
     detail: {
       agent: { id: run.agentId, name: run.agentName },
+      chatId: auditChatId(run.sessionKey),
       runId,
       reason: run.abortRequest.reason,
       followUp: "aborted_by_run_id",
@@ -524,6 +526,7 @@ async function auditCompletedAnyway(run: ActiveRun, runId: string) {
     resource: `agent:${run.agentId}`,
     detail: {
       agent: { id: run.agentId, name: run.agentName },
+      chatId: auditChatId(run.sessionKey),
       runId,
     },
     outcome: "success",
@@ -547,6 +550,7 @@ export async function auditStoppedBeforeDispatch(run: ActiveRun): Promise<void> 
     resource: `agent:${run.agentId}`,
     detail: {
       agent: { id: run.agentId, name: run.agentName },
+      chatId: auditChatId(run.sessionKey),
       // No run reached OpenClaw, so there is no gateway runId to name.
       runId: null,
       reason: run.abortRequest.reason,
