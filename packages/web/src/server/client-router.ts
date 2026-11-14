@@ -18,7 +18,6 @@ import { auditChatId, directSessionKey } from "@/lib/session-key";
 import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
 import { getLicenseState } from "@/lib/enterprise";
 import { budgetExhaustedMessage, getExhaustedBlockingBudget } from "@/lib/budgets";
-import { buildMemoryPromptBlock } from "@/lib/memory-prompt";
 import { appendAuditLog } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 import { ActiveRuns, type ActiveRun } from "@/server/active-runs";
@@ -649,17 +648,11 @@ export class ClientRouter {
         chatOptions.clientMessageId = message.clientMessageId;
       }
 
-      // Build extraSystemPrompt from memory capability + user name + context +
-      // greeting. The memory block goes first: it's a stable platform
-      // capability, not per-turn context. We inject it here (not AGENTS.md)
-      // because it's a capability every write-capable agent has and must not
-      // be user-editable — see memory-prompt.ts.
+      // Build extraSystemPrompt from user name + context + greeting: what this
+      // web turn knows that OpenClaw doesn't. The `## Memory` block is not
+      // here: pinchy-files adds it to every turn of a memory agent, whichever
+      // channel started it (pinchy-files/memory-prompt.ts).
       const extraPromptParts: string[] = [];
-      const allowedTools = (agent.allowedTools as string[] | null) ?? [];
-      const memoryBlock = buildMemoryPromptBlock(allowedTools);
-      if (memoryBlock) {
-        extraPromptParts.push(memoryBlock);
-      }
       const user = await db.query.users.findFirst({
         where: eq(users.id, this.userId),
       });
