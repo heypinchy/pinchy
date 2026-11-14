@@ -81,8 +81,8 @@ process.stdin.on("end", () => {
 '
 }
 
-# Prints the mismatched agent ids of the current install. Non-zero exit when
-# the status could not be read.
+# Prints the mismatched agent ids of the current install (or, given `--agent
+# <id>`, of that one agent). Non-zero exit when the status could not be read.
 #
 # A non-zero exit from the status command alone is not "unreadable": when one
 # agent's memory manager throws, the command still prints the array for every
@@ -92,7 +92,7 @@ query_mismatched_memory_indexes() {
     local limit=() out rc
     command -v timeout >/dev/null 2>&1 && limit=(timeout "$OPENCLAW_MEMORY_STATUS_TIMEOUT")
     # stderr carries OpenClaw's plugin and provider logs; only stdout is data.
-    out="$("${limit[@]}" openclaw memory status --json 2>/dev/null)"
+    out="$("${limit[@]}" openclaw memory status "$@" --json 2>/dev/null)"
     rc=$?
     if ! printf '%s\n' "$out" | list_mismatched_memory_indexes; then
         [ "$rc" -ne 0 ] || rc=2
@@ -127,10 +127,14 @@ heal_memory_indexes() {
     echo "[memory-heal] Memory indexes OpenClaw will not rebuild on its own (built for a different embedding model, usually after a failed embed):"
     echo "$mismatched" | sed 's/^/[memory-heal]   /'
 
-    local start agent remaining limit rc
-    start=$(date +%s)
+    local agents=() agent i start remaining limit rc still took broken=""
     while IFS= read -r agent; do
-        [ -n "$agent" ] || continue
+        [ -n "$agent" ] && agents+=("$agent")
+    done <<<"$mismatched"
+
+    start=$(date +%s)
+    for ((i = 0; i < ${#agents[@]}; i++)); do
+        agent="${agents[i]}"
         remaining=$(( OPENCLAW_MEMORY_HEAL_BUDGET - ($(date +%s) - start) ))
         if [ "$remaining" -le 0 ]; then
             echo "[memory-heal] Time budget of ${OPENCLAW_MEMORY_HEAL_BUDGET}s used up; the rest is rebuilt on the next start."
@@ -140,23 +144,36 @@ heal_memory_indexes() {
         command -v timeout >/dev/null 2>&1 && limit=(timeout "$remaining")
         echo "[memory-heal] Rebuilding the memory index of agent $agent..."
         # Every command is guarded: start-openclaw.sh runs under `set -e`.
-        # </dev/null: the loop's stdin is the list of agents still to come.
+        # </dev/null: the loop's stdin would otherwise be the caller's.
         "${limit[@]}" openclaw memory index --agent "$agent" </dev/null 2>&1 | sed 's/^/[memory-heal] index: /'
         rc=${PIPESTATUS[0]}
-        [ "$rc" -eq 0 ] || echo "[memory-heal] 'openclaw memory index --agent $agent' exited $rc."
-    done <<<"$mismatched"
+        if [ "$rc" -ne 0 ]; then
+            echo "[memory-heal] 'openclaw memory index --agent $agent' exited $rc."
+            broken=1
+            break
+        fi
+        # The exit code says nothing about the embeds; the status does.
+        if ! still="$(query_mismatched_memory_indexes --agent "$agent")"; then
+            echo "[memory-heal] Could not re-read the memory index status of agent $agent."
+            broken=1
+            break
+        fi
+        if [ -n "$still" ]; then
+            echo "[memory-heal] The memory index of agent $agent is still mismatched after the rebuild."
+            broken=1
+            break
+        fi
+    done
 
-    local still took
     took=$(( $(date +%s) - start ))
-    still="$(query_mismatched_memory_indexes)" || {
-        echo "[memory-heal] Rebuild ran for ${took}s; could not re-read the status to confirm it."
-        return 0
-    }
-    if [ -z "$still" ]; then
+    if [ "$i" -eq "${#agents[@]}" ]; then
         echo "[memory-heal] Memory indexes rebuilt in ${took}s."
         return 0
     fi
+    # Embeddings that fail for one agent fail for all of them: trying the rest
+    # would spend the whole budget on every start while the gateway waits.
+    [ -z "$broken" ] || echo "[memory-heal] Not trying the remaining agents: whatever broke this rebuild breaks theirs too."
     echo "[memory-heal] FAILED after ${took}s: still not rebuilt, retried on the next start:"
-    echo "$still" | sed 's/^/[memory-heal]   /'
+    printf '%s\n' "${agents[@]:i}" | sed 's/^/[memory-heal]   /'
     return 0
 }

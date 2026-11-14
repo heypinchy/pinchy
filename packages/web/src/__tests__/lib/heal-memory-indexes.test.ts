@@ -309,6 +309,26 @@ describe("heal_memory_indexes", () => {
     expect(output).not.toContain("rebuilt in");
   });
 
+  it.each([
+    ["is still mismatched afterwards", { indexHeals: false }],
+    ["exits non-zero", { indexExit: 1 }],
+  ])("stops after the first rebuild that %s", (_label, stub) => {
+    // A rebuild fails because embeddings fail, and those fail for every agent
+    // alike. Trying the rest would spend the whole budget on each start for
+    // nothing while the gateway waits.
+    setIdentities({ kb: "mismatched", odoo: "mismatched", hr: "mismatched" });
+    stubOpenclaw(stub);
+
+    const output = run();
+
+    expect(indexCalls()).toEqual([["memory", "index", "--agent", "kb"]]);
+    expect(output.match(/not trying the remaining agents/gi)).toHaveLength(1);
+    expect(output).toContain("FAILED");
+    for (const agent of ["kb", "odoo", "hr"]) {
+      expect(output).toContain(`[memory-heal]   ${agent}\n`);
+    }
+  });
+
   it("reads the status past log lines printed before the JSON", () => {
     setIdentities({ kb: "mismatched" });
     stubOpenclaw({ statusPrefix: "[plugins] registered pinchy-files\\n" });
