@@ -16,12 +16,25 @@ import { pinnedLookup, type PinnedTarget } from "./pinned-target.js";
 // shares one process (and one `globalThis.fetch`) with every plugin, and a
 // later replacement is wrapped again rather than silently undoing the pin.
 //
+// The store lives on `globalThis` next to the wrapper, for the same reason:
+// OpenClaw restarts its gateway inside the process and evaluates this module
+// again. The new copy finds the old wrapper installed and keeps it, so it has
+// to pin into the store that wrapper reads — a module-local store would leave
+// every Odoo call unpinned, and without its timeout, until the process ends.
+//
 // MUST use the npm `undici`'s fetch together with its `Agent`: Node's global
 // fetch is backed by Node's bundled undici, which rejects the npm package's
 // Agent (UND_ERR_INVALID_ARG, reported only as "fetch failed"). Pinned to
 // undici 7 for the global-dispatcher reason pinchy-web's web-fetch.ts gives.
 
-const store = new AsyncLocalStorage<{ origin: string; target: PinnedTarget; timeoutMs: number }>();
+type Pin = { origin: string; target: PinnedTarget; timeoutMs: number };
+
+const STORE = Symbol.for("pinchy.odoo.pinStore");
+
+function store(): AsyncLocalStorage<Pin> {
+  const holder = globalThis as unknown as { [STORE]?: AsyncLocalStorage<Pin> };
+  return (holder[STORE] ??= new AsyncLocalStorage<Pin>());
+}
 
 // odoo-node passes no signal, so before the pin an Odoo that accepted the
 // connection and never answered held the agent's tool call open for good.
@@ -75,7 +88,7 @@ function ensureInstalled(): void {
   if (current[WRAPPER]) return;
 
   const wrapper = ((input: Parameters<Fetch>[0], init?: RequestInit) => {
-    const pin = store.getStore();
+    const pin = store().getStore();
     if (pin) {
       const url = requestUrl(input);
       if (new URL(url).origin === pin.origin)
@@ -95,7 +108,7 @@ export function withPinnedFetch<T>(
   { timeoutMs = ODOO_REQUEST_TIMEOUT_MS }: { timeoutMs?: number } = {}
 ): Promise<T> {
   ensureInstalled();
-  return store.run({ origin: new URL(url).origin, target, timeoutMs }, fn);
+  return store().run({ origin: new URL(url).origin, target, timeoutMs }, fn);
 }
 
 /**

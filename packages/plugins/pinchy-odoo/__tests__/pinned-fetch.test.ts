@@ -167,6 +167,36 @@ describe("withPinnedFetch", () => {
     }
   });
 
+  it("pins through a fresh copy of the module, as after an in-process gateway restart", async () => {
+    // OpenClaw restarts its gateway inside the same process and re-evaluates
+    // plugin modules, while the wrapper on the shared global fetch stays. The
+    // new copy must not pin into a store the installed wrapper never reads.
+    const original = globalThis.fetch;
+    const unpinned = vi.fn(async () => new Response("unpinned"));
+    globalThis.fetch = unpinned as unknown as typeof fetch;
+    try {
+      const url = `http://odoo.rebind.test:${port}`;
+      vi.resetModules();
+      const first = await import("../pinned-fetch");
+      await first.withPinnedFetch(url, checked, async () => undefined);
+      vi.resetModules();
+      const second = await import("../pinned-fetch");
+
+      const status = await second.withPinnedFetch(url, checked, async () => {
+        const res = await fetch(`${url}/jsonrpc`, { method: "POST", body: "{}" });
+        await res.text();
+        return res.status;
+      });
+
+      expect(unpinned).not.toHaveBeenCalled();
+      expect(status).toBe(200);
+      expect(seen).toHaveLength(1);
+      expect(seen[0].remoteAddress).toBe("127.0.0.1");
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
   it("gives up on an Odoo that accepts the connection and never answers", async () => {
     // odoo-node passes no signal, so without a bound here a blackholed Odoo
     // would hold the agent's tool call open forever.
