@@ -3,10 +3,15 @@ import { lookup } from "node:dns/promises";
 import { checkStoredDestination } from "../stored-destination";
 
 // Hosts here are IP literals, which the guards classify from the string alone.
-// The tests that need a name resolve it through this mock, never the network.
+// The tests that need a name resolve it through this mock, never the network:
+// a lookup no test arranged fails the test instead of reaching a resolver.
+function unexpectedLookup(host: string): never {
+  throw new Error(`unexpected DNS lookup for "${host}" — arrange it with resolveNames()`);
+}
+
 vi.mock("node:dns/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:dns/promises")>();
-  return { ...actual, lookup: vi.fn(actual.lookup) };
+  return { ...actual, lookup: vi.fn(async (host: string) => unexpectedLookup(host)) };
 });
 
 const mockedLookup = vi.mocked(lookup) as unknown as {
@@ -32,10 +37,9 @@ function resolveNames(
 }
 
 describe("checkStoredDestination", () => {
-  afterEach(async () => {
+  afterEach(() => {
     vi.unstubAllEnvs();
-    const actual = await vi.importActual<typeof import("node:dns/promises")>("node:dns/promises");
-    mockedLookup.mockImplementation(actual.lookup as never);
+    mockedLookup.mockImplementation(async (host: string) => unexpectedLookup(host));
   });
 
   describe("odoo", () => {
