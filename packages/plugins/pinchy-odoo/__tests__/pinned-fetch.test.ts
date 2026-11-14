@@ -213,9 +213,9 @@ describe("withPinnedFetch", () => {
     }
   });
 
-  it("sends every request of one scope over one connection, and closes it when the scope ends", async () => {
-    // A schema sync makes hundreds of requests in one scope: a connector per
-    // request would open (and TLS-handshake) a socket for each.
+  it("shares one connector across the requests of a scope, and closes it when the scope ends", async () => {
+    // The connector belongs to the scope: created when it opens, closed when
+    // it settles. Requests inside it reuse its connection.
     const url = `http://odoo.rebind.test:${port}`;
     await withPinnedFetch(url, checked, async () => {
       for (let i = 0; i < 3; i++) {

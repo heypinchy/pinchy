@@ -754,6 +754,9 @@ describe("credential fetching", () => {
 
     expect((await tool.execute("call-2", {})).isError).toBeFalsy();
     expect(mockFetch).toHaveBeenCalledTimes(2);
+    // A complete adapter is cached again: the third call does not refetch.
+    expect((await tool.execute("call-3", {})).isError).toBeFalsy();
+    expect(mockFetch).toHaveBeenCalledTimes(2);
     expect(ImapAdapter).toHaveBeenLastCalledWith({
       ...imapCredentials,
       imapTarget: [{ address: "203.0.113.10", family: 4 }],

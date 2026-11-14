@@ -29,7 +29,10 @@ import { pinnedLookup, type PinnedTarget } from "./pinned-target.js";
 
 type Pin = {
   origin: string;
-  /** One connector per scope: a schema sync makes hundreds of requests. */
+  /**
+   * The scope's connector, created when the scope opens and closed when it
+   * settles. `pinOdooClient` opens one scope per odoo-node call.
+   */
   dispatcher: Agent;
   timeoutMs: number;
 };

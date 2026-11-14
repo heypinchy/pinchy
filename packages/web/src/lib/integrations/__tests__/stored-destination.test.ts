@@ -196,13 +196,21 @@ describe("checkStoredDestination", () => {
       });
     });
 
-    it("rethrows an error that is not a DNS failure", async () => {
+    it("reads a lookup error without a resolver code as temporary, like the Odoo check", async () => {
+      // Thrown on, it would surface from "Test connection" as a failed login
+      // and flag a healthy connection as needing new credentials.
       mockedLookup.mockImplementation(async () => {
         throw new TypeError("resolver exploded");
       });
-      await expect(
-        checkStoredDestination("imap", imap("imap.example.com", "93.184.216.34"))
-      ).rejects.toThrow("resolver exploded");
+      const result = await checkStoredDestination(
+        "imap",
+        imap("imap.example.com", "93.184.216.34")
+      );
+      expect(result).toEqual({
+        allowed: true,
+        checked: { smtpHost: [{ address: "93.184.216.34", family: 4 }] },
+        lookupFailures: { imapHost: "temporary" },
+      });
     });
 
     it("pins a resolved name to every address it answered with", async () => {

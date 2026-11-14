@@ -165,12 +165,13 @@ export async function checkStoredDestination(
 }
 
 /**
- * A resolver error read the way the Odoo check reads it (`NO_ANSWER_CODES`):
- * the name has no answer, or the lookup failed and says nothing about the name.
- * An error without a resolver code is not a DNS failure at all, and is thrown on.
+ * A resolver error read exactly the way the Odoo check reads it
+ * (`NO_ANSWER_CODES`): the name has no answer, or the lookup failed and says
+ * nothing about the name — which includes an error without a resolver code.
+ * Thrown on, such an error would reach "Test connection" as a failed login and
+ * flag a healthy connection as needing new credentials.
  */
 function classifyLookupFailure(err: unknown): LookupFailure {
   const code = (err as { code?: unknown } | null)?.code;
-  if (typeof code !== "string") throw err;
-  return NO_ANSWER_CODES.has(code) ? "no-answer" : "temporary";
+  return typeof code === "string" && NO_ANSWER_CODES.has(code) ? "no-answer" : "temporary";
 }
