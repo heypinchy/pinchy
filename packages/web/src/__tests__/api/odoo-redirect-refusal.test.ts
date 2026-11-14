@@ -87,6 +87,8 @@ let redirecting: { server: Server; origin: string };
 let redirectStatus = 307;
 // "Public" Odoo that answers with HTML instead of JSON-RPC.
 let htmlServer: { server: Server; origin: string };
+// A JSON-RPC server whose error envelope carries no message at all.
+let emptyErrorServer: { server: Server; origin: string };
 
 beforeAll(async () => {
   internal = await listen((_req, res) => {
@@ -105,12 +107,17 @@ beforeAll(async () => {
     res.writeHead(200, { "content-type": "text/html" });
     res.end(`<html>${SECRET}</html>`);
   });
+  emptyErrorServer = await listen((_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end('{"jsonrpc":"2.0","id":1,"error":{}}');
+  });
 });
 
 afterAll(() => {
   internal.server.close();
   redirecting.server.close();
   htmlServer.server.close();
+  emptyErrorServer.server.close();
 });
 
 beforeEach(() => {
@@ -506,5 +513,24 @@ describe("probeIntegrationCredentials (odoo) against a non-JSON-RPC answer", () 
     expect(JSON.stringify(result)).toMatch(/not a JSON-RPC response/i);
     expect(JSON.stringify(result)).not.toContain("SECR");
     expect(JSON.stringify(result)).not.toContain("<html");
+  });
+});
+
+describe("POST /api/integrations/test-credentials against a JSON-RPC error without a message", () => {
+  it("says the URL is not Odoo's, not that Pinchy failed", async () => {
+    const { POST } = await import("@/app/api/integrations/test-credentials/route");
+
+    const response = await POST(
+      post("/api/integrations/test-credentials", {
+        type: "odoo",
+        credentials: { url: emptyErrorServer.origin, db: "prod", login: "admin", apiKey: "key" },
+      }),
+      routeContext()
+    );
+    const body = await response.json();
+
+    expect(body.success).toBe(false);
+    expect(body.error).toMatch(/not a JSON-RPC response \(HTTP 200, application\/json\)/i);
+    expect(body.error).not.toMatch(/internal error/i);
   });
 });

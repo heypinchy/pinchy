@@ -8,7 +8,7 @@ import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
 import { deferAuditLog } from "@/lib/audit-deferred";
 import { fetchOdooSchema } from "@/lib/integrations/odoo-sync";
 import { resolveExternalUrlTarget } from "@/lib/integrations/url-validation";
-import { withPinnedOdooFetch } from "@/lib/integrations/odoo-pin";
+import { withPinnedOdoo } from "@/lib/integrations/odoo-pin";
 import { setIntegrationAuthFailed, clearIntegrationAuthError } from "@/lib/integrations/auth-state";
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
@@ -40,8 +40,8 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
       return NextResponse.json({ success: false, error: urlCheck.error }, { status: 200 });
     }
 
-    const result = await withPinnedOdooFetch(urlCheck.url, urlCheck.target, () =>
-      fetchOdooSchema(parsed.data)
+    const result = await withPinnedOdoo(urlCheck.url, urlCheck.target, (pinned) =>
+      fetchOdooSchema({ ...parsed.data, fetch: pinned })
     );
     if (!result.success) {
       if (result.isAuthError) {

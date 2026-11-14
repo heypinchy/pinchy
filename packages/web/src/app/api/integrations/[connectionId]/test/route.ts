@@ -25,7 +25,7 @@ import {
   type MicrosoftCredentials,
 } from "@/lib/integrations/microsoft-refresh";
 import { authenticateOdoo } from "@/lib/integrations/odoo-calls";
-import { withPinnedOdooFetch } from "@/lib/integrations/odoo-pin";
+import { withPinnedOdoo } from "@/lib/integrations/odoo-pin";
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
 
@@ -76,12 +76,13 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
         try {
           // Connects to the address the destination check classified, not to
           // the name — one lookup serves the check, this login and the probe.
-          uid = await withPinnedOdooFetch(pin!.origin, pin!.target, () =>
+          uid = await withPinnedOdoo(pin!.origin, pin!.target, (pinned) =>
             authenticateOdoo({
               url: creds.url,
               db: creds.db,
               login: creds.login,
               apiKey: creds.apiKey,
+              fetch: pinned,
             })
           );
         } catch (err) {
@@ -136,10 +137,13 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
       }
     }
 
-    const runProbe = () => probeIntegrationCredentials(connection.type, decrypted);
-    const probe = pin
-      ? await withPinnedOdooFetch(pin.origin, pin.target, runProbe)
-      : await runProbe();
+    // Only an Odoo destination comes back with a pin.
+    const probe =
+      connection.type === "odoo" && pin
+        ? await withPinnedOdoo(pin.origin, pin.target, (pinned) =>
+            probeIntegrationCredentials(connection.type, decrypted, { odooFetch: pinned })
+          )
+        : await probeIntegrationCredentials(connection.type, decrypted);
 
     if (probe.success) {
       await clearIntegrationAuthError({ connectionId, actor });

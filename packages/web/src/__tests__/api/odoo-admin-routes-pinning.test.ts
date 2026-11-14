@@ -4,11 +4,12 @@ import { mockSession } from "@/test-helpers/auth";
 import { routeContext } from "@/test-helpers/route";
 
 // The admin Odoo routes check a URL against the SSRF rules and then talk to it
-// through odoo-node, which calls the global `fetch` by hostname. That resolves
-// the name a second time, and a hostile resolver can answer a public address
-// for the check and 127.0.0.1 for the connect. These tests run the REAL guard
-// and the REAL odoo-node with DNS stubbed, and assert where each request goes:
-// to the address the guard classified, never by name.
+// through odoo-node with the pinned fetch from `withPinnedOdoo`. A route that
+// forgets to pass it falls back to odoo-node's default, the global `fetch` by
+// hostname: a second lookup, where a hostile resolver can answer a public
+// address for the check and 127.0.0.1 for the connect. These tests run the REAL
+// guard and the REAL odoo-node with DNS stubbed, and assert where each request
+// goes: to the address the guard classified, never by name.
 
 vi.mock("next/headers", () => ({
   headers: vi.fn().mockResolvedValue(new Headers()),

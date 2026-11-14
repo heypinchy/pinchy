@@ -34,18 +34,25 @@ vi.mock("@/lib/audit", () => ({
   scrubEmails: (text: string) => text.replace(/[^\s@]+@[^\s@]+\.[^\s@]+/g, "<email-redacted>"),
 }));
 
-const { mockAuthenticate, mockVersion, mockModels, mockFields, mockCheckAccessRights } = vi.hoisted(
-  () => ({
-    mockAuthenticate: vi.fn(),
-    mockVersion: vi.fn(),
-    mockModels: vi.fn(),
-    mockFields: vi.fn(),
-    mockCheckAccessRights: vi.fn().mockResolvedValue(true),
-  })
-);
+const {
+  mockAuthenticate,
+  mockOdooClient,
+  mockVersion,
+  mockModels,
+  mockFields,
+  mockCheckAccessRights,
+} = vi.hoisted(() => ({
+  mockAuthenticate: vi.fn(),
+  mockOdooClient: vi.fn(),
+  mockVersion: vi.fn(),
+  mockModels: vi.fn(),
+  mockFields: vi.fn(),
+  mockCheckAccessRights: vi.fn().mockResolvedValue(true),
+}));
 
 vi.mock("odoo-node", () => {
-  function OdooClient() {
+  function OdooClient(config: unknown) {
+    mockOdooClient(config);
     return {
       version: mockVersion,
       models: mockModels,
@@ -1098,7 +1105,9 @@ describe("POST /api/integrations/[connectionId]/test", () => {
       db: "prod",
       login: "admin",
       apiKey: "secret-key",
+      fetch: expect.any(Function),
     });
+    expect(mockAuthenticate.mock.calls[0][0].fetch).not.toBe(globalThis.fetch);
     // Probe is delegated — version/uid are no longer in the response
     expect(body.version).toBeUndefined();
     expect(body.uid).toBeUndefined();
@@ -1347,7 +1356,12 @@ describe("POST /api/integrations/test-credentials", () => {
       db: "prod",
       login: "admin",
       apiKey: "key",
+      fetch: expect.any(Function),
     });
+    // Login and version go through the same pinned fetch, never the global one.
+    const pinned = mockAuthenticate.mock.calls[0][0].fetch;
+    expect(pinned).not.toBe(globalThis.fetch);
+    expect(mockOdooClient).toHaveBeenCalledWith(expect.objectContaining({ fetch: pinned }));
     expect(mockVersion).toHaveBeenCalled();
   });
 
