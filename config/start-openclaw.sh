@@ -114,6 +114,16 @@ fix_config_permissions
 # shellcheck source=migrate-openclaw-state.sh
 source /migrate-openclaw-state.sh
 
+# Rebuilds agent memory indexes OpenClaw will not rebuild on its own — ones
+# stamped "fts-only" after a failed embed, which memory_search then answers
+# with nothing until `openclaw memory index` runs. Costs one
+# `openclaw memory status --json` when every index is fine. Runs once per
+# container start, before the first gateway start: the CLI's llama-server must
+# not share the provider's port with a running gateway. See
+# config/heal-memory-indexes.sh. Defines heal_memory_indexes() into this shell.
+# shellcheck source=heal-memory-indexes.sh
+source /heal-memory-indexes.sh
+
 # Auto-approve pending device pairing requests (needed for Docker networking
 # where connections come from container IPs, not localhost).
 # Stops as soon as Pinchy signals successful connection (writes signal file).
@@ -291,11 +301,12 @@ remove_retired_auth_profiles
 restore_gateway_lock_ownership
 restore_credentials_privacy
 migrate_legacy_openclaw_state
+heal_memory_indexes
 # Start auto-approver in background — stops when Pinchy signals connection
 # (writes pinchy-device-approved). Safety timeout: 5 minutes, counted from
-# here, so it starts after the migration: a long import would use up the cap,
-# and each tick's openclaw CLI would run its own migration preflight beside
-# doctor.
+# here, so it starts after the migration and the memory-index rebuild: either
+# can take long enough to use up the cap, and each tick's openclaw CLI would
+# run its own migration preflight beside doctor.
 auto_approve_devices &
 echo "Starting OpenClaw Gateway..."
 openclaw gateway --port 18789 &

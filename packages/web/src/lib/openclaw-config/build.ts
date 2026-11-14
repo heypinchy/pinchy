@@ -50,8 +50,9 @@ import { resolveBootstrapCaps } from "./bootstrap-caps";
 import {
   CONFIG_PATH,
   LLAMA_CPP_PROVIDER_ID,
+  LLAMA_SERVER_ARGS,
   LLAMA_SERVER_COMMAND,
-  LLAMA_SERVER_PRESET_PATH,
+  LLAMA_SERVER_PORT,
   MEMORY_EMBEDDING_MODEL_PATH,
   OPENCLAW_MEDIA_TTL_HOURS,
   REQUIRED_BUNDLED_PLUGINS,
@@ -131,9 +132,6 @@ export const DEFAULT_DOCS_PUBLIC_BASE_URL = "https://docs.heypinchy.com";
 
 export { MEMORY_EMBEDDING_MODEL_PATH } from "./paths";
 
-/** Loopback port of the managed llama-server — the provider's own default. */
-const LLAMA_SERVER_PORT = 19432;
-
 /**
  * `models.providers.llama-cpp`: the llama-server memory-core's `local`
  * embeddings go through. Until OpenClaw 2026.9 the llama.cpp provider embedded
@@ -161,18 +159,8 @@ function buildManagedLlamaCppProvider(): Record<string, unknown> {
     models: [],
     localService: {
       command: LLAMA_SERVER_COMMAND,
-      args: [
-        "--host",
-        "127.0.0.1",
-        "--port",
-        String(LLAMA_SERVER_PORT),
-        "--models-preset",
-        LLAMA_SERVER_PRESET_PATH,
-        "--models-max",
-        "2",
-        "--metrics",
-        "--no-ui",
-      ],
+      // Includes the batch sizing — see LLAMA_SERVER_EMBEDDING_BATCH_TOKENS.
+      args: [...LLAMA_SERVER_ARGS],
       healthUrl: `${root}/health`,
       readyTimeoutMs: 30_000,
       idleStopMs: 600_000,
