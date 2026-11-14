@@ -101,8 +101,8 @@ vi.mock("@/server/openclaw-client", () => ({
   getOpenClawClient: vi.fn(() => mockOpenClawClient),
 }));
 const mockWaitForAgentInRuntime = vi.fn().mockResolvedValue(true);
-vi.mock("@/lib/wait-for-agent-in-runtime", () => ({
-  waitForAgentInRuntime: (...args: unknown[]) => mockWaitForAgentInRuntime(...args),
+vi.mock("@/server/agent-readiness", () => ({
+  waitForAgentInRuntimeOnClient: (...args: unknown[]) => mockWaitForAgentInRuntime(...args),
 }));
 
 vi.mock("@/lib/path-validation", () => ({

@@ -16,8 +16,12 @@
 // Docker E2E dispatch probes.
 
 import { describe, it, expect, vi } from "vitest";
-import type { AgentsListResult } from "openclaw-node";
-import { dispatchableAgentIds, waitForAgentInRuntime } from "@/server/agent-readiness";
+import type { AgentsListResult, OpenClawClient } from "openclaw-node";
+import {
+  dispatchableAgentIds,
+  waitForAgentInRuntime,
+  waitForAgentInRuntimeOnClient,
+} from "@/server/agent-readiness";
 
 /**
  * Fake clock: `delay(ms)` advances `now` by `ms` synchronously so the
@@ -230,5 +234,62 @@ describe("dispatchableAgentIds", () => {
         agents: [{ id: "main" }, { id: "5747120b-4fee-4c87-8f62-45f663e58a80" }],
       })
     ).toEqual([]);
+  });
+});
+
+describe("waitForAgentInRuntimeOnClient", () => {
+  function clientWith(opts: {
+    hasMethod?: boolean;
+    list: () => Promise<AgentsListResult>;
+  }): OpenClawClient & { config: { get: ReturnType<typeof vi.fn> } } {
+    return {
+      hasMethod: vi.fn(() => opts.hasMethod ?? true),
+      agents: { list: vi.fn(opts.list) },
+      // OC 2026.9: the file snapshot carries `agents.entries`; the `list`
+      // projection is non-enumerable and never reaches the wire.
+      config: {
+        get: vi.fn(async () => ({ config: { agents: { entries: { "new-agent": {} } } } })),
+      },
+    } as unknown as OpenClawClient & { config: { get: ReturnType<typeof vi.fn> } };
+  }
+
+  const roster = (ids: string[]): AgentsListResult =>
+    ({
+      defaultId: ids[0] ?? "main",
+      mainKey: "main",
+      scope: "per-sender",
+      agents: ids.map((id) => ({ id, name: id })),
+    }) as unknown as AgentsListResult;
+
+  it("confirms an agent that the agents.list RPC reports, ignoring config.get", async () => {
+    const client = clientWith({ list: async () => roster(["new-agent"]) });
+
+    expect(await waitForAgentInRuntimeOnClient(client, "new-agent")).toBe(true);
+    expect(client.config.get).not.toHaveBeenCalled();
+  });
+
+  it("keeps polling through a transient agents.list error until the agent appears", async () => {
+    let calls = 0;
+    const client = clientWith({
+      list: async () => {
+        calls++;
+        if (calls <= 2) throw new Error("WebSocket disconnected");
+        return roster(["new-agent"]);
+      },
+    });
+
+    expect(await waitForAgentInRuntimeOnClient(client, "new-agent")).toBe(true);
+    expect(calls).toBeGreaterThanOrEqual(3);
+  });
+
+  it("returns false at once when there is no client (OpenClaw not connected)", async () => {
+    expect(await waitForAgentInRuntimeOnClient(null, "any")).toBe(false);
+  });
+
+  it("returns false at once on a Gateway without the agents.list RPC", async () => {
+    const client = clientWith({ hasMethod: false, list: async () => roster(["new-agent"]) });
+
+    expect(await waitForAgentInRuntimeOnClient(client, "new-agent")).toBe(false);
+    expect(client.agents.list).not.toHaveBeenCalled();
   });
 });
