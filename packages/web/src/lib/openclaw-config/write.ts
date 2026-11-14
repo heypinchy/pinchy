@@ -11,10 +11,12 @@ import {
 import { CONFIG_PATH } from "./paths";
 import { parseSizeDropRejection, planShrinkPush, utf8Bytes } from "./size-drop";
 import { unresolvedSecretRefs } from "./keyless-bridge";
+import { liveAgentIds } from "./live-agents";
 import {
   PLACEHOLDER_AGENT_ID,
   parseRosterDropRejection,
   retainRosterEntries,
+  keepRosterEntries,
 } from "./roster-removal";
 import { clearLastGoodBound, guardFileWrite, UnderReadSideLineError } from "./last-good-bound";
 import {
@@ -534,6 +536,11 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
     // Agents OpenClaw refused to drop (parseRosterDropRejection), removed on
     // the next attempt through agents.delete.
     let rosterRemoval: string[] | undefined;
+    // Agents OpenClaw refused to drop that Pinchy's database still holds as
+    // live: this push's payload is a stale copy (a targeted writer's read of
+    // openclaw.json from before they were created), so every later attempt
+    // keeps them instead of deleting them (see liveAgentsAmong).
+    const rosterKeep = new Set<string>();
     let rosterRemovalRounds = 0;
     let placeholderRetired = false;
     // The roster bridge persisted without an answer: the next round goes
@@ -567,6 +574,32 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
           );
         }
       }
+    };
+    // Which of the agents OpenClaw refused to drop Pinchy's database still holds
+    // as live. agents.delete removes an agent's workspace (deleteFiles), and a
+    // payload that leaves an agent out does not say it is gone: a targeted
+    // writer's copy of openclaw.json can predate the agent's creation. When the
+    // database cannot answer, every one counts as live — nothing is deleted on
+    // a guess — and OpenClaw's next connect regenerates from the database.
+    const liveAgentsAmong = async (ids: string[]): Promise<string[]> => {
+      const candidates = ids.filter((id) => id !== PLACEHOLDER_AGENT_ID);
+      let live: string[];
+      try {
+        const held = await liveAgentIds(candidates);
+        live = candidates.filter((id) => held.has(id));
+      } catch (err) {
+        console.error(
+          `[openclaw-config] push gen=${String(generation)}: could not check ${candidates.join(", ")} against the database before removing them from OpenClaw's roster (${err instanceof Error ? err.message : String(err)}); keeping them`
+        );
+        noteUndeliveredConfigChange(regenerateSeq);
+        return candidates;
+      }
+      if (live.length > 0) {
+        console.error(
+          `[openclaw-config] push gen=${String(generation)}: this config drops ${live.join(", ")}, which Pinchy's database still holds as live — a stale copy of openclaw.json; keeping them in OpenClaw's roster`
+        );
+      }
+      return live;
     };
     const shrinkKnown = () => options.expectsProviderShrink === true || shrink !== undefined;
     // Hand a shrink that stopped short of its target to one follow-up full
@@ -949,6 +982,15 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
           payload = plan.payload;
           isShrinkStep = plan.isStep;
         }
+        if (rosterKeep.size > 0) {
+          payload = JSON.stringify(
+            keepRosterEntries(JSON.parse(payload) as Record<string, unknown>, lastOcConfig ?? {}, [
+              ...rosterKeep,
+            ]),
+            null,
+            2
+          );
+        }
 
         // OpenClaw 2026.9 refused the previous attempt for dropping agents from
         // its roster. Only agents.delete may remove one, and it refuses the sole
@@ -1159,10 +1201,18 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
           continue;
         }
         if (rosterDrop && rosterRemovalRounds < MAX_ROSTER_REMOVAL_ROUNDS) {
+          for (const id of await liveAgentsAmong(rosterDrop)) rosterKeep.add(id);
+          const gone = rosterDrop.filter((id) => !rosterKeep.has(id));
+          if (gone.length === 0) {
+            // Only live agents were dropped: the next attempt keeps them.
+            rosterRemovalRounds++;
+            i--;
+            continue;
+          }
           console.warn(
-            `[openclaw-config] push gen=${String(generation)}: OpenClaw refused to drop ${rosterDrop.join(", ")} from its agent roster; removing via agents.delete`
+            `[openclaw-config] push gen=${String(generation)}: OpenClaw refused to drop ${gone.join(", ")} from its agent roster; removing via agents.delete`
           );
-          rosterRemoval = rosterDrop;
+          rosterRemoval = gone;
           i--;
           continue;
         }

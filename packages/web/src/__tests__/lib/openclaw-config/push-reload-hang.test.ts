@@ -22,6 +22,11 @@ vi.mock("@/server/openclaw-client", () => ({
   getOpenClawClient: () => mockGetClient(),
 }));
 
+// Every agent these pushes drop is deleted in Pinchy's database.
+vi.mock("@/lib/openclaw-config/live-agents", () => ({
+  liveAgentIds: async () => new Set<string>(),
+}));
+
 let fileContent: (() => string) | undefined;
 let onConfigFileWrite: ((content: string) => void) | undefined;
 const mockWriteFileSync = vi.fn();

@@ -26,6 +26,12 @@ vi.mock("@/server/openclaw-client", () => ({
   getOpenClawClient: () => mockGetClient(),
 }));
 
+/** Agents Pinchy's database holds as live (not soft-deleted). */
+const liveInDb = new Set<string>();
+vi.mock("@/lib/openclaw-config/live-agents", () => ({
+  liveAgentIds: async (ids: string[]) => new Set(ids.filter((id) => liveInDb.has(id))),
+}));
+
 const mockWriteFileSync = vi.fn();
 // writeConfigAtomic writes openclaw.json.tmp, then renames it into place.
 let onConfigFileWrite: ((content: string) => void) | undefined;
@@ -196,6 +202,7 @@ describe("pushConfigInBackground: a roster change OpenClaw refuses as dropping a
     vi.clearAllMocks();
     _supersedePendingPushes();
     _resetConfigPushState();
+    liveInDb.clear();
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
     errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -233,6 +240,39 @@ describe("pushConfigInBackground: a roster change OpenClaw refuses as dropping a
     expect(configFileWrites()).toHaveLength(0);
     expect(onChangeApplied).toHaveBeenCalledTimes(1);
     expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it("keeps an agent Pinchy's database still holds, when a stale copy of openclaw.json drops it", async () => {
+    // A partial writer's copy of openclaw.json from before agent "c" was
+    // created. agents.delete with deleteFiles would remove a live agent's
+    // workspace; the database, not the payload, says whether "c" is gone.
+    const oc = new FakeOpenClaw({
+      gateway,
+      agents: {
+        ownership: "explicit",
+        entries: { a: { name: "A" }, b: { name: "B" }, c: { name: "C" } },
+      },
+    });
+    mockGetClient.mockReturnValue(oc.client);
+    liveInDb.add("a").add("b").add("c");
+    const stale = {
+      gateway,
+      channels: { telegram: { enabled: true } },
+      agents: { ownership: "explicit", entries: { a: { name: "A" }, b: { name: "B" } } },
+    };
+
+    pushConfigInBackground(serialize(stale));
+    await settle();
+
+    expect(oc.deletes).toEqual([]);
+    expect(oc.file).toEqual({
+      ...stale,
+      agents: {
+        ownership: "explicit",
+        entries: { a: { name: "A" }, b: { name: "B" }, c: { name: "C" } },
+      },
+    });
+    expect(configFileWrites()).toHaveLength(0);
   });
 
   it("deletes the agent without re-sending a bridge openclaw.json already holds", async () => {
