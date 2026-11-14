@@ -125,7 +125,8 @@ heal_memory_indexes() {
         command -v timeout >/dev/null 2>&1 && limit=(timeout "$remaining")
         echo "[memory-heal] Rebuilding the memory index of agent $agent..."
         # Every command is guarded: start-openclaw.sh runs under `set -e`.
-        "${limit[@]}" openclaw memory index --agent "$agent" 2>&1 | sed 's/^/[memory-heal] index: /'
+        # </dev/null: the loop's stdin is the list of agents still to come.
+        "${limit[@]}" openclaw memory index --agent "$agent" </dev/null 2>&1 | sed 's/^/[memory-heal] index: /'
         rc=${PIPESTATUS[0]}
         [ "$rc" -eq 0 ] || echo "[memory-heal] 'openclaw memory index --agent $agent' exited $rc."
     done <<<"$mismatched"

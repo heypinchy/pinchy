@@ -273,6 +273,18 @@ describe("heal_memory_indexes", () => {
     expect(output).toMatch(/Memory indexes rebuilt in \d+s/);
   });
 
+  it("gives the rebuild no stdin, so it cannot swallow the agents still to come", () => {
+    setIdentities({ kb: "mismatched", odoo: "mismatched" });
+    stubOpenclaw({ indexReadsStdin: true });
+
+    run();
+
+    expect(indexCalls()).toEqual([
+      ["memory", "index", "--agent", "kb"],
+      ["memory", "index", "--agent", "odoo"],
+    ]);
+  });
+
   it("judges the outcome by the status afterwards, not by the exit code", () => {
     // `openclaw memory index` exits 0 when every embed failed and the index was
     // left dirty — measured on the RC image. A success line then would be a lie.
