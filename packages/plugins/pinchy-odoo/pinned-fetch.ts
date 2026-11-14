@@ -27,7 +27,12 @@ import { pinnedLookup, type PinnedTarget } from "./pinned-target.js";
 // Agent (UND_ERR_INVALID_ARG, reported only as "fetch failed"). Pinned to
 // undici 7 for the global-dispatcher reason pinchy-web's web-fetch.ts gives.
 
-type Pin = { origin: string; target: PinnedTarget; timeoutMs: number };
+type Pin = {
+  origin: string;
+  /** One connector per scope: a schema sync makes hundreds of requests. */
+  dispatcher: Agent;
+  timeoutMs: number;
+};
 
 const STORE = Symbol.for("pinchy.odoo.pinStore");
 
@@ -52,9 +57,9 @@ function requestUrl(input: Parameters<Fetch>[0]): string {
 }
 
 /**
- * `fetch` to `target` instead of resolving the URL's host. The URL is
- * otherwise untouched, so the Host header, TLS SNI and certificate
- * verification still use the name.
+ * `fetch` through the scope's pinned connector instead of resolving the URL's
+ * host. The URL is otherwise untouched, so the Host header, TLS SNI and
+ * certificate verification still use the name.
  *
  * Never follows a redirect, whatever the caller asked: a followed hop is a
  * connection nobody checked. odoo-node already asks for "manual".
@@ -62,25 +67,16 @@ function requestUrl(input: Parameters<Fetch>[0]): string {
 async function pinnedFetch(
   url: string,
   init: RequestInit | undefined,
-  target: PinnedTarget,
-  timeoutMs: number
+  pin: Pin
 ): Promise<Response> {
-  const timeout = AbortSignal.timeout(timeoutMs);
-  const dispatcher = new Agent({
-    connect: { lookup: pinnedLookup(target) as never, autoSelectFamily: true },
-  });
-  try {
-    return (await undiciFetch(url, {
-      ...((init ?? {}) as Record<string, unknown>),
-      redirect: "manual",
-      // The caller's own signal, if it passed one, still cancels.
-      signal: init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout,
-      dispatcher,
-    })) as unknown as Response;
-  } finally {
-    // Graceful: waits for the request in flight, body included.
-    dispatcher.close().catch(() => {});
-  }
+  const timeout = AbortSignal.timeout(pin.timeoutMs);
+  return (await undiciFetch(url, {
+    ...((init ?? {}) as Record<string, unknown>),
+    redirect: "manual",
+    // The caller's own signal, if it passed one, still cancels.
+    signal: init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout,
+    dispatcher: pin.dispatcher,
+  })) as unknown as Response;
 }
 
 function ensureInstalled(): void {
@@ -91,8 +87,7 @@ function ensureInstalled(): void {
     const pin = store().getStore();
     if (pin) {
       const url = requestUrl(input);
-      if (new URL(url).origin === pin.origin)
-        return pinnedFetch(url, init, pin.target, pin.timeoutMs);
+      if (new URL(url).origin === pin.origin) return pinnedFetch(url, init, pin);
     }
     return current(input, init);
   }) as Fetch & { [WRAPPER]?: true };
@@ -101,14 +96,22 @@ function ensureInstalled(): void {
 }
 
 /** Runs `fn` with every request to `url`'s origin pinned to `target`. */
-export function withPinnedFetch<T>(
+export async function withPinnedFetch<T>(
   url: string,
   target: PinnedTarget,
   fn: () => Promise<T>,
   { timeoutMs = ODOO_REQUEST_TIMEOUT_MS }: { timeoutMs?: number } = {}
 ): Promise<T> {
   ensureInstalled();
-  return store().run({ origin: new URL(url).origin, target, timeoutMs }, fn);
+  const dispatcher = new Agent({
+    connect: { lookup: pinnedLookup(target) as never, autoSelectFamily: true },
+  });
+  try {
+    return await store().run({ origin: new URL(url).origin, dispatcher, timeoutMs }, fn);
+  } finally {
+    // Graceful: a response body the caller has not read yet still arrives.
+    dispatcher.close().catch(() => {});
+  }
 }
 
 /**

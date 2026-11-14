@@ -19,11 +19,20 @@ const dns = createRequire(import.meta.url)("node:dns") as typeof import("node:dn
 
 let server: Server;
 let port: number;
-const seen: { headers: IncomingHttpHeaders; remoteAddress: string | undefined }[] = [];
+const seen: {
+  headers: IncomingHttpHeaders;
+  remoteAddress: string | undefined;
+  remotePort: number | undefined;
+}[] = [];
+const closedPorts: number[] = [];
 
 beforeAll(async () => {
   server = createServer((req, res) => {
-    seen.push({ headers: req.headers, remoteAddress: req.socket.remoteAddress });
+    seen.push({
+      headers: req.headers,
+      remoteAddress: req.socket.remoteAddress,
+      remotePort: req.socket.remotePort,
+    });
     req.resume();
     req.on("end", () => {
       res.setHeader("content-type", "application/json");
@@ -36,6 +45,12 @@ beforeAll(async () => {
       );
     });
   });
+  server.on("connection", (socket) => {
+    const remotePort = socket.remotePort;
+    socket.on("close", () => {
+      if (remotePort !== undefined) closedPorts.push(remotePort);
+    });
+  });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   port = (server.address() as AddressInfo).port;
 });
@@ -44,6 +59,7 @@ afterAll(() => new Promise<void>((resolve) => server.close(() => resolve())));
 
 afterEach(() => {
   seen.length = 0;
+  closedPorts.length = 0;
   vi.restoreAllMocks();
 });
 
@@ -195,6 +211,24 @@ describe("withPinnedFetch", () => {
     } finally {
       globalThis.fetch = original;
     }
+  });
+
+  it("sends every request of one scope over one connection, and closes it when the scope ends", async () => {
+    // A schema sync makes hundreds of requests in one scope: a connector per
+    // request would open (and TLS-handshake) a socket for each.
+    const url = `http://odoo.rebind.test:${port}`;
+    await withPinnedFetch(url, checked, async () => {
+      for (let i = 0; i < 3; i++) {
+        const res = await fetch(`${url}/jsonrpc`, { method: "POST", body: "{}" });
+        await res.text();
+        // Let the client hand the idle socket back to its pool.
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+    });
+
+    expect(seen).toHaveLength(3);
+    expect(new Set(seen.map((s) => s.remotePort)).size).toBe(1);
+    await vi.waitFor(() => expect(closedPorts).toContain(seen[0].remotePort));
   });
 
   it("gives up on an Odoo that accepts the connection and never answers", async () => {
