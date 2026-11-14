@@ -662,31 +662,42 @@ describe("createVisionConfig", () => {
     expect(config.ollamaBaseUrl).toBe("http://host.docker.internal:11434");
   });
 
-  it("resolves provider keys for the given agentDir", async () => {
+  it("resolves provider keys as the reading agent through cfg, the only field OpenClaw forwards", async () => {
+    // OpenClaw 2026.9's plugin runtime forwards only {provider, cfg,
+    // workspaceDir} to the key lookup, which then takes its owner from
+    // cfg.agents.defaults.systemAgent. With none set on a multi-agent install
+    // it throws AgentSelectionRequiredError.
     const resolveApiKeyForProvider = vi.fn().mockResolvedValue({ apiKey: "k" });
+    const cfg = {
+      agents: { list: [{ id: "agent-1" }, { id: "agent-2" }], defaults: { model: "x/y" } },
+      models: { providers: { anthropic: { api: "anthropic" } } },
+    };
     const config = createVisionConfig({
       modelAuth: { resolveApiKeyForProvider },
-      cfg: {},
+      cfg,
       model: "anthropic/claude-haiku-4-5-20251001",
-      agentDir: "/state/agents/agent-1/agent",
+      ownerAgentId: "agent-1",
     });
     await expect(config.resolveApiKey("anthropic")).resolves.toBe("k");
-    expect(resolveApiKeyForProvider).toHaveBeenCalledWith({
-      provider: "anthropic",
-      cfg: {},
-      agentDir: "/state/agents/agent-1/agent",
-    });
+    const passed = resolveApiKeyForProvider.mock.calls[0][0];
+    expect(passed.cfg.agents.defaults.systemAgent).toEqual({ agentId: "agent-1" });
+    // Everything else in the config is the same, and the live config is untouched.
+    expect(passed.cfg.agents.list).toBe(cfg.agents.list);
+    expect(passed.cfg.agents.defaults.model).toBe("x/y");
+    expect(passed.cfg.models).toBe(cfg.models);
+    expect(cfg.agents.defaults).toEqual({ model: "x/y" });
   });
 
-  it("omits agentDir when none is known", async () => {
+  it("passes cfg through unchanged when no owner is known", async () => {
     const resolveApiKeyForProvider = vi.fn().mockResolvedValue({ apiKey: "k" });
+    const cfg = {};
     const config = createVisionConfig({
       modelAuth: { resolveApiKeyForProvider },
-      cfg: {},
+      cfg,
       model: "anthropic/claude-haiku-4-5-20251001",
     });
     await config.resolveApiKey("anthropic");
-    expect(resolveApiKeyForProvider).toHaveBeenCalledWith({ provider: "anthropic", cfg: {} });
+    expect(resolveApiKeyForProvider).toHaveBeenCalledWith({ provider: "anthropic", cfg });
   });
 
   it("sets ollamaBaseUrl to undefined when no ollama provider configured", () => {

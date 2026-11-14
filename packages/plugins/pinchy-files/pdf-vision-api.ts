@@ -87,16 +87,35 @@ export interface VisionApiInternalConfig {
     resolveApiKeyForProvider: (params: {
       provider: string;
       cfg: unknown;
-      agentDir?: string;
     }) => Promise<{ apiKey: string } | null>;
   };
   cfg: unknown;
   model: string;
   /**
-   * The reading agent's state dir. OpenClaw 2026.9 has no default agent, so
-   * a provider key resolved without one throws on any multi-agent install.
+   * The agent reading the PDF, whose credentials pay for the vision call.
+   * OpenClaw 2026.9 has no default agent: a provider key resolved without an
+   * owner throws on any multi-agent install. The plugin runtime forwards only
+   * `{ provider, cfg, workspaceDir }` to the lookup, so the owner travels in
+   * `cfg` as `agents.defaults.systemAgent` (see `scopeConfigToAgent`).
    */
-  agentDir?: string;
+  ownerAgentId?: string;
+}
+
+/**
+ * A shallow copy of `cfg` naming `agentId` as the owner of ambient work.
+ * OpenClaw's key lookup resolves its agent dir from
+ * `cfg.agents.defaults.systemAgent.agentId` when the caller cannot pass one,
+ * which is the only route a plugin has. The live config is not touched.
+ */
+export function scopeConfigToAgent(cfg: unknown, agentId: string): unknown {
+  const base = (cfg ?? {}) as { agents?: { defaults?: Record<string, unknown> } };
+  return {
+    ...base,
+    agents: {
+      ...base.agents,
+      defaults: { ...base.agents?.defaults, systemAgent: { agentId } },
+    },
+  };
 }
 
 /** Token usage returned from a vision API call. */
@@ -163,8 +182,9 @@ export function createVisionConfig(internal: VisionApiInternalConfig): VisionApi
       try {
         const result = await internal.modelAuth.resolveApiKeyForProvider({
           provider,
-          cfg: internal.cfg,
-          ...(internal.agentDir && { agentDir: internal.agentDir }),
+          cfg: internal.ownerAgentId
+            ? scopeConfigToAgent(internal.cfg, internal.ownerAgentId)
+            : internal.cfg,
         });
         return result?.apiKey ?? null;
       } catch (err) {

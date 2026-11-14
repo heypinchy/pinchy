@@ -508,7 +508,6 @@ describe("pinchy_read PDF integration", { timeout: PDF_INTEGRATION_SUITE_TIMEOUT
     agentModel: string;
     visionModelOverride?: string;
     configAccessor?: "current" | "loadConfig";
-    resolveAgentDir?: (cfg: unknown, agentId: string) => string;
     resolveApiKeyImpl?: (params: Record<string, unknown>) => Promise<{ apiKey: string } | null>;
     fetchJson: () => Promise<unknown>;
   }): Promise<{ result: any; mockResolveApiKey: ReturnType<typeof vi.fn> }> {
@@ -532,7 +531,6 @@ describe("pinchy_read PDF integration", { timeout: PDF_INTEGRATION_SUITE_TIMEOUT
           agents: { list: [{ id: "agent-1", model: opts.agentModel }] },
         }),
       },
-      ...(opts.resolveAgentDir && { agent: { resolveAgentDir: opts.resolveAgentDir } }),
     };
 
     const originalFetch = globalThis.fetch;
@@ -595,17 +593,18 @@ describe("pinchy_read PDF integration", { timeout: PDF_INTEGRATION_SUITE_TIMEOUT
   });
 
   it("resolves the vision API key as the reading agent, which OpenClaw 2026.9 requires", async () => {
-    // 2026.9 has no default agent: resolving a provider key without an
-    // agentDir throws AgentSelectionRequiredError on any multi-agent
-    // install, and every scanned page came back "Unable to extract text".
-    const resolveAgentDir = vi.fn(
-      (_cfg: unknown, agentId: string) => `/state/agents/${agentId}/agent`
-    );
+    // 2026.9 has no default agent. Its plugin runtime forwards only
+    // {provider, cfg, workspaceDir} to the key lookup, which then takes the
+    // owner from cfg.agents.defaults.systemAgent and throws
+    // AgentSelectionRequiredError without one. Every scanned page came back
+    // "Unable to extract text". The mock enforces exactly that contract.
     const { result, mockResolveApiKey } = await runScannedPdfVision({
       agentModel: "anthropic/claude-haiku-4-5-20251001",
-      resolveAgentDir,
       resolveApiKeyImpl: async (params) => {
-        if (!params.agentDir) {
+        const cfg = params.cfg as {
+          agents?: { defaults?: { systemAgent?: { agentId?: string } } };
+        };
+        if (cfg?.agents?.defaults?.systemAgent?.agentId !== "agent-1") {
           throw new Error(
             "Multiple agents are configured, but this operation has no explicit owner."
           );
@@ -617,12 +616,8 @@ describe("pinchy_read PDF integration", { timeout: PDF_INTEGRATION_SUITE_TIMEOUT
       }),
     });
 
-    expect(resolveAgentDir).toHaveBeenCalledWith(
-      expect.objectContaining({ agents: expect.anything() }),
-      "agent-1"
-    );
     expect(mockResolveApiKey).toHaveBeenCalledWith(
-      expect.objectContaining({ provider: "anthropic", agentDir: "/state/agents/agent-1/agent" })
+      expect.objectContaining({ provider: "anthropic" })
     );
     expect(result.content[0].text).toContain("HWB 234");
     expect(result.content[0].text).not.toContain("Unable to extract text");
