@@ -95,4 +95,24 @@ describe("reloadSecretsInBackground (#943)", () => {
     const warning = warnSpy.mock.calls.map((c: unknown[]) => c.join(" ")).join("\n");
     expect(warning).toContain("secrets.reload failed");
   });
+
+  it("does not call for a restart OpenClaw's own answer cannot justify", async () => {
+    // OpenClaw answers every failed reload with the same "secrets.reload
+    // failed" — a reload a concurrent config change superseded included, and
+    // that change's own reload resolves the new credentials. Its log has the
+    // cause; the warning must not send an operator to restart for nothing.
+    request.mockResolvedValue({
+      type: "res",
+      id: "1",
+      ok: false,
+      error: { code: "UNAVAILABLE", message: "secrets.reload failed" },
+    });
+
+    reloadSecretsInBackground();
+    await drain();
+
+    const warning = warnSpy.mock.calls.map((c: unknown[]) => c.join(" ")).join("\n");
+    expect(warning).not.toMatch(/— restart OpenClaw to apply/);
+    expect(warning).toMatch(/OpenClaw's log/);
+  });
 });

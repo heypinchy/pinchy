@@ -5843,11 +5843,13 @@ describe("regenerateOpenClawConfig", () => {
       await drainBackgroundCoroutine();
       pushConfigInBackground(JSON.stringify({ env: { X: "2" } }));
       await drainBackgroundCoroutine();
-      expect(mockConfigApply, "precondition: both pushes are applying").toHaveBeenCalledTimes(2);
+      // The newer push waits for the older one's apply (trackConfigWrite).
+      expect(mockConfigApply, "precondition: the older push is applying").toHaveBeenCalledTimes(1);
 
       answerOlder();
       await drainBackgroundCoroutine();
       expect(fileOnlyDeliveryPending(), "the older push no longer speaks for the file").toBe(true);
+      expect(mockConfigApply, "precondition: the newer push is applying").toHaveBeenCalledTimes(2);
 
       answerNewer();
       await drainBackgroundCoroutine();

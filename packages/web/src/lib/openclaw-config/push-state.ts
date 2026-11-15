@@ -74,6 +74,10 @@ interface ConfigPushState {
   fileOnlyFollowUp: ReturnType<typeof setTimeout> | undefined;
   /** Follow-ups fired for the pending file-only delivery (sets the backoff). */
   fileOnlyFollowUps: number;
+  /** The config write a push has in flight, settled either way (see trackConfigWrite). */
+  configWrite: Promise<void> | undefined;
+  /** Settles when the next generation is claimed (see nextGenerationClaimed). */
+  generationClaimed: { promise: Promise<void>; resolve: () => void } | undefined;
 }
 
 /**
@@ -121,6 +125,8 @@ function state(): ConfigPushState {
       inFlightGenerations: new Set(),
       fileOnlyFollowUp: undefined,
       fileOnlyFollowUps: 0,
+      configWrite: undefined,
+      generationClaimed: undefined,
     };
     return globalThis.__pinchyConfigPushState;
   }
@@ -185,7 +191,29 @@ export function getPendingConfigPushCount(): number {
  * reach `config.apply`, which is the restart storm the counter exists to stop.
  */
 export function nextConfigPushGeneration(): number {
-  return ++state().generation;
+  const s = state();
+  const claimed = s.generationClaimed;
+  s.generationClaimed = undefined;
+  s.generation++;
+  claimed?.resolve();
+  return s.generation;
+}
+
+/**
+ * Settles as soon as a newer push generation is claimed — the moment every
+ * older push is superseded. Lets a push waiting for another one's config write
+ * (write.ts) give up that wait at once instead of when the write is answered.
+ */
+export function nextGenerationClaimed(): Promise<void> {
+  const s = state();
+  if (!s.generationClaimed) {
+    let resolve!: () => void;
+    const promise = new Promise<void>((r) => {
+      resolve = r;
+    });
+    s.generationClaimed = { promise, resolve };
+  }
+  return s.generationClaimed.promise;
 }
 
 /** The newest generation any module instance in this process has claimed. */
@@ -538,6 +566,42 @@ export function setLastGoodBound(bound: LastGoodBound): void {
 }
 
 /**
+ * Record a config write a push sent to OpenClaw — config.apply or
+ * agents.delete — until OpenClaw answers it. The returned promise settles as
+ * `write` does, with the record already cleared.
+ *
+ * OpenClaw 2026.9 answers config.apply only after its hot reload, and part of
+ * that reload republishes the prepared model runtime. A second write landing
+ * in that window supersedes the publication, and OpenClaw books the superseded
+ * publication as a failed reload: "prepared model runtime reload failed after
+ * config supersession … recovery deferred to the newer config". That debt is
+ * kept across config changes and paid by the next reload OpenClaw accepts —
+ * with an in-process gateway restart that drops every running chat for ~15 s
+ * (staging, 2026-11-14: a burst of agent creates and a delete). So a push
+ * waits for the write in flight before it reads and sends (configWriteInFlight).
+ *
+ * On globalThis for the same reason as the generation counter: route bundles
+ * and the custom server each load their own copy of write.ts.
+ */
+export function trackConfigWrite<T>(write: Promise<T>): Promise<T> {
+  const s = state();
+  const tracked = write.finally(() => {
+    if (s.configWrite === settled) s.configWrite = undefined;
+  });
+  const settled: Promise<void> = tracked.then(
+    () => undefined,
+    () => undefined
+  );
+  s.configWrite = settled;
+  return tracked;
+}
+
+/** The config write in flight (trackConfigWrite); it never rejects. */
+export function configWriteInFlight(): Promise<void> | undefined {
+  return state().configWrite;
+}
+
+/**
  * Test-only: reset the pending counter, the recorded secrets shape, the
  * last-known-good bound (reloaded from disk on next use), an undelivered
  * change and the newest delivered regenerate, and drop a queued follow-up
@@ -552,6 +616,7 @@ export function _resetConfigPushState(): void {
   s.fileOnlyFollowUps = 0;
   clearFileOnlyFollowUp(s);
   s.inFlightGenerations.clear();
+  s.configWrite = undefined;
   s.unservedCalls = undefined;
   s.writtenSecretsShape = undefined;
   s.lastGoodBound = undefined;
