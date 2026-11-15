@@ -70,6 +70,10 @@ import {
 } from "@/test-helpers/openclaw-gateway-handlers";
 
 const mockGetClient = vi.fn();
+// Every agent these pushes drop is deleted in Pinchy's database.
+vi.mock("@/lib/openclaw-config/live-agents", () => ({
+  liveAgentIds: async () => new Set<string>(),
+}));
 vi.mock("@/server/openclaw-client", () => ({
   getOpenClawClient: () => mockGetClient(),
 }));

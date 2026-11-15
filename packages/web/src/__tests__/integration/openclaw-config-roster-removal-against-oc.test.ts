@@ -35,6 +35,11 @@ vi.mock("@/server/openclaw-client", () => ({
   getOpenClawClient: () => mockGetClient(),
 }));
 
+// Every agent these pushes drop is deleted in Pinchy's database.
+vi.mock("@/lib/openclaw-config/live-agents", () => ({
+  liveAgentIds: async () => new Set<string>(),
+}));
+
 type Json = Record<string, unknown>;
 
 /** The openclaw.json the pinchy-openclaw image ships (Dockerfile.openclaw copies it). */

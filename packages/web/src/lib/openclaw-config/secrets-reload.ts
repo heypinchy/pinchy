@@ -67,10 +67,15 @@ export function reloadSecretsInBackground(): void {
       // reload as a successful one, which is the class of lie #943 is about.
       const response = await client.request(SECRETS_RELOAD_METHOD);
       if (!response.ok) {
+        // OpenClaw answers every failed reload alike ("secrets.reload failed"),
+        // one a concurrent config change superseded included — and that
+        // change's own reload resolves the new credentials. Only its log says
+        // which, so the warning points there instead of calling for a restart.
         console.warn(
           `[openclaw-config] ${SECRETS_RELOAD_METHOD} was refused by the gateway ` +
-            `(${response.error?.message ?? "no reason given"}) — restart OpenClaw to apply the ` +
-            "new credentials."
+            `(${response.error?.message ?? "no reason given"}). OpenClaw's log names the cause: ` +
+            "if a config change superseded the reload, that change's reload applies the new " +
+            "credentials; otherwise restart OpenClaw to apply them."
         );
         return;
       }

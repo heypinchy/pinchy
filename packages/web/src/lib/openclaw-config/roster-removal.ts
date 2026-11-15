@@ -68,6 +68,19 @@ export function parseRosterDropRejection(message: string): string[] | undefined 
 }
 
 /**
+ * `payload` with `ids` in its roster as OpenClaw holds them, and nothing else
+ * changed: agents a stale payload leaves out but that are not being removed
+ * (write.ts keeps an agent Pinchy's database still holds as live).
+ */
+export function keepRosterEntries(payload: Json, ocConfig: Json, ids: string[]): Json {
+  const held = effectiveRoster(ocConfig);
+  const agents = isRecord(payload.agents) ? payload.agents : {};
+  const entries: Record<string, Json> = { ...(rosterEntries(payload) ?? {}) };
+  for (const id of ids) entries[id] = held[id] ?? {};
+  return { ...payload, agents: { ...agents, ownership: "explicit", entries } };
+}
+
+/**
  * `payload` with the dropped agents kept, as OpenClaw holds them: the write
  * OpenClaw accepts before `agents.delete` removes them. A roster of more than
  * one agent needs explicit ownership, which this one always is.
@@ -80,12 +93,10 @@ export function parseRosterDropRejection(message: string): string[] | undefined 
  * SecretRefs, build.ts), so the role carries nothing for it.
  */
 export function retainRosterEntries(payload: Json, ocConfig: Json, ids: string[]): Json {
-  const held = effectiveRoster(ocConfig);
-  const agents = isRecord(payload.agents) ? payload.agents : {};
+  const withKept = keepRosterEntries(payload, ocConfig, ids);
+  const agents = withKept.agents as Json;
   const kept = Object.keys(rosterEntries(payload) ?? {}).filter((id) => !ids.includes(id));
-  const entries: Record<string, Json> = { ...(rosterEntries(payload) ?? {}) };
-  for (const id of ids) entries[id] = held[id] ?? {};
-  const bridge: Json = { ...agents, ownership: "explicit", entries };
+  const bridge: Json = { ...agents };
   const defaults = isRecord(agents.defaults) ? agents.defaults : {};
   const inheritance = isRecord(defaults.authInheritance) ? defaults.authInheritance : {};
   const owner = inheritance.agentId;
