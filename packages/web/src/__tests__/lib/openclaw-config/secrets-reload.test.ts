@@ -98,15 +98,10 @@ describe("reloadSecretsInBackground (#943)", () => {
     expect(warnSpy).toHaveBeenCalled();
   });
 
-  it("treats an ok:false response as a failure rather than success", async () => {
-    // openclaw-node resolves the promise for an error response, so a bare
-    // `await request(...)` would report a refused reload as a successful one.
-    request.mockResolvedValue({
-      type: "res",
-      id: "1",
-      ok: false,
-      error: { code: "UNAVAILABLE", message: "secrets.reload failed" },
-    });
+  it("reports a refused reload as a failure rather than success", async () => {
+    // openclaw-node rejects the request with the gateway's error message when
+    // OpenClaw answers ok:false.
+    request.mockRejectedValue(new Error("secrets.reload failed"));
 
     reloadSecretsInBackground();
     await drain();
@@ -121,12 +116,7 @@ describe("reloadSecretsInBackground (#943)", () => {
     // failed" — a reload a concurrent config change superseded included, and
     // that change's own reload resolves the new credentials. Its log has the
     // cause; the warning must not send an operator to restart for nothing.
-    request.mockResolvedValue({
-      type: "res",
-      id: "1",
-      ok: false,
-      error: { code: "UNAVAILABLE", message: "secrets.reload failed" },
-    });
+    request.mockRejectedValue(new Error("secrets.reload failed"));
 
     reloadSecretsInBackground();
     await drain();
@@ -295,12 +285,7 @@ describe("reloadSecretsInBackground (#943)", () => {
     });
 
     it("forgets the write when OpenClaw refuses the reload", async () => {
-      request.mockResolvedValue({
-        type: "res",
-        id: "1",
-        ok: false,
-        error: { code: "UNAVAILABLE", message: "secrets.reload failed" },
-      });
+      request.mockRejectedValue(new Error("secrets.reload failed"));
       reloadSecretsInBackground();
       await drain();
       expect(mockForgetSecretsWrite).toHaveBeenCalledTimes(1);
