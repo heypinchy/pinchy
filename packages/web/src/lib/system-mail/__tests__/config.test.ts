@@ -120,6 +120,13 @@ describe("mergeWithStoredPassword", () => {
     expect(merged.password).toBeUndefined();
   });
 
+  it("does not inherit a password when only the port changes", () => {
+    // Same host, different port is a different service (587 submission vs a
+    // relay on 25 or 2525), and the saved password was never typed for it.
+    const merged = mergeWithStoredPassword({ ...config, port: 2525, password: undefined }, config);
+    expect(merged.password).toBeUndefined();
+  });
+
   it("treats the host case-insensitively — DNS does", () => {
     const merged = mergeWithStoredPassword(
       { ...config, host: "SMTP.Example.com", password: undefined },
@@ -142,14 +149,32 @@ describe("needsPasswordReentry", () => {
     expect(needsPasswordReentry({ ...keep, security: "none" }, config)).toBe(true);
   });
 
+  it("is true when only the port changes and no password is sent", () => {
+    expect(needsPasswordReentry({ ...keep, port: 465, security: "tls" }, config)).toBe(true);
+  });
+
+  it("is false when nothing is stored to protect, even if the host changes", () => {
+    const noPassword = { ...config, password: undefined };
+    expect(needsPasswordReentry({ ...keep, host: "smtp.other.com" }, noPassword)).toBe(false);
+  });
+
+  it("is true when the host changes and no password is sent", () => {
+    expect(needsPasswordReentry({ ...keep, host: "smtp.other.com" }, config)).toBe(true);
+  });
+
   it("is true from 25/STARTTLS to no encryption, on port 25 or any other", () => {
     const relay = { ...config, port: 25 };
     expect(needsPasswordReentry({ ...keep, port: 25, security: "none" }, relay)).toBe(true);
     expect(needsPasswordReentry({ ...keep, port: 587, security: "none" }, relay)).toBe(true);
   });
 
-  it("is false for STARTTLS on port 25: the port does not weaken the connection, requireTLS does the work", () => {
-    expect(needsPasswordReentry({ ...keep, port: 25 }, config)).toBe(false);
+  it("is true for a move to STARTTLS on port 25 too: the port differs, so the password was not typed for it", () => {
+    expect(needsPasswordReentry({ ...keep, port: 25 }, config)).toBe(true);
+  });
+
+  it("is false for STARTTLS on port 25 when it is already the stored port", () => {
+    const relay = { ...config, port: 25 };
+    expect(needsPasswordReentry({ ...keep, port: 25 }, relay)).toBe(false);
   });
 
   it("is false when the password is typed again", () => {

@@ -236,6 +236,21 @@ describe("EmailDeliverySettings", () => {
     expect(screen.getByLabelText("Sender address")).toHaveAttribute("aria-invalid", "true");
   });
 
+  it("stops promising to keep the password once the port changes", async () => {
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse(configured));
+    const user = userEvent.setup();
+    render(<EmailDeliverySettings />);
+    await user.click(await screen.findByRole("button", { name: "Edit" }));
+    await user.click(screen.getByRole("button", { name: "Change" }));
+    const port = screen.getByLabelText("Port");
+    await user.clear(port);
+    await user.type(port, "2525");
+    expect(screen.getByLabelText(/Password/)).toHaveAttribute(
+      "placeholder",
+      "Enter the password for this server and port"
+    );
+  });
+
   it("stops promising to keep the password once the server changes", async () => {
     vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse(configured));
     const user = userEvent.setup();
@@ -246,7 +261,7 @@ describe("EmailDeliverySettings", () => {
     await user.type(host, "smtp.other.com");
     expect(screen.getByLabelText(/Password/)).toHaveAttribute(
       "placeholder",
-      "Enter the password for this server"
+      "Enter the password for this server and port"
     );
   });
 

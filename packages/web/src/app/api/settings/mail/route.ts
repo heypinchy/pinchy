@@ -6,6 +6,7 @@ import {
   systemMailConfigSchema,
   type SystemMailConfig,
   type SystemMailStatus,
+  sameServerAndPort,
 } from "@/lib/schemas/system-mail";
 import {
   getSystemMailConfig,
@@ -101,9 +102,11 @@ export async function PUT(request: NextRequest) {
   const stored = await getSystemMailConfig();
   if (needsPasswordReentry(parsed.data, stored)) {
     const message =
-      "Enter the password again to switch to a less secure connection — Pinchy won't reuse the saved one.";
+      stored && sameServerAndPort(parsed.data, stored)
+        ? "Enter the password again to switch to a less secure connection — Pinchy won't reuse the saved one."
+        : "Enter the password again to use a different server or port — Pinchy won't send the saved one there.";
     // A refused save is audited like a failed verification: the attempt to
-    // weaken the transport is worth a row.
+    // weaken the transport or redirect the login is worth a row.
     await appendAuditLog({
       actorType: "user",
       actorId: session.user.id,

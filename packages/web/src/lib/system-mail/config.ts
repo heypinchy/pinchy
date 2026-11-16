@@ -1,5 +1,6 @@
 import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
 import {
+  keepsStoredPassword,
   needsPasswordReentry,
   systemMailConfigSchema,
   type SystemMailConfig,
@@ -66,8 +67,8 @@ export function toPublicConfig(
  * The settings form never receives the stored password, so a `PUT` without
  * one means "keep it". Two exceptions, both about where a secret may go:
  * without a username there is no AUTH and so no password; and a password is
- * never carried over to a different host — it was typed for the server it was
- * typed for.
+ * never carried over to a different host or port — it was typed for the
+ * service it was typed for.
  */
 export function mergeWithStoredPassword(
   update: SystemMailConfig,
@@ -75,9 +76,8 @@ export function mergeWithStoredPassword(
 ): SystemMailConfig {
   if (!update.username) return { ...update, password: undefined };
   if (update.password) return update;
-  // Host names are case-insensitive; a re-typed "SMTP.example.com" is the same server.
-  if (stored && stored.host.toLowerCase() === update.host.toLowerCase()) {
-    return { ...update, password: stored.password };
+  if (keepsStoredPassword(update, stored)) {
+    return { ...update, password: stored?.password };
   }
   return update;
 }

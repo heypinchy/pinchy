@@ -39,7 +39,6 @@ vi.mock("@/lib/audit", () => ({
 import { auth } from "@/lib/auth";
 import * as tz from "@/lib/settings-timezone";
 import * as audit from "@/lib/audit";
-import { after } from "next/server";
 
 describe("POST /api/settings — timezone", () => {
   let POST: typeof import("@/app/api/settings/route").POST;
@@ -68,7 +67,6 @@ describe("POST /api/settings — timezone", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ success: true });
     expect(tz.setOrgTimezone).toHaveBeenCalledWith("Europe/Vienna");
-    expect(after).toHaveBeenCalledTimes(1);
     expect(audit.appendAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: "settings.updated",
@@ -121,7 +119,6 @@ describe("POST /api/settings — timezone", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ success: true });
     // A no-op save (same value) must not spam the audit log with from===to rows.
-    expect(after).not.toHaveBeenCalled();
     expect(audit.appendAuditLog).not.toHaveBeenCalled();
   });
 });

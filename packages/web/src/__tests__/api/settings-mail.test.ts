@@ -217,6 +217,28 @@ describe("PUT /api/settings/mail", () => {
     expect(JSON.stringify(entry)).not.toContain("s3cret");
   });
 
+  it("refuses a port-only change without the password, before any connection is made", async () => {
+    stored = { ...body };
+    const res = await PUT(put({ ...body, password: undefined, port: 465, security: "tls" }));
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json.details.fieldErrors.password).toEqual([
+      expect.stringMatching(/enter the password/i),
+    ]);
+    expect(mockVerify).not.toHaveBeenCalled();
+    expect(saveSystemMailConfig).not.toHaveBeenCalled();
+    expect(mockAppendAuditLog.mock.calls[0][0]).toMatchObject({
+      outcome: "failure",
+      detail: { passwordChanged: false },
+    });
+  });
+
+  it("accepts a port change once the password is typed again", async () => {
+    stored = { ...body };
+    const res = await PUT(put({ ...body, password: "s3cret", port: 465, security: "tls" }));
+    expect(res.status).toBe(200);
+  });
+
   it("accepts the downgrade once the password is typed again", async () => {
     stored = { ...body };
     const res = await PUT(put({ ...body, password: "s3cret", security: "none", port: 25 }));
