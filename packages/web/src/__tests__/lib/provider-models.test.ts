@@ -142,6 +142,19 @@ function customProvider(
   };
 }
 
+// `pnpm models:discover` on 2026-11-16: https://ollama.com/v1/models no longer
+// serves these curated models, so they were dropped from the catalog.
+const RETIRED_2026_11_16 = [
+  "deepseek-v4-flash",
+  "deepseek-v4-pro",
+  "glm-5.1",
+  "kimi-k2.5",
+  "minimax-m2.5",
+  "minimax-m2.7",
+  "mistral-large-3:675b",
+  "qwen3.5:397b",
+];
+
 describe("fetchProviderModels", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -513,26 +526,21 @@ describe("fetchProviderModels", () => {
         JSON.stringify({
           data: [
             // Tool-capable — should appear
-            { id: "deepseek-v4-flash" },
-            { id: "deepseek-v4-pro" },
             { id: "gemma4:31b" },
-            { id: "glm-5.1" },
             { id: "glm-5.2" },
             { id: "gpt-oss:20b" },
             { id: "gpt-oss:120b" },
             // kimi-k2-thinking: still returned by Ollama API but removed from Pinchy allowlist (#305)
             { id: "kimi-k2-thinking" },
-            { id: "kimi-k2.5" },
             { id: "kimi-k2.6" },
             { id: "kimi-k2.7-code" },
-            { id: "minimax-m2.5" },
-            { id: "minimax-m2.7" },
             { id: "minimax-m3" },
-            { id: "mistral-large-3:675b" },
             { id: "nemotron-3-super" },
             { id: "nemotron-3-ultra" },
             { id: "qwen3-next:80b" },
-            { id: "qwen3.5:397b" },
+            // Retired from the catalog 2026-11-16 — a stale or proxied /v1/models
+            // that still lists them must not bring them back into the picker.
+            ...RETIRED_2026_11_16.map((id) => ({ id })),
             // Tool-broken on the live chat/completions endpoint — must be filtered out
             { id: "cogito-2.1:671b" },
             // Still served, but dropped from the catalog on 2026-07-30: it skips
@@ -557,23 +565,15 @@ describe("fetchProviderModels", () => {
     // Every tool-capable model surfaces
     expect(ids).toEqual(
       expect.arrayContaining([
-        "ollama-cloud/deepseek-v4-flash",
-        "ollama-cloud/deepseek-v4-pro",
         "ollama-cloud/gemma4:31b",
-        "ollama-cloud/glm-5.1",
         "ollama-cloud/glm-5.2",
         "ollama-cloud/gpt-oss:20b",
         "ollama-cloud/gpt-oss:120b",
-        "ollama-cloud/kimi-k2.5",
         "ollama-cloud/kimi-k2.6",
         "ollama-cloud/kimi-k2.7-code",
-        "ollama-cloud/minimax-m2.5",
-        "ollama-cloud/minimax-m2.7",
         "ollama-cloud/minimax-m3",
-        "ollama-cloud/mistral-large-3:675b",
         "ollama-cloud/nemotron-3-super",
         "ollama-cloud/nemotron-3-ultra",
-        "ollama-cloud/qwen3.5:397b",
       ])
     );
     // kimi-k2-thinking removed from allowlist (#305 — Ollama Cloud returns HTTP 500 for this model)
@@ -587,7 +587,12 @@ describe("fetchProviderModels", () => {
     expect(ids).not.toContain("ollama-cloud/qwen3-next:80b");
     // minimax-m3 was added to the allowlist (vision + tools confirmed live).
     expect(ids).toContain("ollama-cloud/minimax-m3");
-    expect(ids).toHaveLength(17);
+    // The 8 models Ollama stopped serving (2026-11-16) are not in the mock
+    // response above and must not come back from the allowlist either.
+    for (const retired of RETIRED_2026_11_16) {
+      expect(ids).not.toContain(`ollama-cloud/${retired}`);
+    }
+    expect(ids).toHaveLength(9);
 
     // Tool-broken models are filtered out (probed 2026-06-12: gemma3:4b leaks
     // pseudo tool calls as text, gemma3:12b serves HTTP 500, gemma3:27b
@@ -632,26 +637,22 @@ describe("fetchProviderModels", () => {
     const ids = ollama!.models.map((m) => m.id);
     // kimi-k2-thinking removed from allowlist (#305 — Ollama Cloud returns HTTP 500 for this model)
     expect(ids).not.toContain("ollama-cloud/kimi-k2-thinking");
-    expect(ids).toHaveLength(17);
+    expect(ids).toHaveLength(9);
+    // The offline fallback must not resurrect models Ollama stopped serving.
+    for (const retired of RETIRED_2026_11_16) {
+      expect(ids).not.toContain(`ollama-cloud/${retired}`);
+    }
     expect(ids).toEqual(
       expect.arrayContaining([
-        "ollama-cloud/deepseek-v4-flash",
-        "ollama-cloud/deepseek-v4-pro",
         "ollama-cloud/gemma4:31b",
-        "ollama-cloud/glm-5.1",
         "ollama-cloud/glm-5.2",
         "ollama-cloud/gpt-oss:20b",
         "ollama-cloud/gpt-oss:120b",
-        "ollama-cloud/kimi-k2.5",
         "ollama-cloud/kimi-k2.6",
         "ollama-cloud/kimi-k2.7-code",
-        "ollama-cloud/minimax-m2.5",
-        "ollama-cloud/minimax-m2.7",
         "ollama-cloud/minimax-m3",
-        "ollama-cloud/mistral-large-3:675b",
         "ollama-cloud/nemotron-3-super",
         "ollama-cloud/nemotron-3-ultra",
-        "ollama-cloud/qwen3.5:397b",
       ])
     );
   });

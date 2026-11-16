@@ -3036,23 +3036,15 @@ describe("regenerateOpenClawConfig", () => {
 
     expect(modelIds.sort()).toEqual(
       [
-        "deepseek-v4-flash",
-        "deepseek-v4-pro",
         "gemma4:31b",
-        "glm-5.1",
         "glm-5.2",
         "gpt-oss:120b",
         "gpt-oss:20b",
-        "kimi-k2.5",
         "kimi-k2.6",
         "kimi-k2.7-code",
-        "minimax-m2.5",
-        "minimax-m2.7",
         "minimax-m3",
-        "mistral-large-3:675b",
         "nemotron-3-super",
         "nemotron-3-ultra",
-        "qwen3.5:397b",
       ].sort()
     );
   });
@@ -3082,30 +3074,17 @@ describe("regenerateOpenClawConfig", () => {
     expect(ctx["gpt-oss:20b"]).toBe(131072);
     expect(ctx["gpt-oss:120b"]).toBe(131072);
     // 160K
-    // 198K (GLM 4.x/5.x family, minimax-m2.5)
-    expect(ctx["glm-5.1"]).toBe(202752);
-    expect(ctx["minimax-m2.5"]).toBe(202752);
     // 976K (GLM-5.2 — "NK" = N×1024 → 999424)
     expect(ctx["glm-5.2"]).toBe(999424);
-    // 200K (other minimax variants)
-    expect(ctx["minimax-m2.7"]).toBe(204800);
     // 256K — the most common class
     expect(ctx["gemma4:31b"]).toBe(262144);
-    expect(ctx["kimi-k2.5"]).toBe(262144);
     expect(ctx["kimi-k2.6"]).toBe(262144);
     expect(ctx["kimi-k2.7-code"]).toBe(262144);
-    expect(ctx["mistral-large-3:675b"]).toBe(262144);
     expect(ctx["nemotron-3-super"]).toBe(262144);
     expect(ctx["nemotron-3-ultra"]).toBe(262144);
-    expect(ctx["qwen3.5:397b"]).toBe(262144);
     // 384K
-    // 512K — deepseek-v4-pro belongs here, not with flash below, despite its
-    // library page claiming 1M (see ollama-cloud-models.ts)
-    expect(ctx["deepseek-v4-pro"]).toBe(524288);
     // 512K — minimax-m3's guaranteed minimum (library page: "up to 1M")
     expect(ctx["minimax-m3"]).toBe(524288);
-    // 1M
-    expect(ctx["deepseek-v4-flash"]).toBe(1048576);
   });
 
   it("emits an effective contextTokens for every model — the global compaction ceiling, or a lower per-model knee", async () => {
@@ -3139,18 +3118,14 @@ describe("regenerateOpenClawConfig", () => {
     expect(byId["glm-5.2"].contextTokens).toBe(262144);
     expect(byId["minimax-m3"].contextTokens).toBe(262144);
 
-    // A lower researched per-model knee wins where it exists (min(131072, 262144)).
-    // Both DeepSeek-V4 models knee at ~128K (flash is the weaker long-context
-    // sibling — see ollama-cloud-models.ts); native windows stay honest.
-    expect(byId["deepseek-v4-pro"].contextWindow).toBe(524288);
-    expect(byId["deepseek-v4-pro"].contextTokens).toBe(131072);
-    expect(byId["deepseek-v4-flash"].contextWindow).toBe(1048576);
-    expect(byId["deepseek-v4-flash"].contextTokens).toBe(131072);
+    // The only per-model knees (deepseek-v4-pro/flash, 131072) left the catalog
+    // when Ollama stopped serving them (2026-11-16); the lower-knee-wins path of
+    // the clamp is pinned in openclaw-config-effective-context.test.ts.
 
     // Models already at/below the ceiling are unchanged: contextTokens == window,
     // so their compaction behavior is identical to before (kimi compacts fine).
     expect(byId["kimi-k2.6"].contextTokens).toBe(262144);
-    expect(byId["glm-5.1"].contextTokens).toBe(202752);
+    expect(byId["gemma4:31b"].contextTokens).toBe(262144);
 
     // No model may ever carry a contextTokens above its native window.
     for (const m of models) {
@@ -3306,17 +3281,13 @@ describe("regenerateOpenClawConfig", () => {
     // rendered in the probe fixture — see scripts/lib/ollama-cloud-vision-probe.mjs.
     const visionModels = [
       "gemma4:31b",
-      "kimi-k2.5",
       "kimi-k2.6",
-      // Both promoted on 2026-07-30 after reading a 512x512 fixture correctly in
-      // 6/6 trials each. They were text-only here for a month for two DIFFERENT
-      // reasons — qwen3.5 hallucinated contents on a 200, kimi-k2.7-code HTTP
-      // 500'd on every image — and both now genuinely see. See
-      // ollama-cloud-models.ts for the dated evidence behind each flip.
+      // Promoted on 2026-07-30 after reading a 512x512 fixture correctly in 6/6
+      // trials (it HTTP 500'd on every image before). qwen3.5:397b was promoted
+      // the same day and has since left the catalog (2026-11-16). See
+      // ollama-cloud-models.ts for the dated evidence.
       "kimi-k2.7-code",
       "minimax-m3",
-      "mistral-large-3:675b",
-      "qwen3.5:397b",
     ];
     for (const id of visionModels) {
       // eslint-disable-next-line security/detect-object-injection
@@ -3334,35 +3305,24 @@ describe("regenerateOpenClawConfig", () => {
 
     // Reasoning-capable cloud models per ollama.com/search?c=thinking&c=cloud
     const reasoningModels = [
-      "deepseek-v4-flash",
-      "deepseek-v4-pro",
       "gemma4:31b",
-      "glm-5.1",
       "glm-5.2",
       "gpt-oss:20b",
       "gpt-oss:120b",
-      "kimi-k2.5",
       "kimi-k2.6",
       "kimi-k2.7-code",
-      "minimax-m2.5",
-      "minimax-m2.7",
       "minimax-m3",
       "nemotron-3-super",
       "nemotron-3-ultra",
-      "qwen3.5:397b",
     ];
     for (const id of reasoningModels) {
       // eslint-disable-next-line security/detect-object-injection
       expect(byId[id].reasoning).toBe(true);
     }
-    // Non-reasoning — qwen3-coder-next explicitly "Non-thinking mode only",
-    // ministral-3 / mistral-large-3 / devstral-* and rnj-1 not tagged,
-    // minimax-m2.1 absent from Ollama's thinking tag list.
-    const nonReasoningModels = ["mistral-large-3:675b"];
-    for (const id of nonReasoningModels) {
-      // eslint-disable-next-line security/detect-object-injection
-      expect(byId[id].reasoning).toBe(false);
-    }
+    // The last non-reasoning model (mistral-large-3:675b) left the catalog on
+    // 2026-11-16, so every curated model is reasoning-capable and this list is
+    // exhaustive.
+    expect(models).toHaveLength(reasoningModels.length);
 
     // Ollama Cloud uses subscription pricing, not per-token billing (see
     // ollama.com/pricing). Setting cost to zero is the honest value — a
@@ -11281,11 +11241,11 @@ describe("regenerateOpenClawConfig imageModel.primary (#416)", () => {
     // routes through the curated `OLLAMA_CLOUD_IMAGE_PREFERENCE` list.
     // Several ollama-cloud models are weaker on images regardless: mistral-
     // large-3 and kimi-k2.5/k2.6 accept image input but occasionally misread
-    // digits, and qwen3.5:397b only claims vision (it hallucinates image
-    // contents and is flagged text-only). The image-default picker explicitly
-    // prefers the best empirically vision-verified models — gemini-3-flash >
-    // minimax-m3 > gemma4 (qwen3-vl led this list until Ollama dropped it
-    // upstream) — over those weaker models.
+    // digits (the first two have since been retired, 2026-11-16). The
+    // image-default picker explicitly prefers the best empirically
+    // vision-verified models — gemini-3-flash > minimax-m3 > gemma4 (qwen3-vl
+    // led this list until Ollama dropped it upstream) — over those weaker
+    // models.
     mockedGetSetting.mockImplementation(async (key: string) =>
       key === "ollama_cloud_api_key" ? "test-key" : null
     );

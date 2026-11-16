@@ -431,6 +431,10 @@ The v0.9.0 notes say a shared agent's `MEMORY.md` stays out of Telegram group ch
 
 An agent with memory got its instructions for it — what to store, where, and to check before answering — only in the web chat. Over Telegram and in email workflow runs it had the memory tools without the instructions. Now every turn carries them, wherever the conversation started. In a group chat, the agent is told to leave its memory alone, matching the group-chat fix above. See [Understanding Agent Memory](/explanation/agent-memory/#memory-works-the-same-wherever-a-conversation-starts). Nothing to do on upgrade.
 
+#### Eight Ollama Cloud models are gone
+
+Ollama no longer serves `deepseek-v4-flash`, `deepseek-v4-pro`, `glm-5.1`, `kimi-k2.5`, `minimax-m2.5`, `minimax-m2.7`, `mistral-large-3:675b` and `qwen3.5:397b`, so they are no longer offered in the model picker, and the fast and reasoning tiers now resolve to `kimi-k2.6` (the fast tier used to pick `deepseek-v4-flash`, the reasoning tier `deepseek-v4-pro`). An agent that still names one of them keeps that setting. While the Ollama Cloud key is configured, Pinchy gives such an agent a fallback to the provider's default model, so it answers on `kimi-k2.6` instead of failing, but every request first tries the retired model. Switch those agents to a current model in the agent's settings (gear icon → **General → Model**).
+
 ### Database migrations
 
 The migrations `0082`–`0083` run automatically on startup — no manual steps.

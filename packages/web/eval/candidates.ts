@@ -34,23 +34,20 @@ const SERVED_IDS: ReadonlySet<string> = new Set(TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_
  * tool-using workflow?).
  */
 export const DEFAULT_INVOICE_CANDIDATES = [
-  // — the original eight, now seven: `glm-4.7` sat here until Ollama retired
-  //   it on 2026-07-15. (The published 2026-07-11 sweep in `data/` already ran
-  //   all 14, expansion included — this block is a lineage, not a sweep.) —
+  // — the original eight, now five: `glm-4.7` sat here until Ollama retired
+  //   it on 2026-07-15; `qwen3.5:397b` and `mistral-large-3:675b` followed on
+  //   2026-11-16. (The published 2026-07-11 sweep in `data/` already ran all
+  //   14, expansion included — this block is a lineage, not a sweep.) —
   "ollama-cloud/kimi-k2.6",
   "ollama-cloud/gemma4:31b",
   "ollama-cloud/glm-5.2",
-  "ollama-cloud/qwen3.5:397b",
   "ollama-cloud/minimax-m3",
   "ollama-cloud/gpt-oss:120b",
-  "ollama-cloud/mistral-large-3:675b",
-  // — breadth expansion: new vendors (DeepSeek, NVIDIA) + intra-family pairs.
-  //   `deepseek-v3.2` sat here, retired in the same 2026-07-15 wave —
-  "ollama-cloud/deepseek-v4-pro",
+  // — breadth expansion: new vendors (NVIDIA) + intra-family pairs.
+  //   `deepseek-v3.2` (retired 2026-07-15), `deepseek-v4-pro`, `glm-5.1` and
+  //   `minimax-m2.7` (retired 2026-11-16) sat here —
   "ollama-cloud/nemotron-3-ultra",
   "ollama-cloud/gpt-oss:20b",
-  "ollama-cloud/glm-5.1",
-  "ollama-cloud/minimax-m2.7",
 ];
 
 /**
@@ -74,7 +71,6 @@ export const DEFAULT_KB_CANDIDATES = [
   // for a transport reason, not a groundedness one. That is a finding worth
   // having, but only if it is attributed correctly.
   "ollama-cloud/glm-5.2",
-  "ollama-cloud/qwen3.5:397b",
   "ollama-cloud/gpt-oss:120b",
 ];
 

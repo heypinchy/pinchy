@@ -8,9 +8,9 @@ import { resolveOllamaCloud } from "../providers/ollama-cloud";
 import type { ModelCapability } from "../types";
 
 describe("resolveOllamaCloud", () => {
-  it("picks a flash model for tier=fast", () => {
+  it("picks kimi-k2.6 for tier=fast (deepseek-v4-flash retired 2026-11-16, forced pick)", () => {
     const r = resolveOllamaCloud({ tier: "fast" });
-    expect(r.model).toMatch(/flash/i);
+    expect(r.model).toBe("ollama-cloud/kimi-k2.6");
   });
 
   it("picks a larger model for tier=reasoning", () => {
@@ -70,15 +70,15 @@ describe("resolveOllamaCloud — allowlist invariant", () => {
 });
 
 describe("resolveOllamaCloud — reasoning tier", () => {
-  it("falls through to deepseek-v4-pro when taskType=reasoning (kimi-k2-thinking removed in #305)", () => {
+  it("falls through to kimi-k2.6 when taskType=reasoning (kimi-k2-thinking removed in #305)", () => {
     const result = resolveOllamaCloud({ tier: "reasoning", taskType: "reasoning" });
-    expect(result.model).toBe("ollama-cloud/deepseek-v4-pro");
+    expect(result.model).toBe("ollama-cloud/kimi-k2.6");
     expect(result.fallbackUsed).toBe(true);
   });
 
-  it("keeps deepseek-v4-pro for tier=reasoning, taskType=general", () => {
+  it("keeps kimi-k2.6 for tier=reasoning, taskType=general", () => {
     const result = resolveOllamaCloud({ tier: "reasoning", taskType: "general" });
-    expect(result.model).toBe("ollama-cloud/deepseek-v4-pro");
+    expect(result.model).toBe("ollama-cloud/kimi-k2.6");
     expect(result.fallbackUsed).toBe(false);
   });
 });
@@ -115,9 +115,9 @@ describe("resolveOllamaCloud — vision capability", () => {
     );
   });
 
-  it("still returns deepseek-v4-pro for reasoning tier when vision is NOT in capabilities", () => {
+  it("still returns kimi-k2.6 for reasoning tier when vision is NOT in capabilities", () => {
     const result = resolveOllamaCloud({ tier: "reasoning", taskType: "reasoning" });
-    expect(result.model).toBe("ollama-cloud/deepseek-v4-pro");
+    expect(result.model).toBe("ollama-cloud/kimi-k2.6");
   });
 
   it("does NOT return a blocked model for any tier's vision slot (pinchy#344)", () => {

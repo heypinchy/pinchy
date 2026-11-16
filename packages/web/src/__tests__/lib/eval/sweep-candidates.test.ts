@@ -297,10 +297,10 @@ describe("judgeModelFromEnv", () => {
   });
 
   it("throws on an override that puts the judge in the candidate set", () => {
-    vi.stubEnv("KB_EVAL_JUDGE_MODEL", "ollama-cloud/qwen3.5:397b");
+    vi.stubEnv("KB_EVAL_JUDGE_MODEL", "ollama-cloud/gpt-oss:120b");
 
     expect(() => judgeModelFromEnv(DEFAULT_KB_JUDGE_MODEL, DEFAULT_KB_CANDIDATES)).toThrow(
-      /qwen3\.5:397b/
+      /gpt-oss:120b/
     );
   });
 
