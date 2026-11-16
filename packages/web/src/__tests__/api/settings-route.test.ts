@@ -308,7 +308,26 @@ describe("POST /api/settings", () => {
     expect(body.error).toBe("Invalid JSON body");
   });
 
-  it("schedules the timezone audit write via after() instead of fire-and-forget", async () => {
+  it("awaits the timezone audit write, so an audit failure surfaces instead of being dropped", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+    vi.mocked(getOrgTimezone).mockResolvedValueOnce("UTC");
+    vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("audit db down"));
+
+    const request = new NextRequest("http://localhost/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "org.timezone", value: "Europe/Vienna" }),
+    });
+
+    await expect(POST(request)).rejects.toThrow(/audit db down/);
+    expect(setOrgTimezone).toHaveBeenCalledWith("Europe/Vienna");
+    expect(after).not.toHaveBeenCalled();
+  });
+
+  it("writes the timezone audit entry with the from/to diff", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "admin-1", role: "admin" },
       expires: "",
@@ -325,7 +344,6 @@ describe("POST /api/settings", () => {
     expect(response.status).toBe(200);
 
     expect(setOrgTimezone).toHaveBeenCalledWith("Europe/Vienna");
-    expect(after).toHaveBeenCalledTimes(1);
     expect(appendAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
         actorType: "user",

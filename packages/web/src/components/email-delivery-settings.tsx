@@ -24,7 +24,9 @@ import {
 import {
   DEFAULT_SMTP_PORT,
   SYSTEM_MAIL_SECURITY,
+  keepsStoredPassword,
   needsPasswordReentry,
+  sameServerAndPort,
   securityForPort,
   type SystemMailConfigInput,
   type SystemMailSecurity,
@@ -197,30 +199,26 @@ export function EmailDeliverySettings() {
     }
   }
 
-  // The stored password only follows the server it was typed for, and only
+  // The stored password only follows the host and port it was typed for, and only
   // while there is a username to log in with (mergeWithStoredPassword).
-  const keepsSavedPassword =
-    Boolean(config?.hasPassword) &&
-    form.host.trim().toLowerCase() === config?.host.toLowerCase() &&
-    form.username.trim() !== "";
-  const needsRetype = needsPasswordReentry(
-    {
-      host: form.host.trim(),
-      port: Number(form.port),
-      security: form.security,
-      username: form.username.trim(),
-      password: form.password,
-    },
-    config ?? null
-  );
+  const formUpdate = {
+    host: form.host.trim(),
+    port: Number(form.port),
+    security: form.security,
+    username: form.username.trim(),
+    password: form.password,
+  };
+  const keepsSavedPassword = keepsStoredPassword(formUpdate, config ?? null);
+  const needsRetype = needsPasswordReentry(formUpdate, config ?? null);
+  const sameServer = config ? sameServerAndPort(formUpdate, config) : false;
   const passwordPlaceholder = !form.username.trim()
     ? "Not used without a username"
-    : needsRetype
+    : needsRetype && sameServer
       ? "Enter the password again to use this connection"
       : keepsSavedPassword
         ? "Leave empty to keep the saved password"
         : config?.hasPassword
-          ? "Enter the password for this server"
+          ? "Enter the password for this server and port"
           : undefined;
 
   function fieldProps(name: string) {
