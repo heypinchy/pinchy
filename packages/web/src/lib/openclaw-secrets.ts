@@ -7,9 +7,10 @@ import {
   chmodSync,
   accessSync,
   constants,
+  statSync,
 } from "fs";
 import { dirname } from "path";
-import { createHash } from "crypto";
+import { createHash, createHmac, randomBytes } from "crypto";
 
 export type SecretRef = {
   source: "file";
@@ -174,19 +175,94 @@ function parsePreviousBundle(previousContent: string | undefined): unknown {
 }
 
 /**
- * True when `next` holds a value the previous bundle did not have under the
- * same path — added or rotated. Deliberately false when the only difference is
- * that values DISAPPEARED (see the removal note on {@link writeSecretsFile}),
- * and for versioned slots (see {@link versionedSecretName}).
+ * What this process last wrote to secrets.json, as keyed MACs only — never a
+ * value — plus the file identity it left behind. In production Pinchy cannot
+ * read the file back (fix-config-permissions.sh hands it to root, 0600), so
+ * without this every regenerate looked like a rotation: it rewrote the file
+ * and sent OpenClaw a `secrets.reload`. A burst of agent creates sent several
+ * of them into OpenClaw's hot reloads, and 2026.9 turns a secrets snapshot that
+ * changed under a plugin reload into a gateway restart (staging, 2026-11-16).
+ *
+ * The MAC key is random per process and never leaves memory, so a weak key
+ * cannot be looked up from its MAC. On globalThis because route bundles and
+ * the custom server each load their own copy of this module.
  */
-function hasNewOrRotatedValue(previousBundle: unknown, next: SecretsBundle): boolean {
-  const before = flattenSecretValues(previousBundle);
+type SecretsWriteRecord = {
+  path: string;
+  ino: number;
+  size: number;
+  mtimeMs: number;
+  content: string;
+  values: Map<string, string>;
+};
+
+const WRITE_RECORD = Symbol.for("pinchy.openclawSecrets.writeRecord");
+const MAC_KEY = Symbol.for("pinchy.openclawSecrets.macKey");
+type WriteRecordGlobal = {
+  [WRITE_RECORD]?: SecretsWriteRecord;
+  [MAC_KEY]?: Buffer;
+};
+
+function mac(value: string): string {
+  const g = globalThis as WriteRecordGlobal;
+  g[MAC_KEY] ??= randomBytes(32);
+  return createHmac("sha256", g[MAC_KEY]).update(value).digest("hex");
+}
+
+function macValues(bundle: unknown): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const [path, value] of flattenSecretValues(bundle)) out.set(path, mac(value));
+  return out;
+}
+
+/** The record of this process's last write, while the file is still that write. */
+function currentWriteRecord(path: string): SecretsWriteRecord | undefined {
+  const record = (globalThis as WriteRecordGlobal)[WRITE_RECORD];
+  if (!record || record.path !== path) return undefined;
+  try {
+    // A chown or chmod leaves these alone; a write, a rename over it, or a
+    // wiped tmpfs does not.
+    const st = statSync(path);
+    if (st.ino !== record.ino || st.size !== record.size || st.mtimeMs !== record.mtimeMs) {
+      return undefined;
+    }
+  } catch {
+    return undefined;
+  }
+  return record;
+}
+
+function recordWrite(path: string, content: string, bundle: SecretsBundle): void {
+  const g = globalThis as WriteRecordGlobal;
+  try {
+    const st = statSync(path);
+    g[WRITE_RECORD] = {
+      path,
+      ino: st.ino,
+      size: st.size,
+      mtimeMs: st.mtimeMs,
+      content: mac(content),
+      values: macValues(bundle),
+    };
+  } catch {
+    g[WRITE_RECORD] = undefined;
+  }
+}
+
+/**
+ * True when `next` holds a value the previous bundle did not have under the
+ * same path — added or rotated. `before` maps each previous path to its MAC.
+ * Deliberately false when the only difference is that values DISAPPEARED (see
+ * the removal note on {@link writeSecretsFile}), and for versioned slots (see
+ * {@link versionedSecretName}).
+ */
+function hasNewOrRotatedValue(before: Map<string, string>, next: SecretsBundle): boolean {
   for (const [path, value] of flattenSecretValues(next)) {
     // A versioned slot never needs a reload: its value cannot change in place,
     // and a new slot is reachable only through the config that names it — the
     // config apply of this same regenerate. See versionedSecretName.
     if (path.split("/").some((segment) => VERSIONED_SEGMENT.test(segment))) continue;
-    if (before.get(path) !== value) return true;
+    if (before.get(path) !== mac(value)) return true;
   }
   return false;
 }
@@ -224,9 +300,11 @@ function hasNewOrRotatedValue(previousBundle: unknown, next: SecretsBundle): boo
  * The previous file is read only to decide the return value and to skip an
  * identical write, never for what is written. In production it is unreadable
  * to Pinchy (fix-config-permissions.sh chowns it to root:root 0600 every
- * 50 ms); it then counts as empty, so every unversioned value counts as new
- * and a reload is requested — the safe side: an unnecessary reload costs a
- * round trip, a missed one costs every agent a 401.
+ * 50 ms). What this process wrote there itself it knows without reading
+ * (SecretsWriteRecord); a file it did not write, or one replaced since, counts
+ * as empty, so every unversioned value counts as new and a reload is
+ * requested — the safe side: an unnecessary reload costs a round trip, a missed
+ * one costs every agent a 401.
  */
 export function writeSecretsFile(bundle: SecretsBundle): boolean {
   const path = process.env.OPENCLAW_SECRETS_PATH || DEFAULT_SECRETS_PATH;
@@ -241,13 +319,17 @@ export function writeSecretsFile(bundle: SecretsBundle): boolean {
       previousContent = undefined;
     }
   }
-  const previousBundle = parsePreviousBundle(previousContent);
   const newContent = JSON.stringify(bundle, null, 2);
+  // Unreadable, the file can still be one this process wrote: then the
+  // record says what it holds.
+  const record = previousContent === undefined ? currentWriteRecord(path) : undefined;
 
   // Skip the write when content is unchanged to avoid a spurious inotify event
   // that would trigger OpenClaw's secrets-file watcher unnecessarily.
   if (previousContent === newContent) return false;
-  const runtimeIsStale = hasNewOrRotatedValue(previousBundle, bundle);
+  if (record?.content === mac(newContent)) return false;
+  const before = record?.values ?? macValues(parsePreviousBundle(previousContent));
+  const runtimeIsStale = hasNewOrRotatedValue(before, bundle);
 
   const dir = dirname(path);
   try {
@@ -260,6 +342,7 @@ export function writeSecretsFile(bundle: SecretsBundle): boolean {
     writeFileSync(tmp, newContent, { mode: 0o600 });
     chmodSync(tmp, 0o600); // enforce regardless of umask
     renameSync(tmp, path);
+    recordWrite(path, newContent, bundle);
     return runtimeIsStale;
   } catch (err) {
     // Replace the bare EACCES/ENOTDIR with an actionable message. This is the
