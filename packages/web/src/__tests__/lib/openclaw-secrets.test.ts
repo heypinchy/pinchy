@@ -367,7 +367,9 @@ describe("writeSecretsFile", () => {
       const tmp = `${path()}.other`;
       writeFileSync(tmp, sameLengthOther(), { mode: 0o600 });
       renameSync(tmp, path());
-      utimesSync(path(), before.atime, before.mtime);
+      // The middle of the recorded millisecond: utimes takes float seconds,
+      // and a value on the millisecond boundary can round into the next one.
+      utimesSync(path(), before.atime, (Math.trunc(before.mtimeMs) + 0.5) / 1000);
       const after = statSync(path());
       expect(after.ino, "precondition: new inode").not.toBe(before.ino);
       expect(after.size, "precondition: same size").toBe(before.size);
