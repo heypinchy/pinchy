@@ -11,8 +11,14 @@ import {
  * (`operator.admin` scope, and deliberately NOT a control-plane write — so it
  * costs none of the ~3-per-45s `config.apply` budget).
  */
-const NOT_CONNECTED = /^Not connected to OpenClaw Gateway/;
 const SECRETS_RELOAD_METHOD = "secrets.reload";
+
+/**
+ * openclaw-node's rejections that carry no answer from OpenClaw: a dropped
+ * socket, or a request that timed out on a hung gateway. Any other rejection
+ * is the gateway's own ok:false message, i.e. a refusal.
+ */
+const NO_ANSWER = /^Not connected to OpenClaw Gateway| timed out$/;
 
 /**
  * How long a reload waits for the config writes ahead of it before it is sent
@@ -192,8 +198,8 @@ function sendReload(): void {
   void (async () => {
     try {
       // openclaw-node rejects the request when OpenClaw answers ok:false,
-      // carrying the gateway's message; a dropped socket rejects with
-      // "Not connected to OpenClaw Gateway". Only the first is a refusal.
+      // carrying the gateway's message; a dropped socket or a timeout rejects
+      // without one (NO_ANSWER). Only the first is a refusal.
       await reply;
       console.log(
         `[openclaw-config] ${SECRETS_RELOAD_METHOD}: OpenClaw re-resolved its secrets from disk`
@@ -201,7 +207,7 @@ function sendReload(): void {
     } catch (err) {
       forgetSecretsWrite();
       const message = err instanceof Error ? err.message : String(err);
-      if (NOT_CONNECTED.test(message)) {
+      if (NO_ANSWER.test(message)) {
         console.warn(
           `[openclaw-config] ${SECRETS_RELOAD_METHOD} failed — restart OpenClaw to apply the new ` +
             "credentials:",

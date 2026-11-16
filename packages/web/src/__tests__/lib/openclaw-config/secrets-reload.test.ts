@@ -111,6 +111,19 @@ describe("reloadSecretsInBackground (#943)", () => {
     expect(warning).toContain("secrets.reload failed");
   });
 
+  it("calls for a restart when the reload timed out instead of calling it refused", async () => {
+    // A hung gateway or a half-open socket ends in openclaw-node's request
+    // timeout, not an answer — there is no OpenClaw log line to point at.
+    request.mockRejectedValue(new Error("Request secrets.reload timed out"));
+
+    reloadSecretsInBackground();
+    await drain();
+
+    const warning = warnSpy.mock.calls.map((c: unknown[]) => c.join(" ")).join("\n");
+    expect(warning).toMatch(/— restart OpenClaw to apply/);
+    expect(warning).not.toMatch(/refused by the gateway/);
+  });
+
   it("does not call for a restart OpenClaw's own answer cannot justify", async () => {
     // OpenClaw answers every failed reload with the same "secrets.reload
     // failed" — a reload a concurrent config change superseded included, and
