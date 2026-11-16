@@ -88,7 +88,11 @@ class FakeOpenClaw209 {
    * holds more than the payload that was sent.
    */
   normalize?: (config: Json) => Json;
-  /** How long a write that changes the config (an apply, agents.delete) takes to answer (its reload). */
+  /**
+   * How long a write that changes the config (an apply, agents.delete) takes
+   * to reload: until its answer, or — for an apply the watcher overtook, which
+   * is never answered — until appliedConfigHash is published.
+   */
   reloadMs = 0;
   /** How long an apply takes to persist openclaw.json after it arrives. */
   persistMs = 0;
@@ -206,7 +210,6 @@ class FakeOpenClaw209 {
       if (this.writes === writes) this.appliedRevision = revision;
     };
     const overtaken = this.watcherWins?.(this.applies.length) === true;
-    if (overtaken) this.runtime = next;
     if (!unchanged) {
       this.runtime = next;
       if (this.reloadMs > 0) await new Promise((r) => setTimeout(r, this.reloadMs));
@@ -500,7 +503,7 @@ describe("pushConfigInBackground: OpenClaw 2026.9's hanging config.apply", () =>
       agents: { ownership: "explicit", entries: Object.fromEntries(ids.map((id) => [id, {}])) },
     });
     const oc = new FakeOpenClaw209(config(["a"]));
-    oc.reloadMs = 1_000;
+    oc.reloadMs = 2_000;
     oc.watcherWins = (apply) => apply === 1;
     mockGetClient.mockReturnValue(oc.client);
 
@@ -508,7 +511,10 @@ describe("pushConfigInBackground: OpenClaw 2026.9's hanging config.apply", () =>
     await vi.advanceTimersByTimeAsync(500);
     expect(oc.applies).toHaveLength(1);
     pushConfigInBackground(serialize(config(["a", "b", "c"])));
-    await vi.advanceTimersByTimeAsync(2_500);
+    // The file moved at once; the runtime holds it only once the reload ends.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(oc.applies).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(2_000);
 
     expect(oc.applies).toHaveLength(2);
     expect(oc.file).toEqual(config(["a", "b", "c"]));
