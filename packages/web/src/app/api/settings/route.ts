@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse, after } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { getAllSettings } from "@/lib/settings";
 import { getOrgTimezone, setOrgTimezone, isValidIanaTimezone } from "@/lib/settings-timezone";
@@ -39,16 +39,14 @@ export async function POST(request: NextRequest) {
   // Only log when it actually changed, so a no-op save doesn't spam the audit
   // log with from===to rows.
   if (previous !== value) {
-    after(() =>
-      appendAuditLog({
-        actorType: "user",
-        actorId: sessionOrError.user.id!,
-        eventType: "settings.updated",
-        resource: "settings",
-        detail: { changes: { timezone: { from: previous, to: value } } },
-        outcome: "success",
-      })
-    );
+    await appendAuditLog({
+      actorType: "user",
+      actorId: sessionOrError.user.id!,
+      eventType: "settings.updated",
+      resource: "settings",
+      detail: { changes: { timezone: { from: previous, to: value } } },
+      outcome: "success",
+    });
   }
   return NextResponse.json({ success: true });
 }
