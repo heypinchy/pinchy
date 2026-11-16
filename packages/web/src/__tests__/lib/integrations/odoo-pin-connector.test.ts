@@ -3,6 +3,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { OdooClient, OdooError } from "odoo-node";
 import { readOdooFields, readOdooVersion } from "@/lib/integrations/odoo-calls";
+import { describeOdooError, isOdooTimeout } from "@/lib/integrations/odoo-error";
 import { withPinnedOdoo } from "@/lib/integrations/odoo-pin";
 import { toPinnedTarget } from "@/lib/pinned-connection";
 
@@ -108,5 +109,82 @@ describe("withPinnedOdoo against a real connector", () => {
       expect(err).toBeInstanceOf(OdooError);
       expect((err as OdooError).code).toBe(0);
     }
+  });
+});
+
+// An Odoo, or a proxy in front of it, that accepts the connection and never
+// answers. Without a bound each call waits for undici's own 300 s headers
+// timeout, and a schema sync retrying across every model for far longer.
+describe("withPinnedOdoo against a server that never answers", () => {
+  let silent: Server;
+  let silentOrigin: string;
+
+  beforeEach(async () => {
+    silent = createServer(() => {
+      // Read nothing, answer nothing.
+    });
+    await new Promise<void>((resolve) => silent.listen(0, "127.0.0.1", resolve));
+    silentOrigin = `http://pinned-odoo.invalid:${(silent.address() as AddressInfo).port}`;
+  });
+
+  afterEach(async () => {
+    silent.closeAllConnections();
+    await new Promise((resolve) => silent.close(resolve));
+  });
+
+  function version(pinned: typeof fetch, signal?: AbortSignal) {
+    return new OdooClient({
+      url: silentOrigin,
+      db: "odoo",
+      uid: 2,
+      apiKey: "k",
+      fetch: pinned,
+      signal,
+    }).version();
+  }
+
+  it("gives up on a request once the bound passes, and says Odoo did not answer in time", async () => {
+    const started = Date.now();
+
+    const err = await withPinnedOdoo(
+      silentOrigin,
+      toPinnedTarget(["127.0.0.1"]),
+      (pinned) => version(pinned).catch((e: unknown) => e),
+      { timeoutMs: 200 }
+    );
+
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(err).toBeInstanceOf(OdooError);
+    expect((err as OdooError).code).toBe(0);
+    expect(isOdooTimeout(err)).toBe(true);
+    expect(describeOdooError(err)).toMatch(/^Odoo did not answer within \d+ seconds\./);
+  });
+
+  it("keeps the bound when the caller passes a signal of its own", async () => {
+    // The `init.signal ?? timeout` trap: a caller's signal must not replace it.
+    const neverAborts = new AbortController().signal;
+
+    const err = await withPinnedOdoo(
+      silentOrigin,
+      toPinnedTarget(["127.0.0.1"]),
+      (pinned) => version(pinned, neverAborts).catch((e: unknown) => e),
+      { timeoutMs: 200 }
+    );
+
+    expect(isOdooTimeout(err)).toBe(true);
+  });
+
+  it("still lets the caller cancel well before the bound", async () => {
+    const caller = new AbortController();
+    const started = Date.now();
+    setTimeout(() => caller.abort(), 50);
+
+    const err = await withPinnedOdoo(silentOrigin, toPinnedTarget(["127.0.0.1"]), (pinned) =>
+      version(pinned, caller.signal).catch((e: unknown) => e)
+    );
+
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(err).toBeInstanceOf(OdooError);
+    expect(isOdooTimeout(err)).toBe(false);
   });
 });

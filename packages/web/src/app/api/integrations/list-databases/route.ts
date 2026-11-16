@@ -5,7 +5,12 @@ import { resolveExternalUrlTarget } from "@/lib/integrations/url-validation";
 import { pinnedFetch } from "@/lib/pinned-connection";
 import { parseRequestBody } from "@/lib/api-validation";
 import { listDatabasesSchema } from "@/lib/schemas/integrations";
-import { odooRedirectRefusedMessage } from "@/lib/integrations/odoo-error";
+import {
+  isOdooTimeout,
+  odooRedirectRefusedMessage,
+  odooTimeoutMessage,
+} from "@/lib/integrations/odoo-error";
+import { ODOO_REQUEST_TIMEOUT_MS } from "@/lib/integrations/odoo-timeout";
 
 export const POST = withAdmin(async (request) => {
   const parsed = await parseRequestBody(listDatabasesSchema, request);
@@ -32,6 +37,10 @@ export const POST = withAdmin(async (request) => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "call", params: {} }),
         redirect: "manual",
+        // The bound every Odoo request from the web app keeps; it covers the
+        // body read below too. Without it an Odoo that took the connection
+        // and went silent held the dialog for undici's 300 s.
+        signal: AbortSignal.timeout(ODOO_REQUEST_TIMEOUT_MS),
       },
       urlCheck.target
     );
@@ -60,7 +69,8 @@ export const POST = withAdmin(async (request) => {
     let data: { error?: unknown; result?: unknown };
     try {
       data = await response.json();
-    } catch {
+    } catch (err) {
+      if (isOdooTimeout(err)) throw err; // A body that stopped arriving, not a wrong one.
       return NextResponse.json({
         success: false,
         error: `Could not list databases: Odoo answered ${describe()}, not JSON-RPC.`,
@@ -72,7 +82,10 @@ export const POST = withAdmin(async (request) => {
     }
 
     return NextResponse.json({ success: true, databases: data.result });
-  } catch {
+  } catch (err) {
+    if (isOdooTimeout(err)) {
+      return NextResponse.json({ success: false, error: odooTimeoutMessage() });
+    }
     return NextResponse.json({ success: false, error: "Could not list databases" });
   }
 });

@@ -3,10 +3,44 @@ import { OdooError } from "odoo-node";
 import {
   describeOdooAuthenticateFailure,
   describeOdooError,
+  isOdooTimeout,
   odooRedirectRefusedMessage,
 } from "@/lib/integrations/odoo-error";
+import { ODOO_REQUEST_TIMEOUT_MS } from "@/lib/integrations/odoo-timeout";
+
+/** odoo-node's error for a request the pinned fetch's bound cut off. */
+function timedOut(): OdooError {
+  return new OdooError("The operation was aborted due to timeout", 0, undefined, {
+    cause: new DOMException("The operation was aborted due to timeout", "TimeoutError"),
+  });
+}
+
+describe("isOdooTimeout", () => {
+  it("recognises the bound cutting off a request, through odoo-node's wrapping", () => {
+    expect(isOdooTimeout(timedOut())).toBe(true);
+  });
+
+  it("does not take a caller's cancellation or another network failure for one", () => {
+    const aborted = new OdooError("This operation was aborted", 0, undefined, {
+      cause: new DOMException("This operation was aborted", "AbortError"),
+    });
+    expect(isOdooTimeout(aborted)).toBe(false);
+    expect(isOdooTimeout(new OdooError("fetch failed", 0))).toBe(false);
+    expect(isOdooTimeout(new Error("ETIMEDOUT"))).toBe(false);
+  });
+});
 
 describe("describeOdooError", () => {
+  it("says Odoo did not answer in time, naming the bound, instead of a bare abort", () => {
+    const seconds = ODOO_REQUEST_TIMEOUT_MS / 1000;
+
+    expect(describeOdooError(timedOut())).toBe(
+      `Odoo did not answer within ${seconds} seconds. ` +
+        "The server took the connection but sent no reply: check that Odoo is running and not overloaded, " +
+        "and that nothing in front of it, such as a proxy or firewall, holds the request."
+    );
+  });
+
   it("passes an Odoo error message through", () => {
     expect(describeOdooError(new Error("Access Denied"))).toBe("Access Denied");
   });

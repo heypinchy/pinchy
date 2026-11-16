@@ -390,6 +390,211 @@ describe("fetchOdooSchema", () => {
     expect(result.isAuthError).toBe(true);
   });
 
+  describe("when Odoo stops answering", () => {
+    // odoo-node's error for a request the pinned fetch's bound cut off.
+    const timedOut = () =>
+      Object.assign(new Error("The operation was aborted due to timeout"), {
+        code: 0,
+        cause: new DOMException("The operation was aborted due to timeout", "TimeoutError"),
+      });
+
+    it("neither retries a timed-out probe nor starts any more, and says Odoo did not answer in time", async () => {
+      // Each probe of a blackhole costs the whole bound. Retrying it, and
+      // walking every curated model five at a time, turned one silent server
+      // into an hour-long sync.
+      mockFields.mockRejectedValue(timedOut());
+
+      const result = await fetchOdooSchema(creds);
+
+      expect(mockFields.mock.calls.length).toBeLessThanOrEqual(5);
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect(result.isAuthError).toBe(false);
+      expect(result.error).toMatch(
+        /^Could not reach Odoo: Odoo did not answer within \d+ seconds\./
+      );
+    });
+
+    it("fails the sync rather than save the models that answered before it stopped", async () => {
+      // A partial schema would quietly drop every model that was never probed.
+      let calls = 0;
+      mockFields.mockImplementation(() => {
+        calls++;
+        return calls <= 3
+          ? Promise.resolve([{ name: "id", string: "ID", type: "integer" }])
+          : Promise.reject(timedOut());
+      });
+
+      const result = await fetchOdooSchema(creds);
+
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect(result.isAuthError).toBe(false);
+      expect(result.error).toMatch(
+        /^Odoo stopped answering partway through reading its models: Odoo did not answer within \d+ seconds\./
+      );
+    });
+
+    it("does not say Odoo stopped partway when the models it skipped were never read", async () => {
+      // A fast proxy error stops new probes; a probe still running then times out.
+      vi.useFakeTimers();
+      mockFields.mockImplementation((model: string) => {
+        if (model === "sale.order") {
+          return Promise.reject(Object.assign(new Error("HTTP 502: Bad Gateway"), { code: 502 }));
+        }
+        return new Promise((_, reject) => setTimeout(() => reject(timedOut()), 5_000));
+      });
+
+      const promise = fetchOdooSchema(creds);
+      await vi.runAllTimersAsync();
+      const result = await promise;
+
+      vi.useRealTimers();
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect(result.error).toMatch(
+        /^Could not reach Odoo: Odoo did not answer within \d+ seconds\./
+      );
+    });
+
+    it("does not read an access check that timed out as missing access", async () => {
+      mockFields.mockResolvedValue([{ name: "id", string: "ID", type: "integer" }]);
+      mockCheckAccessRights.mockRejectedValue(timedOut());
+
+      const result = await fetchOdooSchema(creds);
+
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect(result.isAuthError).toBe(false);
+      expect(result.error).toMatch(/Odoo did not answer within \d+ seconds\./);
+    });
+  });
+
+  describe("when a probe gives up without an answer from Odoo", () => {
+    const fieldsAfter = (ms: number) =>
+      new Promise((resolve) => setTimeout(() => resolve([{ name: "id", type: "integer" }]), ms));
+
+    // A proxy in front of Odoo cutting requests off with its own 502 or 504
+    // fails every model alike; a single probe that ran out of retries on one
+    // is not a model to skip.
+    it("fails the sync instead of saving the schema without that model", async () => {
+      vi.useFakeTimers();
+      mockFields.mockImplementation((model: string) =>
+        model === "sale.order"
+          ? Promise.reject(Object.assign(new Error("HTTP 504: Gateway Timeout"), { code: 504 }))
+          : fieldsAfter(10)
+      );
+
+      const promise = fetchOdooSchema(creds);
+      await vi.runAllTimersAsync();
+      const result = await promise;
+
+      vi.useRealTimers();
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect(result.isAuthError).toBe(false);
+      expect(result.error).toBe(
+        "Reading Odoo's models failed partway through, so nothing was saved: " +
+          "The Odoo address answered with an error: HTTP 504: Gateway Timeout"
+      );
+    });
+
+    it("names the connection failure, not the models Odoo says it does not have", async () => {
+      // Most installs lack a few curated apps; their errors come first in the
+      // catalog and must not stand in for the proxy error that stopped the sync.
+      vi.useFakeTimers();
+      const missing = new Set(["sale.subscription.plan", "purchase.order", "purchase.order.line"]);
+      mockFields.mockImplementation((model: string) => {
+        if (missing.has(model)) {
+          return Promise.reject(
+            Object.assign(new Error(`Object ${model} doesn't exist`), {
+              code: 200,
+              data: { name: "builtins.KeyError" },
+            })
+          );
+        }
+        if (model === "stock.picking") {
+          return Promise.reject(
+            Object.assign(new Error("HTTP 504: Gateway Timeout"), { code: 504 })
+          );
+        }
+        return fieldsAfter(10);
+      });
+
+      const promise = fetchOdooSchema(creds);
+      await vi.runAllTimersAsync();
+      const result = await promise;
+
+      vi.useRealTimers();
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect(result.error).toBe(
+        "Reading Odoo's models failed partway through, so nothing was saved: " +
+          "The Odoo address answered with an error: HTTP 504: Gateway Timeout"
+      );
+    });
+
+    it("starts no further probe once one gave up", async () => {
+      // Under a proxy that times out before our bound, each probe costs that
+      // proxy's timeout three times over: walking all models took most of an hour.
+      vi.useFakeTimers();
+      mockFields.mockImplementation((model: string) =>
+        model === "sale.order"
+          ? Promise.reject(Object.assign(new Error("HTTP 504: Gateway Timeout"), { code: 504 }))
+          : fieldsAfter(5_000)
+      );
+
+      const promise = fetchOdooSchema(creds);
+      await vi.runAllTimersAsync();
+      await promise;
+
+      vi.useRealTimers();
+      const probedModels = new Set(mockFields.mock.calls.map(([model]) => model));
+      expect(probedModels.size).toBeLessThanOrEqual(5);
+    });
+
+    it("fails the sync when an access check is cut off by a proxy error", async () => {
+      vi.useFakeTimers();
+      mockFields.mockResolvedValue([{ name: "id", string: "ID", type: "integer" }]);
+      mockCheckAccessRights.mockImplementation((model: string) =>
+        model === "sale.order"
+          ? Promise.reject(Object.assign(new Error("HTTP 502: Bad Gateway"), { code: 502 }))
+          : Promise.resolve(true)
+      );
+
+      const promise = fetchOdooSchema(creds);
+      await vi.runAllTimersAsync();
+      const result = await promise;
+
+      vi.useRealTimers();
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect(result.error).toContain("HTTP 502: Bad Gateway");
+      expect(result.isAuthError).toBe(false);
+    });
+
+    it("still skips a model Odoo itself says it does not have", async () => {
+      // A module that is not installed: Odoo answers, with its own error.
+      mockFields.mockImplementation((model: string) =>
+        model === "sale.subscription.plan"
+          ? Promise.reject(
+              Object.assign(new Error("sale.subscription.plan"), {
+                code: 200,
+                data: { name: "builtins.KeyError" },
+              })
+            )
+          : Promise.resolve([{ name: "id", string: "ID", type: "integer" }])
+      );
+
+      const result = await fetchOdooSchema(creds);
+
+      expect(result.success).toBe(true);
+      if (!result.success) return;
+      expect(result.data.models.map((m) => m.model)).not.toContain("sale.subscription.plan");
+      expect(result.data.models.map((m) => m.model)).toContain("sale.order");
+    });
+  });
+
   it("retries transient errors instead of treating them as no-access", async () => {
     let saleOrderCalls = 0;
     mockFields.mockImplementation((model: string) => {
@@ -616,19 +821,38 @@ describe("fetchOdooSchema", () => {
       });
     });
 
-    it("handles checkAccessRights failure gracefully", async () => {
+    it("reads an access check that got no answer as Odoo unreachable, not as missing access", async () => {
+      vi.useFakeTimers();
       mockFields.mockResolvedValue([
         { name: "id", string: "ID", type: "integer", required: true, readonly: true },
       ]);
-      // checkAccessRights throws for all operations
       mockCheckAccessRights.mockRejectedValue(new Error("Network error"));
+
+      const promise = fetchOdooSchema(creds);
+      await vi.runAllTimersAsync();
+      const result = await promise;
+
+      vi.useRealTimers();
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect(result.error).toBe("Could not reach Odoo: Network error");
+      expect(result.isAuthError).toBe(false);
+    });
+
+    it("reads Odoo's own error on an access check as no access", async () => {
+      mockFields.mockResolvedValue([{ name: "id", string: "ID", type: "integer" }]);
+      mockCheckAccessRights.mockRejectedValue(
+        Object.assign(new Error("Access Denied"), {
+          code: 200,
+          data: { name: "odoo.exceptions.AccessError" },
+        })
+      );
 
       const result = await fetchOdooSchema(creds);
 
-      // All models should be excluded since read check fails (treated as false)
       expect(result.success).toBe(false);
       if (result.success) return;
-      expect(result.error).toContain("Could not access any Odoo models");
+      expect(result.error).toBe(READ_ACCESS_MESSAGE);
     });
   });
 
