@@ -1684,7 +1684,7 @@ The host goes through the same check as a mailbox connection: a host on a privat
 **Errors:**
 
 - `400` — invalid body, or the connection check failed. `error` says what to fix, e.g. `"Authentication failed — check the username and password"`. Nothing is saved.
-- `400` — the update would keep the stored password but switch the same server to `security: "none"`, and the body carries no `password`. Pinchy won't send a saved password unencrypted without it being typed again, so the request is refused before any connection is made:
+- `400` — the body carries no `password` while a password is stored, and the update changes the `host` or `port`, or switches the same server to `security: "none"`. Pinchy won't send a saved password to a different address, or unencrypted, without it being typed again, so the request is refused before any connection is made:
 
   ```json
   {
@@ -1693,7 +1693,7 @@ The host goes through the same check as a mailbox connection: a host on a privat
       "formErrors": [],
       "fieldErrors": {
         "password": [
-          "Enter the password again to switch to a less secure connection — Pinchy won't reuse the saved one."
+          "Enter the password again to use a different server or port — Pinchy won't send the saved one there."
         ]
       }
     }

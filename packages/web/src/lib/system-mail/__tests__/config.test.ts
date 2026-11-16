@@ -149,14 +149,27 @@ describe("needsPasswordReentry", () => {
     expect(needsPasswordReentry({ ...keep, security: "none" }, config)).toBe(true);
   });
 
+  it("is true when only the port changes and no password is sent", () => {
+    expect(needsPasswordReentry({ ...keep, port: 465, security: "tls" }, config)).toBe(true);
+  });
+
+  it("is true when the host changes and no password is sent", () => {
+    expect(needsPasswordReentry({ ...keep, host: "smtp.other.com" }, config)).toBe(true);
+  });
+
   it("is true from 25/STARTTLS to no encryption, on port 25 or any other", () => {
     const relay = { ...config, port: 25 };
     expect(needsPasswordReentry({ ...keep, port: 25, security: "none" }, relay)).toBe(true);
     expect(needsPasswordReentry({ ...keep, port: 587, security: "none" }, relay)).toBe(true);
   });
 
-  it("is false for STARTTLS on port 25: the port does not weaken the connection, requireTLS does the work", () => {
-    expect(needsPasswordReentry({ ...keep, port: 25 }, config)).toBe(false);
+  it("is true for a move to STARTTLS on port 25 too: the port differs, so the password was not typed for it", () => {
+    expect(needsPasswordReentry({ ...keep, port: 25 }, config)).toBe(true);
+  });
+
+  it("is false for STARTTLS on port 25 when it is already the stored port", () => {
+    const relay = { ...config, port: 25 };
+    expect(needsPasswordReentry({ ...keep, port: 25 }, relay)).toBe(false);
   });
 
   it("is false when the password is typed again", () => {

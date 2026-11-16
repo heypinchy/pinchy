@@ -323,6 +323,7 @@ describe("POST /api/settings", () => {
     });
 
     await expect(POST(request)).rejects.toThrow(/audit db down/);
+    expect(setOrgTimezone).toHaveBeenCalledWith("Europe/Vienna");
     expect(after).not.toHaveBeenCalled();
   });
 

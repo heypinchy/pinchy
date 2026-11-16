@@ -1,5 +1,6 @@
 import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
 import {
+  keepsStoredPassword,
   needsPasswordReentry,
   systemMailConfigSchema,
   type SystemMailConfig,
@@ -76,11 +77,7 @@ export function mergeWithStoredPassword(
   if (!update.username) return { ...update, password: undefined };
   if (update.password) return update;
   // Host names are case-insensitive; a re-typed "SMTP.example.com" is the same server.
-  if (
-    stored &&
-    stored.host.toLowerCase() === update.host.toLowerCase() &&
-    stored.port === update.port
-  ) {
+  if (stored && keepsStoredPassword(update, stored)) {
     return { ...update, password: stored.password };
   }
   return update;

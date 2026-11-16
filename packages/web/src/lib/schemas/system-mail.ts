@@ -71,32 +71,53 @@ export function securityForPort(port: number): SystemMailSecurity {
 
 type PasswordRuleConfig = { host: string; port: number; security: SystemMailSecurity };
 
+type StoredPasswordConfig = PasswordRuleConfig & { password?: string; hasPassword?: boolean };
+type PasswordUpdate = PasswordRuleConfig & { username?: string; password?: string };
+
+function hasStoredPassword(stored: StoredPasswordConfig | null): stored is StoredPasswordConfig {
+  return Boolean(stored && (stored.hasPassword ?? Boolean(stored.password)));
+}
+
+/** Host names are case-insensitive; the port must match exactly. */
+function sameServerAndPort(a: PasswordRuleConfig, b: PasswordRuleConfig): boolean {
+  return a.host.toLowerCase() === b.host.toLowerCase() && a.port === b.port;
+}
+
 /**
- * Would keeping the stored password put it on a weaker connection of the same
- * server? The rule lives here, not in `config.ts` (which imports the
- * database), so the settings form and the route read the same one.
- *
- * Only `security: "none"` is weaker. STARTTLS sets `requireTLS` on every port,
- * port 25 included, so the login never travels in the clear there — an admin
- * moving 587/STARTTLS to 25/STARTTLS is not downgrading anything, and an admin
- * moving 25/STARTTLS to no encryption (on 25 or elsewhere) is.
- *
- * An admin who only meant to change the sender must not, by a dropdown, send
- * the saved password unencrypted without ever typing it: the downgrade asks
- * for the password again.
+ * Does an update that sends no password keep the stored one? Only while there
+ * is a username to log in with and the host and port are the ones the password
+ * was typed for. Shared by the route and the settings form so they agree.
  */
-export function needsPasswordReentry<
-  U extends PasswordRuleConfig & { username?: string; password?: string },
->(
+export function keepsStoredPassword<U extends PasswordUpdate>(
   update: U,
-  stored: (PasswordRuleConfig & { password?: string; hasPassword?: boolean }) | null
+  stored: StoredPasswordConfig | null
 ): boolean {
-  if (!stored || !(stored.hasPassword ?? Boolean(stored.password))) return false;
   return Boolean(
     update.username &&
     !update.password &&
-    stored.host.toLowerCase() === update.host.toLowerCase() &&
-    update.security === "none" &&
-    stored.security !== "none"
+    hasStoredPassword(stored) &&
+    sameServerAndPort(update, stored)
+  );
+}
+
+/**
+ * Must the admin type the password again? The saved one is never reused for a
+ * different host or port, and never on a weaker connection of the same server;
+ * sending nothing in those cases would only fail at AUTH with an empty
+ * password. The rule lives here, not in `config.ts` (which imports the
+ * database), so the settings form and the route read the same one.
+ *
+ * Only `security: "none"` is weaker. STARTTLS sets `requireTLS` on every port,
+ * port 25 included, so the login never travels in the clear there. That does
+ * not make 587/STARTTLS to 25/STARTTLS keep the password, though: the port
+ * differs, so the password is asked for again on that account alone.
+ */
+export function needsPasswordReentry<U extends PasswordUpdate>(
+  update: U,
+  stored: StoredPasswordConfig | null
+): boolean {
+  if (!update.username || update.password || !hasStoredPassword(stored)) return false;
+  return (
+    !sameServerAndPort(update, stored) || (update.security === "none" && stored.security !== "none")
   );
 }
