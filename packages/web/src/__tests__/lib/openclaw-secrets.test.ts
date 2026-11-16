@@ -7,8 +7,17 @@ import {
   secretVersion,
   versionedSecretName,
   referencedSecretIds,
+  forgetSecretsWrite,
 } from "@/lib/openclaw-secrets";
-import { readFileSync, existsSync, statSync, writeFileSync, chmodSync } from "fs";
+import {
+  readFileSync,
+  existsSync,
+  statSync,
+  writeFileSync,
+  chmodSync,
+  renameSync,
+  utimesSync,
+} from "fs";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -264,14 +273,130 @@ describe("writeSecretsFile", () => {
     });
 
     it("asks for a reload over an unreadable file that may hold an older unversioned value", () => {
-      // The safe side: unread, every unversioned value may be a rotation. An
-      // unnecessary reload costs a round trip; a missed one costs every agent
-      // a 401 (#943).
-      writeSecretsFile({ providers: { anthropic: { apiKey: "a" }, [v1]: { apiKey: "k" } } });
+      // The safe side: unread, and not written by this process, every
+      // unversioned value may be a rotation. An unnecessary reload costs a
+      // round trip; a missed one costs every agent a 401 (#943).
+      writeFileSync(
+        path(),
+        JSON.stringify({ providers: { anthropic: { apiKey: "a" }, [v1]: { apiKey: "k" } } }),
+        { mode: 0o600 }
+      );
       makeUnreadable();
       expect(
         writeSecretsFile({ providers: { anthropic: { apiKey: "a" }, [v2]: { apiKey: "k2" } } })
       ).toBe(true);
+    });
+  });
+
+  // Production: Pinchy (uid 999) cannot read secrets.json back, so it cannot
+  // tell an identical bundle from a rotation by reading. Every agent create
+  // used to rewrite the file and fire secrets.reload; six creates at once sent
+  // five reloads into OpenClaw's hot reloads, and one of them turned a plugin
+  // reload into a gateway restart (staging, 2026-11-16). Pinchy wrote the file
+  // itself, so it knows what is in it.
+  describe("over a file this process wrote but cannot read back", () => {
+    const path = () => process.env.OPENCLAW_SECRETS_PATH!;
+    const makeUnreadable = () => {
+      chmodSync(path(), 0o000);
+      expect(() => readFileSync(path(), "utf-8"), "the test needs a non-root uid").toThrow();
+    };
+
+    it("neither rewrites nor asks for a reload when the bundle is the one it wrote", () => {
+      writeSecretsFile(bundle);
+      makeUnreadable();
+      const inoBefore = statSync(path()).ino;
+
+      expect(writeSecretsFile(bundle)).toBe(false);
+      expect(statSync(path()).ino).toBe(inoBefore);
+    });
+
+    it("still asks for a reload when a key it wrote is rotated", () => {
+      writeSecretsFile({ providers: { anthropic: { apiKey: "a" }, openai: { apiKey: "o" } } });
+      makeUnreadable();
+
+      expect(
+        writeSecretsFile({ providers: { anthropic: { apiKey: "a2" }, openai: { apiKey: "o" } } })
+      ).toBe(true);
+    });
+
+    it("asks for no reload when a value it wrote is only removed", () => {
+      writeSecretsFile({ providers: { anthropic: { apiKey: "a" }, openai: { apiKey: "o" } } });
+      makeUnreadable();
+
+      expect(writeSecretsFile({ providers: { anthropic: { apiKey: "a" } } })).toBe(false);
+      chmodSync(path(), 0o600);
+      expect(JSON.parse(readFileSync(path(), "utf-8"))).toEqual({
+        providers: { anthropic: { apiKey: "a" } },
+      });
+    });
+
+    it("writes again, and asks for a reload, once the file was replaced behind its back", () => {
+      // A wiped tmpfs, or anyone else's write: what this process wrote no
+      // longer says what the file holds.
+      writeSecretsFile(bundle);
+      rmSync(path());
+      writeFileSync(path(), "{}", { mode: 0o600 });
+      makeUnreadable();
+
+      expect(writeSecretsFile(bundle)).toBe(true);
+      chmodSync(path(), 0o600);
+      expect(JSON.parse(readFileSync(path(), "utf-8"))).toEqual(bundle);
+    });
+
+    // The record keys on inode, size and mtime together; each alone has to
+    // invalidate it. Same-length content keeps the size equal.
+    const sameLengthOther = () =>
+      JSON.stringify({ providers: { anthropic: { apiKey: "sk-ant-TEST" } } }, null, 2);
+
+    it("writes again when the file was overwritten in place (same inode and size)", () => {
+      writeSecretsFile(bundle);
+      const before = statSync(path());
+      writeFileSync(path(), sameLengthOther());
+      utimesSync(path(), before.atime, new Date(before.mtimeMs + 10_000));
+      const after = statSync(path());
+      expect(after.ino, "precondition: same inode").toBe(before.ino);
+      expect(after.size, "precondition: same size").toBe(before.size);
+      makeUnreadable();
+
+      expect(writeSecretsFile(bundle)).toBe(true);
+    });
+
+    it("writes again when the file was renamed over with the old mtime (new inode only)", () => {
+      writeSecretsFile(bundle);
+      const before = statSync(path());
+      const tmp = `${path()}.other`;
+      writeFileSync(tmp, sameLengthOther(), { mode: 0o600 });
+      renameSync(tmp, path());
+      // The middle of the recorded millisecond: utimes takes float seconds,
+      // and a value on the millisecond boundary can round into the next one.
+      utimesSync(path(), before.atime, (Math.trunc(before.mtimeMs) + 0.5) / 1000);
+      const after = statSync(path());
+      expect(after.ino, "precondition: new inode").not.toBe(before.ino);
+      expect(after.size, "precondition: same size").toBe(before.size);
+      expect(Math.trunc(after.mtimeMs), "precondition: same mtime").toBe(
+        Math.trunc(before.mtimeMs)
+      );
+      makeUnreadable();
+
+      expect(writeSecretsFile(bundle)).toBe(true);
+    });
+
+    it("writes again, and asks for a reload, once the write was forgotten", () => {
+      // A reload that did not land forgets the write (secrets-reload.ts): the
+      // file is on disk, but OpenClaw may not hold it.
+      writeSecretsFile(bundle);
+      makeUnreadable();
+      forgetSecretsWrite();
+
+      expect(writeSecretsFile(bundle)).toBe(true);
+    });
+
+    it("writes again when the file is gone", () => {
+      writeSecretsFile(bundle);
+      rmSync(path());
+
+      expect(writeSecretsFile(bundle)).toBe(true);
+      expect(existsSync(path())).toBe(true);
     });
   });
 
