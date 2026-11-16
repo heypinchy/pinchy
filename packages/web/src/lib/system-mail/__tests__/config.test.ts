@@ -153,6 +153,11 @@ describe("needsPasswordReentry", () => {
     expect(needsPasswordReentry({ ...keep, port: 465, security: "tls" }, config)).toBe(true);
   });
 
+  it("is false when nothing is stored to protect, even if the host changes", () => {
+    const noPassword = { ...config, password: undefined };
+    expect(needsPasswordReentry({ ...keep, host: "smtp.other.com" }, noPassword)).toBe(false);
+  });
+
   it("is true when the host changes and no password is sent", () => {
     expect(needsPasswordReentry({ ...keep, host: "smtp.other.com" }, config)).toBe(true);
   });

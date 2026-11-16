@@ -79,7 +79,7 @@ function hasStoredPassword(stored: StoredPasswordConfig | null): stored is Store
 }
 
 /** Host names are case-insensitive; the port must match exactly. */
-function sameServerAndPort(a: PasswordRuleConfig, b: PasswordRuleConfig): boolean {
+export function sameServerAndPort(a: PasswordRuleConfig, b: PasswordRuleConfig): boolean {
   return a.host.toLowerCase() === b.host.toLowerCase() && a.port === b.port;
 }
 

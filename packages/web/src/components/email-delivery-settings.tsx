@@ -26,6 +26,7 @@ import {
   SYSTEM_MAIL_SECURITY,
   keepsStoredPassword,
   needsPasswordReentry,
+  sameServerAndPort,
   securityForPort,
   type SystemMailConfigInput,
   type SystemMailSecurity,
@@ -209,9 +210,7 @@ export function EmailDeliverySettings() {
   };
   const keepsSavedPassword = keepsStoredPassword(formUpdate, config ?? null);
   const needsRetype = needsPasswordReentry(formUpdate, config ?? null);
-  const sameServer =
-    form.host.trim().toLowerCase() === config?.host.toLowerCase() &&
-    Number(form.port) === config?.port;
+  const sameServer = config ? sameServerAndPort(formUpdate, config) : false;
   const passwordPlaceholder = !form.username.trim()
     ? "Not used without a username"
     : needsRetype && sameServer

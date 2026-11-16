@@ -76,9 +76,8 @@ export function mergeWithStoredPassword(
 ): SystemMailConfig {
   if (!update.username) return { ...update, password: undefined };
   if (update.password) return update;
-  // Host names are case-insensitive; a re-typed "SMTP.example.com" is the same server.
-  if (stored && keepsStoredPassword(update, stored)) {
-    return { ...update, password: stored.password };
+  if (keepsStoredPassword(update, stored)) {
+    return { ...update, password: stored?.password };
   }
   return update;
 }

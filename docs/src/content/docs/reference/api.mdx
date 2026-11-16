@@ -1684,7 +1684,7 @@ The host goes through the same check as a mailbox connection: a host on a privat
 **Errors:**
 
 - `400` — invalid body, or the connection check failed. `error` says what to fix, e.g. `"Authentication failed — check the username and password"`. Nothing is saved.
-- `400` — the body carries no `password` while a password is stored, and the update changes the `host` or `port`, or switches the same server to `security: "none"`. Pinchy won't send a saved password to a different address, or unencrypted, without it being typed again, so the request is refused before any connection is made:
+- `400` — the body carries a `username` but no `password` while a password is stored, and the update changes the `host` or `port`, or switches the same server to `security: "none"`. Pinchy won't send a saved password to a different address, or unencrypted, without it being typed again, so the request is refused before any connection is made:
 
   ```json
   {
@@ -1700,12 +1700,12 @@ The host goes through the same check as a mailbox connection: a host on a privat
   }
   ```
 
-  Send the `password` again and the request goes through. A change of `host` or `port` never keeps the stored password, so it has to be sent again whatever the `security` value.
+  Send the `password` again and the request goes through. A change of `host` or `port` never keeps the stored password, so it has to be sent again whatever the `security` value. A same-server downgrade to `none` returns the same error shape with the wording "Enter the password again to switch to a less secure connection — Pinchy won't reuse the saved one."
 
 - `401` — not authenticated
 - `403` — not an admin
 
-Writes `settings.updated` with resource `settings:mail` — on failure too, including the refused downgrade above. The row records the changed fields and whether the password changed, never the password; a username that isn't an email address appears only as `(set)`.
+Writes `settings.updated` with resource `settings:mail` — on failure too, including the refused saves above. The row records the changed fields and whether the password changed, never the password; a username that isn't an email address appears only as `(set)`.
 
 ### `DELETE /api/settings/mail`
 
