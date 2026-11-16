@@ -242,8 +242,8 @@ This avoids having to hunt through menus when a model goes down.
 
 When a provider stops serving a model, Pinchy removes it from the model list (most recently eight Ollama Cloud models, see [Upgrading](/guides/upgrading/#eight-ollama-cloud-models-are-gone)). An agent that still names a removed model keeps that setting:
 
-- On a built-in provider (Anthropic, OpenAI, Google, Ollama Cloud, Ollama Local) whose key is configured, the agent falls back to the provider's default model, so it keeps answering, but every message first costs a failed request to the removed model.
-- Without a fallback, for example on an OpenAI-compatible provider or after the key was removed, every message fails with an error saying the model is no longer available. If the provider answers with a server error instead, you see the model-unavailable bubble described above.
+- On a built-in provider (Anthropic, OpenAI, Google, Ollama Cloud, Ollama Local) that is still configured, the agent falls back to the provider's default model, so it keeps answering, but every message first costs a failed request to the removed model.
+- Without a fallback, for example on an OpenAI-compatible provider, every message fails with an error. If the provider's error says the model is retired or unknown, Pinchy says the model is no longer available. Otherwise you see the provider's own error with the model named, and for a server error the model-unavailable bubble described above.
 
 Either way, the agent's **Model** field marks the old model **(no longer available)**. To resolve it:
 
