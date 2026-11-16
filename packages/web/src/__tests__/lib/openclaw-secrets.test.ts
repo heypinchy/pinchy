@@ -7,8 +7,17 @@ import {
   secretVersion,
   versionedSecretName,
   referencedSecretIds,
+  forgetSecretsWrite,
 } from "@/lib/openclaw-secrets";
-import { readFileSync, existsSync, statSync, writeFileSync, chmodSync } from "fs";
+import {
+  readFileSync,
+  existsSync,
+  statSync,
+  writeFileSync,
+  chmodSync,
+  renameSync,
+  utimesSync,
+} from "fs";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -332,6 +341,52 @@ describe("writeSecretsFile", () => {
       expect(writeSecretsFile(bundle)).toBe(true);
       chmodSync(path(), 0o600);
       expect(JSON.parse(readFileSync(path(), "utf-8"))).toEqual(bundle);
+    });
+
+    // The record keys on inode, size and mtime together; each alone has to
+    // invalidate it. Same-length content keeps the size equal.
+    const sameLengthOther = () =>
+      JSON.stringify({ providers: { anthropic: { apiKey: "sk-ant-TEST" } } }, null, 2);
+
+    it("writes again when the file was overwritten in place (same inode and size)", () => {
+      writeSecretsFile(bundle);
+      const before = statSync(path());
+      writeFileSync(path(), sameLengthOther());
+      utimesSync(path(), before.atime, new Date(before.mtimeMs + 10_000));
+      const after = statSync(path());
+      expect(after.ino, "precondition: same inode").toBe(before.ino);
+      expect(after.size, "precondition: same size").toBe(before.size);
+      makeUnreadable();
+
+      expect(writeSecretsFile(bundle)).toBe(true);
+    });
+
+    it("writes again when the file was renamed over with the old mtime (new inode only)", () => {
+      writeSecretsFile(bundle);
+      const before = statSync(path());
+      const tmp = `${path()}.other`;
+      writeFileSync(tmp, sameLengthOther(), { mode: 0o600 });
+      renameSync(tmp, path());
+      utimesSync(path(), before.atime, before.mtime);
+      const after = statSync(path());
+      expect(after.ino, "precondition: new inode").not.toBe(before.ino);
+      expect(after.size, "precondition: same size").toBe(before.size);
+      expect(Math.trunc(after.mtimeMs), "precondition: same mtime").toBe(
+        Math.trunc(before.mtimeMs)
+      );
+      makeUnreadable();
+
+      expect(writeSecretsFile(bundle)).toBe(true);
+    });
+
+    it("writes again, and asks for a reload, once the write was forgotten", () => {
+      // A reload that did not land forgets the write (secrets-reload.ts): the
+      // file is on disk, but OpenClaw may not hold it.
+      writeSecretsFile(bundle);
+      makeUnreadable();
+      forgetSecretsWrite();
+
+      expect(writeSecretsFile(bundle)).toBe(true);
     });
 
     it("writes again when the file is gone", () => {

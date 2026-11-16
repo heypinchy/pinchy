@@ -223,7 +223,11 @@ function currentWriteRecord(path: string): SecretsWriteRecord | undefined {
     // A chown or chmod leaves these alone; a write, a rename over it, or a
     // wiped tmpfs does not.
     const st = statSync(path);
-    if (st.ino !== record.ino || st.size !== record.size || st.mtimeMs !== record.mtimeMs) {
+    if (
+      st.ino !== record.ino ||
+      st.size !== record.size ||
+      Math.trunc(st.mtimeMs) !== record.mtimeMs
+    ) {
       return undefined;
     }
   } catch {
@@ -240,13 +244,28 @@ function recordWrite(path: string, content: string, bundle: SecretsBundle): void
       path,
       ino: st.ino,
       size: st.size,
-      mtimeMs: st.mtimeMs,
+      // Whole milliseconds: utimes cannot set the sub-millisecond part, so a
+      // finer comparison only tells files apart that the inode already does.
+      mtimeMs: Math.trunc(st.mtimeMs),
       content: mac(content),
       values: macValues(bundle),
     };
   } catch {
     g[WRITE_RECORD] = undefined;
   }
+}
+
+/**
+ * Drop the record of the last write, so the next writeSecretsFile judges an
+ * unreadable file as unknown again: it rewrites it and asks for a reload.
+ *
+ * The record says what is on disk, not what OpenClaw holds. A reload that did
+ * not land — no client connected, refused, or failed — calls this, so the
+ * next regenerate with the same bundle asks again instead of treating the
+ * file as delivered (secrets-reload.ts).
+ */
+export function forgetSecretsWrite(): void {
+  (globalThis as WriteRecordGlobal)[WRITE_RECORD] = undefined;
 }
 
 /**

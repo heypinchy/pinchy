@@ -1,4 +1,5 @@
 import { getOpenClawClient } from "@/server/openclaw-client";
+import { forgetSecretsWrite } from "@/lib/openclaw-secrets";
 import {
   configWriteInFlight,
   getPendingConfigPushCount,
@@ -52,26 +53,13 @@ function delay(ms: number): { promise: Promise<void>; cancel: () => void } {
 }
 
 /**
- * Wait until no config write is in flight and no push is about to send one,
- * or until RELOAD_MAX_WAIT_MS has passed. Returns false on the cap.
- *
- * A pending push counts because it reads config.get between its own wait and
- * its config.apply; a reload sent into that gap would run alongside the apply.
+ * No config write in flight and no push between its wait and its write. A
+ * pending push counts because it reads config.get after its own wait and
+ * before its config.apply; a reload sent into that gap would run alongside
+ * the apply.
  */
-async function waitForQuietConfigWrites(): Promise<boolean> {
-  const deadline = Date.now() + RELOAD_MAX_WAIT_MS;
-  for (;;) {
-    const write = configWriteInFlight();
-    if (!write && getPendingConfigPushCount() === 0) return true;
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) return false;
-    const timer = delay(write ? remaining : Math.min(PENDING_PUSH_POLL_MS, remaining));
-    try {
-      await (write ? Promise.race([write, timer.promise]) : timer.promise);
-    } finally {
-      timer.cancel();
-    }
-  }
+function configWritesQuiet(): boolean {
+  return !configWriteInFlight() && getPendingConfigPushCount() === 0;
 }
 
 /**
@@ -100,9 +88,12 @@ async function waitForQuietConfigWrites(): Promise<boolean> {
  * config commit: runtime secrets changed while config hot reload was deferred;
  * restarting gateway" (server-reload-managed, scheduleRecoveryRestart;
  * staging, 2026-11-16: three reloads beside the apply for six new agents). So
- * a reload waits for the config write in flight and for any push about to
- * send one, then claims the slot itself (trackConfigWrite), and the next push
- * waits for it. Requests made while one reload waits ride on it — it reads the
+ * a reload waits for the config write in flight and for any push that has
+ * started but not yet sent its write, then claims the slot itself
+ * (trackConfigWrite) in the same synchronous turn it found the writes quiet —
+ * a regenerate asks for the reload and starts its push in one turn, and the
+ * push checks for a write in flight in that turn too. The next push waits for
+ * the reload. Requests made while one reload waits ride on it — it reads the
  * file as it is when it is sent; a request made while one is in flight
  * queues one more, because that reload may have read the file before the
  * write that asked for this one.
@@ -110,59 +101,101 @@ async function waitForQuietConfigWrites(): Promise<boolean> {
  * Fire-and-forget, like `pushConfigInBackground`: interactive save flows
  * must not block on an OpenClaw round trip. A failure here is loud but benign —
  * the new value is already on disk, so any later OpenClaw start reads it.
- * There is deliberately no retry: the only realistic reason the WS is down
+ * There is no retry on a timer: the only realistic reason the WS is down
  * inside the compose network is that OpenClaw is restarting, and a restarting
- * OpenClaw resolves the fresh file on its way up.
+ * OpenClaw resolves the fresh file on its way up. A reload that did not land
+ * forgets the write record (forgetSecretsWrite), so the next regenerate asks
+ * again instead of judging the file as already delivered.
  */
 export function reloadSecretsInBackground(): void {
   const q = queue();
   if (q.waiting) return;
+  if (configWritesQuiet()) {
+    sendReload();
+    return;
+  }
   q.waiting = true;
   void (async () => {
-    let quiet: boolean;
+    const deadline = Date.now() + RELOAD_MAX_WAIT_MS;
     try {
-      quiet = await waitForQuietConfigWrites();
+      for (;;) {
+        const write = configWriteInFlight();
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+          console.warn(
+            write
+              ? `[openclaw-config] ${SECRETS_RELOAD_METHOD}: a config write is still unanswered ` +
+                  `after ${String(RELOAD_MAX_WAIT_MS)}ms; sending the reload beside it`
+              : `[openclaw-config] ${SECRETS_RELOAD_METHOD}: a config push has not sent its ` +
+                  `write after ${String(RELOAD_MAX_WAIT_MS)}ms; sending the reload anyway`
+          );
+          break;
+        }
+        const timer = delay(write ? remaining : Math.min(PENDING_PUSH_POLL_MS, remaining));
+        try {
+          await (write ? Promise.race([write, timer.promise]) : timer.promise);
+        } finally {
+          timer.cancel();
+        }
+        if (configWritesQuiet()) break;
+      }
     } finally {
       q.waiting = false;
     }
-    if (!quiet) {
-      console.warn(
-        `[openclaw-config] ${SECRETS_RELOAD_METHOD}: a config write is still unanswered after ` +
-          `${String(RELOAD_MAX_WAIT_MS)}ms; sending the reload anyway`
-      );
-    }
-    let client;
-    try {
-      client = getOpenClawClient();
-    } catch {
-      client = undefined;
-    }
-    if (!client) {
-      // Deliberately worded for BOTH cases this branch really sees. The common
-      // one is a cold start: `/openclaw-secrets` is a tmpfs, so every container
-      // restart writes the bundle afresh while the WS is still coming up — and
-      // there "agents are stuck on the old key" would simply be untrue. The
-      // other is a rotation while OpenClaw is down, where the wait is real.
-      console.warn(
-        "[openclaw-config] secrets changed but no WS client is connected. The values are on " +
-          "disk and OpenClaw resolves them when it starts; a gateway that is already running " +
-          "keeps the credentials it resolved at ITS start until then."
-      );
-      return;
-    }
-    // Deliberately NOT gated on `client.hasMethod`: the advertised-method list
-    // is empty until the hello-ok handshake lands, so "this gateway is too old"
-    // and "we just reconnected" look identical through it (see
-    // createAgentReadinessGate for the same trap). Unobservable is not "no" —
-    // and a gateway that really lacks the method answers with an error we
-    // report exactly like any other refusal, so the check would buy nothing
-    // and could silently skip a rotation on a gateway that supports it.
+    // No await between the last check and the claim in sendReload.
+    sendReload();
+  })();
+}
+
+/**
+ * Send the reload and, unless a write is still in flight (the wait was capped),
+ * claim the write slot with it — synchronously, so a push started later in
+ * this turn waits for it. Over a live write the reload goes out untracked:
+ * taking the slot would hide that write from every later push.
+ */
+function sendReload(): void {
+  let client;
+  try {
+    client = getOpenClawClient();
+  } catch {
+    client = undefined;
+  }
+  if (!client) {
+    // Deliberately worded for BOTH cases this branch really sees. The common
+    // one is a cold start: `/openclaw-secrets` is a tmpfs, so every container
+    // restart writes the bundle afresh while the WS is still coming up — and
+    // there "agents are stuck on the old key" would simply be untrue. The
+    // other is a rotation while OpenClaw is down, where the wait is real.
+    console.warn(
+      "[openclaw-config] secrets changed but no WS client is connected. The values are on " +
+        "disk and OpenClaw resolves them when it starts; a gateway that is already running " +
+        "keeps the credentials it resolved at ITS start until then."
+    );
+    forgetSecretsWrite();
+    return;
+  }
+  // Deliberately NOT gated on `client.hasMethod`: the advertised-method list
+  // is empty until the hello-ok handshake lands, so "this gateway is too old"
+  // and "we just reconnected" look identical through it (see
+  // createAgentReadinessGate for the same trap). Unobservable is not "no" —
+  // and a gateway that really lacks the method answers with an error we
+  // report exactly like any other refusal, so the check would buy nothing
+  // and could silently skip a rotation on a gateway that supports it.
+  let request: ReturnType<typeof client.request>;
+  try {
+    request = client.request(SECRETS_RELOAD_METHOD);
+  } catch (err) {
+    request = Promise.reject(err);
+  }
+  const reply = configWriteInFlight() ? request : trackConfigWrite(request);
+  void (async () => {
     try {
       // openclaw-node RESOLVES on an error response rather than rejecting, so
       // the `ok` flag has to be read: awaiting alone would report a refused
       // reload as a successful one, which is the class of lie #943 is about.
-      const response = await trackConfigWrite(client.request(SECRETS_RELOAD_METHOD));
+      const response = await reply;
       if (!response.ok) {
+        forgetSecretsWrite();
         // OpenClaw answers every failed reload alike ("secrets.reload failed"),
         // one a concurrent config change superseded included — and that
         // change's own reload resolves the new credentials. Only its log says
@@ -179,6 +212,7 @@ export function reloadSecretsInBackground(): void {
         `[openclaw-config] ${SECRETS_RELOAD_METHOD}: OpenClaw re-resolved its secrets from disk`
       );
     } catch (err) {
+      forgetSecretsWrite();
       console.warn(
         `[openclaw-config] ${SECRETS_RELOAD_METHOD} failed — restart OpenClaw to apply the new ` +
           "credentials:",
