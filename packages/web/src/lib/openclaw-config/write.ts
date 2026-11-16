@@ -38,6 +38,7 @@ import {
   trackConfigWrite,
   nextGenerationClaimed,
   configWriteInFlight,
+  configWriteBaseHash,
 } from "./push-state";
 
 /** Atomic write: tmp file + rename to prevent OpenClaw reading a truncated config */
@@ -381,6 +382,54 @@ const MAX_ROSTER_REMOVAL_ROUNDS = 3;
 const CONFIG_WRITE_MAX_WAIT_MS = 15_000;
 
 /**
+ * How often a push waiting behind an unanswered config.apply asks config.get
+ * whether OpenClaw's runtime already holds it (whenRuntimeHoldsWriteAfter).
+ */
+const APPLIED_POLL_MS = 500;
+
+/**
+ * Resolves once openclaw.json has moved past `baseHash` — the config.get hash
+ * the write in flight was sent against — and OpenClaw's runtime has applied
+ * the file as it stands. 2026.9 publishes config.get's appliedConfigHash only
+ * after a reload has finished, the prepared model runtime included, so a write
+ * sent then supersedes nothing: the gateway restart trackConfigWrite guards
+ * against cannot happen. The apply's answer often comes only with that next
+ * write (UNANSWERED_APPLY_ERROR_FRAGMENTS), so waiting for it held every push
+ * for CONFIG_WRITE_MAX_WAIT_MS.
+ *
+ * A runtime that holds a restart debt leaves appliedConfigHash behind the
+ * file, and so does an OpenClaw without the field: the wait's cap still bounds
+ * both. A failing config.get only means asking again.
+ */
+async function whenRuntimeHoldsWriteAfter(
+  client: { config: { get: () => Promise<unknown> } },
+  baseHash: string,
+  stopped: () => boolean
+): Promise<void> {
+  while (!stopped()) {
+    await new Promise((resolve) => setTimeout(resolve, APPLIED_POLL_MS));
+    if (stopped()) return;
+    try {
+      const snapshot = (await client.config.get()) as {
+        hash?: unknown;
+        configRevisionHash?: unknown;
+        appliedConfigHash?: unknown;
+      };
+      if (
+        typeof snapshot.hash === "string" &&
+        snapshot.hash !== baseHash &&
+        typeof snapshot.configRevisionHash === "string" &&
+        snapshot.appliedConfigHash === snapshot.configRevisionHash
+      ) {
+        return;
+      }
+    } catch {
+      // Asked again on the next tick; the cap bounds the wait regardless.
+    }
+  }
+}
+
+/**
  * How OpenClaw 2026.9's agents.delete words its refusal of the agent the
  * others inherit auth profiles from (agents.defaults.authInheritance).
  */
@@ -546,29 +595,47 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
     // The roster bridge persisted without an answer: the next round goes
     // straight to agents.delete (see the catch below).
     let bridgeUnanswered = false;
-    // A write this push stopped waiting for (CONFIG_WRITE_MAX_WAIT_MS).
-    let outwaited: Promise<void> | undefined;
-    const waitForOtherConfigWrite = async () => {
+    // A write this push stopped waiting for: OpenClaw's runtime holds it
+    // already (whenRuntimeHoldsWriteAfter), or it outlasted
+    // CONFIG_WRITE_MAX_WAIT_MS.
+    let passed: Promise<void> | undefined;
+    const waitForOtherConfigWrite = async (oc: { config: { get: () => Promise<unknown> } }) => {
       for (
         let write = configWriteInFlight();
-        write !== undefined && write !== outwaited;
+        write !== undefined && write !== passed;
         write = configWriteInFlight()
       ) {
         // A newer push supersedes this one: stop waiting now, not when the
         // write is answered. The caller's generation check returns.
         if (generation !== getCurrentConfigPushGeneration()) return;
+        const baseHash = configWriteBaseHash();
         let timer: ReturnType<typeof setTimeout> | undefined;
+        let decided = false;
         const outcome = await Promise.race([
           write.then(() => "answered" as const),
           nextGenerationClaimed().then(() => "superseded" as const),
           new Promise<"timedOut">((resolve) => {
             timer = setTimeout(() => resolve("timedOut"), CONFIG_WRITE_MAX_WAIT_MS);
           }),
+          ...(baseHash === undefined
+            ? []
+            : [
+                whenRuntimeHoldsWriteAfter(oc, baseHash, () => decided).then(
+                  () => "applied" as const
+                ),
+              ]),
         ]);
+        decided = true;
         clearTimeout(timer);
         if (outcome === "superseded") return;
+        if (outcome === "applied") {
+          passed = write;
+          console.log(
+            `[openclaw-config] push gen=${String(generation)}: OpenClaw's runtime holds the config another push sent, though that write is still unanswered; sending`
+          );
+        }
         if (outcome === "timedOut") {
-          outwaited = write;
+          passed = write;
           console.warn(
             `[openclaw-config] push gen=${String(generation)}: another push's config write is still unanswered after ${String(CONFIG_WRITE_MAX_WAIT_MS)}ms; sending anyway`
           );
@@ -825,7 +892,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
       // (trackConfigWrite). Waiting here, before config.get, also coalesces a
       // burst: every push that queued behind the write finds itself superseded
       // below, and only the newest one sends.
-      await waitForOtherConfigWrite();
+      await waitForOtherConfigWrite(client);
       // Check before each attempt — a newer pushConfigInBackground call
       // may have started while we were sleeping.
       if (generation !== getCurrentConfigPushGeneration()) {
@@ -1050,7 +1117,8 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
               await trackConfigWrite(
                 client.config.apply(bridge, current.hash, {
                   note: `pinchy: keep ${ids.join(", ")} until agents.delete removes it`,
-                })
+                }),
+                current.hash
               );
               if (isShrinkStep && shrink) {
                 shrinkSteps++;
@@ -1098,7 +1166,8 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
         await trackConfigWrite(
           client.config.apply(payload, current.hash, {
             note: "pinchy: regenerateOpenClawConfig",
-          })
+          }),
+          current.hash
         );
         // OpenClaw is running and promotes its own write to last-known-good.
         clearLastGoodBound();
