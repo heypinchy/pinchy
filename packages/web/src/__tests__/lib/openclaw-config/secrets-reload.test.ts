@@ -6,7 +6,17 @@ vi.mock("@/server/openclaw-client", () => ({
   getOpenClawClient: () => mockGetClient(),
 }));
 
-import { reloadSecretsInBackground } from "@/lib/openclaw-config/secrets-reload";
+import {
+  _resetSecretsReloadQueue,
+  reloadSecretsInBackground,
+} from "@/lib/openclaw-config/secrets-reload";
+import {
+  _resetConfigPushState,
+  configWriteInFlight,
+  trackConfigPushSettled,
+  trackConfigPushStarted,
+  trackConfigWrite,
+} from "@/lib/openclaw-config/push-state";
 
 /** The push is fire-and-forget; let its microtasks run. */
 async function drain(): Promise<void> {
@@ -21,6 +31,8 @@ describe("reloadSecretsInBackground (#943)", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    _resetConfigPushState();
+    _resetSecretsReloadQueue();
     request = vi.fn().mockResolvedValue({ type: "res", id: "1", ok: true, payload: {} });
     hasMethod = vi.fn().mockReturnValue(true);
     mockGetClient.mockReturnValue({ request, hasMethod });
@@ -114,5 +126,112 @@ describe("reloadSecretsInBackground (#943)", () => {
     const warning = warnSpy.mock.calls.map((c: unknown[]) => c.join(" ")).join("\n");
     expect(warning).not.toMatch(/— restart OpenClaw to apply/);
     expect(warning).toMatch(/OpenClaw's log/);
+  });
+
+  // OpenClaw 2026.9 restarts the gateway when the secrets snapshot changes
+  // under a hot reload that replaces plugin services
+  // (GatewayHotReloadStaleSecretsError → "hot reload recovery: plugin service
+  // replacement teardown"; staging, 2026-11-16: three reloads alongside an
+  // apply for six new agents). So a reload is a config write like any other:
+  // one at a time, after the one in flight.
+  describe("one config write at a time", () => {
+    function deferred() {
+      let resolve!: (v: unknown) => void;
+      const promise = new Promise((r) => (resolve = r));
+      return { promise, resolve };
+    }
+
+    it("waits for a config write in flight before reloading", async () => {
+      const apply = deferred();
+      void trackConfigWrite(apply.promise);
+
+      reloadSecretsInBackground();
+      await drain();
+      expect(request).not.toHaveBeenCalled();
+
+      apply.resolve({ ok: true });
+      await drain();
+      expect(request).toHaveBeenCalledWith("secrets.reload");
+    });
+
+    it("waits until no push is about to send its own write", async () => {
+      // A push reads config.get between its wait and its apply; a reload
+      // slipping into that gap would run alongside the apply.
+      vi.useFakeTimers();
+      try {
+        trackConfigPushStarted(1);
+        reloadSecretsInBackground();
+        await vi.advanceTimersByTimeAsync(2_000);
+        expect(request).not.toHaveBeenCalled();
+
+        trackConfigPushSettled(1);
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(request).toHaveBeenCalledWith("secrets.reload");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("is the write a push waits for while it is in flight", async () => {
+      const reload = deferred();
+      request.mockReturnValue(reload.promise);
+
+      reloadSecretsInBackground();
+      await drain();
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(configWriteInFlight()).toBeDefined();
+
+      reload.resolve({ type: "res", id: "1", ok: true, payload: {} });
+      await drain();
+      expect(configWriteInFlight()).toBeUndefined();
+    });
+
+    it("sends one reload for every request that queued behind the same write", async () => {
+      const apply = deferred();
+      void trackConfigWrite(apply.promise);
+
+      reloadSecretsInBackground();
+      reloadSecretsInBackground();
+      reloadSecretsInBackground();
+      apply.resolve({ ok: true });
+      await drain();
+      await drain();
+
+      expect(request).toHaveBeenCalledTimes(1);
+    });
+
+    it("sends another reload for a request made while one is in flight", async () => {
+      // The reload in flight may have read secrets.json before the write that
+      // asked for this one.
+      const first = deferred();
+      request.mockReturnValueOnce(first.promise);
+
+      reloadSecretsInBackground();
+      await drain();
+      reloadSecretsInBackground();
+      await drain();
+      expect(request).toHaveBeenCalledTimes(1);
+
+      first.resolve({ type: "res", id: "1", ok: true, payload: {} });
+      await drain();
+      await drain();
+      expect(request).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not wait out a write OpenClaw never answers", async () => {
+      vi.useFakeTimers();
+      try {
+        void trackConfigWrite(new Promise(() => {}));
+
+        reloadSecretsInBackground();
+        await vi.advanceTimersByTimeAsync(14_000);
+        expect(request).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(2_000);
+        expect(request).toHaveBeenCalledWith("secrets.reload");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });

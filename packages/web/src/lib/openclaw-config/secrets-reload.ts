@@ -1,4 +1,9 @@
 import { getOpenClawClient } from "@/server/openclaw-client";
+import {
+  configWriteInFlight,
+  getPendingConfigPushCount,
+  trackConfigWrite,
+} from "@/lib/openclaw-config/push-state";
 
 /**
  * OpenClaw's purpose-built "re-resolve the secrets you already hold" RPC
@@ -6,6 +11,68 @@ import { getOpenClawClient } from "@/server/openclaw-client";
  * costs none of the ~3-per-45s `config.apply` budget).
  */
 const SECRETS_RELOAD_METHOD = "secrets.reload";
+
+/**
+ * How long a reload waits for the config writes ahead of it before it is sent
+ * anyway — the same bound a push gives the write in flight (write.ts,
+ * CONFIG_WRITE_MAX_WAIT_MS), so a gateway that never answers cannot strand a
+ * key rotation.
+ */
+const RELOAD_MAX_WAIT_MS = 15_000;
+
+/** How often a reload looks again while a push is between its wait and its write. */
+const PENDING_PUSH_POLL_MS = 250;
+
+interface ReloadQueueState {
+  /** A reload is waiting for its turn; later requests ride on it. */
+  waiting: boolean;
+}
+
+// On globalThis for the same reason as push-state: route bundles and the
+// custom server each load their own copy of this module, and the queue has to
+// be one per process.
+const QUEUE_KEY = Symbol.for("pinchy.openclawConfig.secretsReloadQueue");
+
+function queue(): ReloadQueueState {
+  const g = globalThis as unknown as Record<symbol, ReloadQueueState | undefined>;
+  return (g[QUEUE_KEY] ??= { waiting: false });
+}
+
+/** Test-only: forget a reload left waiting by a previous test. */
+export function _resetSecretsReloadQueue(): void {
+  queue().waiting = false;
+}
+
+function delay(ms: number): { promise: Promise<void>; cancel: () => void } {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const promise = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, ms);
+  });
+  return { promise, cancel: () => clearTimeout(timer) };
+}
+
+/**
+ * Wait until no config write is in flight and no push is about to send one,
+ * or until RELOAD_MAX_WAIT_MS has passed. Returns false on the cap.
+ *
+ * A pending push counts because it reads config.get between its own wait and
+ * its config.apply; a reload sent into that gap would run alongside the apply.
+ */
+async function waitForQuietConfigWrites(): Promise<boolean> {
+  const deadline = Date.now() + RELOAD_MAX_WAIT_MS;
+  for (;;) {
+    const write = configWriteInFlight();
+    if (!write && getPendingConfigPushCount() === 0) return true;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    const timer = delay(write ? remaining : Math.min(PENDING_PUSH_POLL_MS, remaining));
+    try {
+      await (write ? Promise.race([write, timer.promise]) : timer.promise);
+    } finally {
+      timer.cancel();
+    }
+  }
+}
 
 /**
  * Tells the running OpenClaw to drop the secret values it resolved at process
@@ -26,6 +93,20 @@ const SECRETS_RELOAD_METHOD = "secrets.reload";
  * rolls back on failure. Forcing the apply would also spend a rate-limit slot
  * the no-op guard exists to protect.
  *
+ * One config write at a time: OpenClaw 2026.9 restarts the gateway when the
+ * secrets snapshot changes under a hot reload that is replacing plugin
+ * services — the reload fails as stale, and the teardown of the half-replaced
+ * services is booked as "plugin service replacement teardown failed before
+ * config commit: runtime secrets changed while config hot reload was deferred;
+ * restarting gateway" (server-reload-managed, scheduleRecoveryRestart;
+ * staging, 2026-11-16: three reloads beside the apply for six new agents). So
+ * a reload waits for the config write in flight and for any push about to
+ * send one, then claims the slot itself (trackConfigWrite), and the next push
+ * waits for it. Requests made while one reload waits ride on it — it reads the
+ * file as it is when it is sent; a request made while one is in flight
+ * queues one more, because that reload may have read the file before the
+ * write that asked for this one.
+ *
  * Fire-and-forget, like `pushConfigInBackground`: interactive save flows
  * must not block on an OpenClaw round trip. A failure here is loud but benign —
  * the new value is already on disk, so any later OpenClaw start reads it.
@@ -34,7 +115,22 @@ const SECRETS_RELOAD_METHOD = "secrets.reload";
  * OpenClaw resolves the fresh file on its way up.
  */
 export function reloadSecretsInBackground(): void {
+  const q = queue();
+  if (q.waiting) return;
+  q.waiting = true;
   void (async () => {
+    let quiet: boolean;
+    try {
+      quiet = await waitForQuietConfigWrites();
+    } finally {
+      q.waiting = false;
+    }
+    if (!quiet) {
+      console.warn(
+        `[openclaw-config] ${SECRETS_RELOAD_METHOD}: a config write is still unanswered after ` +
+          `${String(RELOAD_MAX_WAIT_MS)}ms; sending the reload anyway`
+      );
+    }
     let client;
     try {
       client = getOpenClawClient();
@@ -65,7 +161,7 @@ export function reloadSecretsInBackground(): void {
       // openclaw-node RESOLVES on an error response rather than rejecting, so
       // the `ok` flag has to be read: awaiting alone would report a refused
       // reload as a successful one, which is the class of lie #943 is about.
-      const response = await client.request(SECRETS_RELOAD_METHOD);
+      const response = await trackConfigWrite(client.request(SECRETS_RELOAD_METHOD));
       if (!response.ok) {
         // OpenClaw answers every failed reload alike ("secrets.reload failed"),
         // one a concurrent config change superseded included — and that
