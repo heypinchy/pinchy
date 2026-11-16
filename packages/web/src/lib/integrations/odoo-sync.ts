@@ -1,7 +1,11 @@
 import { OdooClient } from "odoo-node";
 import type { PinnedOdooFetch } from "./odoo-pin";
 import { runWithConcurrency } from "@/lib/concurrency";
-import { describeOdooError } from "@/lib/integrations/odoo-error";
+import {
+  describeOdooError,
+  isOdooTimeout,
+  odooTimeoutMessage,
+} from "@/lib/integrations/odoo-error";
 import { readOdooFields } from "@/lib/integrations/odoo-calls";
 
 export { MODEL_CATEGORIES, type ModelCategory } from "./odoo-model-catalog";
@@ -137,7 +141,17 @@ function isTransientOdooProbeError(error: unknown): boolean {
  * another reason, and the error says which: "Could not reach Odoo: …" when
  * none got an answer, the shared error when all failed alike (a refused
  * redirect, a proxy error), otherwise the first few distinct failures.
- * Retries transient errors (timeouts, rate limits, 5xx) up to MAX_RETRIES times.
+ * Retries transient errors (network resets, rate limits, 5xx) up to MAX_RETRIES times.
+ * A request the pinned fetch's bound cut off is not retried, and no further
+ * probe starts: Odoo took the connection and went silent, and each probe of
+ * it would cost the whole bound again. Such a sync fails, even when some
+ * models answered first — a partial schema would drop the rest.
+ * The same holds for a probe that gives up without an answer from Odoo
+ * itself: no answer at all, or an HTTP-level one (a proxy's 502 or 504, a
+ * page that is not JSON-RPC). Every model goes through the same endpoint, so
+ * that is the connection failing, not a model to skip; probes already
+ * running finish, none starts after it, and the sync fails. Only Odoo's own
+ * error about one model (it is not installed, say) skips that model.
  * Limits concurrency to MAX_CONCURRENCY to avoid overwhelming the server.
  * Does NOT save anything — returns the data for the caller to handle.
  */
@@ -176,12 +190,26 @@ export async function fetchOdooSchema(credentials: {
      * Why the probe failed, when it failed for a reason other than access.
      * `unreachable`: it ran out of retries without any answer from Odoo.
      */
-    failure?: { text: string; unreachable: boolean };
+    failure?: { text: string; unreachable: boolean; connection?: boolean };
+    /** Never probed: an earlier probe gave up on the connection. */
+    skipped?: boolean;
   };
+
+  /** Set once any request timed out; probes not yet started are skipped. */
+  let stoppedAnswering = false;
+  /** Set once a probe gave up without an answer from Odoo itself. */
+  let gaveUp = false;
 
   const tasks = ALL_KNOWN_MODELS.map(({ model, name, category }) => {
     return async (): Promise<ProbeResult> => {
       for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        if (stoppedAnswering) {
+          const failure = { text: odooTimeoutMessage(), unreachable: true };
+          return { model, name, category, fields: [], accessible: false, failure };
+        }
+        if (attempt === 0 && gaveUp) {
+          return { model, name, category, fields: [], accessible: false, skipped: true };
+        }
         try {
           const fields = await readOdooFields(client, model);
 
@@ -191,8 +219,12 @@ export async function fetchOdooSchema(credentials: {
           ): Promise<boolean> => {
             try {
               return await client.checkAccessRights(model, op);
-            } catch {
-              return false;
+            } catch (error) {
+              // Only Odoo's own error says something about access; anything
+              // else (no answer, a proxy's status, a reset) is the request
+              // failing, and goes the way of a failed fields_get.
+              if ((error as { data?: unknown } | null)?.data !== undefined) return false;
+              throw error;
             }
           };
 
@@ -212,6 +244,11 @@ export async function fetchOdooSchema(credentials: {
 
           return { model, name, category, fields, accessible: true, access };
         } catch (error) {
+          if (isOdooTimeout(error)) {
+            stoppedAnswering = true;
+            const failure = { text: describeOdooError(error), unreachable: true };
+            return { model, name, category, fields: [], accessible: false, failure };
+          }
           if (isAccessError(error)) {
             // Permanent access denial — flag it so the caller can distinguish
             // auth-related failures (which should mark the integration as
@@ -223,6 +260,8 @@ export async function fetchOdooSchema(credentials: {
             // Non-transient, or out of retries — no point in trying again.
             const described = describeOdooError(error);
             const unreachable = isNoAnswerError(error) || (transient && !odooAnswered(error));
+            const connection = unreachable || isHttpLevelError(error);
+            if (connection) gaveUp = true;
             // A bare status line may come from a proxy in front of Odoo as
             // much as from Odoo, retried or not; a described message that
             // already says what came back ("Odoo answered with …") needs no
@@ -240,7 +279,7 @@ export async function fetchOdooSchema(credentials: {
               category,
               fields: [],
               accessible: false,
-              failure: { text, unreachable },
+              failure: { text, unreachable, connection },
             };
           }
           await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
@@ -252,7 +291,54 @@ export async function fetchOdooSchema(credentials: {
 
   const results = await runWithConcurrency(tasks, MAX_CONCURRENCY);
 
-  const accessibleModels = results.filter((r) => r.accessible && r.fields.length > 0);
+  if (stoppedAnswering) {
+    // A model Odoo itself answered for; a skipped probe never asked, and a
+    // proxy's status line is not Odoo answering.
+    const answeredFirst = results.some(
+      (r) => !r.skipped && !r.failure?.unreachable && !r.failure?.connection
+    );
+    return {
+      success: false,
+      error: answeredFirst
+        ? `Odoo stopped answering partway through reading its models: ${odooTimeoutMessage()}`
+        : `Could not reach Odoo: ${odooTimeoutMessage()}`,
+      isAuthError: false,
+    };
+  }
+
+  const probed = results.filter((r) => !r.skipped);
+  const accessibleModels = probed.filter((r) => r.accessible && r.fields.length > 0);
+
+  /** The first few distinct failure texts, and whether none got an answer. */
+  const summarize = (failures: Array<{ text: string; unreachable: boolean }>) => {
+    const distinct = [...new Set(failures.map((f) => f.text))];
+    const texts =
+      distinct.slice(0, MAX_NAMED_FAILURES).join("; ") +
+      (distinct.length > MAX_NAMED_FAILURES ? "; …" : "");
+    // Every probe failing to reach Odoo, or failing the same way (a refused
+    // redirect, a proxy error), is one failure of the connection.
+    const error = failures.every((f) => f.unreachable)
+      ? `Could not reach Odoo: ${texts}`
+      : distinct.length === 1
+        ? texts
+        : `Could not read any Odoo model: ${texts}`;
+    return { texts, error };
+  };
+
+  if (gaveUp) {
+    // Only what stopped the sync: Odoo's own error about a model it doesn't
+    // have would otherwise push the proxy or network error out of view.
+    const failures = probed.flatMap((r) => (r.failure?.connection ? [r.failure] : []));
+    const { texts, error } = summarize(failures);
+    return {
+      success: false,
+      error:
+        accessibleModels.length > 0
+          ? `Reading Odoo's models failed partway through, so nothing was saved: ${texts}`
+          : error,
+      isAuthError: false,
+    };
+  }
 
   if (accessibleModels.length === 0) {
     const anyAccessError = results.some((r) => r.hadAccessError);
@@ -260,18 +346,11 @@ export async function fetchOdooSchema(credentials: {
     // Only claim missing read access when a probe actually reported an access
     // problem: Odoo denied it, or granted no read right.
     if (!anyAccessError && failures.every((f) => f !== undefined)) {
-      const distinct = [...new Set(failures.map((f) => f!.text))];
-      const texts =
-        distinct.slice(0, MAX_NAMED_FAILURES).join("; ") +
-        (distinct.length > MAX_NAMED_FAILURES ? "; …" : "");
-      // Every probe failing to reach Odoo, or failing the same way (a refused
-      // redirect, a proxy error), is one failure of the connection.
-      const error = failures.every((f) => f!.unreachable)
-        ? `Could not reach Odoo: ${texts}`
-        : distinct.length === 1
-          ? texts
-          : `Could not read any Odoo model: ${texts}`;
-      return { success: false, error, isAuthError: false };
+      return {
+        success: false,
+        error: summarize(failures.map((f) => f!)).error,
+        isAuthError: false,
+      };
     }
     return {
       success: false,

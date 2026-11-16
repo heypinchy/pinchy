@@ -1,3 +1,5 @@
+import { ODOO_REQUEST_TIMEOUT_MS } from "./odoo-timeout";
+
 /** Longest Odoo error message handed back to an admin. */
 const MAX_LENGTH = 300;
 
@@ -14,6 +16,30 @@ export function odooRedirectRefusedMessage(status: number | string): string {
 }
 
 /**
+ * Did the pinned fetch's bound (`ODOO_REQUEST_TIMEOUT_MS`) cut this request
+ * off? odoo-node wraps the abort into an `OdooError` with code 0 and keeps
+ * the `TimeoutError` that `AbortSignal.timeout` raised as its `cause` — for a
+ * reply that never started and for a body that stopped arriving alike. A
+ * caller's own cancellation is an `AbortError` and is not one.
+ */
+export function isOdooTimeout(err: unknown): boolean {
+  for (let e = err, depth = 0; e && depth < 5; depth++) {
+    if ((e as { name?: unknown }).name === "TimeoutError") return true;
+    e = (e as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+/** What an admin is told when Odoo took the connection and never answered. */
+export function odooTimeoutMessage(): string {
+  return (
+    `Odoo did not answer within ${ODOO_REQUEST_TIMEOUT_MS / 1000} seconds. ` +
+    "The server took the connection but sent no reply: check that Odoo is running and not overloaded, " +
+    "and that nothing in front of it, such as a proxy or firewall, holds the request."
+  );
+}
+
+/**
  * The message an admin is shown when an `odoo-node` call fails.
  *
  * `odoo-node` wraps network failures, HTTP errors (`HTTP 502: Bad Gateway`),
@@ -24,7 +50,8 @@ export function odooRedirectRefusedMessage(status: number | string): string {
  * the URL does not point at Odoo — keeping status and content type.
  * odoo-node reports a JSON-RPC error envelope that carries no message
  * (`{"error": {}}`) the same way. A `TypeError` is a bug on our side and says
- * so. odoo-node's refused-redirect message names the library; the
+ * so. A request the pinned fetch's bound cut off says Odoo did not answer
+ * in time, not undici's "aborted due to timeout". odoo-node's refused-redirect message names the library; the
  * admin gets `odooRedirectRefusedMessage` instead, the same sentence listing
  * databases shows.
  *
@@ -34,6 +61,7 @@ export function odooRedirectRefusedMessage(status: number | string): string {
  */
 export function describeOdooError(err: unknown): string {
   const notOdoo = "Check that the URL points at the Odoo server itself.";
+  if (isOdooTimeout(err)) return odooTimeoutMessage();
   if (err instanceof TypeError) {
     // The name and, from V8's "(reading 'x')", the property — never the
     // free message, which may carry a value.

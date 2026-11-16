@@ -52,6 +52,10 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
+
+        # Longer than nginx's 60 s default: an Odoo check or schema sync can
+        # take that long before Pinchy can say why it failed
+        proxy_read_timeout 300s;
     }
 }
 
@@ -65,6 +69,8 @@ server {
 :::caution
 WebSocket support is required. Without the `Upgrade` and `Connection` headers, agent communication will fail.
 :::
+
+nginx gives up on an answer after 60 seconds by default. Pinchy gives an Odoo connection that doesn't answer 60 seconds per request, and some actions make several in a row: **Test connection** logs in and then reads the models, and a schema sync retries a model before it gives up. With nginx's default, these end in a generic error from nginx instead of Pinchy's explanation. `proxy_read_timeout 300s` leaves room for them; chats are unaffected, since Pinchy keeps their connection alive on its own.
 
 ## Firewall rules
 

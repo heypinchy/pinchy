@@ -3,6 +3,7 @@ import {
   fetchWithPinnedAgent,
   type PinnedTarget,
 } from "@/lib/pinned-connection";
+import { ODOO_REQUEST_TIMEOUT_MS } from "./odoo-timeout";
 
 // A route that checked an Odoo URL hands odoo-node a fetch that connects to
 // the checked addresses and nowhere else, instead of letting it fetch by name
@@ -19,11 +20,15 @@ export type PinnedOdooFetch = typeof globalThis.fetch;
  * Runs `fn` with a fetch whose requests to `origin` go to `target` — the
  * addresses `resolveExternalUrlTarget` classified for that origin. A request
  * to any other origin is refused: it would go out by name, unchecked.
+ *
+ * Each request gets its own bound of `timeoutMs` (see
+ * {@link ODOO_REQUEST_TIMEOUT_MS}); a signal the caller passes still cancels.
  */
 export async function withPinnedOdoo<T>(
   origin: string,
   target: PinnedTarget,
-  fn: (pinned: PinnedOdooFetch) => Promise<T>
+  fn: (pinned: PinnedOdooFetch) => Promise<T>,
+  { timeoutMs = ODOO_REQUEST_TIMEOUT_MS }: { timeoutMs?: number } = {}
 ): Promise<T> {
   // One connector per scope: a schema sync makes hundreds of requests.
   const agent = createPinnedAgent(target);
@@ -44,7 +49,13 @@ export async function withPinnedOdoo<T>(
           "it would be sent by host name, unchecked."
       );
     }
-    return fetchWithPinnedAgent(url, init ?? {}, agent);
+    // A fresh bound per request, not one deadline for the scope: a schema
+    // sync makes hundreds. Combined with the caller's signal, never replaced
+    // by it — `init.signal ?? timeout` would drop the bound for any caller
+    // that passes a signal.
+    const timeout = AbortSignal.timeout(timeoutMs);
+    const signal = init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
+    return fetchWithPinnedAgent(url, { ...init, signal }, agent);
   };
 
   try {
