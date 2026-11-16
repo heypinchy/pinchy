@@ -76,6 +76,8 @@ interface ConfigPushState {
   fileOnlyFollowUps: number;
   /** The config write a push has in flight, settled either way (see trackConfigWrite). */
   configWrite: Promise<void> | undefined;
+  /** The config.get hash the write in flight was sent against (see trackConfigWrite). */
+  configWriteBaseHash: string | undefined;
   /** Settles when the next generation is claimed (see nextGenerationClaimed). */
   generationClaimed: { promise: Promise<void>; resolve: () => void } | undefined;
 }
@@ -126,6 +128,7 @@ function state(): ConfigPushState {
       fileOnlyFollowUp: undefined,
       fileOnlyFollowUps: 0,
       configWrite: undefined,
+      configWriteBaseHash: undefined,
       generationClaimed: undefined,
     };
     return globalThis.__pinchyConfigPushState;
@@ -580,20 +583,37 @@ export function setLastGoodBound(bound: LastGoodBound): void {
  * (staging, 2026-11-14: a burst of agent creates and a delete). So a push
  * waits for the write in flight before it reads and sends (configWriteInFlight).
  *
+ * `baseHash` is the config.get hash a config.apply was sent against. Once
+ * openclaw.json has moved past it, config.get tells whether the runtime holds
+ * the file — the reload finished — without waiting for the answer, which 2026.9
+ * often withholds until the next write (configWriteBaseHash).
+ *
  * On globalThis for the same reason as the generation counter: route bundles
  * and the custom server each load their own copy of write.ts.
  */
-export function trackConfigWrite<T>(write: Promise<T>): Promise<T> {
+export function trackConfigWrite<T>(write: Promise<T>, baseHash?: string): Promise<T> {
   const s = state();
   const tracked = write.finally(() => {
-    if (s.configWrite === settled) s.configWrite = undefined;
+    if (s.configWrite === settled) {
+      s.configWrite = undefined;
+      s.configWriteBaseHash = undefined;
+    }
   });
   const settled: Promise<void> = tracked.then(
     () => undefined,
     () => undefined
   );
   s.configWrite = settled;
+  s.configWriteBaseHash = baseHash;
   return tracked;
+}
+
+/**
+ * The config.get hash the write in flight was sent against, undefined when
+ * there is none or the write was not a config.apply (trackConfigWrite).
+ */
+export function configWriteBaseHash(): string | undefined {
+  return state().configWriteBaseHash;
 }
 
 /** The config write in flight (trackConfigWrite); it never rejects. */
@@ -617,6 +637,7 @@ export function _resetConfigPushState(): void {
   clearFileOnlyFollowUp(s);
   s.inFlightGenerations.clear();
   s.configWrite = undefined;
+  s.configWriteBaseHash = undefined;
   s.unservedCalls = undefined;
   s.writtenSecretsShape = undefined;
   s.lastGoodBound = undefined;

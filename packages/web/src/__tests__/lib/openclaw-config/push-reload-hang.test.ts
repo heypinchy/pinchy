@@ -59,6 +59,7 @@ import {
 type Json = Record<string, unknown>;
 const serialize = (c: Json) => JSON.stringify(c, null, 2).trimEnd() + "\n";
 const withoutMeta = ({ meta: _meta, ...rest }: Json) => rest;
+const revisionOf = (c: Json) => `r:${serialize(c)}`;
 
 const gateway = { mode: "local", bind: "lan", auth: { mode: "token", token: "t".repeat(40) } };
 const providers = {
@@ -87,8 +88,22 @@ class FakeOpenClaw209 {
    * holds more than the payload that was sent.
    */
   normalize?: (config: Json) => Json;
-  /** How long a write that changes the config (an apply, agents.delete) takes to answer (its reload). */
+  /**
+   * How long a write that changes the config (an apply, agents.delete) takes
+   * to reload: until its answer, or — for an apply the watcher overtook, which
+   * is never answered — until appliedConfigHash is published.
+   */
   reloadMs = 0;
+  /** How long an apply takes to persist openclaw.json after it arrives. */
+  persistMs = 0;
+  /**
+   * config.get's appliedConfigHash: the revision of the file the runtime has
+   * applied. Like OpenClaw's, every hash here derives from content, so a
+   * write of the same bytes moves none of them. OpenClaw publishes it once a
+   * reload has finished, prepared model runtime included — whether or not
+   * the apply is answered.
+   */
+  private appliedRevision: string;
   /** Writes (config.apply, agents.delete) in flight now, and the most at once. */
   private writesInFlight = 0;
   maxWritesInFlight = 0;
@@ -99,11 +114,13 @@ class FakeOpenClaw209 {
   constructor(initial: Json) {
     this.file = initial;
     this.runtime = initial;
+    this.appliedRevision = revisionOf(initial);
     fileContent = () => serialize(this.file);
     // A direct write of openclaw.json: OpenClaw's watcher reloads it.
     onConfigFileWrite = (content) => {
       this.commit(JSON.parse(content) as Json);
       this.runtime = this.file;
+      this.appliedRevision = revisionOf(this.file);
     };
   }
 
@@ -144,7 +161,9 @@ class FakeOpenClaw209 {
 
   private snapshot() {
     return {
-      hash: `h${this.writes}`,
+      hash: `h:${serialize(this.file)}`,
+      configRevisionHash: revisionOf(this.file),
+      appliedConfigHash: this.appliedRevision,
       config: {
         ...structuredClone(this.runtime),
         models: {
@@ -182,16 +201,24 @@ class FakeOpenClaw209 {
       );
     }
     const unchanged = isDeepStrictEqual(withoutMeta(next), withoutMeta(this.runtime));
+    if (this.persistMs > 0) await new Promise((r) => setTimeout(r, this.persistMs));
     this.commit(next);
+    const writes = this.writes;
+    const revision = revisionOf(next);
+    // A newer write publishes its own revision; a reload it overtook never does.
+    const publish = () => {
+      if (this.writes === writes) this.appliedRevision = revision;
+    };
     const overtaken = this.watcherWins?.(this.applies.length) === true;
-    if (overtaken) this.runtime = next;
-    if (!unchanged && !overtaken) {
+    if (!unchanged) {
       this.runtime = next;
       if (this.reloadMs > 0) await new Promise((r) => setTimeout(r, this.reloadMs));
-      return { ok: true };
+      publish();
+      if (!overtaken) return { ok: true };
     }
     // Persisted; the reload hangs until the next write — or until the
-    // client's own 30 s request timeout.
+    // client's own 30 s request timeout. When the watcher overtook it, the
+    // runtime holds the write all the same.
     return new Promise((_resolve, reject) => {
       let done = false;
       const answer = (err: Error) => {
@@ -214,7 +241,10 @@ class FakeOpenClaw209 {
     delete entries[agentId];
     this.commit({ ...this.file, agents: { ...agents, entries } });
     this.runtime = this.file;
+    const writes = this.writes;
+    const revision = revisionOf(this.file);
     if (this.reloadMs > 0) await new Promise((r) => setTimeout(r, this.reloadMs));
+    if (this.writes === writes) this.appliedRevision = revision;
     return { type: "res", id: "1", ok: true, payload: { ok: true, agentId } };
   }
 }
@@ -450,29 +480,92 @@ describe("pushConfigInBackground: OpenClaw 2026.9's hanging config.apply", () =>
     await vi.advanceTimersByTimeAsync(1_000);
     expect(oc.applies).toHaveLength(1);
     pushConfigInBackground(serialize(config(["a", "b"])));
-    await vi.advanceTimersByTimeAsync(20_000);
+    // Nothing in config.get moved — the write left the bytes as they were —
+    // so only the wait cap lets the push go.
+    await vi.advanceTimersByTimeAsync(13_000);
+    expect(oc.applies).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(7_000);
 
     expect(oc.applies).toHaveLength(2);
     expect(oc.file).toEqual(config(["a", "b"]));
     await settle();
   });
 
-  it("lets a push queued behind another write go as soon as a newer push supersedes it", async () => {
-    // Waiting on would only hold the superseded push for the write's answer —
-    // up to CONFIG_WRITE_MAX_WAIT_MS behind an apply OpenClaw never answers —
-    // to find out what is already known.
+  it("does not hold a push for the wait cap behind an apply OpenClaw applied but never answered", async () => {
+    // 2026.9 often answers config.apply only when the next write supersedes
+    // it, although its reload has long finished. Waiting for that answer cost
+    // every push the full CONFIG_WRITE_MAX_WAIT_MS — a Telegram disconnect
+    // landed 30–40 s late (CI, release/0.11, run 43708131974). config.get's
+    // appliedConfigHash says when the runtime holds what the file holds.
     const config = (ids: string[]) => ({
       gateway,
       models: { providers },
       agents: { ownership: "explicit", entries: Object.fromEntries(ids.map((id) => [id, {}])) },
     });
     const oc = new FakeOpenClaw209(config(["a"]));
+    oc.reloadMs = 2_000;
+    oc.watcherWins = (apply) => apply === 1;
+    mockGetClient.mockReturnValue(oc.client);
+
+    pushConfigInBackground(serialize(config(["a", "b"])));
+    await vi.advanceTimersByTimeAsync(500);
+    expect(oc.applies).toHaveLength(1);
+    pushConfigInBackground(serialize(config(["a", "b", "c"])));
+    // The file moved at once; the runtime holds it only once the reload ends.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(oc.applies).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(oc.applies).toHaveLength(2);
+    expect(oc.file).toEqual(config(["a", "b", "c"]));
+    await settle();
+  });
+
+  it("keeps a push waiting while the unanswered apply ahead of it has not reached openclaw.json yet", async () => {
+    // Before the apply persists, the runtime still holds the file it read —
+    // "applied" then says nothing about the write in flight, whose reload has
+    // not even started.
+    const config = (ids: string[]) => ({
+      gateway,
+      models: { providers },
+      agents: { ownership: "explicit", entries: Object.fromEntries(ids.map((id) => [id, {}])) },
+    });
+    const oc = new FakeOpenClaw209(config(["a"]));
+    oc.persistMs = 4_000;
+    oc.watcherWins = (apply) => apply === 1;
+    mockGetClient.mockReturnValue(oc.client);
+
+    pushConfigInBackground(serialize(config(["a", "b"])));
+    await vi.advanceTimersByTimeAsync(500);
+    expect(oc.applies).toHaveLength(1);
+    pushConfigInBackground(serialize(config(["a", "b", "c"])));
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(oc.applies).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(oc.applies).toHaveLength(2);
+    await settle();
+    expect(oc.file).toEqual(config(["a", "b", "c"]));
+  });
+
+  it("lets a push queued behind another write go as soon as a newer push supersedes it", async () => {
+    // Waiting on would only hold the superseded push for the write's answer —
+    // up to CONFIG_WRITE_MAX_WAIT_MS behind an apply OpenClaw has neither
+    // answered nor applied — to find out what is already known.
+    const config = (ids: string[]) => ({
+      gateway,
+      models: { providers },
+      agents: { ownership: "explicit", entries: Object.fromEntries(ids.map((id) => [id, {}])) },
+    });
+    const oc = new FakeOpenClaw209(config(["a"]));
+    oc.persistMs = 10_000;
     mockGetClient.mockReturnValue(oc.client);
     noteFileOnlyDelivery();
 
     pushConfigInBackground(serialize(config(["a"])));
     await vi.advanceTimersByTimeAsync(1_000);
     expect(oc.applies).toHaveLength(1);
+    oc.persistMs = 0;
     pushConfigInBackground(serialize(config(["a", "b"])));
     await vi.advanceTimersByTimeAsync(1_000);
     expect(getPendingConfigPushCount()).toBe(2);
@@ -485,8 +578,8 @@ describe("pushConfigInBackground: OpenClaw 2026.9's hanging config.apply", () =>
   });
 
   it("still delivers a full regenerate's agent when a partial writer supersedes it while it waits for another write", async () => {
-    // A regenerate that adds agent "b" queues behind an apply OpenClaw does not
-    // answer. A partial writer (the Telegram channel) supersedes it meanwhile
+    // A regenerate that adds agent "b" queues behind an apply OpenClaw has
+    // neither answered nor applied yet. A partial writer (the Telegram channel) supersedes it meanwhile
     // with its copy of openclaw.json, which predates "b". Nothing but the
     // regenerate knew about "b".
     const config = (ids: string[], extra: Json = {}) => ({
@@ -497,12 +590,14 @@ describe("pushConfigInBackground: OpenClaw 2026.9's hanging config.apply", () =>
     });
     const telegram = { channels: { telegram: { enabled: true } } };
     const oc = new FakeOpenClaw209(config(["a"]));
+    oc.persistMs = 10_000;
     mockGetClient.mockReturnValue(oc.client);
     noteFileOnlyDelivery();
 
     pushConfigInBackground(serialize(config(["a"])));
     await vi.advanceTimersByTimeAsync(1_000);
     expect(oc.applies).toHaveLength(1);
+    oc.persistMs = 0;
     pushConfigInBackground(serialize(config(["a", "b"])), {
       fullRegenerate: true,
       resumeStrandedShrink: () =>
