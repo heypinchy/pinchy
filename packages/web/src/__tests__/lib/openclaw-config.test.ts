@@ -3141,6 +3141,7 @@ describe("regenerateOpenClawConfig", () => {
     // A knee below the ceiling must win over the 256K clamp.
     const glm = TOOL_CAPABLE_OLLAMA_CLOUD_MODELS.find((m) => m.id === "glm-5.2");
     expect(glm).toBeDefined();
+    const original = Reflect.getOwnPropertyDescriptor(glm!, "contextTokens");
     Reflect.set(glm!, "contextTokens", 131072);
     try {
       mockedGetSetting.mockImplementation(async (key: string) => {
@@ -3157,7 +3158,8 @@ describe("regenerateOpenClawConfig", () => {
       }>;
       expect(models.find((m) => m.id === "glm-5.2")?.contextTokens).toBe(131072);
     } finally {
-      Reflect.deleteProperty(glm!, "contextTokens");
+      if (original) Reflect.defineProperty(glm!, "contextTokens", original);
+      else Reflect.deleteProperty(glm!, "contextTokens");
     }
   });
 

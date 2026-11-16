@@ -45,7 +45,7 @@ export const DEFAULT_INVOICE_CANDIDATES = [
   "ollama-cloud/gpt-oss:120b",
   // — breadth expansion: new vendors (NVIDIA) + intra-family pairs.
   //   `deepseek-v3.2` (retired 2026-07-15), `deepseek-v4-pro`, `glm-5.1` and
-  //   `minimax-m2.7` (found retired 2026-11-16) sat here —
+  //   `minimax-m2.7` (retired 2026-11-16) sat here —
   "ollama-cloud/nemotron-3-ultra",
   "ollama-cloud/gpt-oss:20b",
 ];
