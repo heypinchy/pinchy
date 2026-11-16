@@ -190,7 +190,7 @@ export async function fetchOdooSchema(credentials: {
      * Why the probe failed, when it failed for a reason other than access.
      * `unreachable`: it ran out of retries without any answer from Odoo.
      */
-    failure?: { text: string; unreachable: boolean };
+    failure?: { text: string; unreachable: boolean; connection?: boolean };
     /** Never probed: an earlier probe gave up on the connection. */
     skipped?: boolean;
   };
@@ -260,7 +260,8 @@ export async function fetchOdooSchema(credentials: {
             // Non-transient, or out of retries — no point in trying again.
             const described = describeOdooError(error);
             const unreachable = isNoAnswerError(error) || (transient && !odooAnswered(error));
-            if (unreachable || isHttpLevelError(error)) gaveUp = true;
+            const connection = unreachable || isHttpLevelError(error);
+            if (connection) gaveUp = true;
             // A bare status line may come from a proxy in front of Odoo as
             // much as from Odoo, retried or not; a described message that
             // already says what came back ("Odoo answered with …") needs no
@@ -278,7 +279,7 @@ export async function fetchOdooSchema(credentials: {
               category,
               fields: [],
               accessible: false,
-              failure: { text, unreachable },
+              failure: { text, unreachable, connection },
             };
           }
           await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
@@ -321,7 +322,9 @@ export async function fetchOdooSchema(credentials: {
   };
 
   if (gaveUp) {
-    const failures = probed.flatMap((r) => (r.failure ? [r.failure] : []));
+    // Only what stopped the sync: Odoo's own error about a model it doesn't
+    // have would otherwise push the proxy or network error out of view.
+    const failures = probed.flatMap((r) => (r.failure?.connection ? [r.failure] : []));
     const { texts, error } = summarize(failures);
     return {
       success: false,

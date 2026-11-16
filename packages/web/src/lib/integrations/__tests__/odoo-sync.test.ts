@@ -477,6 +477,41 @@ describe("fetchOdooSchema", () => {
       );
     });
 
+    it("names the connection failure, not the models Odoo says it does not have", async () => {
+      // Most installs lack a few curated apps; their errors come first in the
+      // catalog and must not stand in for the proxy error that stopped the sync.
+      vi.useFakeTimers();
+      const missing = new Set(["sale.subscription.plan", "purchase.order", "purchase.order.line"]);
+      mockFields.mockImplementation((model: string) => {
+        if (missing.has(model)) {
+          return Promise.reject(
+            Object.assign(new Error(`Object ${model} doesn't exist`), {
+              code: 200,
+              data: { name: "builtins.KeyError" },
+            })
+          );
+        }
+        if (model === "stock.picking") {
+          return Promise.reject(
+            Object.assign(new Error("HTTP 504: Gateway Timeout"), { code: 504 })
+          );
+        }
+        return fieldsAfter(10);
+      });
+
+      const promise = fetchOdooSchema(creds);
+      await vi.runAllTimersAsync();
+      const result = await promise;
+
+      vi.useRealTimers();
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect(result.error).toBe(
+        "Reading Odoo's models failed partway through, so nothing was saved: " +
+          "The Odoo address answered with an error: HTTP 504: Gateway Timeout"
+      );
+    });
+
     it("starts no further probe once one gave up", async () => {
       // Under a proxy that times out before our bound, each probe costs that
       // proxy's timeout three times over: walking all models took most of an hour.
