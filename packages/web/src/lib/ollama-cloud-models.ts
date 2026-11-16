@@ -21,9 +21,9 @@
  *
  *     ollama show <id>:cloud     # "context length" row
  *
- * deepseek-v4-pro is the confirmed example: library page and manifest both
- * say 1M, `/api/show` says 524288, and 524288 is the value here (see the
- * inline comment on that entry). Don't "reconcile" a `/api/show`-sourced
+ * deepseek-v4-pro was the confirmed example (since retired, 2026-11-16):
+ * library page and manifest both said 1M, `/api/show` said 524288, and 524288
+ * was the value here. Don't "reconcile" a `/api/show`-sourced
  * value back to the library page — re-run the command instead.
  *
  * Cost is always zero: Ollama Cloud uses subscription pricing (Free / Pro /
@@ -48,7 +48,8 @@ export interface OllamaCloudModel {
    * `models.providers.*.models[].contextTokens`, which the runtime budgets
    * compaction against (resolveContextWindowInfo, source "modelsConfig") while
    * contextWindow stays the honest native size. Set ONLY where a model's
-   * quality degrades well before its advertised window — see deepseek-v4-pro.
+   * quality degrades well before its advertised window — deepseek-v4-pro
+   * (retired 2026-11-16) was the example, capped at 131072.
    *
    * NOTE: this is a *static budget cap* (config input) and is a different
    * concept from the per-turn `context_tokens` / `contextTokens` in
@@ -71,70 +72,11 @@ const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as const;
 // the `OllamaCloudModel` shape.
 export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
   {
-    // The 1M here is real, unlike deepseek-v4-pro below: `ollama show
-    // deepseek-v4-flash:cloud` reports 1048576, matching its library page
-    // (checked 2026-07-16). Same family and same claimed size as pro, so it
-    // looks like it should carry pro's contextWindow correction — it must not.
-    id: "deepseek-v4-flash",
-    contextWindow: 1048576,
-    // Effective context capped at 128K — the DeepSeek-V4 long-context quality
-    // knee. The V4 family's MRCR retrieval is "stable up to 128K tokens, with
-    // degradation beyond that point" (DeepSeek-V4 tech report / HF blog), and
-    // Flash is the *weaker* long-context sibling: Flash-Max scores 0.49 vs
-    // Pro-Max 0.59 on MRCR 8-needle @1M. So the 128K knee that caps pro applies
-    // to flash a fortiori — not mere family analogy but flash-specific evidence.
-    // flash is the fast-tier general pick (model-resolver), so this is a model
-    // agents actually run; without the cap OpenClaw's shouldCompact() would only
-    // fire past 1,032,192 on its 1M window — i.e. never (the 2026-07-24 Piper
-    // incident shape). See MAX_EFFECTIVE_CONTEXT_TOKENS in
-    // openclaw-config/effective-context.ts for the global backstop that bounds
-    // every model regardless of its catalog entry.
-    contextTokens: 131072,
-    maxTokens: 8192,
-    reasoning: true,
-    vision: false,
-  },
-  {
-    // 512K, NOT the 1M its library page and registry manifest both claim:
-    // `ollama show deepseek-v4-pro:cloud` reports 524288 (checked
-    // 2026-07-16). That's a contradiction on Ollama's side, not a typo here,
-    // and /api/show is the side that binds. Do not "correct" this back to
-    // 1048576 from the library page — re-run the command instead.
-    //
-    // It matters because OpenClaw's shouldCompact() is `contextTokens >
-    // contextWindow - reserveTokens` (reserveTokens=16384). At 1048576,
-    // compaction would only fire past 1,032,192 tokens on a model that tops
-    // out at 524288 — i.e. never. Production incident 2026-07-15: agent
-    // "Piper" on this model ran to 171K context with compactionCount:0 and
-    // began confabulating tool results (reported an Odoo API outage while
-    // all 10 Odoo calls in the window had succeeded).
-    id: "deepseek-v4-pro",
-    contextWindow: 524288,
-    // Pinchy caps the effective runtime context at 128K. The 512K window above
-    // is the honest native size, but DeepSeek V4 Pro's long-context quality
-    // knees well before it (~0.92 recall @128K → ~0.66 @512K), and the
-    // 2026-07-15 Piper incident traced a confabulated Odoo "outage" to context
-    // bloat past ~170K with compaction never firing. Budgeting compaction
-    // against 128K instead of 512K makes OpenClaw's preemptive compaction fire
-    // in time. Cap only this model — its knee, not a global policy.
-    contextTokens: 131072,
-    maxTokens: 8192,
-    reasoning: true,
-    vision: false,
-  },
-  {
     id: "gemma4:31b",
     contextWindow: 262144,
     maxTokens: 8192,
     reasoning: true,
     vision: true,
-  },
-  {
-    id: "glm-5.1",
-    contextWindow: 202752,
-    maxTokens: 8192,
-    reasoning: true,
-    vision: false,
   },
   {
     // GLM-5.2, verified against the live API on 2026-06-17: structured
@@ -164,13 +106,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     vision: false,
   },
   {
-    id: "kimi-k2.5",
-    contextWindow: 262144,
-    maxTokens: 8192,
-    reasoning: true,
-    vision: true,
-  },
-  {
     id: "kimi-k2.6",
     contextWindow: 262144,
     maxTokens: 8192,
@@ -180,7 +115,7 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
   {
     // Tools verified 4/4 rounds (structured tool_call + clean multi-turn,
     // 2026-06-25) — reliably tool-capable, no multi-turn-500 regression.
-    // `reasoning:true` from the library "thinking" tag (kimi-k2.5/2.6 parity).
+    // `reasoning:true` from the library "thinking" tag (kimi-k2.6 parity).
     //
     // vision:true since 2026-07-30. It was false from 2026-06-25, when
     // /v1/chat/completions HTTP 500'd on every image_url payload (2 rounds).
@@ -200,20 +135,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     vision: true,
   },
   {
-    id: "minimax-m2.5",
-    contextWindow: 202752,
-    maxTokens: 8192,
-    reasoning: true,
-    vision: false,
-  },
-  {
-    id: "minimax-m2.7",
-    contextWindow: 204800,
-    maxTokens: 8192,
-    reasoning: true,
-    vision: false,
-  },
-  {
     // ollama.com/library/minimax-m3 tags: "vision tools thinking cloud",
     // input "Text, Image", context "up to 1M with a guaranteed minimum of
     // 512K". Vision and tools were both confirmed against the live
@@ -225,13 +146,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     contextWindow: 524288,
     maxTokens: 8192,
     reasoning: true,
-    vision: true,
-  },
-  {
-    id: "mistral-large-3:675b",
-    contextWindow: 262144,
-    maxTokens: 8192,
-    reasoning: false,
     vision: true,
   },
   {
@@ -250,26 +164,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     maxTokens: 8192,
     reasoning: true,
     vision: false,
-  },
-  {
-    // vision:true since 2026-07-30 — this entry was vision:false for a month
-    // and the reversal is deliberate, so do not "restore" it from the old
-    // comment. In 2026-06 this model accepted images and HALLUCINATED their
-    // contents (wrong number AND wrong colour across distinct PIL-generated
-    // test images), which is the dangerous failure the flag existed to contain.
-    // Re-probed 2026-07-30 with 512x512 PNGs carrying a random 4-digit number
-    // and a coloured circle: 6/6 trials read BOTH correctly, no miss. Random
-    // agreement on the number alone is ~1/9000 per trial, so the hallucination
-    // is gone rather than merely unlucky — Ollama evidently fixed or replaced
-    // the serving path. If it regresses, put the flag back and say so here with
-    // the date; a flip in this direction needs fresh probe evidence, never a
-    // library page (which claimed image input throughout, including while the
-    // model was demonstrably blind).
-    id: "qwen3.5:397b",
-    contextWindow: 262144,
-    maxTokens: 8192,
-    reasoning: true,
-    vision: true,
   },
 ] as const satisfies readonly OllamaCloudModel[];
 

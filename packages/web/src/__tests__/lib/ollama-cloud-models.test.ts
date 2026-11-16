@@ -36,24 +36,25 @@ describe("Ollama Cloud model catalog — empirically verified capabilities", () 
     expect(m!.reasoning).toBe(true);
   });
 
-  it("promotes qwen3.5:397b to vision — the 2026-06 hallucination is gone (2026-07-30)", () => {
-    // This assertion is the REVERSE of what it pinned until 2026-07-30, and the
-    // reversal is the interesting part. In 2026-06 the endpoint returned HTTP
-    // 200 on image payloads and hallucinated the contents (colours 1/3, numbers
-    // 0/3 across distinct test images) — accepted-but-blind, the failure a
-    // library tag cannot show you.
-    //
-    // Re-probed 2026-07-30 with 512x512 PNGs carrying a random 4-digit number
-    // and a coloured circle: 6/6 trials returned BOTH correctly. Guessing one
-    // 4-digit number is ~1/9000, so six in a row is sight, not luck.
-    //
-    // Kept as an explicit test rather than folded into a generic vision list
-    // because the direction of travel matters: anyone who finds the old comment
-    // in git history should see that the flip was measured, not assumed.
-    const m = byId("qwen3.5:397b");
-    expect(m).toBeDefined();
-    expect(m!.vision).toBe(true);
-    expect(VISION_OLLAMA_CLOUD_MODEL_IDS.has("qwen3.5:397b")).toBe(true);
+  it("no longer carries the 8 models Ollama stopped serving (2026-11-16)", () => {
+    // `pnpm models:discover` against https://ollama.com/v1/models on 2026-11-16
+    // (three runs, stable) reported these as REMOVED: they are not in the live
+    // catalog any more, so offering them in the picker or writing them into
+    // openclaw.json hands users a model that 404s.
+    const retired = [
+      "deepseek-v4-flash",
+      "deepseek-v4-pro",
+      "glm-5.1",
+      "kimi-k2.5",
+      "minimax-m2.5",
+      "minimax-m2.7",
+      "mistral-large-3:675b",
+      "qwen3.5:397b",
+    ];
+    for (const id of retired) {
+      expect(TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS, id).not.toContain(id);
+      expect(VISION_OLLAMA_CLOUD_MODEL_IDS.has(id), id).toBe(false);
+    }
   });
 
   it("drops qwen3-next:80b — tool calls still flaky on Ollama Cloud", () => {
@@ -213,33 +214,26 @@ describe("Ollama Cloud model catalog — empirically verified capabilities", () 
     expect(TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS).not.toContain("kimi-k3");
   });
 
-  it("keeps the deepseek-v4 pair's context windows split: pro 512K, flash 1M", () => {
-    // These two look like they should match — same family, and both library
-    // pages claim 1M — but `ollama show` splits them: pro reports 524288,
-    // flash 1048576. So this guards against a well-meant "fix" in either
-    // direction. Rationale and the production incident behind pro's value:
-    // see ollama-cloud-models.ts.
-    expect(byId("deepseek-v4-pro")?.contextWindow).toBe(524288);
-    expect(byId("deepseek-v4-flash")?.contextWindow).toBe(1048576);
+  it("keeps exactly the 9 models still served on 2026-11-16", () => {
+    expect([...TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS].sort()).toEqual(
+      [
+        "gemma4:31b",
+        "glm-5.2",
+        "gpt-oss:120b",
+        "gpt-oss:20b",
+        "kimi-k2.6",
+        "kimi-k2.7-code",
+        "minimax-m3",
+        "nemotron-3-super",
+        "nemotron-3-ultra",
+      ].sort()
+    );
   });
 
-  it("caps both DeepSeek-V4 models' effective context at 128K while keeping native windows honest", () => {
-    // contextWindow stays the honest native size (pro 512K, flash 1M, guarded
-    // above), and a separate contextTokens field carries Pinchy's researched
-    // policy cap. OpenClaw budgets compaction against contextTokens (< window,
-    // resolveContextWindowInfo source "modelsConfig"), so the family's
-    // long-context quality knee can't cause the silent confabulation the
-    // 2026-07-15 pro incident traced to context bloat past ~170K.
-    //   - pro:   ~0.92 recall @128K → ~0.66 @512K (2026-07-15 incident).
-    //   - flash: DeepSeek-V4 MRCR "stable up to 128K, degradation beyond"; and
-    //     Flash-Max 0.49 < Pro-Max 0.59 MRCR 8-needle @1M, i.e. weaker at long
-    //     context than pro, so the same 128K knee applies a fortiori.
-    const pro = byId("deepseek-v4-pro");
-    expect(pro?.contextWindow).toBe(524288);
-    expect(pro?.contextTokens).toBe(131072);
-    const flash = byId("deepseek-v4-flash");
-    expect(flash?.contextWindow).toBe(1048576);
-    expect(flash?.contextTokens).toBe(131072);
+  it("keeps the vision set to the models that still pass the sight probe (2026-11-16)", () => {
+    expect([...VISION_OLLAMA_CLOUD_MODEL_IDS].sort()).toEqual(
+      ["gemma4:31b", "kimi-k2.6", "kimi-k2.7-code", "minimax-m3"].sort()
+    );
   });
 
   it("never sets a contextTokens cap above the native contextWindow", () => {
