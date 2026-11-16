@@ -124,6 +124,19 @@ describe("reloadSecretsInBackground (#943)", () => {
     expect(warning).not.toMatch(/refused by the gateway/);
   });
 
+  it("reads a gateway answer that merely ends in 'timed out' as a refusal", async () => {
+    // Only openclaw-node's own "Request <method> timed out" means no answer
+    // came back. An ok:false message from OpenClaw that happens to end the same
+    // way is still OpenClaw's answer, and its log names the cause.
+    request.mockRejectedValue(new Error("provider lookup timed out"));
+
+    reloadSecretsInBackground();
+    await drain();
+
+    const warning = warnSpy.mock.calls.map((c: unknown[]) => c.join(" ")).join("\n");
+    expect(warning).toMatch(/refused by the gateway/);
+  });
+
   it("does not call for a restart OpenClaw's own answer cannot justify", async () => {
     // OpenClaw answers every failed reload with the same "secrets.reload
     // failed" — a reload a concurrent config change superseded included, and

@@ -18,7 +18,7 @@ const SECRETS_RELOAD_METHOD = "secrets.reload";
  * socket, or a request that timed out on a hung gateway. Any other rejection
  * is the gateway's own ok:false message, i.e. a refusal.
  */
-const NO_ANSWER = /^Not connected to OpenClaw Gateway| timed out$/;
+const NO_ANSWER = /^(?:Not connected to OpenClaw Gateway|Request \S+ timed out$)/;
 
 /**
  * How long a reload waits for the config writes ahead of it before it is sent
