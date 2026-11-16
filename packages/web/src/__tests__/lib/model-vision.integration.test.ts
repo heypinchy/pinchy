@@ -91,9 +91,8 @@ describe("Ollama cloud vision models (from DB seed)", () => {
 
   it("returns true for kimi-k2.6", () => {
     // Replaces the old qwen3-vl:235b(-instruct) block — Ollama dropped both
-    // from the cloud catalog (2026-06-17). minimax-m3
-    // already has their own dedicated cases above; kimi-k2.6
-    // was the one vision model still lacking one.
+    // from the cloud catalog (2026-06-17). minimax-m3 already has its own
+    // dedicated case above; kimi-k2.6 was the one vision model still lacking one.
     expect(isModelVisionCapable("ollama-cloud/kimi-k2.6")).toBe(true);
   });
 

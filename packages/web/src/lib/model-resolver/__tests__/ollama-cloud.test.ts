@@ -13,7 +13,7 @@ describe("resolveOllamaCloud", () => {
     expect(r.model).toBe("ollama-cloud/kimi-k2.6");
   });
 
-  it("picks a larger model for tier=reasoning", () => {
+  it("labels the reasoning tier in its reason", () => {
     const r = resolveOllamaCloud({ tier: "reasoning" });
     expect(r.model).toBeDefined();
     expect(r.reason).toContain("reasoning");

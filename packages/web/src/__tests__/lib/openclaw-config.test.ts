@@ -285,6 +285,7 @@ import {
   OPENCLAW_GATEWAY_MODE,
 } from "@/lib/openclaw-config/paths";
 import { REFUSED_BASE_URL } from "@/lib/openai-compatible-stored-url";
+import { TOOL_CAPABLE_OLLAMA_CLOUD_MODELS } from "@/lib/ollama-cloud-models";
 import { pushConfigInBackground, _supersedePendingPushes } from "@/lib/openclaw-config/write";
 import { regenerateOnConnect } from "@/server/openclaw-connect-regenerate";
 import {
@@ -3131,6 +3132,32 @@ describe("regenerateOpenClawConfig", () => {
     for (const m of models) {
       expect(m.contextTokens).toBeLessThanOrEqual(m.contextWindow);
       expect(m.contextTokens).toBeLessThanOrEqual(262144);
+    }
+  });
+
+  it("carries a catalog entry's per-model contextTokens knee into the written config", async () => {
+    // No catalog entry sets contextTokens since the DeepSeek-V4 pair left
+    // (2026-11-16), so nothing else would notice build.ts dropping the field.
+    // A knee below the ceiling must win over the 256K clamp.
+    const glm = TOOL_CAPABLE_OLLAMA_CLOUD_MODELS.find((m) => m.id === "glm-5.2");
+    expect(glm).toBeDefined();
+    Reflect.set(glm!, "contextTokens", 131072);
+    try {
+      mockedGetSetting.mockImplementation(async (key: string) => {
+        if (key === "ollama_cloud_api_key") return "sk-ollama-test";
+        return null;
+      });
+
+      await regenerateOpenClawConfig();
+
+      const written = mockedWriteFileSync.mock.calls[0][1] as string;
+      const models = JSON.parse(written).models.providers["ollama-cloud"].models as Array<{
+        id: string;
+        contextTokens?: number;
+      }>;
+      expect(models.find((m) => m.id === "glm-5.2")?.contextTokens).toBe(131072);
+    } finally {
+      Reflect.deleteProperty(glm!, "contextTokens");
     }
   });
 

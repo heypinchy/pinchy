@@ -157,7 +157,7 @@ const RULES: BlockRule[] = [
   // is tracked separately — the two are complements, not substitutes.
   //
   // The pattern has NO trailing boundary on purpose, so it also covers point
-  // releases of the same line: the catalog names them `minimax-m2.1`, `m2.5`,
+  // releases of the same line: the catalog named them `minimax-m2.1`, `m2.5`,
   // `m2.7`, so a future `minimax-m3.5` is the expected shape, and a substring
   // match blocks it too. That is the fail-safe direction and it is not silent —
   // the catalog is hand-curated, so adding `minimax-m3.5` means editing
