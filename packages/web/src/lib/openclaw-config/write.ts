@@ -392,14 +392,16 @@ const APPLIED_POLL_MS = 500;
  * the write in flight was sent against — and OpenClaw's runtime has applied
  * the file as it stands. 2026.9 publishes config.get's appliedConfigHash only
  * after a reload has finished, the prepared model runtime included, so a write
- * sent then supersedes nothing: the gateway restart trackConfigWrite guards
- * against cannot happen. The apply's answer often comes only with that next
+ * sent then supersedes no reload work: the gateway restart trackConfigWrite
+ * guards against cannot happen. The apply's answer often comes only with that next
  * write (UNANSWERED_APPLY_ERROR_FRAGMENTS), so waiting for it held every push
  * for CONFIG_WRITE_MAX_WAIT_MS.
  *
  * A runtime that holds a restart debt leaves appliedConfigHash behind the
  * file, and so does an OpenClaw without the field: the wait's cap still bounds
- * both. A failing config.get only means asking again.
+ * both. So does an apply that leaves the file's bytes or the effective config
+ * as they were — it never publishes a new revision. A failing config.get only
+ * means asking again.
  */
 async function whenRuntimeHoldsWriteAfter(
   client: { config: { get: () => Promise<unknown> } },
