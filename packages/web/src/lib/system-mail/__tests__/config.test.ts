@@ -120,6 +120,13 @@ describe("mergeWithStoredPassword", () => {
     expect(merged.password).toBeUndefined();
   });
 
+  it("does not inherit a password when only the port changes", () => {
+    // Same host, different port is a different service (587 submission vs a
+    // relay on 25 or 2525), and the saved password was never typed for it.
+    const merged = mergeWithStoredPassword({ ...config, port: 2525, password: undefined }, config);
+    expect(merged.password).toBeUndefined();
+  });
+
   it("treats the host case-insensitively — DNS does", () => {
     const merged = mergeWithStoredPassword(
       { ...config, host: "SMTP.Example.com", password: undefined },

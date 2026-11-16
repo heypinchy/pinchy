@@ -197,11 +197,12 @@ export function EmailDeliverySettings() {
     }
   }
 
-  // The stored password only follows the server it was typed for, and only
+  // The stored password only follows the host and port it was typed for, and only
   // while there is a username to log in with (mergeWithStoredPassword).
   const keepsSavedPassword =
     Boolean(config?.hasPassword) &&
     form.host.trim().toLowerCase() === config?.host.toLowerCase() &&
+    Number(form.port) === config?.port &&
     form.username.trim() !== "";
   const needsRetype = needsPasswordReentry(
     {

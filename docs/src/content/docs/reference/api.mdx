@@ -1667,15 +1667,15 @@ Save the mailer configuration. Pinchy first connects, negotiates encryption and 
 
 **Request body:**
 
-| Field         | Type   | Required | Description                                                                                       |
-| ------------- | ------ | -------- | ------------------------------------------------------------------------------------------------- |
-| `host`        | string | Yes      | SMTP server host name or IP address                                                               |
-| `port`        | number | Yes      | Usually `587` (STARTTLS) or `465` (TLS)                                                           |
-| `security`    | string | Yes      | `starttls`, `tls` or `none`. `starttls` refuses to continue if the server doesn't offer it.       |
-| `username`    | string | No       | Leave out for a relay that accepts mail without logging in                                        |
-| `password`    | string | No       | Leave out to keep the stored password. It is not kept when `host` changes or `username` is empty. |
-| `fromAddress` | string | Yes      | The sender address                                                                                |
-| `fromName`    | string | No       | The sender name; defaults to `Pinchy`                                                             |
+| Field         | Type   | Required | Description                                                                                                  |
+| ------------- | ------ | -------- | ------------------------------------------------------------------------------------------------------------ |
+| `host`        | string | Yes      | SMTP server host name or IP address                                                                          |
+| `port`        | number | Yes      | Usually `587` (STARTTLS) or `465` (TLS)                                                                      |
+| `security`    | string | Yes      | `starttls`, `tls` or `none`. `starttls` refuses to continue if the server doesn't offer it.                  |
+| `username`    | string | No       | Leave out for a relay that accepts mail without logging in                                                   |
+| `password`    | string | No       | Leave out to keep the stored password. It is not kept when `host` or `port` changes, or `username` is empty. |
+| `fromAddress` | string | Yes      | The sender address                                                                                           |
+| `fromName`    | string | No       | The sender name; defaults to `Pinchy`                                                                        |
 
 **Response:** the same shape as `GET`.
 
@@ -1700,7 +1700,7 @@ The host goes through the same check as a mailbox connection: a host on a privat
   }
   ```
 
-  Send the `password` again and the request goes through. Moving a server from STARTTLS to another port keeps the stored password: STARTTLS refuses to continue without encryption on every port, port 25 included.
+  Send the `password` again and the request goes through. A change of `host` or `port` never keeps the stored password, so it has to be sent again whatever the `security` value.
 
 - `401` — not authenticated
 - `403` — not an admin
