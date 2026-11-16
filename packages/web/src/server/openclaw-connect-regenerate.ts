@@ -1,4 +1,3 @@
-import { dropOwedSecretsReload, reloadSecretsIfOwed } from "@/lib/openclaw-config/secrets-reload";
 import {
   fileOnlyDeliveryPending,
   newestPushInFlight,
@@ -45,10 +44,6 @@ export function regenerateOnConnect(
   { firstConnect }: { firstConnect: boolean },
   regenerate: () => Promise<void>
 ): void {
-  // A secrets reload asked for while no client was connected is owed to a
-  // reconnect only (OpenClaw kept running); the first connect owes none.
-  if (firstConnect) dropOwedSecretsReload();
-  else reloadSecretsIfOwed();
   if (!firstConnect) {
     if (undeliveredConfigChange()) {
       console.log(

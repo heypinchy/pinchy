@@ -7,13 +7,6 @@
 // refused while OpenClaw was down waited for an unrelated later change: a
 // Telegram bot removed for everyone kept polling once OpenClaw came back.
 import { describe, it, expect, beforeEach, vi } from "vitest";
-const { mockGetClient } = vi.hoisted(() => ({ mockGetClient: vi.fn() }));
-vi.mock("@/server/openclaw-client", () => ({ getOpenClawClient: () => mockGetClient() }));
-
-import {
-  _resetSecretsReloadQueue,
-  reloadSecretsInBackground,
-} from "@/lib/openclaw-config/secrets-reload";
 import { regenerateOnConnect } from "@/server/openclaw-connect-regenerate";
 import {
   _resetConfigPushState,
@@ -24,10 +17,7 @@ import {
 } from "@/lib/openclaw-config/push-state";
 
 describe("regenerateOnConnect", () => {
-  beforeEach(() => {
-    _resetConfigPushState();
-    _resetSecretsReloadQueue();
-  });
+  beforeEach(() => _resetConfigPushState());
 
   it("regenerates on the first connect", () => {
     const regenerate = vi.fn(async () => {});
@@ -91,48 +81,5 @@ describe("regenerateOnConnect", () => {
     regenerateOnConnect({ firstConnect: true }, () => Promise.reject(new Error("db down")));
     await new Promise((r) => setImmediate(r));
     expect(warn.mock.calls.flat().join(" ")).toMatch(/db down/);
-  });
-
-  describe("a secrets reload owed from while no client was connected", () => {
-    async function settle() {
-      await new Promise((r) => setImmediate(r));
-      await new Promise((r) => setImmediate(r));
-    }
-
-    it("is not sent on the first connect (cold start: OpenClaw reads the file itself)", async () => {
-      vi.spyOn(console, "warn").mockImplementation(() => {});
-      vi.spyOn(console, "log").mockImplementation(() => {});
-      mockGetClient.mockReturnValue(undefined);
-      reloadSecretsInBackground(); // the boot regenerate, before the WS is up
-      await settle();
-      const request = vi.fn().mockResolvedValue({ ok: true });
-      mockGetClient.mockReturnValue({ request });
-
-      regenerateOnConnect({ firstConnect: true }, async () => {});
-      // A later reconnect owes nothing either.
-      regenerateOnConnect({ firstConnect: false }, async () => {});
-      await settle();
-
-      expect(request).not.toHaveBeenCalled();
-    });
-
-    it("is sent exactly once on the reconnect", async () => {
-      vi.spyOn(console, "warn").mockImplementation(() => {});
-      vi.spyOn(console, "log").mockImplementation(() => {});
-      mockGetClient.mockReturnValue(undefined);
-      reloadSecretsInBackground(); // Pinchy's WS was down while OpenClaw ran
-      await settle();
-      const request = vi.fn().mockResolvedValue({ ok: true });
-      mockGetClient.mockReturnValue({ request });
-
-      regenerateOnConnect({ firstConnect: false }, async () => {});
-      await settle();
-      expect(request).toHaveBeenCalledTimes(1);
-      expect(request).toHaveBeenCalledWith("secrets.reload");
-
-      regenerateOnConnect({ firstConnect: false }, async () => {});
-      await settle();
-      expect(request).toHaveBeenCalledTimes(1);
-    });
   });
 });

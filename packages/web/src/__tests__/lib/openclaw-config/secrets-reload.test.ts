@@ -16,10 +16,7 @@ vi.mock("@/lib/openclaw-secrets", async (importOriginal) => ({
 
 import {
   _resetSecretsReloadQueue,
-  dropOwedSecretsReload,
-  reloadSecretsIfOwed,
   reloadSecretsInBackground,
-  secretsReloadOwed,
 } from "@/lib/openclaw-config/secrets-reload";
 import {
   _resetConfigPushState,
@@ -290,65 +287,11 @@ describe("reloadSecretsInBackground (#943)", () => {
   // OpenClaw holds. A reload that did not land has to be asked for again by
   // the next regenerate, even when the bundle is the same.
   describe("a reload that did not land", () => {
-    it("keeps the write when no client is connected, and owes the reload instead", async () => {
-      // Forgetting here made every Pinchy boot rewrite secrets.json and send a
-      // reload on the first connect: the boot regenerate runs before the WS is
-      // up, so this branch is the boot path. The debt is paid on a reconnect.
+    it("forgets the write when no client is connected", async () => {
       mockGetClient.mockReturnValue(undefined);
       reloadSecretsInBackground();
       await drain();
-      expect(mockForgetSecretsWrite).not.toHaveBeenCalled();
-      expect(secretsReloadOwed()).toBe(true);
-    });
-
-    it("sends the owed reload once, queued, and clears the debt when it lands", async () => {
-      mockGetClient.mockReturnValue(undefined);
-      reloadSecretsInBackground();
-      await drain();
-      mockGetClient.mockReturnValue({ request, hasMethod });
-
-      reloadSecretsIfOwed();
-      reloadSecretsIfOwed();
-      await drain();
-
-      expect(request).toHaveBeenCalledTimes(1);
-      expect(request).toHaveBeenCalledWith("secrets.reload");
-      expect(secretsReloadOwed()).toBe(false);
-      reloadSecretsIfOwed();
-      await drain();
-      expect(request).toHaveBeenCalledTimes(1);
-    });
-
-    it("queues the owed reload behind a config write in flight", async () => {
-      mockGetClient.mockReturnValue(undefined);
-      reloadSecretsInBackground();
-      await drain();
-      mockGetClient.mockReturnValue({ request, hasMethod });
-      let release!: (v: unknown) => void;
-      void trackConfigWrite(new Promise((r) => (release = r)));
-
-      reloadSecretsIfOwed();
-      await drain();
-      expect(request).not.toHaveBeenCalled();
-
-      release({ ok: true });
-      await drain();
-      await new Promise((r) => setTimeout(r, 300));
-      expect(request).toHaveBeenCalledTimes(1);
-    });
-
-    it("pays nothing on a cold first connect: the owed reload is dropped", async () => {
-      mockGetClient.mockReturnValue(undefined);
-      reloadSecretsInBackground();
-      await drain();
-      mockGetClient.mockReturnValue({ request, hasMethod });
-
-      dropOwedSecretsReload();
-      reloadSecretsIfOwed();
-      await drain();
-
-      expect(request).not.toHaveBeenCalled();
-      expect(secretsReloadOwed()).toBe(false);
+      expect(mockForgetSecretsWrite).toHaveBeenCalledTimes(1);
     });
 
     it("forgets the write when OpenClaw refuses the reload", async () => {
