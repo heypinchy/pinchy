@@ -27,6 +27,8 @@ const PENDING_PUSH_POLL_MS = 250;
 interface ReloadQueueState {
   /** A reload is waiting for its turn; later requests ride on it. */
   waiting: boolean;
+  /** A reload was asked for while no client was connected and has not landed. */
+  owed: boolean;
 }
 
 // On globalThis for the same reason as push-state: route bundles and the
@@ -36,12 +38,41 @@ const QUEUE_KEY = Symbol.for("pinchy.openclawConfig.secretsReloadQueue");
 
 function queue(): ReloadQueueState {
   const g = globalThis as unknown as Record<symbol, ReloadQueueState | undefined>;
-  return (g[QUEUE_KEY] ??= { waiting: false });
+  return (g[QUEUE_KEY] ??= { waiting: false, owed: false });
 }
 
 /** Test-only: forget a reload left waiting by a previous test. */
 export function _resetSecretsReloadQueue(): void {
   queue().waiting = false;
+  queue().owed = false;
+}
+
+/** A reload asked for while no client was connected, not yet sent. */
+export function secretsReloadOwed(): boolean {
+  return queue().owed;
+}
+
+/**
+ * The first connect of this process: a cold OpenClaw read the file itself on
+ * its way up, and after a Pinchy boot the bundle comes from the same database,
+ * so nothing is owed.
+ */
+export function dropOwedSecretsReload(): void {
+  queue().owed = false;
+}
+
+/**
+ * A reconnect: OpenClaw may have kept running while Pinchy's WS was down, so a
+ * reload asked for in that window is sent now — through the same queue as every
+ * other reload.
+ */
+export function reloadSecretsIfOwed(): void {
+  const q = queue();
+  if (!q.owed) return;
+  // Settled by sending: a send with no client owes it again, a refusal forgets
+  // the write record instead.
+  q.owed = false;
+  reloadSecretsInBackground();
 }
 
 function delay(ms: number): { promise: Promise<void>; cancel: () => void } {
@@ -103,7 +134,7 @@ function configWritesQuiet(): boolean {
  * the new value is already on disk, so any later OpenClaw start reads it.
  * There is no retry on a timer: the only realistic reason the WS is down
  * inside the compose network is that OpenClaw is restarting, and a restarting
- * OpenClaw resolves the fresh file on its way up. A reload that did not land
+ * OpenClaw resolves the fresh file on its way up. A reload refused or failed
  * forgets the write record (forgetSecretsWrite), so the next regenerate asks
  * again instead of judging the file as already delivered.
  */
@@ -171,7 +202,13 @@ function sendReload(): void {
         "disk and OpenClaw resolves them when it starts; a gateway that is already running " +
         "keeps the credentials it resolved at ITS start until then."
     );
-    forgetSecretsWrite();
+    // The write record is kept: the file really is on disk, and forgetting it
+    // here makes every Pinchy boot (regenerate runs before the WS connects)
+    // rewrite secrets.json under a running OpenClaw and send a reload on the
+    // first connect. A reload is owed only if OpenClaw keeps running while
+    // Pinchy's WS is down — settled on the next reconnect
+    // (reloadSecretsIfOwed), dropped on the first connect of the process.
+    queue().owed = true;
     return;
   }
   // Deliberately NOT gated on `client.hasMethod`: the advertised-method list
@@ -195,6 +232,7 @@ function sendReload(): void {
       // reload as a successful one, which is the class of lie #943 is about.
       const response = await reply;
       if (!response.ok) {
+        queue().owed = false;
         forgetSecretsWrite();
         // OpenClaw answers every failed reload alike ("secrets.reload failed"),
         // one a concurrent config change superseded included — and that
@@ -208,10 +246,12 @@ function sendReload(): void {
         );
         return;
       }
+      queue().owed = false;
       console.log(
         `[openclaw-config] ${SECRETS_RELOAD_METHOD}: OpenClaw re-resolved its secrets from disk`
       );
     } catch (err) {
+      queue().owed = false;
       forgetSecretsWrite();
       console.warn(
         `[openclaw-config] ${SECRETS_RELOAD_METHOD} failed — restart OpenClaw to apply the new ` +
