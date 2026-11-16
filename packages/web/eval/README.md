@@ -610,8 +610,9 @@ with a breadth expansion (new vendors + intra-family pairs: does the
 bigger/newer sibling behave better on a real tool-using workflow?), and all 14
 are what the published sweep in `data/` measured. Ollama's 2026-07-15
 retirement wave then took `glm-4.7` and `deepseek-v3.2` out of the serving
-path, and on 2026-11-16 Ollama stopped serving five more (`qwen3.5:397b`,
-`mistral-large-3:675b`, `deepseek-v4-pro`, `glm-5.1`, `minimax-m2.7`),
+path, and by 2026-11-16 Ollama had stopped serving eight more models, five of them
+candidates (`qwen3.5:397b`, `mistral-large-3:675b`, `deepseek-v4-pro`,
+`glm-5.1`, `minimax-m2.7`),
 leaving the **7** a sweep dispatches today. Their measured numbers stay
 published — see `data/CHANGELOG.md`'s legacy policy; only what a future sweep
 dispatches changed.

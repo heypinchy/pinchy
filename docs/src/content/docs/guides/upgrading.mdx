@@ -433,7 +433,11 @@ An agent with memory got its instructions for it — what to store, where, and t
 
 #### Eight Ollama Cloud models are gone
 
-Ollama no longer serves `deepseek-v4-flash`, `deepseek-v4-pro`, `glm-5.1`, `kimi-k2.5`, `minimax-m2.5`, `minimax-m2.7`, `mistral-large-3:675b` and `qwen3.5:397b`, so they are no longer offered in the model picker, and the fast and reasoning tiers now resolve to `kimi-k2.6` (the fast tier used to pick `deepseek-v4-flash`, the reasoning tier `deepseek-v4-pro`). An agent that still names one of them keeps that setting. While the Ollama Cloud key is configured, Pinchy gives such an agent a fallback to the provider's default model, so it answers on `kimi-k2.6` instead of failing, but every request first tries the retired model. Switch those agents to a current model in the agent's settings (gear icon → **General → Model**).
+Ollama no longer serves `deepseek-v4-flash`, `deepseek-v4-pro`, `glm-5.1`, `kimi-k2.5`, `minimax-m2.5`, `minimax-m2.7`, `mistral-large-3:675b` and `qwen3.5:397b`, so the model picker no longer offers them.
+
+New agents from a template that asks for a fast or reasoning model now get `kimi-k2.6` (see [Which model Pinchy picks](/guides/llm-providers/#which-model-pinchy-picks)). Before, those were `deepseek-v4-flash` and `deepseek-v4-pro`.
+
+An existing agent on one of these models keeps that setting. While the Ollama Cloud key is configured, it falls back to `kimi-k2.6` and keeps answering, but every message first costs a failed request to the retired model. In the agent's settings (gear icon → **General → Model**), the Model field shows the old model marked **(no longer available)**. Pick a current model there and save.
 
 ### Database migrations
 
