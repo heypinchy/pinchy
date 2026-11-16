@@ -448,6 +448,96 @@ describe("fetchOdooSchema", () => {
     });
   });
 
+  describe("when a probe gives up without an answer from Odoo", () => {
+    const fieldsAfter = (ms: number) =>
+      new Promise((resolve) => setTimeout(() => resolve([{ name: "id", type: "integer" }]), ms));
+
+    // A proxy in front of Odoo cutting requests off with its own 502 or 504
+    // fails every model alike; a single probe that ran out of retries on one
+    // is not a model to skip.
+    it("fails the sync instead of saving the schema without that model", async () => {
+      vi.useFakeTimers();
+      mockFields.mockImplementation((model: string) =>
+        model === "sale.order"
+          ? Promise.reject(Object.assign(new Error("HTTP 504: Gateway Timeout"), { code: 504 }))
+          : fieldsAfter(10)
+      );
+
+      const promise = fetchOdooSchema(creds);
+      await vi.runAllTimersAsync();
+      const result = await promise;
+
+      vi.useRealTimers();
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect(result.isAuthError).toBe(false);
+      expect(result.error).toBe(
+        "Reading Odoo's models failed partway through, so nothing was saved: " +
+          "The Odoo address answered with an error: HTTP 504: Gateway Timeout"
+      );
+    });
+
+    it("starts no further probe once one gave up", async () => {
+      // Under a proxy that times out before our bound, each probe costs that
+      // proxy's timeout three times over: walking all models took most of an hour.
+      vi.useFakeTimers();
+      mockFields.mockImplementation((model: string) =>
+        model === "sale.order"
+          ? Promise.reject(Object.assign(new Error("HTTP 504: Gateway Timeout"), { code: 504 }))
+          : fieldsAfter(5_000)
+      );
+
+      const promise = fetchOdooSchema(creds);
+      await vi.runAllTimersAsync();
+      await promise;
+
+      vi.useRealTimers();
+      const probedModels = new Set(mockFields.mock.calls.map(([model]) => model));
+      expect(probedModels.size).toBeLessThanOrEqual(5);
+    });
+
+    it("fails the sync when an access check is cut off by a proxy error", async () => {
+      vi.useFakeTimers();
+      mockFields.mockResolvedValue([{ name: "id", string: "ID", type: "integer" }]);
+      mockCheckAccessRights.mockImplementation((model: string) =>
+        model === "sale.order"
+          ? Promise.reject(Object.assign(new Error("HTTP 502: Bad Gateway"), { code: 502 }))
+          : Promise.resolve(true)
+      );
+
+      const promise = fetchOdooSchema(creds);
+      await vi.runAllTimersAsync();
+      const result = await promise;
+
+      vi.useRealTimers();
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect(result.error).toContain("HTTP 502: Bad Gateway");
+      expect(result.isAuthError).toBe(false);
+    });
+
+    it("still skips a model Odoo itself says it does not have", async () => {
+      // A module that is not installed: Odoo answers, with its own error.
+      mockFields.mockImplementation((model: string) =>
+        model === "sale.subscription.plan"
+          ? Promise.reject(
+              Object.assign(new Error("sale.subscription.plan"), {
+                code: 200,
+                data: { name: "builtins.KeyError" },
+              })
+            )
+          : Promise.resolve([{ name: "id", string: "ID", type: "integer" }])
+      );
+
+      const result = await fetchOdooSchema(creds);
+
+      expect(result.success).toBe(true);
+      if (!result.success) return;
+      expect(result.data.models.map((m) => m.model)).not.toContain("sale.subscription.plan");
+      expect(result.data.models.map((m) => m.model)).toContain("sale.order");
+    });
+  });
+
   it("retries transient errors instead of treating them as no-access", async () => {
     let saleOrderCalls = 0;
     mockFields.mockImplementation((model: string) => {
@@ -674,19 +764,38 @@ describe("fetchOdooSchema", () => {
       });
     });
 
-    it("handles checkAccessRights failure gracefully", async () => {
+    it("reads an access check that got no answer as Odoo unreachable, not as missing access", async () => {
+      vi.useFakeTimers();
       mockFields.mockResolvedValue([
         { name: "id", string: "ID", type: "integer", required: true, readonly: true },
       ]);
-      // checkAccessRights throws for all operations
       mockCheckAccessRights.mockRejectedValue(new Error("Network error"));
+
+      const promise = fetchOdooSchema(creds);
+      await vi.runAllTimersAsync();
+      const result = await promise;
+
+      vi.useRealTimers();
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect(result.error).toBe("Could not reach Odoo: Network error");
+      expect(result.isAuthError).toBe(false);
+    });
+
+    it("reads Odoo's own error on an access check as no access", async () => {
+      mockFields.mockResolvedValue([{ name: "id", string: "ID", type: "integer" }]);
+      mockCheckAccessRights.mockRejectedValue(
+        Object.assign(new Error("Access Denied"), {
+          code: 200,
+          data: { name: "odoo.exceptions.AccessError" },
+        })
+      );
 
       const result = await fetchOdooSchema(creds);
 
-      // All models should be excluded since read check fails (treated as false)
       expect(result.success).toBe(false);
       if (result.success) return;
-      expect(result.error).toContain("Could not access any Odoo models");
+      expect(result.error).toBe(READ_ACCESS_MESSAGE);
     });
   });
 
