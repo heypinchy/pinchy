@@ -288,6 +288,10 @@ import { REFUSED_BASE_URL } from "@/lib/openai-compatible-stored-url";
 import { pushConfigInBackground, _supersedePendingPushes } from "@/lib/openclaw-config/write";
 import { regenerateOnConnect } from "@/server/openclaw-connect-regenerate";
 import {
+  _resetSecretsReloadQueue,
+  reloadSecretsInBackground,
+} from "@/lib/openclaw-config/secrets-reload";
+import {
   getPendingConfigPushCount,
   _resetConfigPushState,
   nextRegenerateSequence,
@@ -12228,5 +12232,79 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     // Empty-table built-in emission is byte-identical to the built-in portion of
     // a populated run — the custom key is purely additive.
     expect(builtInsFromCustomRun).toEqual(upgradeConfig.models.providers);
+  });
+});
+
+// A regenerate that rotates a secret and changes the config (connecting a
+// Telegram bot: a new botToken and a channels change) asks for a reload and
+// starts a push in one synchronous turn. OpenClaw 2026.9 restarts the gateway
+// when the reload lands under the apply's hot reload, so the push must see the
+// reload as the write in flight (secrets-reload.ts).
+describe("secrets.reload and a push requested in the same turn", () => {
+  it("sends the apply only after the reload settled", async () => {
+    let answerReload: (v: unknown) => void = () => {};
+    const request = vi.fn(() => new Promise((r) => (answerReload = r)));
+    mockGetClient.mockReturnValue({
+      request,
+      config: { get: mockConfigGet, apply: mockConfigApply },
+    });
+    mockConfigGet.mockResolvedValue({ hash: "h" });
+    mockConfigApply.mockResolvedValue(undefined);
+    _resetSecretsReloadQueue();
+
+    reloadSecretsInBackground();
+    pushConfigInBackground(JSON.stringify({ env: { X: "1" } }));
+    await drainBackgroundCoroutine();
+    expect(request, "precondition: the reload went out").toHaveBeenCalledWith("secrets.reload");
+    expect(mockConfigApply).not.toHaveBeenCalled();
+
+    answerReload({ type: "res", id: "1", ok: true, payload: {} });
+    await drainBackgroundCoroutine();
+    await drainBackgroundCoroutine();
+    expect(mockConfigApply).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not send both when they waited behind the same apply", async () => {
+    // Both wake when the earlier apply answers; whichever claims the slot
+    // first, the other must wait for it.
+    let answerReload: (v: unknown) => void = () => {};
+    const request = vi.fn(() => new Promise((r) => (answerReload = r)));
+    mockGetClient.mockReturnValue({
+      request,
+      config: { get: mockConfigGet, apply: mockConfigApply },
+    });
+    mockConfigGet.mockResolvedValue({ hash: "h" });
+    let answerFirstApply: () => void = () => {};
+    let answerSecondApply: () => void = () => {};
+    mockConfigApply
+      .mockImplementationOnce(() => new Promise<void>((r) => (answerFirstApply = r)))
+      .mockImplementationOnce(() => new Promise<void>((r) => (answerSecondApply = r)));
+    _resetSecretsReloadQueue();
+
+    pushConfigInBackground(JSON.stringify({ env: { X: "1" } }));
+    await drainBackgroundCoroutine();
+    expect(mockConfigApply, "precondition: the first apply is in flight").toHaveBeenCalledTimes(1);
+    reloadSecretsInBackground();
+    pushConfigInBackground(JSON.stringify({ env: { X: "2" } }));
+    await drainBackgroundCoroutine();
+    expect(request).not.toHaveBeenCalled();
+
+    answerFirstApply();
+    await drainBackgroundCoroutine();
+    await drainBackgroundCoroutine();
+    const reloadSent = request.mock.calls.length === 1;
+    const secondApplySent = mockConfigApply.mock.calls.length === 2;
+    expect(reloadSent !== secondApplySent, "exactly one of them went out").toBe(true);
+
+    // A reload waiting on a pending push looks again every 250 ms.
+    if (reloadSent) answerReload({ type: "res", id: "1", ok: true, payload: {} });
+    else answerSecondApply();
+    await vi.waitFor(() => {
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(mockConfigApply).toHaveBeenCalledTimes(2);
+    });
+    answerSecondApply();
+    answerReload({ type: "res", id: "1", ok: true, payload: {} });
+    await drainBackgroundCoroutine();
   });
 });

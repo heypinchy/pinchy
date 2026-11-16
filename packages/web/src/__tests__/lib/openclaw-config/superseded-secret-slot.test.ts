@@ -233,9 +233,9 @@ function connectGateway() {
           (id) => typeof resolve(id) !== "string"
         );
         reloadOutcomes.push({ unresolved });
-        return unresolved.length === 0
-          ? { type: "res", id: "1", ok: true, payload: {} }
-          : { type: "res", id: "1", ok: false, error: { message: "unresolved SecretRef" } };
+        // openclaw-node rejects an ok:false answer with the gateway's message.
+        if (unresolved.length > 0) throw new Error("unresolved SecretRef");
+        return { type: "res", id: "1", ok: true, payload: {} };
       }
       return { type: "res", id: "1", ok: true, payload: {} };
     }),
