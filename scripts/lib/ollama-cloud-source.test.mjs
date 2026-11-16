@@ -95,11 +95,26 @@ test("parses the real curated source and finds a known model with correct fields
   assert.equal(glm.reasoning, true);
   assert.equal(glm.vision, false);
   // Catch a parser that silently matches only the first entry. The floor was 25
-  // when the catalog held 32; the 2026-07-15 retirement wave cut it to 18, so a
-  // floor near the catalog size would just be a snapshot that breaks on every
-  // retirement. 15 still catches the failure this guards (a parser returning 1).
+  // when the catalog held 32; the 2026-07-15 retirement wave cut it to 18 and
+  // the 2026-11-16 one to 9, so a floor near the catalog size would just be a
+  // snapshot that breaks on every retirement. 5 still catches the failure this
+  // guards (a parser returning 1).
   assert.ok(
-    models.length >= 15,
+    models.length >= 5,
     `expected the full catalog, parsed ${models.length}`,
   );
+  // 2026-11-16: Ollama stopped serving these eight (pnpm models:discover); the
+  // parser must not find them in the curated source any more.
+  for (const id of [
+    "deepseek-v4-flash",
+    "deepseek-v4-pro",
+    "glm-5.1",
+    "kimi-k2.5",
+    "minimax-m2.5",
+    "minimax-m2.7",
+    "mistral-large-3:675b",
+    "qwen3.5:397b",
+  ]) {
+    assert.ok(!models.some((m) => m.id === id), `${id} is retired`);
+  }
 });

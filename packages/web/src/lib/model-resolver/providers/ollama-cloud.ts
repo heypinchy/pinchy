@@ -22,15 +22,21 @@ const BY_TIER_FAMILY: Record<
   }
 > = {
   fast: {
-    general: "ollama-cloud/deepseek-v4-flash",
+    // deepseek-v4-flash was retired from Ollama Cloud (2026-11-16: no longer in
+    // /v1/models). Nothing small is left to trade reliability for speed:
+    // gpt-oss:20b is 0/12 on happy-path, conflict and line-items in the 2026-07-11
+    // sweep, and nemotron-3-super has no eval data at all. kimi-k2.6 is the
+    // strongest remaining tool-driver (see the balanced tier), so this is a
+    // forced pick: the slot loses its "fast" character rather than its reliability.
+    general: "ollama-cloud/kimi-k2.6",
     // qwen3-coder-next was retired from Ollama Cloud (2026-07-15), along with
     // the whole qwen3-coder family. kimi-k2.7-code is the only coder-specialised
     // model left on the platform, so this is a forced pick, not a ranking.
     coder: "ollama-cloud/kimi-k2.7-code",
     // ministral-3:8b ("smallest practical vision model: 8B, vision+tools") was
     // retired 2026-07-15 with the entire ministral family. There is no small
-    // vision model left: the live vision set is gemma4:31b, kimi-k2.5/2.6,
-    // minimax-m3 (tools-blocked) and mistral-large-3:675b. So this tier's
+    // vision model left: the live vision set is gemma4:31b, kimi-k2.6/2.7-code
+    // and minimax-m3 (tools-blocked). So this tier's
     // vision slot cannot be fast AND reliable, and reliability wins — the same
     // trade-off the reasoning tier already made below, for the same reason: a
     // corrupted invoice ref fails the turn outright, which is what the speed
@@ -69,17 +75,23 @@ const BY_TIER_FAMILY: Record<
     vision: "ollama-cloud/kimi-k2.6",
   },
   reasoning: {
-    general: "ollama-cloud/deepseek-v4-pro",
+    // deepseek-v4-pro (12/12 happy path, 12/12 line-items in the 2026-07-11
+    // sweep) was retired from Ollama Cloud (2026-11-16: no longer in /v1/models).
+    // Among the models still served, kimi-k2.6 beats glm-5.2 — the only other
+    // reasoning-capable candidate with real eval data — where it costs money:
+    // duplicate-guard 5/12 vs 1/12, silent-failure 4/12 vs 2/12, hard-rejection
+    // 12/12 vs 9/12, line-items 10/12 vs 9/12; glm-5.2 leads only the happy
+    // path (12/12 vs 10/12). GLM-family reasoning loops when the /v1
+    // client drops reasoning_content between turns (glm-4.7, see balanced tier).
+    // gpt-oss:120b and nemotron-3-ultra are far behind (happy path 2/12 and 9/12,
+    // hard-rejection 9/12 and 0/12). A forced pick, so this tier now resolves to
+    // the same model as balanced.
+    general: "ollama-cloud/kimi-k2.6",
     // qwen3.5:397b was the original pick, then lost the slot because the live
-    // endpoint hallucinated image contents rather than seeing them.
-    //
-    // As of 2026-07-30 it genuinely sees again (6/6 fixture reads — see
-    // ollama-cloud-models.ts) and is flagged vision:true once more. It is still
-    // NOT reinstated here, and that is a decision rather than an oversight:
-    // proving a model can read a number off a test image says nothing about
-    // whether it carries opaque refs through a multi-turn tool loop, which is
-    // this slot's actual job. Reinstating it needs comparative evidence against
-    // kimi-k2.6 — an eval sweep, not a vision probe.
+    // endpoint hallucinated image contents rather than seeing them. Ollama
+    // stopped serving it altogether (found 2026-11-16). A successor for this
+    // slot needs comparative evidence against kimi-k2.6 on a multi-turn tool
+    // loop — an eval sweep, not a vision probe.
     //
     // minimax-m3 replaced it on confirmed vision quality, then had to go too:
     // it is now tools-blocked for mangling nested tool arguments (Penny,

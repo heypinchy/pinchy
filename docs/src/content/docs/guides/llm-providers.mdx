@@ -16,7 +16,7 @@ For the very first provider during the setup wizard, see [Installation](/install
 | **Anthropic**         | API key       | Claude family (Haiku, Sonnet, Opus, Fable) — strongest tool calling and reasoning                                              |
 | **OpenAI**            | API key       | GPT-5 family, o-series reasoning models                                                                                        |
 | **Google**            | API key       | Gemini family — long context, fast and cheap                                                                                   |
-| **Ollama Cloud**      | API key       | Hosted open-source models (Kimi, Qwen, Mistral, Gemini Flash) via ollama.com                                                   |
+| **Ollama Cloud**      | API key       | Hosted open-source models (Kimi, GLM, MiniMax, Gemma, gpt-oss, Nemotron) via ollama.com                                        |
 | **Ollama (Local)**    | URL           | Fully air-gapped local inference — see [Ollama setup](/guides/ollama-setup/)                                                   |
 | **OpenAI-compatible** | URL + API key | Any endpoint that speaks the OpenAI API — sovereign EU clouds, self-hosted gateways. See [below](#openai-compatible-providers) |
 
@@ -79,13 +79,14 @@ The **very first** provider you configure — built-in or custom — automatical
 
 When you create an agent from a template, Pinchy doesn't ask you for a model. Each template says how much model it needs — **fast**, **balanced** or **reasoning** — and Pinchy picks that model from your default provider:
 
-| Provider  | Fast                  | Balanced        | Reasoning       |
-| --------- | --------------------- | --------------- | --------------- |
-| Anthropic | Claude Haiku 4.5      | Claude Sonnet 5 | Claude Opus 4.7 |
-| OpenAI    | GPT-5.4 Mini          | GPT-5.5         | GPT-5.5         |
-| Google    | Gemini 2.5 Flash-Lite | Gemini 2.5 Pro  | Gemini 2.5 Pro  |
+| Provider     | Fast                  | Balanced        | Reasoning       |
+| ------------ | --------------------- | --------------- | --------------- |
+| Anthropic    | Claude Haiku 4.5      | Claude Sonnet 5 | Claude Opus 4.7 |
+| OpenAI       | GPT-5.4 Mini          | GPT-5.5         | GPT-5.5         |
+| Google       | Gemini 2.5 Flash-Lite | Gemini 2.5 Pro  | Gemini 2.5 Pro  |
+| Ollama Cloud | Kimi K2.6             | Kimi K2.6       | Kimi K2.6       |
 
-For these three providers, the balanced model is also what a **Custom Agent** starts on, and it's the model behind Pinchy's **PDF and image tools** — which also read the scanned pages your knowledge base sends out at index time (see [What indexing sends to your provider](/guides/mount-data-directories/#what-indexing-sends-to-your-provider)). With several providers configured, that reading goes to Anthropic first, then Google, then OpenAI, then Ollama Cloud.
+For Anthropic, OpenAI and Google, the balanced model is also what a **Custom Agent** starts on, and it's the model behind Pinchy's **PDF and image tools** — which also read the scanned pages your knowledge base sends out at index time (see [What indexing sends to your provider](/guides/mount-data-directories/#what-indexing-sends-to-your-provider)). With several providers configured, that reading goes to Anthropic first, then Google, then OpenAI, then Ollama Cloud. On Ollama Cloud, a Custom Agent starts on Kimi K2.6 too, but the PDF and image tools use MiniMax M3.
 
 The pick is a starting point: [changing an agent's model](#change-an-agents-model) takes a few clicks.
 
@@ -237,12 +238,17 @@ When the provider returns a server error (HTTP 5xx) that Pinchy recognises as a 
 
 This avoids having to hunt through menus when a model goes down.
 
-### Removed model: `ollama-cloud/kimi-k2-thinking`
+### A model was removed from Pinchy's list
 
-`ollama-cloud/kimi-k2-thinking` has been removed from Pinchy's supported model list. Agents that used this model will show the model-unavailable bubble the next time they receive a message. To resolve it:
+When a provider stops serving a model, Pinchy removes it from the model list (most recently eight Ollama Cloud models, see [Upgrading](/guides/upgrading/#eight-ollama-cloud-models-are-gone)). An agent that still names a removed model keeps that setting:
 
-1. Click **Switch model →** in the error bubble, or open the agent's settings manually (gear icon → **General → Model**).
-2. Select a replacement — `ollama-cloud/deepseek-v4-pro` is a good like-for-like option for reasoning-heavy workloads.
+- On a built-in provider (Anthropic, OpenAI, Google, Ollama Cloud, Ollama Local) that is still configured, the agent falls back to the provider's default model, so it keeps answering, but every message first costs a failed request to the removed model.
+- Without a fallback, for example on an OpenAI-compatible provider, every message fails with an error. If the provider's error says the model is retired or unknown, Pinchy says the model is no longer available. Otherwise you see the provider's own error with the model named, and for a server error the model-unavailable bubble described above.
+
+Either way, the agent's **Model** field marks the old model **(no longer available)**. To resolve it:
+
+1. Open the agent's settings (gear icon → **General → Model**), or click **Switch model →** if the error shows it.
+2. Select a replacement from the same provider. On Ollama Cloud, `kimi-k2.6` is a good like-for-like option.
 3. Click **Save**. The agent is ready immediately.
 
 **"Invalid API key"** — Double-check the key with the provider's own dashboard. Anthropic keys start with `sk-ant-`, OpenAI keys with `sk-`, Google keys are typically `AIza...`.
@@ -257,4 +263,4 @@ This avoids having to hunt through menus when a model goes down.
 
 **The model dropdown is empty after adding a key** — Pinchy caches the model list for one hour for cloud providers. Try waiting a minute, or remove and re-add the provider to force a refresh. Local Ollama is always fetched live.
 
-**Ollama Cloud returns `HTTP 500: "Internal Server Error (ref: …)"` on every retry** — Ollama Cloud occasionally retires a model from its serving fleet without surfacing a `model_not_found` error or a deprecation header. The model can still appear on `ollama.com/library/<model>` and pull fine for self-hosted Ollama, but the hosted `ollama.com/v1` endpoint no longer routes to it, so every request to that one model ends in a generic upstream 500 with a fresh reference ID. We first saw this with `kimi-k2-thinking` on 2026-05-08; consecutive retries each produced different upstream reference IDs, all 500. If retries fail consistently and other Ollama Cloud models on the same key still work, treat the failing model as unavailable and switch the agent to another Ollama Cloud model (for example Kimi K2.5, Kimi K2.6, or DeepSeek V4). If every Ollama Cloud model fails, the issue is transient — wait a moment and retry.
+**Ollama Cloud returns `HTTP 500: "Internal Server Error (ref: …)"` on every retry** — Ollama Cloud occasionally retires a model from its serving fleet without surfacing a `model_not_found` error or a deprecation header. The model can still appear on `ollama.com/library/<model>` and pull fine for self-hosted Ollama, but the hosted `ollama.com/v1` endpoint no longer routes to it, so every request to that one model ends in a generic upstream 500 with a fresh reference ID. We first saw this with `kimi-k2-thinking` on 2026-05-08; consecutive retries each produced different upstream reference IDs, all 500. If retries fail consistently and other Ollama Cloud models on the same key still work, treat the failing model as unavailable and switch the agent to another Ollama Cloud model (for example Kimi K2.6). If every Ollama Cloud model fails, the issue is transient — wait a moment and retry.

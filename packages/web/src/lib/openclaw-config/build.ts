@@ -1564,7 +1564,8 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
         name: m.id,
         contextWindow: m.contextWindow,
         // Researched per-model quality knee, emitted only where the catalog
-        // sets one (deepseek-v4-pro/flash). The global operational ceiling is
+        // sets one (none today: deepseek-v4-pro/flash carried 131072 until Ollama
+        // stopped serving them, 2026-11-16). The global operational ceiling is
         // NOT applied here — applyEffectiveContextCeiling() clamps the whole
         // emitted tree below, so every provider is covered by one rule.
         ...(m.contextTokens !== undefined ? { contextTokens: m.contextTokens } : {}),

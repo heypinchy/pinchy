@@ -58,22 +58,6 @@ export const MODEL_PRICING: PricingSnapshot = {
   crossCheck:
     "Artificial Analysis provider tables; direct list prices from Together / Fireworks / DeepInfra where multi-hosted",
   entries: {
-    "deepseek-v4-flash": {
-      inputMin: 0.054,
-      inputMax: 0.14,
-      outputMin: 0.242,
-      outputMax: 0.28,
-      confidence: "high",
-      note: "OpenRouter weighted-avg (Jun 2026) realized $0.054/$0.242; DeepSeek first-party $0.14/$0.28.",
-    },
-    "deepseek-v4-pro": {
-      inputMin: 0.435,
-      inputMax: 0.435,
-      outputMin: 0.87,
-      outputMax: 0.87,
-      confidence: "high",
-      note: "OpenRouter (Jul 2026). Single canonical listing — no provider spread captured yet.",
-    },
     "gemma4:31b": {
       inputMin: 0.1,
       inputMax: 0.14,
@@ -81,14 +65,6 @@ export const MODEL_PRICING: PricingSnapshot = {
       outputMax: 0.35,
       confidence: "high",
       note: "OpenRouter $0.10/$0.35; TokenCost lists $0.14/M input — narrow spread.",
-    },
-    "glm-5.1": {
-      inputMin: 0.966,
-      inputMax: 0.966,
-      outputMin: 3.036,
-      outputMax: 3.036,
-      confidence: "high",
-      note: "OpenRouter (Jul 2026). Note: OR prices 5.1 ABOVE 5.2 — 5.1 is the less price-optimized release.",
     },
     "glm-5.2": {
       inputMin: 0.447,
@@ -114,14 +90,6 @@ export const MODEL_PRICING: PricingSnapshot = {
       confidence: "high",
       note: "DeepInfra $0.039/$0.19 (cheapest); Together & Fireworks both $0.15/$0.60.",
     },
-    "kimi-k2.5": {
-      inputMin: 0.6,
-      inputMax: 0.6,
-      outputMin: 2.0,
-      outputMax: 3.0,
-      confidence: "medium",
-      note: "OpenRouter input $0.60; output varies by provider (~$2.00–3.00). Re-capture at sweep.",
-    },
     "kimi-k2.6": {
       inputMin: 0.66,
       inputMax: 0.66,
@@ -138,22 +106,6 @@ export const MODEL_PRICING: PricingSnapshot = {
       confidence: "approx",
       note: "No direct listing found; proxied from kimi-k2.6 (same family). Re-capture at sweep.",
     },
-    "minimax-m2.5": {
-      inputMin: 0.24,
-      inputMax: 0.24,
-      outputMin: 0.96,
-      outputMax: 0.96,
-      confidence: "approx",
-      note: "No direct listing found; proxied from minimax-m2.7 (same family). Re-capture at sweep.",
-    },
-    "minimax-m2.7": {
-      inputMin: 0.24,
-      inputMax: 0.24,
-      outputMin: 0.96,
-      outputMax: 0.96,
-      confidence: "high",
-      note: "OpenRouter (Jul 2026).",
-    },
     "minimax-m3": {
       inputMin: 0.098,
       inputMax: 0.3,
@@ -161,14 +113,6 @@ export const MODEL_PRICING: PricingSnapshot = {
       outputMax: 1.21,
       confidence: "high",
       note: "OpenRouter weighted-avg (Jun 2026) $0.098/$1.21; first-party $0.30/$1.20.",
-    },
-    "mistral-large-3:675b": {
-      inputMin: 0.5,
-      inputMax: 0.5,
-      outputMin: 1.5,
-      outputMax: 1.5,
-      confidence: "medium",
-      note: "OpenRouter Mistral Large 3 (2512) (Jul 2026). Single listing — verify the 675B open-weight variant at sweep.",
     },
     // nemotron-3-nano:30b's entry was removed on 2026-07-30 with the model
     // itself (it skipped tool calls in 4 of 5 probe rounds). The Record is keyed
@@ -190,14 +134,6 @@ export const MODEL_PRICING: PricingSnapshot = {
       outputMax: 2.61,
       confidence: "high",
       note: "OpenRouter weighted-avg (Jun 2026).",
-    },
-    "qwen3.5:397b": {
-      inputMin: 0.3,
-      inputMax: 0.5,
-      outputMin: 1.56,
-      outputMax: 2.0,
-      confidence: "approx",
-      note: "397B open-weight not directly listed on aggregators; bracketed above Qwen3.5-Plus ($0.26/$1.56) for the flagship size. Re-capture at sweep.",
     },
   },
 };
