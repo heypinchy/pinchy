@@ -12,6 +12,23 @@ import {
 // with the fetch, so concurrent scopes cannot see each other's, and no other
 // request in the process passes through it.
 
+/**
+ * How long one Odoo request may take, response body included, before Pinchy
+ * gives up on it. Every call the web app makes is metadata — authenticate,
+ * version, fields_get, check_access_rights — which a healthy Odoo serves in
+ * well under a second, and a busy one (the schema sync keeps up to 20 requests
+ * in flight) in seconds. The slowest legitimate answer is a cold Odoo loading
+ * its registry on the first request after a restart, which can take tens of
+ * seconds on a large database. Odoo's own worker limit, `limit_time_cpu`,
+ * defaults to 60 seconds: a request that needed more would be killed by Odoo
+ * itself. Past this an answer is not coming — an Odoo, or a proxy in front of
+ * it, that took the connection and went silent — and the admin waiting on
+ * the page is better served by "did not answer in time" than by undici's
+ * 300-second default. Kept below the plugin's 120 s, which also covers an
+ * agent's large search_read.
+ */
+export const ODOO_REQUEST_TIMEOUT_MS = 60_000;
+
 /** A fetch confined to one checked origin. Pass it to every OdooClient and `OdooClient.authenticate` in the scope. */
 export type PinnedOdooFetch = typeof globalThis.fetch;
 
@@ -19,11 +36,15 @@ export type PinnedOdooFetch = typeof globalThis.fetch;
  * Runs `fn` with a fetch whose requests to `origin` go to `target` — the
  * addresses `resolveExternalUrlTarget` classified for that origin. A request
  * to any other origin is refused: it would go out by name, unchecked.
+ *
+ * Each request gets its own bound of `timeoutMs` (see
+ * {@link ODOO_REQUEST_TIMEOUT_MS}); a signal the caller passes still cancels.
  */
 export async function withPinnedOdoo<T>(
   origin: string,
   target: PinnedTarget,
-  fn: (pinned: PinnedOdooFetch) => Promise<T>
+  fn: (pinned: PinnedOdooFetch) => Promise<T>,
+  { timeoutMs = ODOO_REQUEST_TIMEOUT_MS }: { timeoutMs?: number } = {}
 ): Promise<T> {
   // One connector per scope: a schema sync makes hundreds of requests.
   const agent = createPinnedAgent(target);
@@ -44,7 +65,13 @@ export async function withPinnedOdoo<T>(
           "it would be sent by host name, unchecked."
       );
     }
-    return fetchWithPinnedAgent(url, init ?? {}, agent);
+    // A fresh bound per request, not one deadline for the scope: a schema
+    // sync makes hundreds. Combined with the caller's signal, never replaced
+    // by it — `init.signal ?? timeout` would drop the bound for any caller
+    // that passes a signal.
+    const timeout = AbortSignal.timeout(timeoutMs);
+    const signal = init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
+    return fetchWithPinnedAgent(url, { ...init, signal }, agent);
   };
 
   try {

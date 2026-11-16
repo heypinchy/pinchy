@@ -1,7 +1,11 @@
 import { OdooClient } from "odoo-node";
 import type { PinnedOdooFetch } from "./odoo-pin";
 import { runWithConcurrency } from "@/lib/concurrency";
-import { describeOdooError } from "@/lib/integrations/odoo-error";
+import {
+  describeOdooError,
+  isOdooTimeout,
+  odooTimeoutMessage,
+} from "@/lib/integrations/odoo-error";
 import { readOdooFields } from "@/lib/integrations/odoo-calls";
 
 export { MODEL_CATEGORIES, type ModelCategory } from "./odoo-model-catalog";
@@ -137,7 +141,11 @@ function isTransientOdooProbeError(error: unknown): boolean {
  * another reason, and the error says which: "Could not reach Odoo: …" when
  * none got an answer, the shared error when all failed alike (a refused
  * redirect, a proxy error), otherwise the first few distinct failures.
- * Retries transient errors (timeouts, rate limits, 5xx) up to MAX_RETRIES times.
+ * Retries transient errors (network resets, rate limits, 5xx) up to MAX_RETRIES times.
+ * A request the pinned fetch's bound cut off is not retried, and no further
+ * probe starts: Odoo took the connection and went silent, and each probe of
+ * it would cost the whole bound again. Such a sync fails, even when some
+ * models answered first — a partial schema would drop the rest.
  * Limits concurrency to MAX_CONCURRENCY to avoid overwhelming the server.
  * Does NOT save anything — returns the data for the caller to handle.
  */
@@ -179,9 +187,16 @@ export async function fetchOdooSchema(credentials: {
     failure?: { text: string; unreachable: boolean };
   };
 
+  /** Set once any request timed out; probes not yet started are skipped. */
+  let stoppedAnswering = false;
+
   const tasks = ALL_KNOWN_MODELS.map(({ model, name, category }) => {
     return async (): Promise<ProbeResult> => {
       for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        if (stoppedAnswering) {
+          const failure = { text: odooTimeoutMessage(), unreachable: true };
+          return { model, name, category, fields: [], accessible: false, failure };
+        }
         try {
           const fields = await readOdooFields(client, model);
 
@@ -191,7 +206,9 @@ export async function fetchOdooSchema(credentials: {
           ): Promise<boolean> => {
             try {
               return await client.checkAccessRights(model, op);
-            } catch {
+            } catch (error) {
+              // No answer is not "no access".
+              if (isOdooTimeout(error)) throw error;
               return false;
             }
           };
@@ -212,6 +229,11 @@ export async function fetchOdooSchema(credentials: {
 
           return { model, name, category, fields, accessible: true, access };
         } catch (error) {
+          if (isOdooTimeout(error)) {
+            stoppedAnswering = true;
+            const failure = { text: describeOdooError(error), unreachable: true };
+            return { model, name, category, fields: [], accessible: false, failure };
+          }
           if (isAccessError(error)) {
             // Permanent access denial — flag it so the caller can distinguish
             // auth-related failures (which should mark the integration as
@@ -251,6 +273,17 @@ export async function fetchOdooSchema(credentials: {
   });
 
   const results = await runWithConcurrency(tasks, MAX_CONCURRENCY);
+
+  if (stoppedAnswering) {
+    const answeredFirst = results.some((r) => !r.failure?.unreachable);
+    return {
+      success: false,
+      error: answeredFirst
+        ? `Odoo stopped answering partway through reading its models: ${odooTimeoutMessage()}`
+        : `Could not reach Odoo: ${odooTimeoutMessage()}`,
+      isAuthError: false,
+    };
+  }
 
   const accessibleModels = results.filter((r) => r.accessible && r.fields.length > 0);
 

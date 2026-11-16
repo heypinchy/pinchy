@@ -390,6 +390,64 @@ describe("fetchOdooSchema", () => {
     expect(result.isAuthError).toBe(true);
   });
 
+  describe("when Odoo stops answering", () => {
+    // odoo-node's error for a request the pinned fetch's bound cut off.
+    const timedOut = () =>
+      Object.assign(new Error("The operation was aborted due to timeout"), {
+        code: 0,
+        cause: new DOMException("The operation was aborted due to timeout", "TimeoutError"),
+      });
+
+    it("neither retries a timed-out probe nor starts any more, and says Odoo did not answer in time", async () => {
+      // Each probe of a blackhole costs the whole bound. Retrying it, and
+      // walking every curated model five at a time, turned one silent server
+      // into an hour-long sync.
+      mockFields.mockRejectedValue(timedOut());
+
+      const result = await fetchOdooSchema(creds);
+
+      expect(mockFields.mock.calls.length).toBeLessThanOrEqual(5);
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect(result.isAuthError).toBe(false);
+      expect(result.error).toMatch(
+        /^Could not reach Odoo: Odoo did not answer within \d+ seconds\./
+      );
+    });
+
+    it("fails the sync rather than save the models that answered before it stopped", async () => {
+      // A partial schema would quietly drop every model that was never probed.
+      let calls = 0;
+      mockFields.mockImplementation(() => {
+        calls++;
+        return calls <= 3
+          ? Promise.resolve([{ name: "id", string: "ID", type: "integer" }])
+          : Promise.reject(timedOut());
+      });
+
+      const result = await fetchOdooSchema(creds);
+
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect(result.isAuthError).toBe(false);
+      expect(result.error).toMatch(
+        /^Odoo stopped answering partway through reading its models: Odoo did not answer within \d+ seconds\./
+      );
+    });
+
+    it("does not read an access check that timed out as missing access", async () => {
+      mockFields.mockResolvedValue([{ name: "id", string: "ID", type: "integer" }]);
+      mockCheckAccessRights.mockRejectedValue(timedOut());
+
+      const result = await fetchOdooSchema(creds);
+
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect(result.isAuthError).toBe(false);
+      expect(result.error).toMatch(/Odoo did not answer within \d+ seconds\./);
+    });
+  });
+
   it("retries transient errors instead of treating them as no-access", async () => {
     let saleOrderCalls = 0;
     mockFields.mockImplementation((model: string) => {
