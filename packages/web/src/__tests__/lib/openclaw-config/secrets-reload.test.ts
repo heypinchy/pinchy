@@ -101,14 +101,43 @@ describe("reloadSecretsInBackground (#943)", () => {
   it("reports a refused reload as a failure rather than success", async () => {
     // openclaw-node rejects the request with the gateway's error message when
     // OpenClaw answers ok:false.
-    request.mockRejectedValue(new Error("secrets.reload failed"));
+    request.mockRejectedValue(new Error("unresolved SecretRef providers/x/apiKey"));
 
     reloadSecretsInBackground();
     await drain();
 
-    expect(warnSpy).toHaveBeenCalled();
     const warning = warnSpy.mock.calls.map((c: unknown[]) => c.join(" ")).join("\n");
-    expect(warning).toContain("secrets.reload failed");
+    expect(warning).toMatch(/refused by the gateway \(unresolved SecretRef providers\/x\/apiKey\)/);
+  });
+
+  it("reads openclaw-node's own fallback message for an ok:false answer as a refusal", async () => {
+    // With no error message from the gateway, openclaw-node rejects with
+    // "Request failed: <id>" — still an answer, not a lost connection.
+    request.mockRejectedValue(new Error("Request failed: 1731-abc"));
+
+    reloadSecretsInBackground();
+    await drain();
+
+    const warning = warnSpy.mock.calls.map((c: unknown[]) => c.join(" ")).join("\n");
+    expect(warning).toMatch(/refused by the gateway/);
+  });
+
+  it.each([
+    "Not connected to OpenClaw Gateway",
+    "Not connected to OpenClaw Gateway: connection closed",
+    "Not connected to OpenClaw Gateway: connection error",
+  ])("does not send an operator to restart a gateway it merely lost (%s)", async (message) => {
+    // The socket is down in practice because OpenClaw is restarting, and a
+    // restarting OpenClaw reads the new file on its way up. Telling the
+    // operator to restart would take every agent down for nothing.
+    request.mockRejectedValue(new Error(message));
+
+    reloadSecretsInBackground();
+    await drain();
+
+    const warning = warnSpy.mock.calls.map((c: unknown[]) => c.join(" ")).join("\n");
+    expect(warning).toMatch(/OpenClaw was unreachable/);
+    expect(warning).not.toMatch(/refused by the gateway/);
   });
 
   it("calls for a restart when the reload timed out instead of calling it refused", async () => {

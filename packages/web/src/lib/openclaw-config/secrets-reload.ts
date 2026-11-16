@@ -19,6 +19,7 @@ const SECRETS_RELOAD_METHOD = "secrets.reload";
  * is the gateway's own ok:false message, i.e. a refusal.
  */
 const NO_ANSWER = /^(?:Not connected to OpenClaw Gateway|Request \S+ timed out$)/;
+const CONNECTION_LOST = /^Not connected to OpenClaw Gateway/;
 
 /**
  * How long a reload waits for the config writes ahead of it before it is sent
@@ -207,7 +208,19 @@ function sendReload(): void {
     } catch (err) {
       forgetSecretsWrite();
       const message = err instanceof Error ? err.message : String(err);
+      if (CONNECTION_LOST.test(message)) {
+        // In practice the socket is down because OpenClaw is restarting, and
+        // a restarting OpenClaw reads the fresh file on its way up.
+        console.warn(
+          `[openclaw-config] ${SECRETS_RELOAD_METHOD} failed — OpenClaw was unreachable. If it ` +
+            "restarted, it read the new credentials on its way up; if it stayed up, restart it " +
+            "to apply them:",
+          message
+        );
+        return;
+      }
       if (NO_ANSWER.test(message)) {
+        // A request timeout: the gateway is up but hung, so only a restart helps.
         console.warn(
           `[openclaw-config] ${SECRETS_RELOAD_METHOD} failed — restart OpenClaw to apply the new ` +
             "credentials:",
