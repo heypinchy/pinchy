@@ -1,4 +1,4 @@
-import { ODOO_REQUEST_TIMEOUT_MS } from "./odoo-pin";
+import { ODOO_REQUEST_TIMEOUT_MS } from "./odoo-timeout";
 
 /** Longest Odoo error message handed back to an admin. */
 const MAX_LENGTH = 300;

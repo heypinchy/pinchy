@@ -10,7 +10,7 @@ import {
   odooRedirectRefusedMessage,
   odooTimeoutMessage,
 } from "@/lib/integrations/odoo-error";
-import { ODOO_REQUEST_TIMEOUT_MS } from "@/lib/integrations/odoo-pin";
+import { ODOO_REQUEST_TIMEOUT_MS } from "@/lib/integrations/odoo-timeout";
 
 export const POST = withAdmin(async (request) => {
   const parsed = await parseRequestBody(listDatabasesSchema, request);

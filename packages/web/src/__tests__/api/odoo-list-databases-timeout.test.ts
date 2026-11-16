@@ -30,10 +30,7 @@ vi.mock("@/lib/integrations/url-validation", () => ({
   }),
 }));
 
-vi.mock("@/lib/integrations/odoo-pin", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/lib/integrations/odoo-pin")>()),
-  ODOO_REQUEST_TIMEOUT_MS: 200,
-}));
+vi.mock("@/lib/integrations/odoo-timeout", () => ({ ODOO_REQUEST_TIMEOUT_MS: 200 }));
 
 let silent: Server;
 let origin: string;

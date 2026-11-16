@@ -6,7 +6,7 @@ import {
   isOdooTimeout,
   odooRedirectRefusedMessage,
 } from "@/lib/integrations/odoo-error";
-import { ODOO_REQUEST_TIMEOUT_MS } from "@/lib/integrations/odoo-pin";
+import { ODOO_REQUEST_TIMEOUT_MS } from "@/lib/integrations/odoo-timeout";
 
 /** odoo-node's error for a request the pinned fetch's bound cut off. */
 function timedOut(): OdooError {
