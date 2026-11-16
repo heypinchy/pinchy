@@ -292,7 +292,11 @@ export async function fetchOdooSchema(credentials: {
   const results = await runWithConcurrency(tasks, MAX_CONCURRENCY);
 
   if (stoppedAnswering) {
-    const answeredFirst = results.some((r) => !r.failure?.unreachable);
+    // A model Odoo itself answered for; a skipped probe never asked, and a
+    // proxy's status line is not Odoo answering.
+    const answeredFirst = results.some(
+      (r) => !r.skipped && !r.failure?.unreachable && !r.failure?.connection
+    );
     return {
       success: false,
       error: answeredFirst

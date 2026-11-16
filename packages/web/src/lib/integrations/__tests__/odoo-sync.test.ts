@@ -435,6 +435,28 @@ describe("fetchOdooSchema", () => {
       );
     });
 
+    it("does not say Odoo stopped partway when the models it skipped were never read", async () => {
+      // A fast proxy error stops new probes; a probe still running then times out.
+      vi.useFakeTimers();
+      mockFields.mockImplementation((model: string) => {
+        if (model === "sale.order") {
+          return Promise.reject(Object.assign(new Error("HTTP 502: Bad Gateway"), { code: 502 }));
+        }
+        return new Promise((_, reject) => setTimeout(() => reject(timedOut()), 5_000));
+      });
+
+      const promise = fetchOdooSchema(creds);
+      await vi.runAllTimersAsync();
+      const result = await promise;
+
+      vi.useRealTimers();
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect(result.error).toMatch(
+        /^Could not reach Odoo: Odoo did not answer within \d+ seconds\./
+      );
+    });
+
     it("does not read an access check that timed out as missing access", async () => {
       mockFields.mockResolvedValue([{ name: "id", string: "ID", type: "integer" }]);
       mockCheckAccessRights.mockRejectedValue(timedOut());
