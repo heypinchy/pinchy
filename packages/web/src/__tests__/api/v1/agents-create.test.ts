@@ -200,7 +200,9 @@ describe("POST /api/v1/agents", () => {
     expect(revalidatePath).toHaveBeenCalledWith("/", "layout");
     // successResult.autoConfiguredPermissions is [] — the permission loop
     // must be a true no-op, not queue an empty/degenerate audit entry.
-    expect(deferAuditLog).not.toHaveBeenCalled();
+    expect(deferAuditLog).not.toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "config.changed" })
+    );
   });
 
   // ── Headline assertion: the audit surface Pinchy sells ──────────────────
@@ -215,7 +217,7 @@ describe("POST /api/v1/agents", () => {
     // Exact-match: the absence of an `issuer` field is as load-bearing as the
     // presence of `apiKey`. The key is the actor; nothing here may claim a
     // human delegated this action.
-    expect(appendAuditLog).toHaveBeenCalledWith({
+    expect(deferAuditLog).toHaveBeenCalledWith({
       actorType: "api_key",
       actorId: "key-1",
       eventType: "agent.created",
@@ -307,11 +309,11 @@ describe("POST /api/v1/agents", () => {
     await expect(POST(postRequest(validBody), routeContext())).rejects.toThrow("regen failed");
 
     // An agent that exists but was never written down is the one outcome an
-    // audit product cannot ship. Registering the after() only once
+    // audit product cannot ship. Registering the audit only once
     // createAgent RETURNED — as this route used to — lost exactly this record,
     // while the comment there advertised it as preventing a "false success".
     // The success was never false: the row is committed by this point.
-    expect(appendAuditLog).toHaveBeenCalledWith(
+    expect(deferAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: "agent.created",
         outcome: "success",
@@ -368,7 +370,7 @@ describe("POST /api/v1/agents", () => {
 
     await expect(POST(postRequest(validBody), routeContext())).rejects.toThrow();
 
-    expect(appendAuditLog).not.toHaveBeenCalled();
+    expect(deferAuditLog).not.toHaveBeenCalled();
   });
 
   it("audits auto-configured integration permissions as config.changed with actorType 'api_key'", async () => {
@@ -513,7 +515,7 @@ describe("POST /api/v1/agents", () => {
       docsUrl: "https://docs.heypinchy.com/guides/ollama-setup#models-for-agent-templates",
     });
 
-    expect(appendAuditLog).toHaveBeenCalledWith({
+    expect(deferAuditLog).toHaveBeenCalledWith({
       actorType: "api_key",
       actorId: "key-1",
       eventType: "agent.created",
@@ -526,7 +528,7 @@ describe("POST /api/v1/agents", () => {
       },
     });
     // Only the failure row — the success path never ran.
-    expect(appendAuditLog).toHaveBeenCalledTimes(1);
+    expect(deferAuditLog).toHaveBeenCalledTimes(1);
   });
 
   it("returns 400 without an audit entry when createAgent rejects on plain validation (parity with the session route)", async () => {
@@ -544,7 +546,7 @@ describe("POST /api/v1/agents", () => {
 
     expect(response.status).toBe(400);
     expect(body).toEqual({ error: "Unknown template: nonexistent" });
-    expect(appendAuditLog).not.toHaveBeenCalled();
+    expect(deferAuditLog).not.toHaveBeenCalled();
   });
 
   it("returns 403 Forbidden when the key is missing the agents:write scope, and creates nothing", async () => {
@@ -559,6 +561,9 @@ describe("POST /api/v1/agents", () => {
     // payload (with-api-key.test.ts). What must never appear is an
     // agent.created row: nothing was created.
     expect(appendAuditLog).not.toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "agent.created" })
+    );
+    expect(deferAuditLog).not.toHaveBeenCalledWith(
       expect.objectContaining({ eventType: "agent.created" })
     );
   });

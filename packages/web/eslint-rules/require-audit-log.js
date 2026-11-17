@@ -4,14 +4,16 @@ module.exports = {
     type: "problem",
     docs: {
       description:
-        "Require appendAuditLog() / deferAuditLog() in API route mutation handlers (POST/PUT/PATCH/DELETE) and forbid fire-and-forget .catch() on appendAuditLog",
+        "Require appendAuditLog() / deferAuditLog() in API route mutation handlers (POST/PUT/PATCH/DELETE) and forbid fire-and-forget .catch() on, or a bare after() around, appendAuditLog",
     },
     messages: {
       missingAuditLog:
         "Mutation handler '{{method}}' must call appendAuditLog() or deferAuditLog(). If this endpoint doesn't need auditing, add a comment directly above it: // audit-exempt: <reason> (or above the file's imports to exempt every handler in the file).",
       missingExemptReason: "audit-exempt comment must include a reason: // audit-exempt: <reason>",
+      noBareAfterAudit:
+        'Do not hand appendAuditLog() to after() directly: a failed write is dropped with no counter and no log line. `await appendAuditLog(...)` only when the audit runs before the commit or a retry would write the same row; use `deferAuditLog(...)` from @/lib/audit-deferred for a diff of already-committed state or a side effect that already happened (the failure is recorded as audit_log_write_failed). See AGENTS.md § "API Routes And Audit Trail".',
       noFireAndForgetAudit:
-        "Do not chain .catch() onto appendAuditLog(): silently swallowed audit failures break the audit-trail contract (see #231). Either `await appendAuditLog(...)` (fail-closed, returns 500) or wrap with `deferAuditLog(...)` from @/lib/audit-deferred (deferred + structured failure signal).",
+        "Do not chain .catch() onto appendAuditLog(): silently swallowed audit failures break the audit-trail contract (see #231). Either `await appendAuditLog(...)` (fail-closed, returns 500; only when the audit runs before the commit or a retry would write the same row) or wrap with `deferAuditLog(...)` from @/lib/audit-deferred (deferred + structured failure signal).",
     },
     schema: [],
   },
@@ -21,8 +23,38 @@ module.exports = {
 
     // The .catch() ban applies to every file, not just route handlers — the
     // pattern is wrong everywhere it appears, and the fix is the same.
+    const isAuditCall = (n) =>
+      n &&
+      n.type === "CallExpression" &&
+      n.callee.type === "Identifier" &&
+      n.callee.name === "appendAuditLog";
+    const unwrap = (n) => (n && n.type === "AwaitExpression" ? n.argument : n);
+
+    // True when the callback's body hands the audit write to after() with
+    // nothing around it that could record a failure: an expression body, or a
+    // top-level statement of a block. A try/catch is a TryStatement, so
+    // deferAuditLog's own after(async () => { try { ... } catch ... }) passes.
+    const callbackWritesAuditBare = (cb) => {
+      if (!cb || (cb.type !== "ArrowFunctionExpression" && cb.type !== "FunctionExpression")) {
+        return false;
+      }
+      if (cb.body.type !== "BlockStatement") return isAuditCall(unwrap(cb.body));
+      return cb.body.body.some(
+        (st) =>
+          (st.type === "ExpressionStatement" && isAuditCall(unwrap(st.expression))) ||
+          (st.type === "ReturnStatement" && isAuditCall(unwrap(st.argument)))
+      );
+    };
+
     const fireAndForgetVisitors = {
       CallExpression(node) {
+        if (
+          node.callee.type === "Identifier" &&
+          node.callee.name === "after" &&
+          callbackWritesAuditBare(node.arguments[0])
+        ) {
+          context.report({ node, messageId: "noBareAfterAudit" });
+        }
         if (
           node.callee.type === "MemberExpression" &&
           node.callee.property.type === "Identifier" &&

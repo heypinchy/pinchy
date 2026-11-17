@@ -1,10 +1,9 @@
-import { NextResponse, after } from "next/server";
+import { NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
 import { withAuth, withAdmin } from "@/lib/api-auth";
 import { parseRequestBody } from "@/lib/api-validation";
 import { createAgent } from "@/lib/agents";
 import { createAgentSchema } from "@/lib/schemas/agents";
-import { appendAuditLog } from "@/lib/audit";
 import { deferAuditLog } from "@/lib/audit-deferred";
 import {
   incompletePermissionsDetail,
@@ -43,22 +42,20 @@ export const POST = withAdmin(async (request, _ctx, session) => {
   // instead would lose both records precisely when something went wrong.
   const result = await createAgent(parsed.data, session.user.id!, {
     onCreated: (agent, audit) =>
-      after(() =>
-        appendAuditLog({
-          actorType: "user",
-          actorId: session.user.id!,
-          eventType: "agent.created",
-          resource: `agent:${agent.id}`,
-          detail: {
-            name: agent.name,
-            model: agent.model,
-            templateId: parsed.data.templateId,
-            skills: audit.templateSkills,
-            modelSelection: audit.modelSelection,
-          },
-          outcome: "success",
-        })
-      ),
+      deferAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "agent.created",
+        resource: `agent:${agent.id}`,
+        detail: {
+          name: agent.name,
+          model: agent.model,
+          templateId: parsed.data.templateId,
+          skills: audit.templateSkills,
+          modelSelection: audit.modelSelection,
+        },
+        outcome: "success",
+      }),
     onPermissionsConfigured: (agent, entry) =>
       deferAuditLog({
         actorType: "user",
@@ -96,7 +93,7 @@ export const POST = withAdmin(async (request, _ctx, session) => {
     // `capabilityFailure`. Both return before the insert, so the callback
     // above never fired.
     if (result.error.status === 422) {
-      await appendAuditLog({
+      deferAuditLog({
         actorType: "user",
         actorId: session.user.id!,
         eventType: "agent.created",

@@ -1,10 +1,10 @@
-import { NextRequest, NextResponse, after } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { deferAuditLog } from "@/lib/audit-deferred";
 import { requireAdmin } from "@/lib/api-auth";
 import { isEnterprise } from "@/lib/enterprise";
 import { db } from "@/db";
 import { groups, userGroups } from "@/db/schema";
 import { eq, count } from "drizzle-orm";
-import { appendAuditLog } from "@/lib/audit";
 import { parseRequestBody } from "@/lib/api-validation";
 import { createGroupSchema } from "@/lib/schemas/groups";
 
@@ -48,16 +48,14 @@ export async function POST(request: NextRequest) {
     .values({ name, description: description?.trim() || null })
     .returning();
 
-  after(() =>
-    appendAuditLog({
-      actorType: "user",
-      actorId: session.user.id!,
-      eventType: "group.created",
-      resource: `group:${group.id}`,
-      detail: { name: group.name },
-      outcome: "success",
-    })
-  );
+  deferAuditLog({
+    actorType: "user",
+    actorId: session.user.id!,
+    eventType: "group.created",
+    resource: `group:${group.id}`,
+    detail: { name: group.name },
+    outcome: "success",
+  });
 
   return NextResponse.json(group, { status: 201 });
 }

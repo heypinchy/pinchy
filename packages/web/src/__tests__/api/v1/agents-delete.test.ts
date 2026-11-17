@@ -52,6 +52,7 @@ vi.mock("@/lib/audit", () => ({
 import { DELETE } from "@/app/api/v1/agents/[agentId]/route";
 import { getAgent, deleteAgent } from "@/lib/agents";
 import { appendAuditLog } from "@/lib/audit";
+import { getAuditWriteFailedCount, resetAuditWriteFailedCount } from "@/lib/audit-deferred";
 import { revalidatePath } from "next/cache";
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -151,6 +152,20 @@ describe("DELETE /api/v1/agents/[agentId]", () => {
         apiKey: { id: "key-1", name: "Provisioning Key" },
       },
     });
+  });
+
+  it("still answers 200 and counts the failure when the agent.deleted audit write fails", async () => {
+    resetAuditWriteFailedCount();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    mockVerifyApiKey.mockResolvedValue(verifiedKey());
+    vi.mocked(getAgent).mockResolvedValueOnce(mockAgent as never);
+    deleteAgentSucceeds();
+    vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("audit db down"));
+
+    const response = await DELETE(deleteRequest(), ctx("agent-1"));
+
+    expect(response.status).toBe(200);
+    expect(getAuditWriteFailedCount()).toBe(1);
   });
 
   it("returns 404 when the agent does not exist, without deleting or auditing", async () => {

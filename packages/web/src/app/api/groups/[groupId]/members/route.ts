@@ -1,10 +1,10 @@
-import { NextRequest, NextResponse, after } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { isEnterprise } from "@/lib/enterprise";
 import { db } from "@/db";
 import { groups, userGroups, users } from "@/db/schema";
 import { eq, inArray } from "drizzle-orm";
-import { appendAuditLog } from "@/lib/audit";
+import { deferAuditLog } from "@/lib/audit-deferred";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 import { parseRequestBody } from "@/lib/api-validation";
 import { setMembersSchema } from "@/lib/schemas/groups";
@@ -111,20 +111,18 @@ export async function PUT(
     }
   });
 
-  after(() =>
-    appendAuditLog({
-      actorType: "user",
-      actorId: session.user.id!,
-      eventType: "group.members_updated",
-      resource: `group:${groupId}`,
-      detail: {
-        added: addedIds.map((id) => ({ id, name: nameMap.get(id) ?? id })),
-        removed: removedIds.map((id) => ({ id, name: nameMap.get(id) ?? id })),
-        memberCount: userIds.length,
-      },
-      outcome: "success",
-    })
-  );
+  deferAuditLog({
+    actorType: "user",
+    actorId: session.user.id!,
+    eventType: "group.members_updated",
+    resource: `group:${groupId}`,
+    detail: {
+      added: addedIds.map((id) => ({ id, name: nameMap.get(id) ?? id })),
+      removed: removedIds.map((id) => ({ id, name: nameMap.get(id) ?? id })),
+      memberCount: userIds.length,
+    },
+    outcome: "success",
+  });
 
   await recalculateTelegramAllowStores();
 
