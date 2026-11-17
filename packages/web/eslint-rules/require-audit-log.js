@@ -11,9 +11,9 @@ module.exports = {
         "Mutation handler '{{method}}' must call appendAuditLog() or deferAuditLog(). If this endpoint doesn't need auditing, add a comment directly above it: // audit-exempt: <reason> (or above the file's imports to exempt every handler in the file).",
       missingExemptReason: "audit-exempt comment must include a reason: // audit-exempt: <reason>",
       noBareAfterAudit:
-        'Do not hand appendAuditLog() to after() directly: a failed write is dropped with no counter and no log line. Use `await appendAuditLog(...)` for an idempotent state change (a failure surfaces as a 500), or `deferAuditLog(...)` from @/lib/audit-deferred for a side effect that already happened (the failure is recorded as audit_log_write_failed). See AGENTS.md § "API Routes And Audit Trail".',
+        'Do not hand appendAuditLog() to after() directly: a failed write is dropped with no counter and no log line. `await appendAuditLog(...)` only when the audit runs before the commit or a retry would write the same row; use `deferAuditLog(...)` from @/lib/audit-deferred for a diff of already-committed state or a side effect that already happened (the failure is recorded as audit_log_write_failed). See AGENTS.md § "API Routes And Audit Trail".',
       noFireAndForgetAudit:
-        "Do not chain .catch() onto appendAuditLog(): silently swallowed audit failures break the audit-trail contract (see #231). Either `await appendAuditLog(...)` (fail-closed, returns 500) or wrap with `deferAuditLog(...)` from @/lib/audit-deferred (deferred + structured failure signal).",
+        "Do not chain .catch() onto appendAuditLog(): silently swallowed audit failures break the audit-trail contract (see #231). Either `await appendAuditLog(...)` (fail-closed, returns 500; only when the audit runs before the commit or a retry would write the same row) or wrap with `deferAuditLog(...)` from @/lib/audit-deferred (deferred + structured failure signal).",
     },
     schema: [],
   },

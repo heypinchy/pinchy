@@ -370,7 +370,7 @@ describe("POST /api/v1/agents", () => {
 
     await expect(POST(postRequest(validBody), routeContext())).rejects.toThrow();
 
-    expect(appendAuditLog).not.toHaveBeenCalled();
+    expect(deferAuditLog).not.toHaveBeenCalled();
   });
 
   it("audits auto-configured integration permissions as config.changed with actorType 'api_key'", async () => {
@@ -546,7 +546,7 @@ describe("POST /api/v1/agents", () => {
 
     expect(response.status).toBe(400);
     expect(body).toEqual({ error: "Unknown template: nonexistent" });
-    expect(appendAuditLog).not.toHaveBeenCalled();
+    expect(deferAuditLog).not.toHaveBeenCalled();
   });
 
   it("returns 403 Forbidden when the key is missing the agents:write scope, and creates nothing", async () => {
@@ -561,6 +561,9 @@ describe("POST /api/v1/agents", () => {
     // payload (with-api-key.test.ts). What must never appear is an
     // agent.created row: nothing was created.
     expect(appendAuditLog).not.toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "agent.created" })
+    );
+    expect(deferAuditLog).not.toHaveBeenCalledWith(
       expect.objectContaining({ eventType: "agent.created" })
     );
   });
