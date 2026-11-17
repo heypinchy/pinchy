@@ -53,6 +53,7 @@ vi.mock("drizzle-orm", async (importOriginal) => {
 import { requireAdmin } from "@/lib/api-auth";
 import { createInvite } from "@/lib/invites";
 import { appendAuditLog } from "@/lib/audit";
+import { getAuditWriteFailedCount, resetAuditWriteFailedCount } from "@/lib/audit-deferred";
 import { getLicenseStatus } from "@/lib/enterprise";
 import { getSeatUsage } from "@/lib/seat-usage";
 
@@ -68,6 +69,8 @@ describe("POST /api/users/invite — seat cap", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    // redactEmail() runs while the audit entry is built, before it is deferred.
+    vi.stubEnv("AUDIT_HMAC_SECRET", "f".repeat(64));
     vi.mocked(requireAdmin).mockResolvedValue(
       mockSession({ user: { id: "admin-1", role: "admin" } })
     );
@@ -160,7 +163,6 @@ describe("POST /api/users/invite — seat cap", () => {
       activeUsers: 6,
       pendingInvites: 0,
     });
-    vi.stubEnv("AUDIT_HMAC_SECRET", "f".repeat(64));
     await POST(makeRequest({ email: "new@test.com", role: "member" }));
     // after() runs synchronously in tests (see test-setup.ts)
     expect(appendAuditLog).toHaveBeenCalledWith(
@@ -237,6 +239,49 @@ describe("POST /api/users/invite — seat cap", () => {
     const detail = call![0].detail as Record<string, unknown>;
     expect(detail).not.toHaveProperty("email");
     expect(JSON.stringify(detail)).not.toContain("alice.example@company.com");
+  });
+
+  it("still answers 201 and counts the failure when the user.invited audit write fails", async () => {
+    resetAuditWriteFailedCount();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(getLicenseStatus).mockResolvedValue({
+      active: false,
+      ver: 1,
+      maxUsers: 0,
+      features: [],
+    });
+    vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("audit db down"));
+
+    const res = await POST(makeRequest({ email: "new@test.com", role: "member" }));
+
+    // The invite row exists; a retry would mint a second token, so the 201 stands.
+    expect(res.status).toBe(201);
+    expect(getAuditWriteFailedCount()).toBe(1);
+  });
+
+  it("still answers the 403 and counts the failure when the seat-cap refusal's audit write fails", async () => {
+    resetAuditWriteFailedCount();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(getLicenseStatus).mockResolvedValue({
+      active: true,
+      ver: 1,
+      maxUsers: 5,
+      features: ["enterprise"],
+    });
+    vi.mocked(getSeatUsage).mockResolvedValue({
+      used: 6,
+      max: 5,
+      available: 0,
+      unlimited: false,
+      activeUsers: 6,
+      pendingInvites: 0,
+    });
+    vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("audit db down"));
+
+    const res = await POST(makeRequest({ email: "new@test.com", role: "member" }));
+
+    expect(res.status).toBe(403);
+    expect(getAuditWriteFailedCount()).toBe(1);
   });
 
   it("does not check seat usage when license is unlimited", async () => {

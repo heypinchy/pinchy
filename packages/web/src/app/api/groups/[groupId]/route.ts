@@ -1,10 +1,11 @@
-import { NextRequest, NextResponse, after } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { isEnterprise } from "@/lib/enterprise";
 import { db } from "@/db";
 import { groups } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { appendAuditLog, type UpdateDetail } from "@/lib/audit";
+import { deferAuditLog } from "@/lib/audit-deferred";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 import { parseRequestBody } from "@/lib/api-validation";
 import { updateGroupSchema } from "@/lib/schemas/groups";
@@ -57,16 +58,14 @@ export async function PATCH(
 
   if (Object.keys(changes).length > 0) {
     const detail: UpdateDetail = { changes };
-    after(() =>
-      appendAuditLog({
-        actorType: "user",
-        actorId: session.user.id!,
-        eventType: "group.updated",
-        resource: `group:${groupId}`,
-        detail,
-        outcome: "success",
-      })
-    );
+    await appendAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "group.updated",
+      resource: `group:${groupId}`,
+      detail,
+      outcome: "success",
+    });
   }
 
   return NextResponse.json(updated);
@@ -92,16 +91,14 @@ export async function DELETE(
     return NextResponse.json({ error: "Group not found" }, { status: 404 });
   }
 
-  after(() =>
-    appendAuditLog({
-      actorType: "user",
-      actorId: session.user.id!,
-      eventType: "group.deleted",
-      resource: `group:${groupId}`,
-      detail: { name: deleted.name },
-      outcome: "success",
-    })
-  );
+  deferAuditLog({
+    actorType: "user",
+    actorId: session.user.id!,
+    eventType: "group.deleted",
+    resource: `group:${groupId}`,
+    detail: { name: deleted.name },
+    outcome: "success",
+  });
 
   await recalculateTelegramAllowStores();
 

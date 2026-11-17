@@ -165,6 +165,7 @@ Audit logging rules:
 - Use `deferAuditLog(...)` from `@/lib/audit-deferred` for non-rollbackable side effects that already happened in a request context.
 - Use `try { await appendAuditLog(...) } catch (err) { recordAuditFailure(err, entry) }` in WebSocket, cron, or non-request contexts.
 - Never fire-and-forget audit writes with `.catch(console.error)`.
+- Never write `after(() => appendAuditLog(...))`: a failure there is dropped and never reaches `recordAuditFailure`. `require-audit-log` rejects it; use `await appendAuditLog` or `deferAuditLog`.
 - Snapshot human-readable names beside IDs with `{ id, name }` pairs.
 - Log what changed, not only that something changed.
 - For membership changes, log added/removed diffs rather than final counts alone.

@@ -10,6 +10,17 @@ const tester = new RuleTester({
 
 tester.run("require-audit-log", rule, {
   valid: [
+    // after() wrapping a try/catch that records the failure is what
+    // deferAuditLog itself does.
+    {
+      code: `after(async () => { try { await appendAuditLog({ eventType: "test" }); } catch (err) { recordAuditFailure(err, {}); } });`,
+      filename: "/lib/audit-deferred.ts",
+    },
+    // after() for work that is not an audit write.
+    {
+      code: `export async function POST(req) { deferAuditLog({ eventType: "test" }); after(() => deleteWorkspace("a")); }`,
+      filename: "/app/api/groups/route.ts",
+    },
     {
       code: `export async function POST(req) { appendAuditLog({ eventType: "test" }); }`,
       filename: "/app/api/groups/route.ts",
@@ -57,6 +68,22 @@ tester.run("require-audit-log", rule, {
     },
   ],
   invalid: [
+    // A bare after() drops a failed audit write: no counter, no log line.
+    {
+      code: `export async function POST(req) { after(() => appendAuditLog({ eventType: "test" })); }`,
+      filename: "/app/api/groups/route.ts",
+      errors: [{ messageId: "noBareAfterAudit" }],
+    },
+    {
+      code: `export async function POST(req) { after(async () => { await appendAuditLog({ eventType: "test" }); }); }`,
+      filename: "/app/api/groups/route.ts",
+      errors: [{ messageId: "noBareAfterAudit" }],
+    },
+    {
+      code: `export async function POST(req) { after(function () { return appendAuditLog({ eventType: "test" }); }); }`,
+      filename: "/lib/helper.ts",
+      errors: [{ messageId: "noBareAfterAudit" }],
+    },
     {
       code: `export async function POST(req) { return "ok"; }`,
       filename: "/app/api/groups/route.ts",

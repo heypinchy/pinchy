@@ -1,4 +1,4 @@
-import { NextResponse, after } from "next/server";
+import { NextResponse } from "next/server";
 import { withAdmin } from "@/lib/api-auth";
 import { parseRequestBody } from "@/lib/api-validation";
 import { setDefaultProviderSchema } from "@/lib/schemas/provider-default";
@@ -8,6 +8,7 @@ import { listOpenAiCompatibleProviders } from "@/lib/openai-compatible-providers
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { resetCache } from "@/lib/provider-models";
 import { appendAuditLog } from "@/lib/audit";
+import { deferAuditLog } from "@/lib/audit-deferred";
 import { refusedBaseUrlReason } from "@/lib/openai-compatible-stored-url";
 
 // Explicit "Set as default" for the unified AI-Provider settings grid (#894).
@@ -61,19 +62,17 @@ export const PATCH = withAdmin(async (request, _ctx, session) => {
     const refusedReason = await refusedBaseUrlReason(match.baseUrl);
     if (refusedReason !== null) {
       const currentDefault = await getSetting("default_provider");
-      after(() =>
-        appendAuditLog({
-          actorType: "user",
-          actorId: session.user.id!,
-          eventType: "config.changed",
-          outcome: "failure",
-          detail: {
-            action: "default_provider_refused",
-            provider: { id: provider, name: match.displayName },
-            currentDefault,
-          },
-        })
-      );
+      deferAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "config.changed",
+        outcome: "failure",
+        detail: {
+          action: "default_provider_refused",
+          provider: { id: provider, name: match.displayName },
+          currentDefault,
+        },
+      });
       return NextResponse.json(
         {
           error: `Its base URL is now refused, so it can't be the default. ${refusedReason} Change the URL first.`,
@@ -106,20 +105,18 @@ export const PATCH = withAdmin(async (request, _ctx, session) => {
   }
   resetCache();
 
-  after(() =>
-    appendAuditLog({
-      actorType: "user",
-      actorId: session.user.id!,
-      eventType: "config.changed",
-      outcome: "success",
-      detail: {
-        provider: { id: provider, name: targetName },
-        previousDefault,
-        newDefault: provider,
-        configRegenerated,
-      },
-    })
-  );
+  await appendAuditLog({
+    actorType: "user",
+    actorId: session.user.id!,
+    eventType: "config.changed",
+    outcome: "success",
+    detail: {
+      provider: { id: provider, name: targetName },
+      previousDefault,
+      newDefault: provider,
+      configRegenerated,
+    },
+  });
 
   return NextResponse.json({
     success: true,

@@ -59,16 +59,14 @@ export async function PATCH(
   // Update role
   await db.update(users).set({ role }).where(eq(users.id, userId));
 
-  after(() =>
-    appendAuditLog({
-      actorType: "user",
-      actorId: session.user.id!,
-      eventType: "user.role_updated",
-      resource: `user:${userId}`,
-      detail: { changes: { role: { from: user.role, to: role } }, userName: user.name },
-      outcome: "success",
-    })
-  );
+  await appendAuditLog({
+    actorType: "user",
+    actorId: session.user.id!,
+    eventType: "user.role_updated",
+    resource: `user:${userId}`,
+    detail: { changes: { role: { from: user.role, to: role } }, userName: user.name },
+    outcome: "success",
+  });
 
   // Telegram routing depends on the role while members may not use a personal
   // agent: a member gets no peer binding (openclaw-config/build.ts). Rebuild
@@ -187,19 +185,17 @@ export async function DELETE(
     });
   }
 
-  after(() =>
-    appendAuditLog({
-      actorType: "user",
-      actorId: session.user.id!,
-      eventType: "user.deleted",
-      resource: `user:${userId}`,
-      // GDPR Art. 17: never record the email here. The audit log is
-      // HMAC-signed and append-only, so we cannot redact later. userId
-      // is in `resource`; name is enough for human-readable diffing.
-      detail: { name: deactivated.name },
-      outcome: "success",
-    })
-  );
+  deferAuditLog({
+    actorType: "user",
+    actorId: session.user.id!,
+    eventType: "user.deleted",
+    resource: `user:${userId}`,
+    // GDPR Art. 17: never record the email here. The audit log is
+    // HMAC-signed and append-only, so we cannot redact later. userId
+    // is in `resource`; name is enough for human-readable diffing.
+    detail: { name: deactivated.name },
+    outcome: "success",
+  });
 
   // Cleanup workspaces (filesystem, not DB — deliberately outside the
   // transaction above).

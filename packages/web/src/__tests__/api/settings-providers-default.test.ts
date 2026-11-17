@@ -53,6 +53,7 @@ import type { OpenAiCompatibleProvider } from "@/lib/openai-compatible-providers
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { resetCache } from "@/lib/provider-models";
 import { appendAuditLog } from "@/lib/audit";
+import { getAuditWriteFailedCount, resetAuditWriteFailedCount } from "@/lib/audit-deferred";
 import { mockSession } from "@/test-helpers/auth";
 import { makeNextRequest, routeContext } from "@/test-helpers/route";
 
@@ -225,6 +226,33 @@ describe("PATCH /api/settings/providers/default", () => {
       },
     });
     expect(JSON.stringify(entry.detail)).not.toContain("100.100.100.200");
+  });
+
+  it("surfaces an audit write failure as an error instead of dropping it", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) =>
+      key === "anthropic_api_key" ? "sk-ant-secret" : null
+    );
+    vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("audit db down"));
+
+    await expect(PATCH(patchRequest({ provider: "anthropic" }), routeContext())).rejects.toThrow(
+      /audit db down/
+    );
+    // The default is saved; setting it again is harmless, so a retry is safe.
+    expect(setSetting).toHaveBeenCalledWith("default_provider", "anthropic", false);
+  });
+
+  it("still answers the 400 and counts the failure when the refusal's audit write fails", async () => {
+    resetAuditWriteFailedCount();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([
+      customProvider({ slug: "imds", baseUrl: "http://100.100.100.200/v1" }),
+    ]);
+    vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("audit db down"));
+
+    const res = await PATCH(patchRequest({ provider: "imds" }), routeContext());
+
+    expect(res.status).toBe(400);
+    expect(getAuditWriteFailedCount()).toBe(1);
   });
 
   it("returns success with a warning (not a 500) when regenerate throws (#880 pattern)", async () => {

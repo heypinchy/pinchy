@@ -1,4 +1,5 @@
-import { NextResponse, after } from "next/server";
+import { NextResponse } from "next/server";
+import { deferAuditLog } from "@/lib/audit-deferred";
 import { withAdmin } from "@/lib/api-auth";
 import { parseRequestBody } from "@/lib/api-validation";
 import {
@@ -338,33 +339,31 @@ export const POST = withAdmin(async (request, _ctx, session) => {
   // structured fields (same rationale as the delete route).
   const { inlineMigrated, truncated } = capMigratedAgents(migratedAgents);
 
-  after(() =>
-    appendAuditLog({
-      actorType: "user",
-      actorId: session.user.id!,
-      eventType: "config.changed",
-      outcome: "success",
-      detail: {
-        provider: { id: row.slug, name: row.displayName },
-        authType: "openai-compatible",
-        baseUrlHost,
-        // `baseUrlChange` is only present when an update moved the provider to a
-        // new base URL (origin + path, never userinfo or query — either can carry
-        // a credential), so an analyst can see where a key was re-pointed.
-        ...(auditedBaseUrlChange ? { baseUrlChange: auditedBaseUrlChange } : {}),
-        modelCount: row.models.length,
-        configRegenerated,
-        // Only present when an edit actually repointed agents off removed models.
-        ...(migratedAgents.length > 0
-          ? {
-              agentCount: migratedAgents.length,
-              migratedAgents: inlineMigrated,
-              ...(truncated ? { migratedAgentsTruncated: true } : {}),
-            }
-          : {}),
-      },
-    })
-  );
+  deferAuditLog({
+    actorType: "user",
+    actorId: session.user.id!,
+    eventType: "config.changed",
+    outcome: "success",
+    detail: {
+      provider: { id: row.slug, name: row.displayName },
+      authType: "openai-compatible",
+      baseUrlHost,
+      // `baseUrlChange` is only present when an update moved the provider to a
+      // new base URL (origin + path, never userinfo or query — either can carry
+      // a credential), so an analyst can see where a key was re-pointed.
+      ...(auditedBaseUrlChange ? { baseUrlChange: auditedBaseUrlChange } : {}),
+      modelCount: row.models.length,
+      configRegenerated,
+      // Only present when an edit actually repointed agents off removed models.
+      ...(migratedAgents.length > 0
+        ? {
+            agentCount: migratedAgents.length,
+            migratedAgents: inlineMigrated,
+            ...(truncated ? { migratedAgentsTruncated: true } : {}),
+          }
+        : {}),
+    },
+  });
 
   return NextResponse.json(row);
 });
@@ -435,21 +434,19 @@ export const DELETE = withAdmin(async (request, _ctx, session) => {
     // so it is recorded like PATCH /default's refusal. No address in it. Its
     // wording (and `reason`) depends on whether this provider is refused too.
     const refusal = await noUsableTargetRefusal(row);
-    after(() =>
-      appendAuditLog({
-        actorType: "user",
-        actorId: session.user.id!,
-        eventType: "config.changed",
-        outcome: "failure",
-        detail: {
-          action: "provider_delete_refused_no_usable_target",
-          reason: refusal.reason,
-          // Keyed by slug like every other config.changed row about an
-          // existing provider (see the header), not by the row UUID.
-          provider: { id: row.slug, name: row.displayName },
-        },
-      })
-    );
+    deferAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "config.changed",
+      outcome: "failure",
+      detail: {
+        action: "provider_delete_refused_no_usable_target",
+        reason: refusal.reason,
+        // Keyed by slug like every other config.changed row about an
+        // existing provider (see the header), not by the row UUID.
+        provider: { id: row.slug, name: row.displayName },
+      },
+    });
     return NextResponse.json({ error: refusal.error }, { status: 400 });
   }
 
@@ -514,27 +511,25 @@ export const DELETE = withAdmin(async (request, _ctx, session) => {
 
   const { inlineMigrated, truncated } = capMigratedAgents(migratedAgents);
 
-  after(() =>
-    appendAuditLog({
-      actorType: "user",
-      actorId: session.user.id!,
-      eventType: "settings.deleted",
-      resource: `settings:provider:${deleted!.slug}`,
-      outcome: "success",
-      detail: {
-        // Snapshot {id,name} + slug: the row is gone and can't be queried later.
-        name: deleted!.displayName,
-        provider: { id: deleted!.id, name: deleted!.displayName },
-        slug: deleted!.slug,
-        wasDefault,
-        ...(newDefault !== undefined ? { newDefault } : {}),
-        agentCount: migratedAgents.length,
-        migratedAgents: inlineMigrated,
-        ...(truncated ? { migratedAgentsTruncated: true } : {}),
-        configRegenerated,
-      },
-    })
-  );
+  deferAuditLog({
+    actorType: "user",
+    actorId: session.user.id!,
+    eventType: "settings.deleted",
+    resource: `settings:provider:${deleted!.slug}`,
+    outcome: "success",
+    detail: {
+      // Snapshot {id,name} + slug: the row is gone and can't be queried later.
+      name: deleted!.displayName,
+      provider: { id: deleted!.id, name: deleted!.displayName },
+      slug: deleted!.slug,
+      wasDefault,
+      ...(newDefault !== undefined ? { newDefault } : {}),
+      agentCount: migratedAgents.length,
+      migratedAgents: inlineMigrated,
+      ...(truncated ? { migratedAgentsTruncated: true } : {}),
+      configRegenerated,
+    },
+  });
 
   return NextResponse.json({
     ok: true,

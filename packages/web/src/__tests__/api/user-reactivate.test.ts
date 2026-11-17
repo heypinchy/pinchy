@@ -86,6 +86,25 @@ describe("POST /api/users/[userId]/reactivate", () => {
     );
   });
 
+  it("surfaces an audit write failure as an error instead of dropping it", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as never);
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: "u1", banned: false }]),
+      }),
+    } as never);
+    vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("audit db down"));
+
+    const req = new NextRequest("http://localhost/api/users/u1/reactivate", { method: "POST" });
+    await expect(POST(req, { params: Promise.resolve({ userId: "u1" }) })).rejects.toThrow(
+      /audit db down/
+    );
+  });
+
   it("returns 404 when user not found", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "admin-1", role: "admin" },

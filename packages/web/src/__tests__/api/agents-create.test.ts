@@ -200,6 +200,8 @@ import {
   writeIdentityFile,
 } from "@/lib/workspace";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { appendAuditLog } from "@/lib/audit";
+import { getAuditWriteFailedCount, resetAuditWriteFailedCount } from "@/lib/audit-deferred";
 import { buildKbSweepAgentPayload } from "../../../eval/kb/sweep-agent";
 
 describe("POST /api/agents", () => {
@@ -233,6 +235,27 @@ describe("POST /api/agents", () => {
     const regenInvocations = vi.mocked(regenerateOpenClawConfig).mock.invocationCallOrder;
     const waitInvocations = mockWaitForAgentInRuntime.mock.invocationCallOrder;
     expect(waitInvocations[0]).toBeGreaterThan(regenInvocations[0]);
+  });
+
+  it("still returns 201 and counts the failure when the agent.created audit write fails", async () => {
+    resetAuditWriteFailedCount();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(appendAuditLog).mockImplementation(async (entry) => {
+      if (entry.eventType === "agent.created") throw new Error("audit db down");
+    });
+
+    const response = await POST(
+      new NextRequest("http://localhost:7777/api/agents", {
+        method: "POST",
+        body: JSON.stringify({ name: "Audit Down", templateId: "custom" }),
+      }),
+      routeContext()
+    );
+
+    // The agent row is committed; a retry would create a duplicate.
+    expect(response.status).toBe(201);
+    expect(getAuditWriteFailedCount()).toBe(1);
+    vi.mocked(appendAuditLog).mockReset().mockResolvedValue(undefined);
   });
 
   it("still returns 201 with the created agent and a warning when config regeneration fails", async () => {

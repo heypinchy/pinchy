@@ -1,4 +1,4 @@
-import { NextResponse, after } from "next/server";
+import { NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
 import { withAuth, withAdmin } from "@/lib/api-auth";
 import { parseRequestBody } from "@/lib/api-validation";
@@ -43,22 +43,20 @@ export const POST = withAdmin(async (request, _ctx, session) => {
   // instead would lose both records precisely when something went wrong.
   const result = await createAgent(parsed.data, session.user.id!, {
     onCreated: (agent, audit) =>
-      after(() =>
-        appendAuditLog({
-          actorType: "user",
-          actorId: session.user.id!,
-          eventType: "agent.created",
-          resource: `agent:${agent.id}`,
-          detail: {
-            name: agent.name,
-            model: agent.model,
-            templateId: parsed.data.templateId,
-            skills: audit.templateSkills,
-            modelSelection: audit.modelSelection,
-          },
-          outcome: "success",
-        })
-      ),
+      deferAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "agent.created",
+        resource: `agent:${agent.id}`,
+        detail: {
+          name: agent.name,
+          model: agent.model,
+          templateId: parsed.data.templateId,
+          skills: audit.templateSkills,
+          modelSelection: audit.modelSelection,
+        },
+        outcome: "success",
+      }),
     onPermissionsConfigured: (agent, entry) =>
       deferAuditLog({
         actorType: "user",

@@ -1,4 +1,4 @@
-import { NextResponse, after } from "next/server";
+import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { getSetting } from "@/lib/settings";
 import { setDomainAndRefreshCache, deleteDomainAndRefreshCache } from "@/lib/domain";
@@ -54,18 +54,16 @@ export async function POST(req: Request) {
   const previousDomain = await getSetting("domain");
   await setDomainAndRefreshCache(domain);
 
-  after(() =>
-    appendAuditLog({
-      actorType: "user",
-      actorId: session.user.id!,
-      eventType: "settings.updated",
-      resource: "settings:domain",
-      detail: {
-        changes: { domain: { from: previousDomain, to: domain } },
-      },
-      outcome: "success",
-    })
-  );
+  await appendAuditLog({
+    actorType: "user",
+    actorId: session.user.id!,
+    eventType: "settings.updated",
+    resource: "settings:domain",
+    detail: {
+      changes: { domain: { from: previousDomain, to: domain } },
+    },
+    outcome: "success",
+  });
 
   if (process.env.PINCHY_E2E_DISABLE_DOMAIN_RESTART !== "1") {
     // Schedule a restart so useSecureCookies picks up the new domain.
@@ -89,18 +87,16 @@ export async function DELETE(_req: Request) {
 
   await deleteDomainAndRefreshCache();
 
-  after(() =>
-    appendAuditLog({
-      actorType: "user",
-      actorId: session.user.id!,
-      eventType: "settings.updated",
-      resource: "settings:domain",
-      detail: {
-        changes: { domain: { from: previousDomain, to: null } },
-      },
-      outcome: "success",
-    })
-  );
+  await appendAuditLog({
+    actorType: "user",
+    actorId: session.user.id!,
+    eventType: "settings.updated",
+    resource: "settings:domain",
+    detail: {
+      changes: { domain: { from: previousDomain, to: null } },
+    },
+    outcome: "success",
+  });
 
   if (process.env.PINCHY_E2E_DISABLE_DOMAIN_RESTART !== "1") {
     // Schedule a restart so useSecureCookies picks up the removed domain.

@@ -103,6 +103,22 @@ describe("POST /api/settings/domain", () => {
     expect(mockSetDomainAndRefreshCache).toHaveBeenCalledWith("pinchy.example.com");
   });
 
+  it("surfaces an audit write failure instead of dropping it, and does not restart on a half-recorded lock", async () => {
+    mockGetSetting.mockResolvedValueOnce(null);
+    mockAppendAuditLog.mockRejectedValueOnce(new Error("audit db down"));
+
+    await expect(
+      POST(
+        makeRequest("POST", {
+          "x-forwarded-host": "pinchy.example.com",
+          "x-forwarded-proto": "https",
+        })
+      )
+    ).rejects.toThrow(/audit db down/);
+    // The lock itself saved; the admin's retry re-applies it and restarts.
+    expect(mockSetDomainAndRefreshCache).toHaveBeenCalledWith("pinchy.example.com");
+  });
+
   it("should use x-forwarded-host over host header", async () => {
     mockGetSetting.mockResolvedValueOnce(null);
 
@@ -186,6 +202,14 @@ describe("DELETE /api/settings/domain", () => {
     const data = await response.json();
     expect(data.removed).toBe(true);
     expect(data.restart).toBe(true);
+    expect(mockDeleteDomainAndRefreshCache).toHaveBeenCalled();
+  });
+
+  it("surfaces an audit write failure instead of dropping it", async () => {
+    mockGetSetting.mockResolvedValueOnce("pinchy.example.com");
+    mockAppendAuditLog.mockRejectedValueOnce(new Error("audit db down"));
+
+    await expect(DELETE(makeRequest("DELETE"))).rejects.toThrow(/audit db down/);
     expect(mockDeleteDomainAndRefreshCache).toHaveBeenCalled();
   });
 

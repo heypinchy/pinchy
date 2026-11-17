@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse, after } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { isEnterprise } from "@/lib/enterprise";
 import { db } from "@/db";
@@ -99,23 +99,21 @@ export async function PUT(
     }
   });
 
-  // 7. Schedule audit log via after() so the response isn't blocked and any
-  // errors flow through Next's error handler instead of being swallowed.
-  after(() =>
-    appendAuditLog({
-      actorType: "user",
-      actorId: session.user.id!,
-      eventType: "user.groups_updated",
-      resource: `user:${userId}`,
-      detail: {
-        userName,
-        added,
-        removed,
-        memberCount: groupIds.length,
-      },
-      outcome: "success",
-    })
-  );
+  // 7. Audit the replace. Awaited: the replace is idempotent, so a failed audit
+  // write surfaces as a 500 and the admin can simply save again.
+  await appendAuditLog({
+    actorType: "user",
+    actorId: session.user.id!,
+    eventType: "user.groups_updated",
+    resource: `user:${userId}`,
+    detail: {
+      userName,
+      added,
+      removed,
+      memberCount: groupIds.length,
+    },
+    outcome: "success",
+  });
 
   await recalculateTelegramAllowStores();
 

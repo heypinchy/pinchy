@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse, after } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
 import { users } from "@/db/schema";
@@ -30,16 +30,14 @@ export async function POST(
   // their next chat would be closed the moment it opened.
   getUserSocketRegistry().restore(userId);
 
-  after(() =>
-    appendAuditLog({
-      actorType: "user",
-      actorId: session.user.id!,
-      eventType: "user.updated",
-      resource: `user:${userId}`,
-      detail: { changes: { status: { from: "deactivated", to: "active" } } },
-      outcome: "success",
-    })
-  );
+  await appendAuditLog({
+    actorType: "user",
+    actorId: session.user.id!,
+    eventType: "user.updated",
+    resource: `user:${userId}`,
+    detail: { changes: { status: { from: "deactivated", to: "active" } } },
+    outcome: "success",
+  });
 
   return NextResponse.json({ success: true });
 }

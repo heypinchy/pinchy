@@ -77,6 +77,7 @@ vi.mock("@/db/schema", async (importOriginal) => {
 import { auth } from "@/lib/auth";
 import { appendAuditLog } from "@/lib/audit";
 import { isEnterprise } from "@/lib/enterprise";
+import { getAuditWriteFailedCount, resetAuditWriteFailedCount } from "@/lib/audit-deferred";
 
 // ── GET /api/groups ──────────────────────────────────────────────────────
 
@@ -177,6 +178,30 @@ describe("POST /api/groups", () => {
         resource: "group:group-new",
       })
     );
+  });
+
+  it("answers 201 and records the failure when the audit write fails after the group exists", async () => {
+    resetAuditWriteFailedCount();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+    mockReturning.mockResolvedValueOnce([
+      { id: "group-new", name: "Marketing", description: null },
+    ]);
+    vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("audit db down"));
+
+    const response = await POST(
+      new NextRequest("http://localhost:7777/api/groups", {
+        method: "POST",
+        body: JSON.stringify({ name: "Marketing" }),
+      })
+    );
+
+    // A retry would create a second group, so the 201 stands; the lost row is counted.
+    expect(response.status).toBe(201);
+    expect(getAuditWriteFailedCount()).toBe(1);
   });
 
   it("rejects missing name", async () => {
@@ -368,6 +393,26 @@ describe("PATCH /api/groups/[groupId]", () => {
     );
   });
 
+  it("surfaces an audit write failure as an error instead of dropping it", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+    mockSelectWhere.mockResolvedValueOnce([{ id: "group-1", name: "Old Name", description: null }]);
+    mockUpdateReturning.mockResolvedValueOnce([{ id: "group-1", name: "New Name" }]);
+    vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("audit db down"));
+
+    await expect(
+      PATCH(
+        new NextRequest("http://localhost:7777/api/groups/group-1", {
+          method: "PATCH",
+          body: JSON.stringify({ name: "New Name" }),
+        }),
+        { params: Promise.resolve({ groupId: "group-1" }) }
+      )
+    ).rejects.toThrow(/audit db down/);
+  });
+
   it("does not log audit when no fields actually changed", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "admin-1", role: "admin" },
@@ -495,6 +540,26 @@ describe("DELETE /api/groups/[groupId]", () => {
         detail: { name: "Old Group" },
       })
     );
+  });
+
+  it("answers 200 and records the failure when the audit write fails after the group is gone", async () => {
+    resetAuditWriteFailedCount();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+    mockDeleteReturning.mockResolvedValueOnce([{ id: "group-1", name: "Old Group" }]);
+    vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("audit db down"));
+
+    const response = await DELETE(
+      new NextRequest("http://localhost:7777/api/groups/group-1", { method: "DELETE" }),
+      { params: Promise.resolve({ groupId: "group-1" }) }
+    );
+
+    // A retry would answer 404, so the success stands; the lost row is counted.
+    expect(response.status).toBe(200);
+    expect(getAuditWriteFailedCount()).toBe(1);
   });
 
   it("returns 404 for unknown group", async () => {
@@ -632,6 +697,28 @@ describe("PUT /api/groups/[groupId]/members", () => {
         },
       })
     );
+  });
+
+  it("surfaces an audit write failure as an error instead of dropping it", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+    mockSelectWhere
+      .mockResolvedValueOnce([{ id: "group-1" }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: "user-1", name: "User One" }]);
+    vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("audit db down"));
+
+    await expect(
+      PUT(
+        new NextRequest("http://localhost:7777/api/groups/group-1/members", {
+          method: "PUT",
+          body: JSON.stringify({ userIds: ["user-1"] }),
+        }),
+        { params: Promise.resolve({ groupId: "group-1" }) }
+      )
+    ).rejects.toThrow(/audit db down/);
   });
 
   it("returns 400 (not an FK 500) and skips the wipe when a userId does not exist", async () => {

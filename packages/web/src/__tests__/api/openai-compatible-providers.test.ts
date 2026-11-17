@@ -127,6 +127,7 @@ vi.mock("@/lib/audit", () => ({
 }));
 
 vi.mock("@/lib/audit-deferred", () => ({
+  deferAuditLog: vi.fn(),
   recordAuditFailure: vi.fn(),
 }));
 
@@ -155,7 +156,7 @@ import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { resetCache } from "@/lib/provider-models";
 import { getSetting, setSetting } from "@/lib/settings";
 import { appendAuditLog } from "@/lib/audit";
-import { recordAuditFailure } from "@/lib/audit-deferred";
+import { deferAuditLog, recordAuditFailure } from "@/lib/audit-deferred";
 import { resolveModelForTemplate } from "@/lib/model-resolver";
 import { SMITHERS_MODEL_HINT } from "@/lib/personal-agent";
 import { mockSession } from "@/test-helpers/auth";
@@ -394,7 +395,7 @@ describe("POST /api/settings/providers/openai-compatible", () => {
     // Exactly one repoint, onto the surviving model.
     expect(setSpy).toHaveBeenCalledTimes(1);
     expect(setSpy).toHaveBeenCalledWith({ model: "acme-llm/acme-large" });
-    const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+    const entry = vi.mocked(deferAuditLog).mock.calls[0][0];
     expect(entry.detail).toMatchObject({ agentCount: 1 });
   });
 
@@ -435,8 +436,8 @@ describe("POST /api/settings/providers/openai-compatible", () => {
       [expect.objectContaining({ id: "acme-large" })]
     );
 
-    expect(appendAuditLog).toHaveBeenCalledTimes(1);
-    const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+    expect(deferAuditLog).toHaveBeenCalledTimes(1);
+    const entry = vi.mocked(deferAuditLog).mock.calls[0][0];
     expect(entry.eventType).toBe("config.changed");
     expect(entry.outcome).toBe("success");
     expect(entry.detail).toMatchObject({
@@ -458,7 +459,7 @@ describe("POST /api/settings/providers/openai-compatible", () => {
       routeCtx
     );
 
-    const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+    const entry = vi.mocked(deferAuditLog).mock.calls[0][0];
     const serialized = JSON.stringify(entry.detail);
     expect(serialized).not.toContain(SECRET_KEY);
     // Only the host is recorded, never the full path.
@@ -481,7 +482,7 @@ describe("POST /api/settings/providers/openai-compatible", () => {
     // The row is already persisted — a runtime-apply failure must NOT 500.
     expect(res.status).toBe(200);
     expect(resetCache).toHaveBeenCalled();
-    const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+    const entry = vi.mocked(deferAuditLog).mock.calls[0][0];
     expect(entry.detail).toMatchObject({ configRegenerated: false });
   });
 
@@ -512,7 +513,7 @@ describe("POST /api/settings/providers/openai-compatible", () => {
       expect.any(Array),
       storedSnapshot()
     );
-    const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+    const entry = vi.mocked(deferAuditLog).mock.calls[0][0];
     expect(entry.detail).toMatchObject({
       provider: { id: "acme-llm", name: "Acme Renamed" },
     });
@@ -731,7 +732,7 @@ describe("POST /api/settings/providers/openai-compatible", () => {
       );
 
       expect(res.status).toBe(200);
-      const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+      const entry = vi.mocked(deferAuditLog).mock.calls[0][0];
       expect(entry.detail).toMatchObject({
         baseUrlHost: "new-host.example.com:8443",
         baseUrlChange: {
@@ -766,7 +767,7 @@ describe("POST /api/settings/providers/openai-compatible", () => {
         routeCtx
       );
 
-      const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+      const entry = vi.mocked(deferAuditLog).mock.calls[0][0];
       expect(entry.detail).not.toHaveProperty("baseUrlChange");
     });
   });
@@ -1423,8 +1424,8 @@ describe("DELETE /api/settings/providers/openai-compatible", () => {
     // The SSRF verdict turned an admin action down: recorded as a failure,
     // like PATCH /default's refusal — with the provider's name, never the
     // refused address.
-    expect(appendAuditLog).toHaveBeenCalledTimes(1);
-    const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+    expect(deferAuditLog).toHaveBeenCalledTimes(1);
+    const entry = vi.mocked(deferAuditLog).mock.calls[0][0];
     expect(entry).toMatchObject({
       eventType: "config.changed",
       outcome: "failure",
@@ -1482,8 +1483,8 @@ describe("DELETE /api/settings/providers/openai-compatible", () => {
     expect(db.update).not.toHaveBeenCalled();
     expect(setSetting).not.toHaveBeenCalled();
 
-    expect(appendAuditLog).toHaveBeenCalledTimes(1);
-    const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+    expect(deferAuditLog).toHaveBeenCalledTimes(1);
+    const entry = vi.mocked(deferAuditLog).mock.calls[0][0];
     expect(entry).toMatchObject({
       eventType: "config.changed",
       outcome: "failure",
@@ -1597,8 +1598,8 @@ describe("DELETE /api/settings/providers/openai-compatible", () => {
     const data = await res.json();
     expect(data).toMatchObject({ ok: true, migratedAgents: 1 });
 
-    expect(appendAuditLog).toHaveBeenCalledTimes(1);
-    const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+    expect(deferAuditLog).toHaveBeenCalledTimes(1);
+    const entry = vi.mocked(deferAuditLog).mock.calls[0][0];
     expect(entry.eventType).toBe("settings.deleted");
     expect(entry.resource).toBe("settings:provider:acme-llm");
     expect(entry.outcome).toBe("success");
@@ -1639,7 +1640,7 @@ describe("DELETE /api/settings/providers/openai-compatible", () => {
     expect(setSetting).toHaveBeenCalledWith("default_provider", "anthropic", false);
     const data = await res.json();
     expect(data).toMatchObject({ ok: true, newDefault: "anthropic" });
-    const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+    const entry = vi.mocked(deferAuditLog).mock.calls[0][0];
     expect(entry.detail).toMatchObject({ wasDefault: true, newDefault: "anthropic" });
   });
 
@@ -1751,7 +1752,7 @@ describe("DELETE /api/settings/providers/openai-compatible", () => {
 
     expect(res.status).toBe(200);
     expect(resetCache).toHaveBeenCalled();
-    const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+    const entry = vi.mocked(deferAuditLog).mock.calls[0][0];
     expect(entry.detail).toMatchObject({ configRegenerated: false });
   });
 });

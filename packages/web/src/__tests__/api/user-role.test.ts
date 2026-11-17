@@ -206,6 +206,24 @@ describe("PATCH /api/users/[userId]", () => {
     );
   });
 
+  it("surfaces an audit write failure as an error instead of dropping it", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+    mockSelectWhere.mockResolvedValueOnce([{ id: "user-1", name: "Max", role: "member" }]);
+    mockUpdateReturning.mockResolvedValueOnce([{ id: "user-1", name: "Max", role: "admin" }]);
+    vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("audit db down"));
+
+    const request = new NextRequest("http://localhost:7777/api/users/user-1", {
+      method: "PATCH",
+      body: JSON.stringify({ role: "admin" }),
+    });
+    await expect(PATCH(request, { params: Promise.resolve({ userId: "user-1" }) })).rejects.toThrow(
+      /audit db down/
+    );
+  });
+
   it("rebuilds the OpenClaw config as well as the allow stores, because Telegram routing depends on the role", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "admin-1", role: "admin" },

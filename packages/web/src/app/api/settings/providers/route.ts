@@ -1,11 +1,11 @@
-import { NextResponse, after } from "next/server";
+import { NextResponse } from "next/server";
+import { deferAuditLog } from "@/lib/audit-deferred";
 import { withAuth, withAdmin } from "@/lib/api-auth";
 import { getSetting, deleteSetting } from "@/lib/settings";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { resetCache } from "@/lib/provider-models";
 import { countConfiguredProviders } from "@/lib/provider-count";
-import { appendAuditLog } from "@/lib/audit";
 import {
   buildRemainingCandidates,
   builtInModelPrefix,
@@ -64,19 +64,17 @@ export const DELETE = withAdmin(async (request, _ctx, session) => {
   if (remainingCandidates.length === 0) {
     // A built-in is never refused itself, so this is the "last usable" case.
     const refusal = await noUsableTargetRefusal();
-    after(() =>
-      appendAuditLog({
-        actorType: "user",
-        actorId: session.user.id!,
-        eventType: "config.changed",
-        outcome: "failure",
-        detail: {
-          action: "provider_delete_refused_no_usable_target",
-          reason: refusal.reason,
-          provider: { id: provider, name: config.name },
-        },
-      })
-    );
+    deferAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "config.changed",
+      outcome: "failure",
+      detail: {
+        action: "provider_delete_refused_no_usable_target",
+        reason: refusal.reason,
+        provider: { id: provider, name: config.name },
+      },
+    });
     return NextResponse.json({ error: refusal.error }, { status: 400 });
   }
 
@@ -106,27 +104,26 @@ export const DELETE = withAdmin(async (request, _ctx, session) => {
 
   const { inlineMigrated, truncated } = capMigratedAgents(migratedAgents);
 
-  // Fire audit via after() — same pattern as the sibling settings/domain route.
-  // The state mutation is already complete; an audit DB blip should not turn
-  // a successful provider removal into a 500 the user sees.
-  after(() =>
-    appendAuditLog({
-      actorType: "user",
-      actorId: session.user.id!,
-      eventType: "settings.deleted",
-      resource: `settings:provider:${provider}`,
-      outcome: "success",
-      detail: {
-        name: config.name,
-        provider,
-        wasDefault,
-        ...(newDefault !== undefined ? { newDefault } : {}),
-        agentCount: migratedAgents.length,
-        migratedAgents: inlineMigrated,
-        ...(truncated ? { migratedAgentsTruncated: true } : {}),
-      },
-    })
-  );
+  // Deferred, not awaited: the provider key, the migrated agents and the config
+  // push are already committed and cannot be rolled back, so an audit DB blip
+  // must not turn a successful removal into a 500 the admin retries (it would
+  // 404). A failed write still lands in recordAuditFailure's counter.
+  deferAuditLog({
+    actorType: "user",
+    actorId: session.user.id!,
+    eventType: "settings.deleted",
+    resource: `settings:provider:${provider}`,
+    outcome: "success",
+    detail: {
+      name: config.name,
+      provider,
+      wasDefault,
+      ...(newDefault !== undefined ? { newDefault } : {}),
+      agentCount: migratedAgents.length,
+      migratedAgents: inlineMigrated,
+      ...(truncated ? { migratedAgentsTruncated: true } : {}),
+    },
+  });
 
   // `migratedAgents` mirrors the custom DELETE's response shape (#949): the
   // success toast confirms what actually happened ("3 agents moved to …") for
