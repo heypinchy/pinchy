@@ -7,7 +7,6 @@ import { getSetting, setSetting } from "@/lib/settings";
 import { listOpenAiCompatibleProviders } from "@/lib/openai-compatible-providers";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { resetCache } from "@/lib/provider-models";
-import { appendAuditLog } from "@/lib/audit";
 import { deferAuditLog } from "@/lib/audit-deferred";
 import { refusedBaseUrlReason } from "@/lib/openai-compatible-stored-url";
 
@@ -105,7 +104,7 @@ export const PATCH = withAdmin(async (request, _ctx, session) => {
   }
   resetCache();
 
-  await appendAuditLog({
+  deferAuditLog({
     actorType: "user",
     actorId: session.user.id!,
     eventType: "config.changed",

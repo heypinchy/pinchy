@@ -4,7 +4,6 @@ import { withAuth, withAdmin } from "@/lib/api-auth";
 import { parseRequestBody } from "@/lib/api-validation";
 import { createAgent } from "@/lib/agents";
 import { createAgentSchema } from "@/lib/schemas/agents";
-import { appendAuditLog } from "@/lib/audit";
 import { deferAuditLog } from "@/lib/audit-deferred";
 import {
   incompletePermissionsDetail,
@@ -94,7 +93,7 @@ export const POST = withAdmin(async (request, _ctx, session) => {
     // `capabilityFailure`. Both return before the insert, so the callback
     // above never fired.
     if (result.error.status === 422) {
-      await appendAuditLog({
+      deferAuditLog({
         actorType: "user",
         actorId: session.user.id!,
         eventType: "agent.created",

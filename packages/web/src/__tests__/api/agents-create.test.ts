@@ -240,9 +240,7 @@ describe("POST /api/agents", () => {
   it("still returns 201 and counts the failure when the agent.created audit write fails", async () => {
     resetAuditWriteFailedCount();
     vi.spyOn(console, "error").mockImplementation(() => {});
-    vi.mocked(appendAuditLog).mockImplementation(async (entry) => {
-      if (entry.eventType === "agent.created") throw new Error("audit db down");
-    });
+    vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("audit db down"));
 
     const response = await POST(
       new NextRequest("http://localhost:7777/api/agents", {
@@ -255,7 +253,6 @@ describe("POST /api/agents", () => {
     // The agent row is committed; a retry would create a duplicate.
     expect(response.status).toBe(201);
     expect(getAuditWriteFailedCount()).toBe(1);
-    vi.mocked(appendAuditLog).mockReset().mockResolvedValue(undefined);
   });
 
   it("still returns 201 with the created agent and a warning when config regeneration fails", async () => {

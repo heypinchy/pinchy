@@ -4,7 +4,6 @@ import { withApiKey } from "@/lib/api-auth";
 import { parseRequestBody } from "@/lib/api-validation";
 import { createAgent, listAgents } from "@/lib/agents";
 import { createAgentSchema } from "@/lib/schemas/agents";
-import { appendAuditLog } from "@/lib/audit";
 import { deferAuditLog } from "@/lib/audit-deferred";
 import {
   incompletePermissionsDetail,
@@ -111,7 +110,7 @@ export const POST = withApiKey(["agents:write"], async (req, _ctx, key) => {
     // route (plain 400 validation failures were never logged there either).
     // Both return before the insert, so onCreated above never fired.
     if (result.error.status === 422) {
-      await appendAuditLog({
+      deferAuditLog({
         actorType: "api_key",
         actorId: key.keyId,
         eventType: "agent.created",

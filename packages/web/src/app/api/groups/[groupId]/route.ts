@@ -4,7 +4,7 @@ import { isEnterprise } from "@/lib/enterprise";
 import { db } from "@/db";
 import { groups } from "@/db/schema";
 import { eq } from "drizzle-orm";
-import { appendAuditLog, type UpdateDetail } from "@/lib/audit";
+import { type UpdateDetail } from "@/lib/audit";
 import { deferAuditLog } from "@/lib/audit-deferred";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 import { parseRequestBody } from "@/lib/api-validation";
@@ -58,7 +58,7 @@ export async function PATCH(
 
   if (Object.keys(changes).length > 0) {
     const detail: UpdateDetail = { changes };
-    await appendAuditLog({
+    deferAuditLog({
       actorType: "user",
       actorId: session.user.id!,
       eventType: "group.updated",

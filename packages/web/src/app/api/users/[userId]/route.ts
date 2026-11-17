@@ -5,7 +5,6 @@ import { users, agents, sessions } from "@/db/schema";
 import { eq, and, count, inArray } from "drizzle-orm";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { deleteWorkspace } from "@/lib/workspace";
-import { appendAuditLog } from "@/lib/audit";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 import { parseRequestBody } from "@/lib/api-validation";
 import { updateUserSchema } from "@/lib/schemas/users";
@@ -59,7 +58,7 @@ export async function PATCH(
   // Update role
   await db.update(users).set({ role }).where(eq(users.id, userId));
 
-  await appendAuditLog({
+  deferAuditLog({
     actorType: "user",
     actorId: session.user.id!,
     eventType: "user.role_updated",

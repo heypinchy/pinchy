@@ -161,11 +161,11 @@ For request bodies, use `parseRequestBody(schema, request)` from `@/lib/api-vali
 Audit logging rules:
 
 - Every `appendAuditLog` call must include `outcome: "success" | "failure"`.
-- Prefer `await appendAuditLog(...)` for idempotent state changes.
+- `await appendAuditLog(...)` only when the audit runs before the commit or a retry would write the same row. A row that is a diff of already-committed state is not retry-safe: use `deferAuditLog`. Where a restart or `process.exit` is armed afterwards, use `try { await appendAuditLog(e) } catch (err) { recordAuditFailure(err, e) }` before arming it (`after()` would race it).
 - Use `deferAuditLog(...)` from `@/lib/audit-deferred` for non-rollbackable side effects that already happened in a request context.
 - Use `try { await appendAuditLog(...) } catch (err) { recordAuditFailure(err, entry) }` in WebSocket, cron, or non-request contexts.
 - Never fire-and-forget audit writes with `.catch(console.error)`.
-- Never write `after(() => appendAuditLog(...))`: a failure there is dropped and never reaches `recordAuditFailure`. `require-audit-log` rejects it; use `await appendAuditLog` or `deferAuditLog`.
+- Never write `after(() => appendAuditLog(...))`: a failure there is dropped and never reaches `recordAuditFailure`. `require-audit-log` rejects it; use `deferAuditLog` or an awaited write per the rule above.
 - Snapshot human-readable names beside IDs with `{ id, name }` pairs.
 - Log what changed, not only that something changed.
 - For membership changes, log added/removed diffs rather than final counts alone.

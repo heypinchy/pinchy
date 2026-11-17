@@ -3,7 +3,7 @@ import { requireAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
 import { users } from "@/db/schema";
 import { and, eq } from "drizzle-orm";
-import { appendAuditLog } from "@/lib/audit";
+import { deferAuditLog } from "@/lib/audit-deferred";
 import { getUserSocketRegistry } from "@/server/user-sockets";
 
 export async function POST(
@@ -30,7 +30,7 @@ export async function POST(
   // their next chat would be closed the moment it opened.
   getUserSocketRegistry().restore(userId);
 
-  await appendAuditLog({
+  deferAuditLog({
     actorType: "user",
     actorId: session.user.id!,
     eventType: "user.updated",

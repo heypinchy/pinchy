@@ -515,7 +515,7 @@ describe("POST /api/v1/agents", () => {
       docsUrl: "https://docs.heypinchy.com/guides/ollama-setup#models-for-agent-templates",
     });
 
-    expect(appendAuditLog).toHaveBeenCalledWith({
+    expect(deferAuditLog).toHaveBeenCalledWith({
       actorType: "api_key",
       actorId: "key-1",
       eventType: "agent.created",
@@ -528,7 +528,7 @@ describe("POST /api/v1/agents", () => {
       },
     });
     // Only the failure row — the success path never ran.
-    expect(appendAuditLog).toHaveBeenCalledTimes(1);
+    expect(deferAuditLog).toHaveBeenCalledTimes(1);
   });
 
   it("returns 400 without an audit entry when createAgent rejects on plain validation (parity with the session route)", async () => {

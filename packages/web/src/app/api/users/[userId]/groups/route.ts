@@ -4,7 +4,7 @@ import { isEnterprise } from "@/lib/enterprise";
 import { db } from "@/db";
 import { users, groups, userGroups } from "@/db/schema";
 import { eq, inArray } from "drizzle-orm";
-import { appendAuditLog } from "@/lib/audit";
+import { deferAuditLog } from "@/lib/audit-deferred";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 import { parseRequestBody } from "@/lib/api-validation";
 import { updateUserGroupsSchema } from "@/lib/schemas/users";
@@ -99,9 +99,10 @@ export async function PUT(
     }
   });
 
-  // 7. Audit the replace. Awaited: the replace is idempotent, so a failed audit
-  // write surfaces as a 500 and the admin can simply save again.
-  await appendAuditLog({
+  // 7. Audit the replace. Deferred: the replace is committed and the row is a
+  // diff of it, so a retry would write added = removed = []; a failed write is
+  // counted instead, and must not skip the allow-store recalculation below.
+  deferAuditLog({
     actorType: "user",
     actorId: session.user.id!,
     eventType: "user.groups_updated",

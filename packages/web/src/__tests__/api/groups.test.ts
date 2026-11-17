@@ -76,6 +76,7 @@ vi.mock("@/db/schema", async (importOriginal) => {
 
 import { auth } from "@/lib/auth";
 import { appendAuditLog } from "@/lib/audit";
+import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 import { isEnterprise } from "@/lib/enterprise";
 import { getAuditWriteFailedCount, resetAuditWriteFailedCount } from "@/lib/audit-deferred";
 
@@ -393,7 +394,9 @@ describe("PATCH /api/groups/[groupId]", () => {
     );
   });
 
-  it("surfaces an audit write failure as an error instead of dropping it", async () => {
+  it("still answers success and counts the failure when the audit write fails after the commit", async () => {
+    resetAuditWriteFailedCount();
+    vi.spyOn(console, "error").mockImplementation(() => {});
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "admin-1", role: "admin" },
       expires: "",
@@ -402,15 +405,16 @@ describe("PATCH /api/groups/[groupId]", () => {
     mockUpdateReturning.mockResolvedValueOnce([{ id: "group-1", name: "New Name" }]);
     vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("audit db down"));
 
-    await expect(
-      PATCH(
-        new NextRequest("http://localhost:7777/api/groups/group-1", {
-          method: "PATCH",
-          body: JSON.stringify({ name: "New Name" }),
-        }),
-        { params: Promise.resolve({ groupId: "group-1" }) }
-      )
-    ).rejects.toThrow(/audit db down/);
+    const res = await PATCH(
+      new NextRequest("http://localhost:7777/api/groups/group-1", {
+        method: "PATCH",
+        body: JSON.stringify({ name: "New Name" }),
+      }),
+      { params: Promise.resolve({ groupId: "group-1" }) }
+    );
+    // A retry would find no diff and write no row at all.
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => expect(getAuditWriteFailedCount()).toBe(1));
   });
 
   it("does not log audit when no fields actually changed", async () => {
@@ -699,7 +703,9 @@ describe("PUT /api/groups/[groupId]/members", () => {
     );
   });
 
-  it("surfaces an audit write failure as an error instead of dropping it", async () => {
+  it("still answers success and counts the failure when the audit write fails after the commit", async () => {
+    resetAuditWriteFailedCount();
+    vi.spyOn(console, "error").mockImplementation(() => {});
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "admin-1", role: "admin" },
       expires: "",
@@ -710,15 +716,17 @@ describe("PUT /api/groups/[groupId]/members", () => {
       .mockResolvedValueOnce([{ id: "user-1", name: "User One" }]);
     vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("audit db down"));
 
-    await expect(
-      PUT(
-        new NextRequest("http://localhost:7777/api/groups/group-1/members", {
-          method: "PUT",
-          body: JSON.stringify({ userIds: ["user-1"] }),
-        }),
-        { params: Promise.resolve({ groupId: "group-1" }) }
-      )
-    ).rejects.toThrow(/audit db down/);
+    const res = await PUT(
+      new NextRequest("http://localhost:7777/api/groups/group-1/members", {
+        method: "PUT",
+        body: JSON.stringify({ userIds: ["user-1"] }),
+      }),
+      { params: Promise.resolve({ groupId: "group-1" }) }
+    );
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => expect(getAuditWriteFailedCount()).toBe(1));
+    // Skipping this would leave a removed member with Telegram access.
+    expect(recalculateTelegramAllowStores).toHaveBeenCalledTimes(1);
   });
 
   it("returns 400 (not an FK 500) and skips the wipe when a userId does not exist", async () => {

@@ -4,7 +4,7 @@ import { isEnterprise } from "@/lib/enterprise";
 import { db } from "@/db";
 import { groups, userGroups, users } from "@/db/schema";
 import { eq, inArray } from "drizzle-orm";
-import { appendAuditLog } from "@/lib/audit";
+import { deferAuditLog } from "@/lib/audit-deferred";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 import { parseRequestBody } from "@/lib/api-validation";
 import { setMembersSchema } from "@/lib/schemas/groups";
@@ -111,7 +111,7 @@ export async function PUT(
     }
   });
 
-  await appendAuditLog({
+  deferAuditLog({
     actorType: "user",
     actorId: session.user.id!,
     eventType: "group.members_updated",
