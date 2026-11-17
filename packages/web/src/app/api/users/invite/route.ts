@@ -1,7 +1,8 @@
-import { NextRequest, NextResponse, after } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { createInvite } from "@/lib/invites";
-import { appendAuditLog, redactEmail } from "@/lib/audit";
+import { redactEmail } from "@/lib/audit";
+import { deferAuditLog } from "@/lib/audit-deferred";
 import { getLicenseStatus } from "@/lib/enterprise";
 import { getSeatUsage } from "@/lib/seat-usage";
 import { evaluateSeatPressure } from "@/lib/seat-grace";
@@ -29,23 +30,21 @@ export async function POST(request: NextRequest) {
     // procurement. Existing users are never deactivated or degraded.
     const pressure = evaluateSeatPressure(usage.used, license.maxUsers);
     if (!pressure.inviteAllowed) {
-      after(() =>
-        appendAuditLog({
-          actorType: "user",
-          actorId: session.user.id!,
-          eventType: "user.invite_blocked",
-          detail: {
-            ...redactEmail(email),
-            role,
-            reason: "seat_cap",
-            seatsUsed: usage.used,
-            maxUsers: license.maxUsers,
-            graceCap: pressure.graceCap,
-          },
-          outcome: "failure",
-          error: { message: "Seat cap reached" },
-        })
-      );
+      deferAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "user.invite_blocked",
+        detail: {
+          ...redactEmail(email),
+          role,
+          reason: "seat_cap",
+          seatsUsed: usage.used,
+          maxUsers: license.maxUsers,
+          graceCap: pressure.graceCap,
+        },
+        outcome: "failure",
+        error: { message: "Seat cap reached" },
+      });
       return NextResponse.json(
         {
           error: "Seat limit reached",
@@ -71,19 +70,17 @@ export async function POST(request: NextRequest) {
     auditGroups = groupIds.map((id: string) => ({ id, name: nameMap.get(id) ?? id }));
   }
 
-  after(() =>
-    appendAuditLog({
-      actorType: "user",
-      actorId: session.user.id!,
-      eventType: "user.invited",
-      detail: {
-        ...redactEmail(email),
-        role,
-        ...(auditGroups.length > 0 ? { groups: auditGroups } : {}),
-      },
-      outcome: "success",
-    })
-  );
+  deferAuditLog({
+    actorType: "user",
+    actorId: session.user.id!,
+    eventType: "user.invited",
+    detail: {
+      ...redactEmail(email),
+      role,
+      ...(auditGroups.length > 0 ? { groups: auditGroups } : {}),
+    },
+    outcome: "success",
+  });
 
   // The invite exists from here on. Emailing it is a second, separate step:
   // whatever the mail server does, the response still carries the token so

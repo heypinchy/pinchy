@@ -110,6 +110,7 @@ vi.mock("@/db/schema", async (importOriginal) => {
 import { auth } from "@/lib/auth";
 import { updateAgent, AgentRuntimeUpdateError } from "@/lib/agents";
 import { appendAuditLog } from "@/lib/audit";
+import { getAuditWriteFailedCount, resetAuditWriteFailedCount } from "@/lib/audit-deferred";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 import { db } from "@/db";
@@ -252,6 +253,24 @@ describe("PATCH /api/agents/[agentId] — config regeneration failure (#1095)", 
         }) as unknown,
       })
     );
+  });
+
+  it("still answers the runtime-not-updated 500 and counts the failure when the failure row cannot be written", async () => {
+    resetAuditWriteFailedCount();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    adminSession();
+    mockAgent({ id: "agent-1", name: "Penny", model: "old", isPersonal: false, ownerId: null });
+    vi.mocked(updateAgent).mockRejectedValueOnce(runtimeFailure());
+    vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("audit db down"));
+
+    const res = await PATCH(patchModel(), { params: Promise.resolve({ agentId: "agent-1" }) });
+    await flushAfter();
+
+    // The admin must still hear that the runtime was not updated, not a bare
+    // 500 about the audit table.
+    expect(res.status).toBe(500);
+    expect(((await res.json()) as { error: string }).error.toLowerCase()).toContain("saved");
+    expect(getAuditWriteFailedCount()).toBe(1);
   });
 
   it("keeps a folder swap on the failure row — and still no path", async () => {

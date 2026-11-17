@@ -87,6 +87,7 @@ import { auth } from "@/lib/auth";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { deleteWorkspace } from "@/lib/workspace";
 import { appendAuditLog } from "@/lib/audit";
+import { getAuditWriteFailedCount, resetAuditWriteFailedCount } from "@/lib/audit-deferred";
 import { findUnknownOriginUsers } from "@/lib/user-provenance";
 import { db } from "@/db";
 import { users, sessions, agents } from "@/db/schema";
@@ -460,6 +461,34 @@ describe("DELETE /api/users/[userId]", () => {
     const detail = call![0].detail as Record<string, unknown>;
     expect(detail).not.toHaveProperty("email");
     expect(JSON.stringify(detail)).not.toContain("secret@example.com");
+  });
+
+  it("still answers 200 and counts the failure when the user.deleted audit write fails", async () => {
+    resetAuditWriteFailedCount();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as never);
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([]),
+      }),
+    } as never);
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: "user-1", name: "Test User" }]),
+      }),
+    } as never);
+    vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("audit db down"));
+
+    const request = new NextRequest("http://localhost:7777/api/users/user-1", { method: "DELETE" });
+    const res = await DELETE(request, { params: Promise.resolve({ userId: "user-1" }) });
+
+    // The user is already deactivated; a retry would answer 404, so the success stands.
+    expect(res.status).toBe(200);
+    expect(getAuditWriteFailedCount()).toBe(1);
   });
 
   it("returns 404 when user not found", async () => {

@@ -1,10 +1,10 @@
-import { NextResponse, after } from "next/server";
+import { NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
 import { eq, inArray } from "drizzle-orm";
 import { updateAgent, deleteAgent, AgentRuntimeUpdateError } from "@/lib/agents";
 import { withAuth, withAdmin } from "@/lib/api-auth";
 import { getAgentWithAccess, requireAgentWriteAccess } from "@/lib/agent-access";
-import { appendAuditLog, safeProviderError } from "@/lib/audit";
+import { safeProviderError } from "@/lib/audit";
 import type { UpdateDetail } from "@/lib/audit";
 import { isEnterprise } from "@/lib/enterprise";
 import { writeIdentityFile } from "@/lib/workspace";
@@ -250,22 +250,20 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
         : `. A follow-up step also failed: ${followUpCause}`;
     }
     if (detail) {
-      after(() =>
-        appendAuditLog({
-          actorType: "user",
-          actorId: session.user.id!,
-          eventType: "agent.updated",
-          resource: `agent:${agentId}`,
-          // safeProviderError, not the raw string: an uncapped field would
-          // trip truncateDetail, which replaces the WHOLE detail with a
-          // summary blob rather than trimming the offender — taking
-          // `changes` with it, on the one row whose value is recording what
-          // changed. It also scrubs addresses, and this path exists because
-          // of the file carrying an agent's mailbox context (TOOLS.md then).
-          detail: { ...detail, runtimeUpdate: { applied: false, error: safeProviderError(cause) } },
-          outcome: "failure",
-        })
-      );
+      deferAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "agent.updated",
+        resource: `agent:${agentId}`,
+        // safeProviderError, not the raw string: an uncapped field would
+        // trip truncateDetail, which replaces the WHOLE detail with a
+        // summary blob rather than trimming the offender — taking
+        // `changes` with it, on the one row whose value is recording what
+        // changed. It also scrubs addresses, and this path exists because
+        // of the file carrying an agent's mailbox context (TOOLS.md then).
+        detail: { ...detail, runtimeUpdate: { applied: false, error: safeProviderError(cause) } },
+        outcome: "failure",
+      });
     }
     return NextResponse.json(
       {
@@ -422,16 +420,14 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
   }
 
   if (hasAuditableChange) {
-    after(() =>
-      appendAuditLog({
-        actorType: "user",
-        actorId: session.user.id!,
-        eventType: "agent.updated",
-        resource: `agent:${agentId}`,
-        detail: auditDetail,
-        outcome: "success",
-      })
-    );
+    deferAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "agent.updated",
+      resource: `agent:${agentId}`,
+      detail: auditDetail,
+      outcome: "success",
+    });
   }
 
   return NextResponse.json(agent);
@@ -453,16 +449,14 @@ export const DELETE = withAdmin<RouteContext>(async (_req, { params }, session) 
   // deleteAgent for why awaiting it first loses the record of a deletion that
   // genuinely happened.
   await deleteAgent(agentId, () =>
-    after(() =>
-      appendAuditLog({
-        actorType: "user",
-        actorId: session.user.id!,
-        eventType: "agent.deleted",
-        resource: `agent:${agentId}`,
-        detail: { name: agent.name },
-        outcome: "success",
-      })
-    )
+    deferAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "agent.deleted",
+      resource: `agent:${agentId}`,
+      detail: { name: agent.name },
+      outcome: "success",
+    })
   );
 
   revalidatePath("/", "layout");

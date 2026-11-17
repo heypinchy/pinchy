@@ -27,6 +27,7 @@ vi.mock("@/lib/audit", () => ({
   appendAuditLog: (...args: unknown[]) => mockAppendAuditLog(...args),
 }));
 
+import { getAuditWriteFailedCount, resetAuditWriteFailedCount } from "@/lib/audit-deferred";
 import { POST, DELETE, GET } from "@/app/api/settings/domain/route";
 
 const adminSession = {
@@ -101,6 +102,35 @@ describe("POST /api/settings/domain", () => {
     expect(data.domain).toBe("pinchy.example.com");
     expect(data.restart).toBe(true);
     expect(mockSetDomainAndRefreshCache).toHaveBeenCalledWith("pinchy.example.com");
+  });
+
+  it("still locks, answers 200, counts the failure and restarts when the audit write fails", async () => {
+    vi.useFakeTimers();
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    resetAuditWriteFailedCount();
+    try {
+      mockGetSetting.mockResolvedValueOnce(null);
+      mockAppendAuditLog.mockRejectedValueOnce(new Error("audit db down"));
+
+      const res = await POST(
+        makeRequest("POST", {
+          "x-forwarded-host": "pinchy.example.com",
+          "x-forwarded-proto": "https",
+        })
+      );
+
+      // The lock is committed; a failed audit write must neither 500 nor skip
+      // the restart that makes the lock take effect.
+      expect(res.status).toBe(200);
+      expect(getAuditWriteFailedCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(600);
+      expect(exit).toHaveBeenCalledWith(0);
+    } finally {
+      vi.useRealTimers();
+      exit.mockRestore();
+    }
   });
 
   it("should use x-forwarded-host over host header", async () => {
@@ -187,6 +217,30 @@ describe("DELETE /api/settings/domain", () => {
     expect(data.removed).toBe(true);
     expect(data.restart).toBe(true);
     expect(mockDeleteDomainAndRefreshCache).toHaveBeenCalled();
+  });
+
+  it("still unlocks, answers 200, counts the failure and restarts when the audit write fails", async () => {
+    vi.useFakeTimers();
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    resetAuditWriteFailedCount();
+    try {
+      mockGetSetting.mockResolvedValueOnce("pinchy.example.com");
+      mockAppendAuditLog.mockRejectedValueOnce(new Error("audit db down"));
+
+      const res = await DELETE(makeRequest("DELETE"));
+
+      // A retry would answer 400 "No domain is locked", so the row would be lost.
+      expect(res.status).toBe(200);
+      expect(mockDeleteDomainAndRefreshCache).toHaveBeenCalled();
+      expect(getAuditWriteFailedCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(600);
+      expect(exit).toHaveBeenCalledWith(0);
+    } finally {
+      vi.useRealTimers();
+      exit.mockRestore();
+    }
   });
 
   it("should log an audit event on removal", async () => {
