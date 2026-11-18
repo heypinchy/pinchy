@@ -55,19 +55,37 @@ function makeConn(overrides: Partial<ConnRow> = {}): ConnRow {
     type: "mcp",
     status: "active",
     credentials: JSON.stringify({ token: REAL_TOKEN }),
-    data: { url: "https://api.githubcopilot.com/mcp/", transport: "http" },
+    data: {
+      url: "https://api.githubcopilot.com/mcp/",
+      transport: "http",
+      tools: [{ name: "create_issue" }, { name: "list_repos" }],
+    },
     ...overrides,
   };
 }
 
+// The grants a live agent holds on the connection, as the route's second
+// query answers them (the DB has already joined live agents and filtered to
+// MCP rows for this connection).
+let grantRows: Array<{ operation: string }> = [];
+const grantWhere = vi.fn();
+
 function mockDbSelectResult(row: ConnRow | null) {
-  vi.mocked(db.select).mockReturnValue({
-    from: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({
-        limit: vi.fn().mockResolvedValue(row ? [row] : []),
-      }),
-    }),
-  } as any);
+  vi.mocked(db.select).mockImplementation(
+    () =>
+      ({
+        from: vi.fn().mockReturnValue({
+          // connection lookup
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue(row ? [row] : []),
+          }),
+          // grant lookup
+          innerJoin: vi.fn().mockReturnValue({
+            where: grantWhere.mockImplementation(() => Promise.resolve(grantRows)),
+          }),
+        }),
+      }) as any
+  );
 }
 
 function makeRequest(
@@ -101,6 +119,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.stubEnv("PINCHY_MCP_ENABLED", "1");
   mockValidate.mockReturnValue(true);
+  grantRows = [{ operation: "create_issue" }];
   mockDbSelectResult(makeConn());
   global.fetch = vi.fn().mockResolvedValue(upstreamResponse());
   mockLookup.mockReset();
@@ -163,9 +182,39 @@ describe("MCP credential proxy route", () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
+  it("returns 403 for an auth_failed connection — build.ts emits no server for it, so nothing legitimate calls", async () => {
+    mockDbSelectResult(makeConn({ status: "auth_failed" }));
+    const res = await POST(makeRequest(), { params });
+    expect(res.status).toBe(403);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 when no live agent holds a grant on a tool the connection still has", async () => {
+    // build.ts emits mcp.servers only for a connection with at least one
+    // surviving grant. A connection without one has no business reaching its
+    // upstream with the stored token, whoever holds the gateway token.
+    grantRows = [];
+    const res = await POST(makeRequest(), { params });
+    expect(res.status).toBe(403);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it("counts only grants on tools still in the synced list (drift), like build.ts", async () => {
+    grantRows = [{ operation: "tool_removed_by_resync" }];
+    const res = await POST(makeRequest(), { params });
+    expect(res.status).toBe(403);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
   it("blocks an upstream URL that targets a private/internal address (SSRF, no fetch)", async () => {
     mockDbSelectResult(
-      makeConn({ data: { url: "http://169.254.169.254/latest/meta-data/", transport: "http" } })
+      makeConn({
+        data: {
+          url: "http://169.254.169.254/latest/meta-data/",
+          transport: "http",
+          tools: [{ name: "create_issue" }],
+        },
+      })
     );
     const res = await POST(makeRequest(), { params });
     expect(res.status).toBe(502);
@@ -221,6 +270,7 @@ describe("MCP credential proxy route", () => {
         data: {
           url: "https://services.leadconnectorhq.com/mcp/",
           transport: "http",
+          tools: [{ name: "create_issue" }],
           extraHeaders: { locationId: "loc-123" },
         },
       })
@@ -236,6 +286,7 @@ describe("MCP credential proxy route", () => {
         data: {
           url: "https://api.githubcopilot.com/mcp/",
           transport: "http",
+          tools: [{ name: "create_issue" }],
           extraHeaders: {
             Authorization: "Bearer attacker-supplied-value",
             "Content-Type": "text/plain",

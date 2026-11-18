@@ -17,6 +17,8 @@ When you connect an MCP server, OpenClaw's `mcp.servers` configuration doesn't p
 
 OpenClaw opens its MCP session against that URL, using only the gateway bootstrap token — the same trust-root credential every Pinchy plugin already uses to reach Pinchy's internal API. The proxy looks up the connection, decrypts its real bearer token in memory, injects it as the `Authorization` header, and transparently streams the request and response between OpenClaw and the actual upstream server. As far as OpenClaw is concerned, it's talking to "the MCP server" — it never sees, and never needs, the real credential.
 
+Before it forwards anything, the proxy checks the same two things the config generator does when it decides whether OpenClaw gets a server entry at all: the connection must be active, and at least one agent that still exists must hold a grant on a tool the connection still offers. A connection whose credentials failed, or whose last grant was revoked while an OpenClaw session still remembers the old entry, gets a `403` — the stored token only travels on behalf of a connection some agent is allowed to use.
+
 This is a byte-level passthrough, not a reimplementation of MCP: the proxy doesn't parse or understand the JSON-RPC payload, it just swaps the authentication header and forwards everything else — including long-lived streaming responses — without buffering.
 
 ## The third-party token never lands in `openclaw.json`

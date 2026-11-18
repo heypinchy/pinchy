@@ -14,8 +14,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { validateGatewayToken } from "@/lib/gateway-auth";
 import { db } from "@/db";
-import { integrationConnections } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { activeAgents, agentConnectionPermissions, integrationConnections } from "@/db/schema";
+import { and, eq, inArray } from "drizzle-orm";
 import { decrypt } from "@/lib/encryption";
 import { resolveExternalUrlTarget } from "@/lib/integrations/url-validation";
 import { pinnedFetch } from "@/lib/pinned-connection";
@@ -108,11 +108,40 @@ async function proxy(request: NextRequest, connectionId: string): Promise<Respon
     // something that was never MCP in the first place.
     return NextResponse.json({ error: "Not an MCP connection" }, { status: 404 });
   }
-  if (connection.status === "pending") {
+  // Mirror build.ts: it emits an mcp.servers entry only for an ACTIVE
+  // connection with at least one live agent holding a grant on a tool the
+  // connection still has. Anything else has no legitimate caller, so the stored
+  // token must not reach the upstream on its behalf — not for a pending or
+  // auth_failed connection, and not after the last grant was revoked or the
+  // last granting agent deleted while an OpenClaw session still holds the old
+  // server entry.
+  if (connection.status !== "active") {
     return NextResponse.json({ error: "Connection not active" }, { status: 403 });
   }
 
   const data = (connection.data ?? {}) as McpIntegrationData;
+
+  const syncedToolNames = (data.tools ?? []).map((t) => t.name);
+  const grants =
+    syncedToolNames.length === 0
+      ? []
+      : await db
+          .select({ operation: agentConnectionPermissions.operation })
+          .from(agentConnectionPermissions)
+          .innerJoin(activeAgents, eq(activeAgents.id, agentConnectionPermissions.agentId))
+          .where(
+            and(
+              eq(agentConnectionPermissions.connectionId, connectionId),
+              eq(agentConnectionPermissions.model, "mcp"),
+              inArray(agentConnectionPermissions.operation, syncedToolNames)
+            )
+          );
+  // The DB already filters by tool name; re-check here so a stale row can never
+  // count as a grant on a tool the connection no longer has.
+  const synced = new Set(syncedToolNames);
+  if (!grants.some((g) => synced.has(g.operation))) {
+    return NextResponse.json({ error: "No agent is granted this connection" }, { status: 403 });
+  }
   const upstreamUrl = data.url;
   if (!upstreamUrl) {
     return NextResponse.json({ error: "Connection has no URL" }, { status: 422 });
