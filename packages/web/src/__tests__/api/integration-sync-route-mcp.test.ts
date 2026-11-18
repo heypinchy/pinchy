@@ -239,6 +239,47 @@ describe("POST /api/integrations/[connectionId]/sync (type=mcp)", () => {
     expect(mockRegenerateOpenClawConfig).toHaveBeenCalledTimes(1);
   });
 
+  it("audits the persisted tool list even when the config regenerate fails afterwards", async () => {
+    // The tool list is already written when regenerate runs. A regenerate
+    // failure must not erase the record of that write, nor report the
+    // sync as failed: the next regenerate picks up the persisted list.
+    mockListMcpTools.mockResolvedValue([
+      { name: "create_pr", description: "Create a PR", inputSchema: {} },
+    ]);
+    mockRegenerateOpenClawConfig.mockRejectedValueOnce(new Error("gateway unreachable"));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const { POST } = await import("@/app/api/integrations/[connectionId]/sync/route");
+    const response = await POST(makeRequest("/api/integrations/conn-mcp-1/sync"), {
+      params: Promise.resolve({ connectionId: "conn-mcp-1" }),
+    });
+    const body = await response.json();
+
+    expect(mockUpdateSet).toHaveBeenCalled();
+    expect(body.success).toBe(true);
+    expect(mockDeferAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "integration.synced", outcome: "success" })
+    );
+    consoleError.mockRestore();
+  });
+
+  it("audits the persisted tool list even when clearing the auth error fails afterwards", async () => {
+    mockListMcpTools.mockResolvedValue([]);
+    mockClearIntegrationAuthError.mockRejectedValueOnce(new Error("db hiccup"));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const { POST } = await import("@/app/api/integrations/[connectionId]/sync/route");
+    await POST(makeRequest("/api/integrations/conn-mcp-1/sync"), {
+      params: Promise.resolve({ connectionId: "conn-mcp-1" }),
+    });
+
+    expect(mockUpdateSet).toHaveBeenCalled();
+    expect(mockDeferAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "integration.synced" })
+    );
+    consoleError.mockRestore();
+  });
+
   it("reuses stored extraHeaders (e.g. HighLevel locationId) during re-discovery", async () => {
     const dataWithHeaders = { ...mockMcpData, extraHeaders: { locationId: "loc-123" } };
     mockSelectWhere.mockResolvedValueOnce([{ ...mockMcpConnection, data: dataWithHeaders }]);

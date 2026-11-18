@@ -91,21 +91,8 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
         .set({ data: { ...data, tools: after, lastSyncAt }, updatedAt: new Date() })
         .where(eq(integrationConnections.id, connectionId));
 
-      await clearIntegrationAuthError({ connectionId, actor });
-
-      // MCP is fundamentally different from Odoo/email here: its gating
-      // lives IN openclaw.json (mcp.servers + tools.allow, see build.ts /
-      // T6), not inside a runtime plugin's checkPermission. A re-sync can
-      // remove a tool this connection previously exposed — without
-      // regenerating now, an agent's already-granted-but-now-revoked tool
-      // would stay silently allowed until some unrelated regenerate
-      // happened to notice the drift. See docs/plans/2026-06-30-mcp-port-to-main.md
-      // task T6. Odoo/email intentionally do NOT do this (their sync
-      // branch below has no equivalent call) — those plugins fetch
-      // credentials and check permissions at tool-call time, so their
-      // config never encodes anything that could go stale here.
-      await regenerateOpenClawConfig();
-
+      // Audit the write right after it lands: nothing after this point may
+      // leave the persisted tool list without its record.
       deferAuditLog({
         actorType: "user",
         actorId: session.user.id!,
@@ -122,6 +109,29 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
         },
         outcome: "success",
       });
+
+      await clearIntegrationAuthError({ connectionId, actor });
+
+      // MCP is fundamentally different from Odoo/email here: its gating
+      // lives IN openclaw.json (mcp.servers + tools.allow, see build.ts /
+      // T6), not inside a runtime plugin's checkPermission. A re-sync can
+      // remove a tool this connection previously exposed — without
+      // regenerating now, an agent's already-granted-but-now-revoked tool
+      // would stay silently allowed until some unrelated regenerate
+      // happened to notice the drift. See docs/plans/2026-06-30-mcp-port-to-main.md
+      // task T6. Odoo/email intentionally do NOT do this (their sync
+      // branch below has no equivalent call) — those plugins fetch
+      // credentials and check permissions at tool-call time, so their
+      // config never encodes anything that could go stale here.
+      //
+      // The tool list is persisted by now, so a regenerate failure is not a
+      // failed sync: the next regenerate reads the persisted list. Log it and
+      // report success rather than tell the admin a write that happened did not.
+      try {
+        await regenerateOpenClawConfig();
+      } catch (err) {
+        console.error("[mcp sync] tool list saved, but regenerating openclaw.json failed:", err);
+      }
 
       return NextResponse.json({
         success: true,
