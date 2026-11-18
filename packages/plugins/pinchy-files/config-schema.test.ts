@@ -66,6 +66,24 @@ describe("pinchy-files manifest contract", () => {
     expect(result.ok).toBe(true);
   });
 
+  it("accepts an agent's skill index, and rejects an entry missing its location", () => {
+    const skill = {
+      name: "web-search",
+      description: "Research a topic on the web.",
+      location: "/root/.openclaw/workspaces/agent-1/skills/web-search/SKILL.md",
+    };
+    const withSkills = (skills: unknown[]) => ({
+      apiBaseUrl: "http://pinchy:7777",
+      gatewayToken: "test-token",
+      agents: { "agent-1": { allowed_paths: ["/data/kb"], skills } },
+    });
+    const ok = validatePluginEntry(manifest, withSkills([skill]));
+    if (!ok.ok) throw new Error(ok.errors.join("\n"));
+    expect(ok.ok).toBe(true);
+    const { location: _location, ...noLocation } = skill;
+    expect(validatePluginEntry(manifest, withSkills([noLocation])).ok).toBe(false);
+  });
+
   it("accepts the top-level visionModel field (pinchy_read scanned-page vision)", () => {
     const config = {
       apiBaseUrl: "http://pinchy:7777",

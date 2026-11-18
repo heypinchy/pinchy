@@ -440,3 +440,28 @@ describe("assertNoSymlinkEscape (write-path symlink containment)", () => {
     }
   });
 });
+
+describe("skill bodies (read-only skills directory)", () => {
+  // build.ts grants an agent with skills `<workspace>/skills` in allowed_paths
+  // only. The skills index the prompt hook injects points at these files.
+  const skillsDir = "/root/.openclaw/workspaces/agent-1/skills";
+  const config = {
+    allowed_paths: ["/root/.openclaw/workspaces/agent-1/uploads", skillsDir],
+    write_paths: ["/root/.openclaw/workspaces/agent-1/uploads"],
+  };
+  const location = `${skillsDir}/web-search/SKILL.md`;
+
+  it("lets pinchy_read load a SKILL.md at the location the index names", () => {
+    expect(validateAccess(config, location)).toBe(location);
+  });
+
+  it("never lets the agent write or delete a skill body", () => {
+    expect(() => validateAccess(config, location, "write")).toThrow(/write_paths/);
+  });
+
+  it("does not open the rest of the workspace", () => {
+    expect(() => validateAccess(config, "/root/.openclaw/workspaces/agent-1/AGENTS.md")).toThrow(
+      /allowed directories/
+    );
+  });
+});

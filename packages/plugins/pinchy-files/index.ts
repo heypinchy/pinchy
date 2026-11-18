@@ -21,6 +21,7 @@ import { resolveAgentInfo } from "./resolve-agent-info";
 import { generateFile, type GenerateFileFormat } from "./generate-file";
 import { normalizeDeliverableBasename } from "./deliverable-filename";
 import { memoryPromptHook } from "./memory-prompt";
+import { skillsPromptHook } from "./skills-prompt";
 import { assertPlainPath } from "./plain-path";
 import { refusingUnknownParams } from "./unknown-params";
 import { openVerified } from "./verified-open";
@@ -198,7 +199,10 @@ interface PluginApi {
     factory: (ctx: PluginToolContext) => AgentTool | null,
     opts?: { name?: string }
   ) => void;
-  on?: (hookName: "before_prompt_build", handler: ReturnType<typeof memoryPromptHook>) => void;
+  on?: (
+    hookName: "before_prompt_build",
+    handler: ReturnType<typeof memoryPromptHook> | ReturnType<typeof skillsPromptHook>
+  ) => void;
 }
 
 interface AgentTool {
@@ -1133,6 +1137,11 @@ const plugin = {
     // chat, Telegram, email workflow runs and scheduled runs alike. See
     // memory-prompt.ts for why it is a hook and not a per-entry-point prompt.
     api.on?.("before_prompt_build", memoryPromptHook(agentConfigs));
+
+    // The `## Skills` index for an agent with skills. OpenClaw 2026.9 only
+    // renders its own when the built-in `read` tool is visible, which no
+    // Pinchy agent has; see skills-prompt.ts.
+    api.on?.("before_prompt_build", skillsPromptHook(agentConfigs));
   },
 };
 

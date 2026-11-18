@@ -18,6 +18,9 @@ import {
 } from "./helpers";
 import {
   FAKE_OLLAMA_WEB_SEARCH_TOOL_TRIGGER,
+  FAKE_OLLAMA_SKILL_READ_PROBE_TRIGGER,
+  FAKE_OLLAMA_SKILL_READ_PROBE_DONE,
+  FAKE_OLLAMA_SKILL_READ_PROBE_NO_SKILLS,
   FAKE_OLLAMA_PORT,
   startFakeOllama,
   stopFakeOllama,
@@ -165,6 +168,7 @@ test.describe("Web dispatch probe (pinchy-web plugin coverage)", () => {
   let dispatchCookie: string;
   let dispatchConnectionId: string;
   let dispatchAgentId: string;
+  let skillAgentId: string;
   let reusedConnection = false;
   let restoreSettings: (() => Promise<void>) | null = null;
 
@@ -178,11 +182,27 @@ test.describe("Web dispatch probe (pinchy-web plugin coverage)", () => {
     // 1. Start fake-Ollama on the host (port 11435).
     await startFakeOllama();
 
+    // 1b. Create the skill-bearing agent while the default provider is still
+    //     anthropic. market-monitor (defaultSkills ["web-search"]) needs a
+    //     tools+vision model; fake-Ollama advertises no vision, so the create
+    //     would 422 after step 3. Its model is moved to fake-Ollama in step 6b.
+    //     Created before the drain below, so its config.apply is absorbed too.
+    dispatchCookie = await login();
+    const skillRes = await pinchyPost(
+      "/api/agents",
+      { name: `E2E Skill Probe ${Date.now()}`, templateId: "market-monitor" },
+      dispatchCookie
+    );
+    if (skillRes.status !== 201)
+      throw new Error(`Skill agent creation failed: ${String(skillRes.status)}`);
+    skillAgentId = ((await skillRes.json()) as { id: string }).id;
+
     // 2. Drain OC's config.apply rate-limit window. Same race the Odoo
     //    dispatch probe hit (see odoo-agent-chat.spec.ts step 2): OC 5.3 allows
     //    ~3 calls per 45 s per (device,IP); tests 1–2 of this suite each
-    //    trigger one or two regens, and this probe's POST agent + PATCH
-    //    allowedTools would push us past the cap. The rejected config.apply
+    //    trigger one or two regens, and this probe's POST agent, PATCH
+    //    allowedTools and the skill agent's model PATCH would push us past
+    //    the cap. The rejected config.apply
     //    falls through to the inotify file-watcher fallback, but an earlier
     //    still-in-flight config.apply succeeds later and overwrites OC's
     //    in-memory state with stale content — agents.list silently loses the
@@ -239,6 +259,18 @@ test.describe("Web dispatch probe (pinchy-web plugin coverage)", () => {
     );
     if (patchRes.status !== 200) throw new Error(`Agent patch failed: ${String(patchRes.status)}`);
 
+    // 6b. Point the skill agent at the fake-Ollama model the dispatch agent
+    //     was created with, so its turns reach the probe.
+    const dispatchAgentRes = await pinchyGet(`/api/agents/${dispatchAgentId}`, dispatchCookie);
+    const { model: ollamaModel } = (await dispatchAgentRes.json()) as { model: string };
+    const skillPatchRes = await pinchyPatch(
+      `/api/agents/${skillAgentId}`,
+      { model: ollamaModel },
+      dispatchCookie
+    );
+    if (skillPatchRes.status !== 200)
+      throw new Error(`Skill agent patch failed: ${String(skillPatchRes.status)}`);
+
     // 7. Wait for OpenClaw to stabilise with the new Ollama config.
     await waitForOpenClawStable(() => pinchyGet("/api/health/openclaw", dispatchCookie));
 
@@ -258,11 +290,22 @@ test.describe("Web dispatch probe (pinchy-web plugin coverage)", () => {
       dispatchAgentId,
       { deadlineMs: 120_000 }
     );
+    // Presence only: the skill agent has been in agents.list since step 1b.
+    // Its model PATCH is covered by waitForOpenClawStable (no config push
+    // pending), not by this gate.
+    await waitForAgentDispatchable(
+      (agentId) => pinchyGet(`/api/health/openclaw?agentId=${agentId}`, dispatchCookie),
+      skillAgentId,
+      { deadlineMs: 120_000 }
+    );
   });
 
   test.afterAll(async () => {
     if (dispatchAgentId) {
       await pinchyDelete(`/api/agents/${dispatchAgentId}`, dispatchCookie);
+    }
+    if (skillAgentId) {
+      await pinchyDelete(`/api/agents/${skillAgentId}`, dispatchCookie);
     }
     // Only delete the connection if we created it ourselves; reusing one left
     // by an earlier test means leaving it alone for any later test in the file.
@@ -358,5 +401,58 @@ test.describe("Web dispatch probe (pinchy-web plugin coverage)", () => {
     // the plugin must report exactly that value back, which only works if
     // it pulled the live credential through the Pinchy internal API.
     expect(reqs.some((r) => r.apiKey === "test-brave-api-key")).toBe(true);
+  });
+
+  // OpenClaw 2026.9 renders its skills section only when the built-in `read`
+  // tool is visible, and no Pinchy agent has it — so after that bump no skill
+  // reached any agent's prompt. pinchy-files now lists them
+  // (skills-prompt.ts) and the agent loads a body with pinchy_read. This reads
+  // what OpenClaw actually sent the model, which is the only place the
+  // regression shows: nothing fails, the agent just never hears of its skills.
+  test("a template agent's skill reaches the model's prompt and its body loads via pinchy_read", async ({
+    page,
+  }, testInfo) => {
+    testInfo.setTimeout(180_000);
+
+    await loginViaUI(page, getAdminEmail(), getAdminPassword());
+    await page.goto(`/chat/${skillAgentId}`);
+    await expect(page).toHaveURL(`/chat/${skillAgentId}`, { timeout: 10_000 });
+
+    const since = new Date().toISOString();
+    const input = page.getByPlaceholder(/send a message/i);
+    await expect(input).toBeVisible({ timeout: 10_000 });
+    await input.fill(`${FAKE_OLLAMA_SKILL_READ_PROBE_TRIGGER}: which skills do you have?`);
+    await input.press("Enter");
+
+    // The fake model answers DONE once it found a <location> in the prompt and
+    // a tool result came back — any result, so the body check below is what
+    // proves the read succeeded. Without a skill in the prompt it answers
+    // NO_SKILLS right away: wait for either, so that regression fails fast.
+    const done = page.getByText(FAKE_OLLAMA_SKILL_READ_PROBE_DONE);
+    await expect(done.or(page.getByText(FAKE_OLLAMA_SKILL_READ_PROBE_NO_SKILLS))).toBeVisible({
+      timeout: 160_000,
+    });
+    await expect(done).toBeVisible();
+
+    const res = await fetch(
+      `http://127.0.0.1:${FAKE_OLLAMA_PORT}/__pinchy_fake_ollama/last-request-text`
+    );
+    expect(res.ok).toBe(true);
+    const { text } = (await res.json()) as { text: string };
+    // The index: exactly one catalog — OpenClaw's own would make two.
+    expect(text.match(/<available_skills>/g)).toHaveLength(1);
+    expect(text).toContain("<name>web-search</name>");
+    expect(text).toContain(`/workspaces/${skillAgentId}/skills/web-search/SKILL.md</location>`);
+    // The body, which only the pinchy_read tool result can have carried — a
+    // line only web-search's SKILL.md has.
+    expect(text).toContain("**Search first, fetch second.**");
+
+    // And the read went through the governed, audited tool.
+    const audited = await pollAuditForTool(page, {
+      toolName: "pinchy_read",
+      agentId: skillAgentId,
+      since,
+    });
+    expect(audited).toBe(true);
   });
 });
