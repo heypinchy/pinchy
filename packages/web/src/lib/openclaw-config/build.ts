@@ -471,7 +471,15 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
   // See loadAgentConnectionPermissions for why this is two queries + an
   // in-memory reconstruction rather than a single `.innerJoin()` (#OOM
   // fan-out fix, v0.9.0 release verification).
-  const allPermissions = await loadAgentConnectionPermissions(db);
+  //
+  // Grant rows outlive a soft delete, so they are cut to live agents here,
+  // once, for every consumer below: a deleted agent's grants must not keep an
+  // MCP server (and its credential-injecting proxy route) or an email/Odoo
+  // config alive.
+  const liveAgentIds = new Set(liveAgents.map((a) => a.id));
+  const allPermissions = (await loadAgentConnectionPermissions(db)).filter((row) =>
+    liveAgentIds.has(row.agent_connection_permissions.agentId)
+  );
 
   // Aggregate email permissions per agent, then derive the per-agent
   // pinchy-email plugin config (emitted into plugins.entries further down).

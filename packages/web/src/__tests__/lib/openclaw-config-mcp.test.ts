@@ -170,6 +170,7 @@ function makeAgent(
     name: string;
     model: string;
     allowedTools: string[];
+    deletedAt: Date | null;
   }> = {}
 ) {
   return {
@@ -180,7 +181,7 @@ function makeAgent(
     pluginConfig: null,
     isPersonal: false,
     ownerId: null,
-    deletedAt: null,
+    deletedAt: overrides.deletedAt ?? null,
     skills: [],
     createdAt: new Date(),
   };
@@ -327,6 +328,23 @@ describe("MCP config generation (native + proxy)", () => {
       "http://pinchy:7777/api/internal/mcp-proxy/conn-linear-1"
     );
     expect(Object.keys(config.mcp.servers)).toHaveLength(2);
+  });
+
+  it("ignores grants of a soft-deleted agent — its connection gets no server and no proxy route", async () => {
+    // Grant rows outlive a soft delete (the agent row is a tombstone). A
+    // server entry kept alive only by a deleted agent's grants would leave
+    // the credential-injecting proxy reachable for nobody's benefit.
+    const live = makeAgent({ id: "agent-live" });
+    const deleted = makeAgent({ id: "agent-gone", deletedAt: new Date() });
+    const conn = makeMcpConnection({ id: "conn-only-deleted" });
+
+    mockDb([live, deleted], [makeMcpPermRow("agent-gone", "create_issue", conn)]);
+    mockedReadFileSync.mockReturnValue(JSON.stringify(gatewayConfig));
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(getWrittenConfigString());
+    expect(config.mcp).toBeUndefined();
   });
 
   it("omits config.mcp entirely when no agent has any MCP permission", async () => {
