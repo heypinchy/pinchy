@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { eq, and, inArray } from "drizzle-orm";
+import { eq, and, ne, inArray } from "drizzle-orm";
 import { withAdmin } from "@/lib/api-auth";
 import { getAgentWithAccess } from "@/lib/agent-access";
 import { db } from "@/db";
@@ -288,7 +288,8 @@ export const PUT = withAdmin<RouteContext>(async (request, { params }, session) 
 /**
  * DELETE /api/agents/[agentId]/integrations
  *
- * Remove ALL integration permissions for this agent (used when connection is cleared).
+ * Remove this agent's Odoo/email integration permissions (used when the settings
+ * page reports none). MCP grants are left alone, see below.
  *
  * Gated like its siblings. It, too, checked nothing before: an unknown id was
  * answered `200 {success:true}` and given a `config.changed` audit row claiming
@@ -300,26 +301,25 @@ export const DELETE = withAdmin<RouteContext>(async (_req, { params }, session) 
   const agentOrError = await getAgentWithAccess(agentId, session.user.id!, session.user.role);
   if (agentOrError instanceof NextResponse) return agentOrError;
 
-  // Get existing permissions for audit log
-  const existingPerms = await db
-    .select()
-    .from(agentConnectionPermissions)
-    .where(eq(agentConnectionPermissions.agentId, agentId));
+  // MCP grants are not cleared here. They are managed per connection (PUT
+  // with an empty list revokes them), and the settings page calls this route
+  // when no Odoo/email section reports a grant — an MCP section that is not
+  // rendered (flag off, connection in auth_failed) reports nothing either, so
+  // a blanket delete would wipe grants the admin never saw.
+  const notMcp = and(
+    eq(agentConnectionPermissions.agentId, agentId),
+    ne(agentConnectionPermissions.model, "mcp")
+  );
 
-  // Delete all permissions for this agent
-  await db
-    .delete(agentConnectionPermissions)
-    .where(eq(agentConnectionPermissions.agentId, agentId));
+  const existingPerms = await db.select().from(agentConnectionPermissions).where(notMcp);
+  await db.delete(agentConnectionPermissions).where(notMcp);
 
-  // Config regeneration for Odoo/email is NOT done here — see PUT handler
-  // comment. For MCP it IS, below — clearing all permissions revokes any MCP
-  // grants too, and that must take effect immediately (same reasoning as the
-  // PUT handler's revocation case).
-
-  // Audit log
+  // Config regeneration is NOT done here — see PUT handler comment. The rows
+  // cleared here are Odoo/email grants, gated at tool-call time.
   const removed = existingPerms.map((p) => ({ model: p.model, operation: p.operation }));
 
-  await appendAuditLog({
+  // The rows are gone; an audit-write failure must not turn that into a 500.
+  const auditEntry: AuditLogEntry = {
     actorType: "user",
     actorId: session.user.id!,
     eventType: "config.changed",
@@ -330,10 +330,11 @@ export const DELETE = withAdmin<RouteContext>(async (_req, { params }, session) 
       removed,
     },
     outcome: "success",
-  });
-
-  if (removed.some((p) => p.model === "mcp")) {
-    await regenerateOpenClawConfig();
+  };
+  try {
+    await appendAuditLog(auditEntry);
+  } catch (err) {
+    recordAuditFailure(err, auditEntry);
   }
 
   return NextResponse.json({ success: true });

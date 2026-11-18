@@ -161,15 +161,15 @@ Both templates declare a `recommendedTools` wish-list — tool names to auto-gra
 
 Every state-changing MCP operation is recorded in the audit trail with `outcome` set. All audit rows are HMAC-SHA256 signed.
 
-| Event                                     | `eventType`                       | `resource`                   | Notable `detail` fields                                                                               |
-| ----------------------------------------- | --------------------------------- | ---------------------------- | ----------------------------------------------------------------------------------------------------- |
-| Connection created                        | `integration.created`             | `integration:<connectionId>` | `type: "mcp"`, `name`, `preset`, `transport`, `origin`, `toolCount`                                   |
-| Tools re-synced                           | `integration.synced`              | `integration:<connectionId>` | `id`, `name`, `tools: { added, removed, total }` (name lists over 20 entries collapse to `{ count }`) |
-| Token / credentials updated               | `integration.credentials_updated` | `integration:<connectionId>` | `id`, `name`, `fields` (field names only, never values)                                               |
-| Connection metadata updated (e.g. rename) | `integration.updated`             | `integration:<connectionId>` | `id`, `name`, `changes`                                                                               |
-| Connection deleted                        | `integration.deleted`             | `integration:<connectionId>` | `id`, `name`, `type`, and — for MCP — `preset`, `transport`, `origin`                                 |
-| Agent's tool grants changed               | `config.changed`                  | `agent:<agentId>`            | `action: "agent_integration_permissions_updated"`, `connectionId`, `changes: { added, removed }`      |
-| All of an agent's grants cleared          | `config.changed`                  | `agent:<agentId>`            | `action: "agent_integration_permissions_cleared"`, `removed`                                          |
+| Event                                     | `eventType`                       | `resource`                   | Notable `detail` fields                                                                                |
+| ----------------------------------------- | --------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Connection created                        | `integration.created`             | `integration:<connectionId>` | `type: "mcp"`, `name`, `preset`, `transport`, `origin`, `toolCount`                                    |
+| Tools re-synced                           | `integration.synced`              | `integration:<connectionId>` | `id`, `name`, `tools: { added, removed, total }` (name lists over 20 entries collapse to `{ count }`)  |
+| Token / credentials updated               | `integration.credentials_updated` | `integration:<connectionId>` | `id`, `name`, `fields` (field names only, never values)                                                |
+| Connection metadata updated (e.g. rename) | `integration.updated`             | `integration:<connectionId>` | `id`, `name`, `changes`                                                                                |
+| Connection deleted                        | `integration.deleted`             | `integration:<connectionId>` | `id`, `name`, `type`, and — for MCP — `preset`, `transport`, `origin`                                  |
+| Agent's tool grants changed               | `config.changed`                  | `agent:<agentId>`            | `action: "agent_integration_permissions_updated"`, `connectionId`, `changes: { added, removed }`       |
+| An agent's Odoo/email grants cleared      | `config.changed`                  | `agent:<agentId>`            | `action: "agent_integration_permissions_cleared"`, `removed` (never MCP grants, see the API reference) |
 
 Discovery failures during connection creation are **not** audited — nothing was persisted, mirroring how a failed credential probe on other integration types isn't audited either.
 

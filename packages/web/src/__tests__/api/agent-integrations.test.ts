@@ -89,6 +89,7 @@ vi.mock("@/lib/audit-deferred", () => ({
 
 import { GET, PUT, DELETE } from "@/app/api/agents/[agentId]/integrations/route";
 import { NextRequest, NextResponse } from "next/server";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { agentConnectionPermissions, integrationConnections } from "@/db/schema";
 
@@ -833,13 +834,17 @@ describe("MCP permissions via the generic agent_connection_permissions path", ()
     ]);
   });
 
-  it("DELETE removes MCP permissions and logs the tool names in the removed diff", async () => {
-    mockSelectFrom.mockImplementationOnce(() => ({
-      where: vi.fn().mockResolvedValue([
-        { model: "mcp", operation: "list_issues", connectionId: CONNECTION_ID },
-        { model: "mcp", operation: "create_issue", connectionId: CONNECTION_ID },
-      ]),
-    }));
+  it("DELETE leaves MCP grants in place — they are managed per connection, and some may be hidden from the caller", async () => {
+    // The settings page calls this route when no Odoo/email section reports a
+    // grant. An MCP section that is not rendered (flag off, connection in
+    // auth_failed) reports nothing either, so a blanket delete would wipe
+    // grants the admin never saw. MCP grants are revoked per connection via
+    // PUT with an empty list.
+    // The mocked select answers what the DB would for the filtered query.
+    const selectWhere = vi
+      .fn()
+      .mockResolvedValue([{ model: "res.partner", operation: "read", connectionId: "conn-odoo" }]);
+    mockSelectFrom.mockImplementationOnce(() => ({ where: selectWhere }));
 
     const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
       method: "DELETE",
@@ -847,21 +852,21 @@ describe("MCP permissions via the generic agent_connection_permissions path", ()
     const res = await DELETE(req, makeParams(AGENT_ID));
 
     expect(res.status).toBe(200);
+    // Both the delete and the audit read must exclude MCP rows.
+    for (const where of [mockDeleteWhere.mock.calls[0][0], selectWhere.mock.calls[0][0]]) {
+      const { sql, params } = new PgDialect().sqlToQuery(where);
+      expect(sql).toMatch(/"model" <> \$\d/);
+      expect(params).toContain("mcp");
+    }
     expect(mockAppendAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
         detail: expect.objectContaining({
           action: "agent_integration_permissions_cleared",
-          removed: [
-            { model: "mcp", operation: "list_issues" },
-            { model: "mcp", operation: "create_issue" },
-          ],
+          removed: [{ model: "res.partner", operation: "read" }],
         }),
       })
     );
-    // Clearing ALL of an agent's permissions on a connection is a revocation
-    // too — an MCP tool must stop being reachable immediately, same as the
-    // PUT revocation case above.
-    expect(regenerateOpenClawConfig).toHaveBeenCalledTimes(1);
+    expect(regenerateOpenClawConfig).not.toHaveBeenCalled();
   });
 });
 
@@ -873,6 +878,28 @@ describe("DELETE /api/agents/[agentId]/integrations", () => {
       where: mockSelectWhere.mockResolvedValue([]),
     }));
     mockDeleteWhere.mockResolvedValue(undefined);
+  });
+
+  it("still answers 200 when the audit write fails after the grants are gone", async () => {
+    mockSelectFrom.mockImplementationOnce(() => ({
+      where: vi
+        .fn()
+        .mockResolvedValue([
+          { model: "res.partner", operation: "read", connectionId: CONNECTION_ID },
+        ]),
+    }));
+    mockAppendAuditLog.mockRejectedValueOnce(new Error("audit db down"));
+
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
+      method: "DELETE",
+    });
+    const res = await DELETE(req, makeParams(AGENT_ID));
+
+    expect(res.status).toBe(200);
+    expect(mockRecordAuditFailure).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({ eventType: "config.changed" })
+    );
   });
 
   it("forwards the read gate's refusal and deletes nothing", async () => {

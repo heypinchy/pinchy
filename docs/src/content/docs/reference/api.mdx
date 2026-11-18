@@ -2240,7 +2240,7 @@ This is a full replace, not a merge: the previous permission rows for this agent
 
 ### `DELETE /api/agents/:agentId/integrations`
 
-Remove all integration permissions for this agent, across every connection. Used when a connection is cleared from the agent's Permissions tab. **Admin only.**
+Remove this agent's Odoo and email permissions, across every connection. Used when a connection is cleared from the agent's Permissions tab. MCP tool grants are left in place: revoke those per connection with `PUT` and an empty `permissions` array. **Admin only.**
 
 **Errors:**
 
