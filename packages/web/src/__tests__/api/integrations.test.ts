@@ -1027,10 +1027,11 @@ describe("DELETE /api/integrations/[connectionId]", () => {
           name: "Our internal MCP",
           preset: "generic",
           transport: "http",
-          url: "https://mcp.internal.example.com/rpc",
+          origin: "https://mcp.internal.example.com",
         }),
       })
     );
+    expect(mockAppendAuditLog.mock.calls[0][0].detail).not.toHaveProperty("url");
     // Unlike Odoo/email, MCP gating lives entirely in openclaw.json
     // (mcp.servers + tools.allow). Without regenerating on delete, a stale
     // mcp.servers entry (and any agent's tools.allow names for it) would

@@ -6,6 +6,7 @@ import { integrationConnections } from "@/db/schema";
 import { encrypt, decrypt } from "@/lib/encryption";
 import { deferAuditLog } from "@/lib/audit-deferred";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
+import { auditableOrigin } from "@/lib/secret-destination";
 import { maskConnectionCredentials } from "@/lib/integrations/mask-credentials";
 import { parseRequestBody } from "@/lib/api-validation";
 import { createIntegrationSchema } from "@/lib/schemas/integrations";
@@ -122,13 +123,19 @@ export const POST = withAdmin(async (request, _ctx, session) => {
       actorId: session.user.id!,
       eventType: "integration.created",
       resource: `integration:${connection.id}`,
-      // `url` is the point of this row: what changed is that this deployment
-      // can now reach a specific external endpoint. For preset "generic" the
-      // URL is the only thing that identifies the server at all. It is an
-      // admin-entered service address — not PII (no scrubbing needed) and not
-      // a secret (the token lives in the encrypted credentials blob and must
-      // never appear here).
-      detail: { type: "mcp", name, preset, transport, url, toolCount: tools.length },
+      // The origin is the point of this row: what changed is that this
+      // deployment can now reach a specific external host. Only the origin —
+      // an MCP URL's path or query can carry a secret (some servers key the
+      // tenant by a secret path segment), and an audit row can never be
+      // rewritten. The token lives in the encrypted credentials blob.
+      detail: {
+        type: "mcp",
+        name,
+        preset,
+        transport,
+        origin: auditableOrigin(url),
+        toolCount: tools.length,
+      },
       outcome: "success",
     });
 

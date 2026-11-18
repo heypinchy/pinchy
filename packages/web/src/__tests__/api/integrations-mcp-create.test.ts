@@ -218,7 +218,7 @@ describe("POST /api/integrations (type=mcp)", () => {
           name: validMcpBody.name,
           preset: validMcpBody.preset,
           transport: validMcpBody.transport,
-          url: validMcpBody.url,
+          origin: "https://mcp.example.com",
           toolCount: mockTools.length,
         }),
         outcome: "success",
@@ -226,7 +226,7 @@ describe("POST /api/integrations (type=mcp)", () => {
     );
   });
 
-  it("records the server URL in the create audit — for a generic server the URL IS the identity", async () => {
+  it("records the server origin in the create audit — for a generic server it is the identity", async () => {
     // What changes on create is that this deployment can now reach a specific
     // external endpoint; the endpoint itself must be in the log (AGENTS.md:
     // "log what changed, not only that something changed"). preset "generic"
@@ -250,8 +250,27 @@ describe("POST /api/integrations (type=mcp)", () => {
     expect(call![0].detail).toMatchObject({
       type: "mcp",
       preset: "generic",
-      url: "https://mcp.internal.example.com/rpc",
+      origin: "https://mcp.internal.example.com",
     });
+  });
+
+  it("records only the origin — a path, query or userinfo can carry a secret, and the row is immutable", async () => {
+    const { POST } = await import("@/app/api/integrations/route");
+
+    const request = makeRequest("/api/integrations", {
+      method: "POST",
+      body: JSON.stringify({
+        ...validMcpBody,
+        preset: "generic",
+        url: "https://user:pw@hooks.example.com/mcp/s3cr3t-path/sse?api_key=s3cr3t-query",
+      }),
+    });
+    await POST(request, routeContext());
+
+    const call = mockDeferAuditLog.mock.calls.find((c) => c[0].eventType === "integration.created");
+    expect(call![0].detail).toMatchObject({ origin: "https://hooks.example.com" });
+    expect(call![0].detail).not.toHaveProperty("url");
+    expect(JSON.stringify(call![0].detail)).not.toMatch(/s3cr3t|pw@/);
   });
 
   it("never writes the token into the create audit detail", async () => {

@@ -49,6 +49,20 @@ export function auditableDestinationUrl(url: string): string {
 }
 
 /**
+ * Only the origin of `url` (scheme, host, port), capped for an audit row. For a
+ * destination whose path is not part of its identity — an MCP server URL, which
+ * services like Zapier or self-hosted gateways key by a secret path segment —
+ * the path is as dangerous as the query, and an audit row is immutable.
+ */
+export function auditableOrigin(url: string): string {
+  try {
+    return capForAudit(new URL(url.trim()).origin);
+  } catch {
+    return "(unparseable URL)";
+  }
+}
+
+/**
  * `{ from, to }` (audit-safe) when the submitted base URL is a different
  * destination than the stored one, otherwise `null`. An unreadable stored URL
  * counts as changed — the safe side.

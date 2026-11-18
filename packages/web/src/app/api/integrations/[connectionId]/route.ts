@@ -20,6 +20,7 @@ import type { McpIntegrationData } from "@/lib/integrations/types";
 import { z } from "zod";
 import { parseRequestBody, formatValidationError } from "@/lib/api-validation";
 import {
+  auditableOrigin,
   capForAudit,
   integrationDestinationChange,
   secretRequiredMessage,
@@ -365,12 +366,16 @@ export const DELETE = withAdmin<RouteContext>(async (_req, { params }, session) 
   // MCP: snapshot the server identity before it's unrecoverable. AGENTS.md
   // requires delete events to carry what the deleted row can no longer answer
   // — for an MCP connection that's *which external endpoint* the agents could
-  // reach, which is the whole question a CISO brings to this log. The URL is
-  // an admin-entered service address (not PII, not a secret); the token stays
-  // in the encrypted credentials blob and never lands here.
+  // reach, which is the whole question a CISO brings to this log. Only the
+  // origin: the URL's path or query can carry a secret, and the row is
+  // immutable. The token stays in the encrypted credentials blob.
   const mcpData = existing.type === "mcp" ? (existing.data as McpIntegrationData | null) : null;
   const mcpIdentity = mcpData
-    ? { preset: mcpData.preset, transport: mcpData.transport, url: mcpData.url }
+    ? {
+        preset: mcpData.preset,
+        transport: mcpData.transport,
+        origin: auditableOrigin(mcpData.url ?? ""),
+      }
     : undefined;
 
   await appendAuditLog({
