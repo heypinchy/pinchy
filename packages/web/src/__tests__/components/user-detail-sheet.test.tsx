@@ -423,7 +423,10 @@ describe("UserDetailSheet", () => {
       vi.spyOn(global, "fetch").mockImplementation(async (url) =>
         String(url) === "/api/settings/mail"
           ? jsonResponse({ configured: false })
-          : jsonResponse({ token: "reset-token-xyz" })
+          : jsonResponse({
+              token: "reset-token-xyz",
+              url: "https://pinchy.example.com/invite/reset-token-xyz",
+            })
       );
 
       render(
@@ -440,7 +443,8 @@ describe("UserDetailSheet", () => {
 
       await user.click(screen.getByRole("button", { name: /reset password/i }));
 
-      await screen.findByText(/reset-token-xyz/);
+      // The link is the server's, not one built from the browser's own host.
+      await screen.findByText("https://pinchy.example.com/invite/reset-token-xyz");
       // Focus moves from Reset Password to the new link's Copy button, so a
       // screen-reader user hears that the link appeared.
       expect(screen.getByRole("button", { name: "Copy link" })).toHaveFocus();
@@ -499,7 +503,13 @@ describe("UserDetailSheet — reset with email delivery (#1309)", () => {
   }
 
   it("emails the reset link and still shows it", async () => {
-    const spy = mockFetch(jsonResponse({ token: "rt", emailDelivery: { sent: true } }));
+    const spy = mockFetch(
+      jsonResponse({
+        token: "rt",
+        url: "http://localhost:7777/invite/rt",
+        emailDelivery: { sent: true },
+      })
+    );
     try {
       const user = userEvent.setup();
       renderSheet();
@@ -516,7 +526,11 @@ describe("UserDetailSheet — reset with email delivery (#1309)", () => {
 
   it("shows the link with an inline error when the send failed", async () => {
     const spy = mockFetch(
-      jsonResponse({ token: "rt", emailDelivery: { sent: false, error: "Connection refused" } })
+      jsonResponse({
+        token: "rt",
+        url: "http://localhost:7777/invite/rt",
+        emailDelivery: { sent: false, error: "Connection refused" },
+      })
     );
     try {
       const user = userEvent.setup();
@@ -557,7 +571,13 @@ describe("UserDetailSheet — reset with email delivery (#1309)", () => {
       const button = await screen.findByRole("button", { name: "Email reset link" });
       await user.click(button);
       expect(screen.getByRole("button", { name: "Sending..." })).toBeDisabled();
-      resolveReset(jsonResponse({ token: "rt", emailDelivery: { sent: true } }));
+      resolveReset(
+        jsonResponse({
+          token: "rt",
+          url: "http://localhost:7777/invite/rt",
+          emailDelivery: { sent: true },
+        })
+      );
       // CopyField has its own status region, so find the line by its text.
       expect(await screen.findByText("Reset link sent to max@example.com.")).toHaveAttribute(
         "role",

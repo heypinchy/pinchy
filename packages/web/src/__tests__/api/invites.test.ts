@@ -23,6 +23,10 @@ vi.mock("@/lib/invites", () => ({
   createInvite: vi.fn(),
 }));
 
+vi.mock("@/lib/domain", () => ({
+  getDomain: vi.fn().mockResolvedValue(null),
+}));
+
 vi.mock("@/lib/audit", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/audit")>();
   return {

@@ -1,12 +1,10 @@
 /**
- * Builds the absolute invite / password-reset link that admins copy and share.
+ * Builds the absolute invite / password-reset link from an origin and token.
  *
- * The link is derived purely from `origin` — in practice
- * `window.location.origin`, i.e. the host the admin is currently browsing.
- * Pinchy deliberately does NOT build this from a configured base URL (such as
- * the former `BETTER_AUTH_URL` env var): there is no Better Auth email flow,
- * so the only correct origin is the one the admin is already on. This is why
- * `BETTER_AUTH_URL` was safe to remove — see issue #352.
+ * Which origin is the job of `resolveLinkOrigin` (lib/link-origin.ts): the
+ * locked domain when one is set, otherwise the host the request arrived on.
+ * There is deliberately no base-URL env var in between — `BETTER_AUTH_URL`
+ * was removed for that reason, see issue #352.
  */
 export function buildInviteUrl(origin: string, token: string): string {
   return `${origin}/invite/${token}`;

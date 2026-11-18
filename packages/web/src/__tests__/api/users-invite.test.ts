@@ -32,6 +32,10 @@ vi.mock("@/lib/seat-usage", () => ({
   getSeatUsage: vi.fn(),
 }));
 
+vi.mock("@/lib/domain", () => ({
+  getDomain: vi.fn().mockResolvedValue(null),
+}));
+
 vi.mock("@/db", () => ({
   db: {
     select: vi.fn().mockReturnValue({
@@ -56,6 +60,7 @@ import { appendAuditLog } from "@/lib/audit";
 import { getAuditWriteFailedCount, resetAuditWriteFailedCount } from "@/lib/audit-deferred";
 import { getLicenseStatus } from "@/lib/enterprise";
 import { getSeatUsage } from "@/lib/seat-usage";
+import { getDomain } from "@/lib/domain";
 
 function makeRequest(body: object) {
   return new NextRequest("http://localhost/api/users/invite", {
@@ -306,5 +311,64 @@ describe("POST /api/users/invite — seat cap", () => {
     const res = await POST(makeRequest({ email: "new@test.com", role: "member" }));
     expect(res.status).toBe(201);
     expect(getSeatUsage).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/users/invite — link URL", () => {
+  let POST: typeof import("@/app/api/users/invite/route").POST;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    vi.stubEnv("AUDIT_HMAC_SECRET", "f".repeat(64));
+    vi.mocked(requireAdmin).mockResolvedValue(
+      mockSession({ user: { id: "admin-1", role: "admin" } })
+    );
+    vi.mocked(createInvite).mockResolvedValue({
+      id: "inv-1",
+      token: "tok-123",
+      tokenHash: "h",
+    } as never);
+    vi.mocked(getLicenseStatus).mockResolvedValue({
+      active: true,
+      ver: 1,
+      maxUsers: 0,
+      features: ["enterprise"],
+    });
+    vi.mocked(getSeatUsage).mockResolvedValue({
+      used: 1,
+      max: 0,
+      available: 0,
+      unlimited: true,
+      activeUsers: 1,
+      pendingInvites: 0,
+    });
+    POST = (await import("@/app/api/users/invite/route")).POST;
+  });
+
+  it("builds the link on the locked domain, not on the host the admin is browsing", async () => {
+    // Inside Citrix the admin reaches Pinchy through an internal hostname. A
+    // link built from that host cannot be opened by the person it is sent to.
+    vi.mocked(getDomain).mockResolvedValue("pinchy.example.com");
+    const request = new NextRequest("http://pinchy-internal:7777/api/users/invite", {
+      method: "POST",
+      body: JSON.stringify({ email: "new@test.com", role: "member" }),
+    });
+
+    const res = await POST(request);
+
+    expect(res.status).toBe(201);
+    expect((await res.json()).url).toBe("https://pinchy.example.com/invite/tok-123");
+  });
+
+  it("builds the link on the request's host when no domain is locked", async () => {
+    vi.mocked(getDomain).mockResolvedValue(null);
+    const request = new NextRequest("http://localhost:7777/api/users/invite", {
+      method: "POST",
+      body: JSON.stringify({ email: "new@test.com", role: "member" }),
+    });
+
+    const res = await POST(request);
+
+    expect((await res.json()).url).toBe("http://localhost:7777/invite/tok-123");
   });
 });

@@ -49,7 +49,6 @@ import type {
 } from "@/lib/schemas/users";
 import type { EmailDelivery, SystemMailStatus } from "@/lib/schemas/system-mail";
 import { CopyField } from "@/components/copy-field";
-import { buildInviteUrl } from "@/lib/invite-url";
 
 interface UserDetailSheetProps {
   user: UserListItem & { kind: "user" };
@@ -221,10 +220,10 @@ export function UserDetailSheet({
     setResetting(true);
     try {
       const data = await apiPost<
-        { token: string; emailDelivery?: EmailDelivery },
+        { token: string; url: string; emailDelivery?: EmailDelivery },
         ResetPasswordInput
       >(`/api/users/${user.id}/reset`, mailConfigured ? { sendEmail: true } : {});
-      setResetLink(buildInviteUrl(window.location.origin, data.token));
+      setResetLink(data.url);
       setResetDelivery(data.emailDelivery ?? null);
     } catch (e) {
       toast.error(errorMessage(e, "Failed to reset password"));

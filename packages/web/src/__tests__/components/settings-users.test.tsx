@@ -336,7 +336,12 @@ describe("SettingsUsers", () => {
       expect(screen.getByLabelText("Role")).toBeInTheDocument();
     });
 
-    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ token: "invite-token-abc" }));
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse({
+        token: "invite-token-abc",
+        url: "http://localhost:7777/invite/invite-token-abc",
+      })
+    );
 
     await user.type(screen.getByLabelText("Email"), "new@example.com");
     await user.click(screen.getByRole("button", { name: "Create Invite" }));
@@ -380,7 +385,12 @@ describe("SettingsUsers", () => {
       await user.click(screen.getByRole("button", { name: "Invite User" }));
       await waitFor(() => expect(screen.getByLabelText("Role")).toBeInTheDocument());
 
-      vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ token: "invite-token-abc" }));
+      vi.mocked(global.fetch).mockResolvedValueOnce(
+        jsonResponse({
+          token: "invite-token-abc",
+          url: "http://localhost:7777/invite/invite-token-abc",
+        })
+      );
       await user.type(screen.getByLabelText("Email"), "new@example.com");
       await user.click(screen.getByRole("button", { name: "Create Invite" }));
 
@@ -785,7 +795,10 @@ describe("SettingsUsers", () => {
           return jsonResponse({ success: true });
         }
         if (String(url) === "/api/users/invite" && init?.method === "POST") {
-          return jsonResponse({ token: "resend-token-xyz" });
+          return jsonResponse({
+            token: "resend-token-xyz",
+            url: "https://pinchy.example.com/invite/resend-token-xyz",
+          });
         }
         if (String(url) === "/api/users") {
           return jsonResponse({ users: mockUsers });
@@ -827,7 +840,7 @@ describe("SettingsUsers", () => {
 
       await waitFor(() => {
         expect(
-          screen.getByText("http://localhost:7777/invite/resend-token-xyz")
+          screen.getByText("https://pinchy.example.com/invite/resend-token-xyz")
         ).toBeInTheDocument();
       });
     });
@@ -857,7 +870,11 @@ describe("SettingsUsers", () => {
           return jsonResponse({ success: true });
         }
         if (String(url) === "/api/users/invite" && init?.method === "POST") {
-          return jsonResponse({ token: "resend-token-xyz", emailDelivery: { sent: true } });
+          return jsonResponse({
+            token: "resend-token-xyz",
+            url: "http://localhost:7777/invite/resend-token-xyz",
+            emailDelivery: { sent: true },
+          });
         }
         if (String(url) === "/api/users") return jsonResponse({ users: mockUsers });
         if (String(url) === "/api/users/invites") return jsonResponse({ invites: [] });
@@ -937,7 +954,10 @@ describe("SettingsUsers", () => {
             return jsonResponse({ success: true });
           }
           if (String(url) === "/api/users/invite" && init?.method === "POST") {
-            return jsonResponse({ token: "resend-token-xyz" });
+            return jsonResponse({
+              token: "resend-token-xyz",
+              url: "http://localhost:7777/invite/resend-token-xyz",
+            });
           }
           if (String(url) === "/api/users") {
             return jsonResponse({ users: mockUsers });
@@ -990,7 +1010,7 @@ describe("SettingsUsers", () => {
         }
         if (String(url) === "/api/users/invite" && init?.method === "POST") {
           postCalled = true;
-          return jsonResponse({ token: "x" });
+          return jsonResponse({ token: "x", url: "http://localhost:7777/invite/x" });
         }
         if (String(url) === "/api/users") {
           return jsonResponse({ users: mockUsers });

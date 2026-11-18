@@ -25,6 +25,10 @@ vi.mock("@/lib/invites", () => ({
   createInvite: vi.fn(),
 }));
 
+vi.mock("@/lib/domain", () => ({
+  getDomain: vi.fn().mockResolvedValue(null),
+}));
+
 vi.mock("@/db", () => ({
   db: {
     query: {
@@ -38,6 +42,7 @@ vi.mock("@/db", () => ({
 import { auth } from "@/lib/auth";
 import { createInvite } from "@/lib/invites";
 import { db } from "@/db";
+import { getDomain } from "@/lib/domain";
 
 // ── POST /api/users/[userId]/reset ──────────────────────────────────────
 
@@ -251,5 +256,52 @@ describe("POST /api/users/[userId]/reset", () => {
       type: "reset",
       createdBy: "admin-1",
     });
+  });
+});
+
+describe("POST /api/users/[userId]/reset — link URL", () => {
+  let POST: typeof import("@/app/api/users/[userId]/reset/route").POST;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    vi.mocked(auth.api.getSession).mockResolvedValue({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as never);
+    vi.mocked(db.query.users.findFirst).mockResolvedValue({
+      id: "user-1",
+      name: "Alice",
+      email: "alice@test.com",
+      role: "member",
+    } as never);
+    vi.mocked(createInvite).mockResolvedValue({
+      id: "invite-1",
+      token: "reset-tok",
+      expiresAt: new Date(),
+    } as never);
+    POST = (await import("@/app/api/users/[userId]/reset/route")).POST;
+  });
+
+  it("builds the reset link on the locked domain, not on the host the admin is browsing", async () => {
+    vi.mocked(getDomain).mockResolvedValue("pinchy.example.com");
+    const request = new NextRequest("http://pinchy-internal:7777/api/users/user-1/reset", {
+      method: "POST",
+    });
+
+    const res = await POST(request, { params: Promise.resolve({ userId: "user-1" }) });
+
+    expect(res.status).toBe(201);
+    expect((await res.json()).url).toBe("https://pinchy.example.com/invite/reset-tok");
+  });
+
+  it("builds the reset link on the request's host when no domain is locked", async () => {
+    vi.mocked(getDomain).mockResolvedValue(null);
+    const request = new NextRequest("http://localhost:7777/api/users/user-1/reset", {
+      method: "POST",
+    });
+
+    const res = await POST(request, { params: Promise.resolve({ userId: "user-1" }) });
+
+    expect((await res.json()).url).toBe("http://localhost:7777/invite/reset-tok");
   });
 });

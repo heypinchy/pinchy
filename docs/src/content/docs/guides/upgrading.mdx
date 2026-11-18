@@ -257,6 +257,10 @@ docker compose pull && docker compose up -d && docker image prune -f
 
 If you keep local changes in a `docker-compose.override.yml`, they carry over as usual.
 
+#### Invite and reset links use your locked domain
+
+The invite and password-reset links an admin copies in **Settings → Users** used to be built from the address the admin's browser showed. Behind a remote desktop such as Citrix, or on an internal hostname, that was an address the invitee couldn't open. With [Domain Lock](/guides/domain-lock/) on, the links now always point at the locked domain — the same address the invitation email already used. Without a lock, nothing changes. No action needed.
+
 #### The first start moves chat history into OpenClaw's new storage
 
 This release updates OpenClaw, the runtime your agents run on, to 2026.9. It keeps chat histories and each agent's workspace state in a database instead of loose files, and it won't start until the old files are moved over. The `openclaw` container does that once, on its first start after the upgrade, before the agents come up. Every chat comes along, including the chats of agents you deleted earlier. The old files aren't deleted: they stay on the volume as archived copies (`agents/<agent-id>/session-sqlite-import-archive/` and `openclaw-workspace-state.json.migrated.*`). Pinchy's `openclaw.json` isn't touched.

@@ -3,7 +3,6 @@
 import { useState, useEffect } from "react";
 import { useLicenseStatus } from "@/hooks/use-license-status";
 import { CopyField } from "@/components/copy-field";
-import { buildInviteUrl } from "@/lib/invite-url";
 import { apiGet, apiPost, errorMessage } from "@/lib/api-client";
 import type { EmailDelivery, SystemMailStatus } from "@/lib/schemas/system-mail";
 import { inviteUserSchema, type InviteUserInput } from "@/lib/schemas/users";
@@ -129,7 +128,7 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
     setCreating(true);
     try {
       const data = await apiPost<
-        { token: string; expiresAt?: string; emailDelivery?: EmailDelivery },
+        { token: string; url: string; expiresAt?: string; emailDelivery?: EmailDelivery },
         InviteUserInput
       >("/api/users/invite", {
         email: values.email,
@@ -138,7 +137,7 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
         ...(mailConfigured ? { sendEmail: true } : {}),
       });
       setCreated({
-        url: buildInviteUrl(window.location.origin, data.token),
+        url: data.url,
         email: values.email,
         expiresAt: data.expiresAt ?? null,
       });

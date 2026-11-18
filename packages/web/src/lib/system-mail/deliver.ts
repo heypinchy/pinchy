@@ -5,7 +5,7 @@ import { classifyMailError } from "@/lib/system-mail/errors";
 import { getOrgTimezone } from "@/lib/settings-timezone";
 import type { EmailDelivery, SystemMailConfig } from "@/lib/schemas/system-mail";
 import { getSystemMailConfig } from "@/lib/system-mail/config";
-import { resolveLinkOrigin } from "@/lib/system-mail/link-origin";
+import { resolveLinkOrigin } from "@/lib/link-origin";
 import { buildLinkEmail, buildTestEmail, type EmailContent } from "@/lib/system-mail/templates";
 import { sendSystemMail } from "@/lib/system-mail/transport";
 
