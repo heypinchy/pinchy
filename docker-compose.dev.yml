@@ -63,6 +63,10 @@ services:
       # Live source, like the pinchy service, so a change to the converter is
       # one `docker compose restart office-converter` away.
       - ./packages/web/src:/app/packages/web/src:ro
+      # log-line.ts (imported by the sidecar) reaches outside web/ for
+      # ../../../plugins/pinchy-files/docx-zip-guard; production COPYs that file
+      # into the image, dev has to mount it. Read-only, like the source.
+      - ./packages/plugins:/app/packages/plugins:ro
       - pinchy-office-spool-dev:/var/spool/pinchy-office
   openclaw:
     build:

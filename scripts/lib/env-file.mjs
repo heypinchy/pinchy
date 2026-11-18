@@ -134,3 +134,22 @@ export function writeManagedBlock(existing, entries) {
 
   return (kept ? `${kept}\n\n` : "") + block + "\n";
 }
+
+/**
+ * Give the dev stack an image tag. `docker-compose.yml` requires
+ * `PINCHY_VERSION` (`${PINCHY_VERSION:?…}`, deliberately strict for
+ * production) and Compose interpolates every file before merging, so the dev
+ * overlay cannot supply a default — only the environment can. Dev builds its
+ * images locally, so `dev` is just the local tag.
+ *
+ * Deliberately NOT one of MANAGED_KEYS: it is not a per-worktree allocation,
+ * and a developer who pinned a real version keeps it.
+ *
+ * @param {string} text current `.env` contents
+ * @returns {string}
+ */
+export function ensureDevVersion(text) {
+  if ("PINCHY_VERSION" in parseEnvFile(text)) return text;
+  const sep = text === "" || text.endsWith("\n") ? "" : "\n";
+  return `${text}${sep}# Local tag for the images the dev stack builds (docker-compose.yml requires one).\nPINCHY_VERSION=dev\n`;
+}
