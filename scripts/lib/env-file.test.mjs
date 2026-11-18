@@ -17,7 +17,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { parseEnvFile, writeManagedBlock } from "./env-file.mjs";
+import {
+  ensureDevVersion,
+  parseEnvFile,
+  writeManagedBlock,
+} from "./env-file.mjs";
 
 // ---------------------------------------------------------------------------
 // parseEnvFile
@@ -118,4 +122,28 @@ test("does not touch a PINCHY_PORT the developer set themselves", () => {
 test("produces a file that ends in exactly one newline", () => {
   const out = writeManagedBlock("MY_OWN=keepme\n\n\n", ENTRIES);
   assert.match(out, /[^\n]\n$/);
+});
+
+// ---------------------------------------------------------------------------
+// ensureDevVersion
+// ---------------------------------------------------------------------------
+
+test("ensureDevVersion adds PINCHY_VERSION=dev when the .env has none", () => {
+  const out = ensureDevVersion("FOO=bar\n");
+  assert.equal(parseEnvFile(out).PINCHY_VERSION, "dev");
+  assert.equal(parseEnvFile(out).FOO, "bar");
+});
+
+test("ensureDevVersion works on an empty .env", () => {
+  assert.equal(parseEnvFile(ensureDevVersion("")).PINCHY_VERSION, "dev");
+});
+
+test("ensureDevVersion never overrides a version the developer set", () => {
+  const text = "PINCHY_VERSION=v0.9.1\n";
+  assert.equal(ensureDevVersion(text), text);
+});
+
+test("ensureDevVersion is idempotent", () => {
+  const once = ensureDevVersion("FOO=bar");
+  assert.equal(ensureDevVersion(once), once);
 });

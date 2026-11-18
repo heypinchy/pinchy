@@ -10,11 +10,13 @@ Two worktrees cannot both run the dev stack on the default ports. Allocate a fre
 pnpm worktree:env
 ```
 
-It writes `COMPOSE_PROJECT_NAME`, `DEV_PINCHY_PORT`, `DEV_DB_PORT` and `DEV_CADDY_PORT` into a gitignored `.env`, which Compose reads automatically. Allocation happens **once** and is not re-derived on later runs — a worktree's address should stay bookmarkable — so pass `--force` if you need a new block. `pnpm -C packages/web test:db` follows the allocation on its own.
+It writes `COMPOSE_PROJECT_NAME`, `DEV_PINCHY_PORT`, `DEV_DB_PORT` and `DEV_CADDY_PORT` into a gitignored `.env` — plus `PINCHY_VERSION=dev` if the file has none (`docker-compose.yml` requires it, and Compose interpolates each file before merging, so the dev overlay cannot default it; a version you set yourself is kept) — which Compose reads automatically. Allocation happens **once** and is not re-derived on later runs — a worktree's address should stay bookmarkable — so pass `--force` if you need a new block. `pnpm -C packages/web test:db` follows the allocation on its own.
 
 Do not hand-write a `docker-compose.local.yml` with `ports: !override` for this any more. That was the old workaround and it is easy to get wrong: a bare `ports:` **appends** instead of replacing, so the conflict survives the override that was meant to fix it.
 
-The compose defaults are unchanged (`7777`/`5434`/`8443`), so a checkout without `.env` behaves exactly as the docs describe.
+The port defaults are unchanged (`7777`/`5434`/`8443`), so a checkout without `.env` binds exactly what the docs describe. It still needs `PINCHY_VERSION` set, though: run `pnpm worktree:env` once, or `PINCHY_VERSION=dev docker compose …`.
+
+A dev service that mounts only `packages/web/src` (the `office-converter`) must also mount `./packages/plugins:/app/packages/plugins:ro`: `log-line.ts` imports `../../../plugins/pinchy-files/docx-zip-guard`, and without it the converter crash-loops on `Cannot find module`. `scripts/lib/dev-stack-bootstrap.test.mjs` guards it.
 
 **The `DEV_` prefix is load-bearing.** Compose reads `.env` for _every_ stack started from the repo root, and `docker-compose.yml` — the base file every E2E overlay layers on — reads `PINCHY_PORT`. Writing that key per worktree therefore moved six E2E suites off the `:7777` their Playwright configs expect (`telegram` hard-codes the URL and has no override at all), and the failure surfaces as a connection timeout with nothing pointing back at the allocation. Only `docker-compose.dev.yml` reads the `DEV_*` keys, so only stacks that include it move. A stack that _does_ layer the dev overlay (`odoo`, `eval`) must pin its ports back with `ports: !override`.
 
