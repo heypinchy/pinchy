@@ -95,7 +95,11 @@ describe("InviteDialog", () => {
     // needs one. So the dialog must not hand out such a link.
     const user = userEvent.setup();
 
-    fetchSpy.mockImplementation(mockFetchForInvite(jsonResponse({ token: "test-token" })));
+    fetchSpy.mockImplementation(
+      mockFetchForInvite(
+        jsonResponse({ token: "test-token", url: "http://localhost:7777/invite/test-token" })
+      )
+    );
 
     render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
 
@@ -110,7 +114,11 @@ describe("InviteDialog", () => {
   it("should submit form with entered email", async () => {
     const user = userEvent.setup();
 
-    fetchSpy.mockImplementation(mockFetchForInvite(jsonResponse({ token: "test-token" })));
+    fetchSpy.mockImplementation(
+      mockFetchForInvite(
+        jsonResponse({ token: "test-token", url: "http://localhost:7777/invite/test-token" })
+      )
+    );
 
     render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
 
@@ -129,15 +137,25 @@ describe("InviteDialog", () => {
   it("should show invite link after successful creation", async () => {
     const user = userEvent.setup();
 
-    fetchSpy.mockImplementation(mockFetchForInvite(jsonResponse({ token: "invite-token-abc" })));
+    fetchSpy.mockImplementation(
+      mockFetchForInvite(
+        jsonResponse({
+          token: "invite-token-abc",
+          url: "https://pinchy.example.com/invite/invite-token-abc",
+        })
+      )
+    );
 
     render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
 
     await user.type(screen.getByLabelText("Email"), "new@example.com");
     await user.click(screen.getByRole("button", { name: "Create Invite" }));
 
+    // The link is the server's (locked domain), not one built from the browser's host.
     await waitFor(() => {
-      expect(screen.getByText("http://localhost:7777/invite/invite-token-abc")).toBeInTheDocument();
+      expect(
+        screen.getByText("https://pinchy.example.com/invite/invite-token-abc")
+      ).toBeInTheDocument();
     });
 
     // The form that had focus is gone; focus lands on the new link's Copy
@@ -151,6 +169,7 @@ describe("InviteDialog", () => {
       mockFetchForInvite(
         jsonResponse({
           token: "invite-token-abc",
+          url: "http://localhost:7777/invite/invite-token-abc",
           email: "stored@example.com",
           expiresAt: "2026-11-12T14:30:00.000Z",
         })
@@ -172,7 +191,14 @@ describe("InviteDialog", () => {
     const user = userEvent.setup();
     const expiresAt = "2026-11-12T14:30:00.000Z";
     fetchSpy.mockImplementation(
-      mockFetchForInvite(jsonResponse({ token: "invite-token-abc", email: null, expiresAt }))
+      mockFetchForInvite(
+        jsonResponse({
+          token: "invite-token-abc",
+          url: "http://localhost:7777/invite/invite-token-abc",
+          email: null,
+          expiresAt,
+        })
+      )
     );
 
     render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
@@ -315,7 +341,11 @@ describe("InviteDialog", () => {
       configurable: true,
     });
 
-    fetchSpy.mockImplementation(mockFetchForInvite(jsonResponse({ token: "share-token" })));
+    fetchSpy.mockImplementation(
+      mockFetchForInvite(
+        jsonResponse({ token: "share-token", url: "http://localhost:7777/invite/share-token" })
+      )
+    );
 
     render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
 
@@ -353,7 +383,11 @@ describe("InviteDialog", () => {
     // @ts-expect-error removing for test
     delete navigator.share;
 
-    fetchSpy.mockImplementation(mockFetchForInvite(jsonResponse({ token: "copy-token" })));
+    fetchSpy.mockImplementation(
+      mockFetchForInvite(
+        jsonResponse({ token: "copy-token", url: "http://localhost:7777/invite/copy-token" })
+      )
+    );
 
     render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
 
@@ -385,7 +419,9 @@ describe("InviteDialog", () => {
           ])
         );
       }
-      return Promise.resolve(jsonResponse({ token: "test" }));
+      return Promise.resolve(
+        jsonResponse({ token: "test", url: "http://localhost:7777/invite/test" })
+      );
     });
 
     render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
@@ -406,7 +442,9 @@ describe("InviteDialog", () => {
       if (urlStr.includes("/api/groups")) {
         return Promise.reject(new Error("Network error"));
       }
-      return Promise.resolve(jsonResponse({ token: "test" }));
+      return Promise.resolve(
+        jsonResponse({ token: "test", url: "http://localhost:7777/invite/test" })
+      );
     });
 
     render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
@@ -425,7 +463,9 @@ describe("InviteDialog", () => {
       if (urlStr.includes("/api/enterprise/status")) {
         return Promise.resolve(jsonResponse({ enterprise: false }));
       }
-      return Promise.resolve(jsonResponse({ token: "test" }));
+      return Promise.resolve(
+        jsonResponse({ token: "test", url: "http://localhost:7777/invite/test" })
+      );
     });
 
     render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
@@ -454,7 +494,9 @@ describe("InviteDialog", () => {
           ])
         );
       }
-      return Promise.resolve(jsonResponse({ token: "test-token" }));
+      return Promise.resolve(
+        jsonResponse({ token: "test-token", url: "http://localhost:7777/invite/test-token" })
+      );
     });
 
     render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
@@ -494,7 +536,9 @@ describe("InviteDialog", () => {
       if (urlStr.includes("/api/groups")) {
         return Promise.resolve(jsonResponse([]));
       }
-      return Promise.resolve(jsonResponse({ token: "test" }));
+      return Promise.resolve(
+        jsonResponse({ token: "test", url: "http://localhost:7777/invite/test" })
+      );
     });
 
     const { rerender } = render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
@@ -517,7 +561,9 @@ describe("InviteDialog", () => {
       if (urlStr.includes("/api/groups")) {
         return Promise.resolve(jsonResponse([{ id: "g1", name: "Engineering" }]));
       }
-      return Promise.resolve(jsonResponse({ token: "test" }));
+      return Promise.resolve(
+        jsonResponse({ token: "test", url: "http://localhost:7777/invite/test" })
+      );
     });
 
     // Reopen dialog
@@ -534,7 +580,11 @@ describe("InviteDialog", () => {
     const user = userEvent.setup();
     const onOpenChange = vi.fn();
 
-    fetchSpy.mockImplementation(mockFetchForInvite(jsonResponse({ token: "test-token" })));
+    fetchSpy.mockImplementation(
+      mockFetchForInvite(
+        jsonResponse({ token: "test-token", url: "http://localhost:7777/invite/test-token" })
+      )
+    );
 
     const { rerender } = render(<InviteDialog open={true} onOpenChange={onOpenChange} />);
 
@@ -571,7 +621,13 @@ describe("InviteDialog — with email delivery (#1309)", () => {
   }
 
   it("makes Send invitation the action and asks the server to email it", async () => {
-    setup(jsonResponse({ token: "tok", emailDelivery: { sent: true } }));
+    setup(
+      jsonResponse({
+        token: "tok",
+        url: "http://localhost:7777/invite/tok",
+        emailDelivery: { sent: true },
+      })
+    );
     const user = userEvent.setup();
     render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
 
@@ -588,7 +644,13 @@ describe("InviteDialog — with email delivery (#1309)", () => {
   });
 
   it("confirms the email and still shows the link to copy", async () => {
-    setup(jsonResponse({ token: "tok", emailDelivery: { sent: true } }));
+    setup(
+      jsonResponse({
+        token: "tok",
+        url: "http://localhost:7777/invite/tok",
+        emailDelivery: { sent: true },
+      })
+    );
     const user = userEvent.setup();
     render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
 
@@ -605,6 +667,7 @@ describe("InviteDialog — with email delivery (#1309)", () => {
     setup(
       jsonResponse({
         token: "tok",
+        url: "http://localhost:7777/invite/tok",
         emailDelivery: { sent: false, error: "Connection refused — check the host and port" },
       })
     );

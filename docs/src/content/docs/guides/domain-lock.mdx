@@ -59,9 +59,9 @@ Caddy automatically provisions Let's Encrypt certificates for your domain. After
   request from the host your reverse proxy forwards (`X-Forwarded-Host` — the
   Caddy config above forwards it by default), and Domain Lock pins which host is
   accepted. The `BETTER_AUTH_URL` env var that older guides mentioned was
-  removed — it had no effect on Pinchy's auth flows (password-reset links are
-  built from the browser's current origin, and origin checks read the Domain
-  Lock value).
+  removed — it had no effect on Pinchy's auth flows (invite and password-reset
+  links are built on the locked domain, and origin checks read the Domain Lock
+  value).
 </Aside>
 
 <details>

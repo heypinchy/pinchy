@@ -38,7 +38,6 @@ import {
 } from "@/lib/user-list";
 import { useLicenseStatus } from "@/hooks/use-license-status";
 import { CopyField } from "@/components/copy-field";
-import { buildInviteUrl } from "@/lib/invite-url";
 import { evaluateSeatPressure } from "@/lib/seat-grace";
 import { SALES_MAILTO, CALENDLY_URL } from "@/lib/conversion-links";
 import { apiGet, apiPost, apiDelete, errorMessage } from "@/lib/api-client";
@@ -335,11 +334,15 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
       .then((s) => s.configured === true)
       .catch(() => false);
     try {
-      const data = await apiPost<{ token: string; emailDelivery?: EmailDelivery }, InviteUserInput>(
-        "/api/users/invite",
-        { email, role: item.role, ...(mailConfigured ? { sendEmail: true } : {}) }
-      );
-      setResetLink(buildInviteUrl(window.location.origin, data.token));
+      const data = await apiPost<
+        { token: string; url: string; emailDelivery?: EmailDelivery },
+        InviteUserInput
+      >("/api/users/invite", {
+        email,
+        role: item.role,
+        ...(mailConfigured ? { sendEmail: true } : {}),
+      });
+      setResetLink(data.url);
       setResendDelivery(data.emailDelivery ? { email, delivery: data.emailDelivery } : null);
     } catch (e) {
       toast.error(errorMessage(e, "Failed to create the new invite. Please try again."));

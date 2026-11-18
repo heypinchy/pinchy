@@ -8,6 +8,8 @@ import { deferAuditLog } from "@/lib/audit-deferred";
 import { parseOptionalRequestBody } from "@/lib/api-validation";
 import { resetPasswordSchema } from "@/lib/schemas/users";
 import type { EmailDelivery } from "@/lib/schemas/system-mail";
+import { resolveLinkOrigin } from "@/lib/link-origin";
+import { buildInviteUrl } from "@/lib/invite-url";
 
 export async function POST(
   request: NextRequest,
@@ -60,7 +62,7 @@ export async function POST(
   let emailDelivery: EmailDelivery | undefined;
   if (parsed.data.sendEmail && user.email) {
     // Loaded only when an email is asked for: with the mailer off, this route
-    // must not pull in the mail stack (nodemailer, the domain lookup) at all.
+    // must not pull in the mail stack (nodemailer) at all.
     emailDelivery = await import("@/lib/system-mail/deliver")
       .then(({ deliverLinkEmail }) =>
         deliverLinkEmail({
@@ -79,8 +81,11 @@ export async function POST(
       });
   }
 
+  // Built here rather than in the browser, so the link lands on the locked
+  // domain rather than on whatever host the admin is browsing.
+  const url = buildInviteUrl(await resolveLinkOrigin(request), invite.token);
   return NextResponse.json(
-    emailDelivery ? { token: invite.token, emailDelivery } : { token: invite.token },
+    emailDelivery ? { token: invite.token, url, emailDelivery } : { token: invite.token, url },
     { status: 201 }
   );
 }

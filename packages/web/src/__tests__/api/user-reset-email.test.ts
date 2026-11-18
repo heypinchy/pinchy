@@ -6,6 +6,11 @@ vi.mock("next/headers", () => ({ headers: vi.fn().mockResolvedValue(new Headers(
 vi.mock("@/lib/api-auth", () => ({ requireAdmin: vi.fn() }));
 vi.mock("@/lib/invites", () => ({ createInvite: vi.fn() }));
 vi.mock("@/lib/system-mail/deliver", () => ({ deliverLinkEmail: vi.fn() }));
+vi.mock("@/lib/domain", () => ({
+  getDomain: vi.fn().mockResolvedValue(null),
+  // auth.ts reads it in trustedOrigins when Better Auth initialises.
+  getCachedDomain: vi.fn(() => null),
+}));
 vi.mock("@/lib/audit-deferred", () => ({ deferAuditLog: vi.fn() }));
 vi.mock("@/db", () => ({ db: { query: { users: { findFirst: vi.fn() } } } }));
 
@@ -47,7 +52,10 @@ describe("POST /api/users/[userId]/reset — sendEmail (#1309)", () => {
   it("keeps working for a client that sends no body", async () => {
     const res = await POST(makeRequest(), params);
     expect(res.status).toBe(201);
-    expect(await res.json()).toEqual({ token: "reset-tok" });
+    expect(await res.json()).toEqual({
+      token: "reset-tok",
+      url: "http://localhost/invite/reset-tok",
+    });
     expect(deliverLinkEmail).not.toHaveBeenCalled();
   });
 
@@ -55,7 +63,11 @@ describe("POST /api/users/[userId]/reset — sendEmail (#1309)", () => {
     vi.mocked(deliverLinkEmail).mockResolvedValue({ sent: true });
     const res = await POST(makeRequest(JSON.stringify({ sendEmail: true })), params);
     expect(res.status).toBe(201);
-    expect(await res.json()).toEqual({ token: "reset-tok", emailDelivery: { sent: true } });
+    expect(await res.json()).toEqual({
+      token: "reset-tok",
+      url: "http://localhost/invite/reset-tok",
+      emailDelivery: { sent: true },
+    });
     expect(deliverLinkEmail).toHaveBeenCalledWith(
       expect.objectContaining({
         kind: "reset",
@@ -73,6 +85,7 @@ describe("POST /api/users/[userId]/reset — sendEmail (#1309)", () => {
     expect(res.status).toBe(201);
     expect(await res.json()).toEqual({
       token: "reset-tok",
+      url: "http://localhost/invite/reset-tok",
       emailDelivery: { sent: false, error: "Connection refused" },
     });
   });
