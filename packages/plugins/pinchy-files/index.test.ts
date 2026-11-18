@@ -2537,24 +2537,38 @@ describe("write tools refuse a path that does not read as what it resolves to", 
   });
 });
 
+type PromptHook = (event: unknown, ctx: unknown) => { appendSystemContext?: string } | undefined;
+
+/**
+ * Every `before_prompt_build` handler pinchy-files registers, run the way
+ * OpenClaw runs them: each in turn, their `appendSystemContext` concatenated
+ * (hook-runner-global's concatOptionalTextSegments). Undefined when none adds
+ * anything — what OpenClaw then leaves out of the prompt.
+ */
+async function registeredPromptHooks(
+  agents: Record<string, Record<string, unknown> & { allowed_paths: string[] }>
+): Promise<PromptHook> {
+  const api = createMockApi(agents as never);
+  const { default: plugin } = await import("./index");
+  plugin.register!(api as any);
+  const hooks = api.on.mock.calls
+    .filter((c: any[]) => c[0] === "before_prompt_build")
+    .map((c: any[]) => c[1] as PromptHook);
+  expect(hooks.length).toBeGreaterThan(0);
+  return (event, ctx) => {
+    const parts = hooks
+      .map((hook) => hook(event, ctx)?.appendSystemContext)
+      .filter((part): part is string => typeof part === "string" && part.length > 0);
+    return parts.length > 0 ? { appendSystemContext: parts.join("\n\n") } : undefined;
+  };
+}
+
 describe("memory prompt hook", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  async function registeredHook(
-    agents: Record<string, { allowed_paths: string[]; write_paths?: string[]; memory?: boolean }>
-  ) {
-    const api = createMockApi(agents);
-    const { default: plugin } = await import("./index");
-    plugin.register!(api as any);
-    const hooks = api.on.mock.calls.filter((c: any[]) => c[0] === "before_prompt_build");
-    expect(hooks).toHaveLength(1);
-    return hooks[0][1] as (
-      event: unknown,
-      ctx: unknown
-    ) => { appendSystemContext?: string } | undefined;
-  }
+  const registeredHook = registeredPromptHooks;
 
   const memoryAgent = {
     allowed_paths: ["/root/.openclaw/workspaces/a1/MEMORY.md"],
@@ -2594,5 +2608,34 @@ describe("memory prompt hook", () => {
     expect(hook({ prompt: "hi", messages: [] }, { agentId: "unknown" })).toBeUndefined();
     expect(hook({ prompt: "hi", messages: [] }, {})).toBeUndefined();
     expect(hook({ prompt: "hi", messages: [] }, undefined)).toBeUndefined();
+  });
+});
+
+describe("skills prompt hook", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const webSearch = {
+    name: "web-search",
+    description: "Research a topic on the web and report back.",
+    location: "/root/.openclaw/workspaces/a1/skills/web-search/SKILL.md",
+  };
+
+  it("puts the skill index into the system prompt of an agent with skills", async () => {
+    // OpenClaw 2026.9 renders its own <available_skills> section only when the
+    // built-in `read` tool is visible, and no Pinchy agent has it — so without
+    // this hook no skill reaches any agent.
+    const hook = await registeredPromptHooks({
+      a1: { allowed_paths: ["/root/.openclaw/workspaces/a1/skills"], skills: [webSearch] },
+    });
+    const result = hook({ prompt: "hi", messages: [] }, { agentId: "a1" });
+    expect(result?.appendSystemContext).toContain("<available_skills>");
+    expect(result?.appendSystemContext).toContain(`<location>${webSearch.location}</location>`);
+  });
+
+  it("adds nothing for an agent without skills", async () => {
+    const hook = await registeredPromptHooks({ a2: { allowed_paths: ["/data/docs/"] } });
+    expect(hook({ prompt: "hi", messages: [] }, { agentId: "a2" })).toBeUndefined();
   });
 });

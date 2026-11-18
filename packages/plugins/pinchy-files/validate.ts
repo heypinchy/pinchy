@@ -15,6 +15,11 @@ export interface AgentFileConfig {
    * and memory-prompt.ts puts the `## Memory` block into its every turn.
    */
   memory?: boolean;
+  /**
+   * The agent's skill index. build.ts puts `<workspace>/skills` into
+   * `allowed_paths` alongside it; skills-prompt.ts lists these in the prompt.
+   */
+  skills?: { name: string; description: string; location: string }[];
 }
 
 export type AccessMode = "read" | "write";

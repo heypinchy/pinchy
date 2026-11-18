@@ -19,7 +19,11 @@ Skills are attached through **templates**. When you create an agent from a templ
 
 1. Materializes the skill body into the agent's workspace at `skills/<skill-id>/SKILL.md`.
 2. Emits `skills: ["<skill-id>"]` in that agent's OpenClaw configuration.
-3. Lets OpenClaw load the `SKILL.md` into the agent's system prompt automatically — the workspace copy takes precedence over any bundled skill of the same name.
+3. Lists the skill in the agent's system prompt — its name, a one-line description, and where its `SKILL.md` lives.
+
+When a request matches one of its skills, the agent reads that `SKILL.md` with `pinchy_read` and follows it. Only the short list sits in the prompt on every turn; the full playbook is loaded when it's needed, so an agent with many skills doesn't pay for all of them on every message.
+
+The agent can read its `skills/` directory but never write to it — a skill is part of the agent's configuration, like its instructions. The read goes through `pinchy_read` like any other file access, so it lands in the [audit trail](/concepts/audit-trail/). OpenClaw's own way of offering skills relies on its unrestricted file-reading tool, which Pinchy agents don't get ([why](/concepts/agent-permissions/#how-permissions-reach-openclaw)), so Pinchy writes the skill list into the prompt itself.
 
 Because Pinchy writes the skill files at config-regenerate time — alongside the AGENTS.md and SOUL.md bootstrap files — the skill travels with the agent and stays in sync with its configuration.
 
