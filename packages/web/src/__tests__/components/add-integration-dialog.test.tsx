@@ -136,6 +136,60 @@ describe("AddIntegrationDialog", () => {
       fetchSpy.mockRestore();
     });
 
+    it("says why the databases could not be listed, in the route's words", async () => {
+      const user = userEvent.setup();
+      const reason =
+        "Odoo did not answer within 60 seconds. The server took the connection but sent no reply.";
+      const fetchSpy = vi
+        .spyOn(global, "fetch")
+        .mockImplementation((url) =>
+          Promise.resolve(
+            resolveUrl(url).includes("/api/integrations/list-databases")
+              ? jsonResponse({ success: false, error: reason })
+              : jsonResponse({})
+          )
+        );
+
+      render(<AddIntegrationDialog {...defaultProps} />);
+      await selectOdooType(user);
+
+      await user.type(screen.getByLabelText("URL"), "https://odoo.example.com");
+      await user.tab();
+
+      await waitFor(() => {
+        expect(screen.getByText(reason)).toBeInTheDocument();
+      });
+      expect(screen.getByLabelText("Database").tagName).toBe("INPUT");
+
+      fetchSpy.mockRestore();
+    });
+
+    it("says why the databases could not be listed when the route refuses the URL", async () => {
+      const user = userEvent.setup();
+      const reason = "This address points at a private network.";
+      const fetchSpy = vi
+        .spyOn(global, "fetch")
+        .mockImplementation((url) =>
+          Promise.resolve(
+            resolveUrl(url).includes("/api/integrations/list-databases")
+              ? jsonResponse({ error: reason }, { status: 400 })
+              : jsonResponse({})
+          )
+        );
+
+      render(<AddIntegrationDialog {...defaultProps} />);
+      await selectOdooType(user);
+
+      await user.type(screen.getByLabelText("URL"), "https://odoo.example.com");
+      await user.tab();
+
+      await waitFor(() => {
+        expect(screen.getByText(reason)).toBeInTheDocument();
+      });
+
+      fetchSpy.mockRestore();
+    });
+
     it("should not show database field when URL is invalid", async () => {
       const user = userEvent.setup();
       const fetchSpy = vi.spyOn(global, "fetch").mockImplementation(() => {
