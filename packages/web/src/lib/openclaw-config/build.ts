@@ -45,7 +45,7 @@ import {
   writeMailboxContext,
   ensureWorkspace,
 } from "@/lib/workspace";
-import { getSkillBody, isKnownSkill } from "@/lib/skills";
+import { getSkillBody, isKnownSkill, parseSkillFrontmatter, type SkillId } from "@/lib/skills";
 import { resolveBootstrapCaps } from "./bootstrap-caps";
 import {
   CONFIG_PATH,
@@ -779,7 +779,7 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     // in-flight insert that races a regenerate could otherwise surface as
     // an opaque TypeError instead of a clean empty allowlist.
     const rawSkills = (agent.skills as string[] | null) ?? [];
-    const skills: string[] = [];
+    const skills: SkillId[] = [];
     for (const id of rawSkills) {
       if (!isKnownSkill(id)) {
         throw new Error(
@@ -789,6 +789,25 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
       skills.push(id);
     }
     agentEntry.skills = skills;
+
+    // OpenClaw 2026.9 renders its own skills section only when the built-in
+    // `read` tool is visible, and tools.allow denies it to every Pinchy agent
+    // so file access stays governed. pinchy-files lists the skills instead
+    // (pinchy-files/skills-prompt.ts) and the agent loads a body with
+    // pinchy_read — so it gets the index, and the skills directory READ-ONLY.
+    // Never write_paths: a skill body is platform-managed, like AGENTS.md.
+    if (skills.length > 0) {
+      const workspaceSkills = `${getOpenClawWorkspacePath(agent.id)}/skills`;
+      agentFilesConfig.allowed_paths = [
+        ...(agentFilesConfig.allowed_paths as string[]),
+        workspaceSkills,
+      ];
+      agentFilesConfig.skills = skills.map((id) => ({
+        name: id,
+        description: parseSkillFrontmatter(getSkillBody(id)).description,
+        location: `${workspaceSkills}/${id}/SKILL.md`,
+      }));
+    }
 
     agentEntries[agent.id] = agentEntry;
   }

@@ -21,7 +21,20 @@
             "allowed_paths": { "type": "array", "items": { "type": "string" } },
             "write_paths": { "type": "array", "items": { "type": "string" } },
             "allowed_extensions": { "type": "array", "items": { "type": "string" } },
-            "memory": { "type": "boolean" }
+            "memory": { "type": "boolean" },
+            "skills": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "name": { "type": "string" },
+                  "description": { "type": "string" },
+                  "location": { "type": "string" }
+                },
+                "required": ["name", "description", "location"]
+              }
+            }
           },
           "required": ["allowed_paths"]
         }

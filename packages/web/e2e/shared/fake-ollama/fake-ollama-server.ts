@@ -26,6 +26,34 @@ function recordAdvertisedTools(payload: Record<string, unknown>): void {
     if (typeof name === "string") advertisedToolNames.add(name);
   }
 }
+// The full text of the most recent chat request — every message, system prompt
+// included — joined. Lets a test assert what OpenClaw actually put in front of
+// the model (e.g. that an agent's skill index reached its system prompt), which
+// no response or audit row can show.
+let lastRequestText = "";
+
+function recordRequestText(messages: unknown[]): void {
+  lastRequestText = messages.map(messageContent).join("\n");
+}
+
+// Skill-read probe: on the trigger, the fake model does what the `## Skills`
+// block (pinchy-files/skills-prompt.ts) tells a real one to — reads the first
+// skill's SKILL.md with `pinchy_read` at the exact <location> its system prompt
+// lists — then answers once the body comes back. With no skill in the prompt it
+// answers SKILL_READ_PROBE_NO_SKILLS instead of calling a tool.
+const SKILL_READ_PROBE_TRIGGER = "E2E_SKILL_READ_PROBE";
+const SKILL_READ_PROBE_DONE = "Skill instructions loaded.";
+const SKILL_READ_PROBE_NO_SKILLS = "No skill is listed in my system prompt.";
+
+// Searches every message rather than role "system" alone: OpenAI-style
+// requests may carry the system prompt as role "developer".
+function firstSkillLocation(messages: unknown[]): string | undefined {
+  return messages
+    .map(messageContent)
+    .join("\n")
+    .match(/<location>([^<]+)<\/location>/)?.[1];
+}
+
 // Default response asserted by the integration test suite. The setup-wizard
 // E2E container overrides this via FAKE_OLLAMA_RESPONSE so its spec can
 // assert the same canonical "Sure, happy to help..." reply as the other
@@ -1758,6 +1786,12 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
     return;
   }
 
+  if (method === "GET" && url === "/__pinchy_fake_ollama/last-request-text") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ text: lastRequestText }));
+    return;
+  }
+
   if (method === "GET" && url === "/api/tags") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(
@@ -1805,7 +1839,22 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
     const hasToolResult = lastRoundHasToolResult(messages);
 
     const lastContent = messageContent(lastUserMessage);
+    recordRequestText(messages);
     const activeTrigger = TOOL_TRIGGERS.find(({ trigger }) => lastContent.includes(trigger));
+
+    if (lastContent.includes(SKILL_READ_PROBE_TRIGGER)) {
+      const location = firstSkillLocation(messages);
+      if (location && !hasToolResult) {
+        writeNdjsonToolCall(res, "pinchy_read", { path: location }, messages);
+      } else {
+        streamTextResponse(
+          res,
+          location ? SKILL_READ_PROBE_DONE : SKILL_READ_PROBE_NO_SKILLS,
+          countUserMessages(messages)
+        );
+      }
+      return;
+    }
 
     if (activeTrigger && !hasToolResult) {
       const { promptTokens, completionTokens } = getUsageTokens(countUserMessages(messages));
@@ -2036,7 +2085,22 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
       .find((message) => (message as { role?: unknown })?.role === "user");
     const hasToolResult = lastRoundHasToolResult(messages);
     const lastContent = messageContent(lastUserMessage);
+    recordRequestText(messages);
     const activeTrigger = TOOL_TRIGGERS.find(({ trigger }) => lastContent.includes(trigger));
+
+    if (lastContent.includes(SKILL_READ_PROBE_TRIGGER)) {
+      const location = firstSkillLocation(messages);
+      if (location && !hasToolResult) {
+        streamOpenAiToolCalls(res, "pinchy_read", { path: location });
+      } else {
+        streamOpenAiText(
+          res,
+          location ? SKILL_READ_PROBE_DONE : SKILL_READ_PROBE_NO_SKILLS,
+          countUserMessages(messages)
+        );
+      }
+      return;
+    }
 
     if (activeTrigger && !hasToolResult) {
       streamOpenAiToolCalls(res, activeTrigger.toolName, activeTrigger.arguments);
@@ -2265,6 +2329,9 @@ export const FAKE_OLLAMA_FILES_LS_TOOL_RESPONSE = FILES_LS_RESPONSE;
 export const FAKE_OLLAMA_FILES_READ_DOCX_TOOL_TRIGGER = FILES_READ_DOCX_TRIGGER;
 export const FAKE_OLLAMA_FILES_READ_DOCX_TOOL_RESPONSE = FILES_READ_DOCX_RESPONSE;
 export const FAKE_OLLAMA_FILES_READ_DOCX_PATH = FILES_READ_DOCX_PATH;
+export const FAKE_OLLAMA_SKILL_READ_PROBE_TRIGGER = SKILL_READ_PROBE_TRIGGER;
+export const FAKE_OLLAMA_SKILL_READ_PROBE_DONE = SKILL_READ_PROBE_DONE;
+export const FAKE_OLLAMA_SKILL_READ_PROBE_NO_SKILLS = SKILL_READ_PROBE_NO_SKILLS;
 export const FAKE_OLLAMA_CONTEXT_SAVE_USER_TOOL_TRIGGER = CONTEXT_SAVE_USER_TRIGGER;
 export const FAKE_OLLAMA_CONTEXT_SAVE_USER_TOOL_RESPONSE = CONTEXT_SAVE_USER_RESPONSE;
 export const FAKE_OLLAMA_ODOO_LIST_MODELS_TOOL_TRIGGER = ODOO_LIST_MODELS_TRIGGER;
