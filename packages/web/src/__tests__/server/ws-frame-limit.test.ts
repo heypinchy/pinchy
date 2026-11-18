@@ -154,7 +154,11 @@ describe("WebSocket server frame limit (regression guard)", () => {
       // "Connection lost".
       maxPayload: SERVER_WS_MAX_PAYLOAD_BYTES,
     });
-    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+    // Bind the address the client dials. A wildcard bind (`::`) lets another
+    // process on this machine take 127.0.0.1 on the same port (Node sets
+    // SO_REUSEADDR), and the client then reaches that server instead: the
+    // suite failed with "Unexpected server response: 404" exactly that way.
+    await new Promise<void>((resolve) => httpServer.listen(0, "127.0.0.1", resolve));
     port = (httpServer.address() as AddressInfo).port;
   });
 
