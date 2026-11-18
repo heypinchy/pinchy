@@ -104,6 +104,17 @@ id = "GHSA-g3hv-75wg-m249"
 ignoreUntil = 2026-12-15
 reason = "minimatch 3.1.5 / 5.1.9 / 9.0.9 / 10.2.5, globparts amplification in firstPhasePreProcess() at optimizationLevel >= 2 (medium); fixed only in 11.0.1, a major no dependent declares (3 -> 11 under eslint is the brace-expansion 5 breakage again). minimatch defaults to optimizationLevel 1 and the direct callers pass code- or config-authored patterns and no level: openclaw tool-policy/model-id matching; dev-only eslint routes (@eslint/config-array, @eslint/eslintrc, eslint-config-next, eslint-plugin-import, eslint-plugin-jsx-a11y, eslint-plugin-react) and typescript-estree; exceljs (archiver > readdir-glob, patterns from archiver's own calls); only glob's own Minimatch runs at 2, over manifest-authored patterns. No request-supplied pattern reaches it."
 
+# picomatch has no fixed release at all (every version <= 4.0.7 is affected),
+# so there is nothing to bump to. The ReDoS needs an attacker-chosen glob
+# pattern; no pattern from a request reaches any copy. It is high severity and
+# sits in the prod tree, so pnpm audit sees it too: the id is mirrored in
+# pnpm.auditConfig.ignoreGhsas, and the parity guard holds the two together.
+
+[[IgnoredVulns]]
+id = "GHSA-fc5q-39xc-vjpf"
+ignoreUntil = 2026-12-15
+reason = "picomatch <=4.0.7, ReDoS through single-branch repeated extglobs (high); no patched version exists. Exploiting it requires the attacker to supply the glob pattern, and none of ours comes from request input. Our source does not import picomatch. The prod-tree copies arrive only via better-auth's optional peer vitest (vitest, vite, tinyglobby, fdir): test tooling the server never loads. Next.js' compiled copy matches patterns from next.config. Dev-only routes in pnpm-lock.yaml match repo-authored config globs: @typescript-eslint/parser, eslint-config-next, micromatch (lint-staged, fast-glob). docs/pnpm-lock.yaml routes run only at astro build time over repo-authored globs: @astrojs/internal-helpers, @astrojs/starlight, anymatch (chokidar in the dev server)."
+
 # Two docs-build-only advisories whose fix exists only in a major the consuming
 # package does not declare. Overriding past the declared range was tried (#1222)
 # and rejected: it pins versions mermaid / expressive-code never tested. The
