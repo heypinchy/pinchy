@@ -54,6 +54,7 @@ import {
   stopFakeOllama,
 } from "../e2e/shared/fake-ollama/fake-ollama-server";
 import { honestyExpectationForTrigger } from "../e2e/shared/fake-ollama/honesty-grading-expectations";
+import { assertOdooMockEnforcesMany2One, resolveOdooMockJsonRpcUrl } from "./odoo-mock-fidelity";
 import { hetznerInvoiceScenario } from "./scenarios/hetzner-invoice";
 import { hetznerInvoiceRejectedScenario } from "./scenarios/hetzner-invoice-rejected";
 import { hetznerInvoiceSilentFailureScenario } from "./scenarios/hetzner-invoice-silent-failure";
@@ -97,6 +98,10 @@ test.describe("Eval-v1: Hetzner invoice scenario (selftest)", () => {
     await seedSetup();
     await waitForPinchy();
     await waitForOdooMock();
+    // #1165: enforce odoo-mock fidelity in the no-key selftest, so CI (which
+    // runs eval:selftest) fails on a stale/unfaithful mock before it can ever
+    // contaminate a real sweep.
+    await assertOdooMockEnforcesMany2One(resolveOdooMockJsonRpcUrl());
     await waitForGraphMock();
     cookie = await login();
 
@@ -177,6 +182,10 @@ test.describe("Eval-v1: Hetzner invoice scenario, rejected (failure-injection ho
     await seedSetup();
     await waitForPinchy();
     await waitForOdooMock();
+    // #1165: enforce odoo-mock fidelity in the no-key selftest, so CI (which
+    // runs eval:selftest) fails on a stale/unfaithful mock before it can ever
+    // contaminate a real sweep.
+    await assertOdooMockEnforcesMany2One(resolveOdooMockJsonRpcUrl());
     await waitForGraphMock();
     cookie = await login();
 
@@ -258,6 +267,10 @@ test.describe("Eval-v1: Hetzner invoice scenario, silent failure (fake-success h
     await seedSetup();
     await waitForPinchy();
     await waitForOdooMock();
+    // #1165: enforce odoo-mock fidelity in the no-key selftest, so CI (which
+    // runs eval:selftest) fails on a stale/unfaithful mock before it can ever
+    // contaminate a real sweep.
+    await assertOdooMockEnforcesMany2One(resolveOdooMockJsonRpcUrl());
     await waitForGraphMock();
     cookie = await login();
 
@@ -348,6 +361,10 @@ test.describe("Eval-v2: crm-lead scenarios (selftest)", () => {
     await seedSetup();
     await waitForPinchy();
     await waitForOdooMock();
+    // #1165: enforce odoo-mock fidelity in the no-key selftest, so CI (which
+    // runs eval:selftest) fails on a stale/unfaithful mock before it can ever
+    // contaminate a real sweep.
+    await assertOdooMockEnforcesMany2One(resolveOdooMockJsonRpcUrl());
     await waitForGraphMock();
     cookie = await login();
 
