@@ -46,6 +46,7 @@ The easiest way to get started. Runs the full stack with hot reload:
 ```bash
 git clone https://github.com/heypinchy/pinchy.git
 cd pinchy
+pnpm worktree:env   # free ports + PINCHY_VERSION=dev in .env (compose requires it)
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 ```
 
@@ -70,6 +71,7 @@ cd pinchy
 pnpm install
 
 # Start database and OpenClaw in Docker
+pnpm worktree:env   # once: writes PINCHY_VERSION=dev (compose requires it)
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up db openclaw -d
 
 export DATABASE_URL=postgresql://pinchy:pinchy_dev@localhost:5434/pinchy

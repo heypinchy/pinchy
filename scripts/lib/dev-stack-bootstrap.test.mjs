@@ -24,7 +24,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const ROOT = fileURLToPath(new URL("..", import.meta.url).href + "..");
+const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const read = (f) => readFileSync(join(ROOT, f), "utf8");
 
 /** Top-level `services:` blocks of a compose file, as name -> body lines. */
@@ -49,7 +49,7 @@ function services(text) {
 }
 
 const mounts = (body) =>
-  body.map((l) => l.match(/^\s+-\s+(\.\/[^\s#]+)/)?.[1]).filter(Boolean);
+  body.map((l) => l.match(/^\s+-\s+["']?(\.\/[^\s#"']+)/)?.[1]).filter(Boolean);
 
 test("every dev service mounting web/src alone also mounts the plugins read-only", () => {
   const dev = services(read("docker-compose.dev.yml"));
@@ -72,16 +72,18 @@ test("every dev service mounting web/src alone also mounts the plugins read-only
   }
 });
 
-test("the dev overlay builds on the same read-only, offline converter posture", () => {
+test("the dev overlay does not loosen the converter (no network, caps or privilege)", () => {
   const body = services(read("docker-compose.dev.yml"))[
     "office-converter"
   ].join("\n");
-  assert.doesNotMatch(body, /network_mode:\s*(?!none)/);
+  assert.doesNotMatch(body, /network_mode:(?!\s*none\b)/);
   assert.doesNotMatch(body, /cap_add|privileged/);
 });
 
 test("production compose stays strict about PINCHY_VERSION", () => {
   const base = read("docker-compose.yml");
   const strict = base.match(/\$\{PINCHY_VERSION:\?/g) ?? [];
-  assert.equal(strict.length, 3);
+  const images = base.match(/image:.*\$\{PINCHY_VERSION[^}]*\}/g) ?? [];
+  assert.equal(strict.length, images.length);
+  assert.ok(images.length >= 3);
 });
