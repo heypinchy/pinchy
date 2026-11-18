@@ -804,10 +804,9 @@ export type AuditLogEntry =
         // failure) it names the destination the stored secret was kept from.
         // URLs carry no userinfo or query. See lib/secret-destination.ts.
         destinationChange?: Record<string, { from: string | number; to: string | number }>;
-        // MCP sync: added/removed tool names (or, past MAX_TOOL_NAMES_IN_AUDIT,
+        // MCP sync: added/removed tool names (or, past MAX_LIST_ITEMS_IN_AUDIT,
         // a { count } summary so a chatty server can't blow the 2048-byte
-        // detail cap — see summarizeToolNames() in
-        // [connectionId]/sync/route.ts). "Log what changed, not only that
+        // detail cap — see summarizeListForAudit() in lib/audit-list-summary.ts). "Log what changed, not only that
         // something changed" (AGENTS.md), mirroring MembershipDetail's
         // added/removed shape above.
         tools?: {

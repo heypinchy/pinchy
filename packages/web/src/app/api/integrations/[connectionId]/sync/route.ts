@@ -6,6 +6,7 @@ import { integrationConnections } from "@/db/schema";
 import { decrypt } from "@/lib/encryption";
 import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
 import { deferAuditLog } from "@/lib/audit-deferred";
+import { summarizeListForAudit } from "@/lib/audit-list-summary";
 import { fetchOdooSchema } from "@/lib/integrations/odoo-sync";
 import { resolveExternalUrlTarget } from "@/lib/integrations/url-validation";
 import { withPinnedOdoo } from "@/lib/integrations/odoo-pin";
@@ -17,15 +18,6 @@ import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import type { McpIntegrationData } from "@/lib/integrations/types";
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
-
-// Keeps the audit `detail` well under AGENTS.md's 2048-byte cap even for a
-// server exposing dozens of tools — summarize to a count instead of listing
-// every name once the list gets long (AGENTS.md: "Summarize bulk operations").
-const MAX_TOOL_NAMES_IN_AUDIT = 20;
-
-function summarizeToolNames(names: string[]): string[] | { count: number } {
-  return names.length > MAX_TOOL_NAMES_IN_AUDIT ? { count: names.length } : names;
-}
 
 export const POST = withAdmin<RouteContext>(async (_req, { params }, session) => {
   const { connectionId } = await params;
@@ -102,8 +94,8 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
           id: connectionId,
           name: connection.name,
           tools: {
-            added: summarizeToolNames(diff.added.map((t) => t.name)),
-            removed: summarizeToolNames(diff.removed.map((t) => t.name)),
+            added: summarizeListForAudit(diff.added.map((t) => t.name)),
+            removed: summarizeListForAudit(diff.removed.map((t) => t.name)),
             total: after.length,
           },
         },

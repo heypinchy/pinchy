@@ -510,6 +510,34 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
     );
   });
 
+  it("names the agent and connection, and keeps a bulk grant under the audit size cap", async () => {
+    // A server with 50 tools granted at once: listing every { model, operation }
+    // would push the detail past 2048 bytes, and truncateDetail would then
+    // replace the whole detail — agent, connection and all.
+    const tools = Array.from({ length: 50 }, (_, i) => ({ name: `tool_number_${i}` }));
+    mockSelectWhere.mockResolvedValueOnce([
+      { id: CONNECTION_ID, name: "GitHub", type: "mcp", data: { tools } },
+    ]);
+    mockTxSelectWhere.mockResolvedValueOnce([]);
+
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
+      method: "PUT",
+      body: JSON.stringify({
+        connectionId: CONNECTION_ID,
+        permissions: tools.map((t) => ({ model: "mcp", operation: t.name })),
+      }),
+    });
+    await PUT(req, makeParams(AGENT_ID));
+
+    const detail = mockAppendAuditLog.mock.calls[0][0].detail;
+    expect(detail).toMatchObject({
+      agent: { id: AGENT_ID, name: "Support Agent" },
+      connection: { id: CONNECTION_ID, name: "GitHub" },
+      changes: { added: { count: 50 }, removed: [] },
+    });
+    expect(new TextEncoder().encode(JSON.stringify(detail)).length).toBeLessThan(2048);
+  });
+
   it("wraps DELETE+INSERT in a database transaction", async () => {
     // Connection exists (validation query runs outside transaction)
     mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]); // connection exists
@@ -878,6 +906,25 @@ describe("DELETE /api/agents/[agentId]/integrations", () => {
       where: mockSelectWhere.mockResolvedValue([]),
     }));
     mockDeleteWhere.mockResolvedValue(undefined);
+  });
+
+  it("names the agent in the clear audit", async () => {
+    mockSelectFrom.mockImplementationOnce(() => ({
+      where: vi
+        .fn()
+        .mockResolvedValue([
+          { model: "res.partner", operation: "read", connectionId: CONNECTION_ID },
+        ]),
+    }));
+
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
+      method: "DELETE",
+    });
+    await DELETE(req, makeParams(AGENT_ID));
+
+    expect(mockAppendAuditLog.mock.calls[0][0].detail).toMatchObject({
+      agent: { id: AGENT_ID, name: "Support Agent" },
+    });
   });
 
   it("still answers 200 when the audit write fails after the grants are gone", async () => {

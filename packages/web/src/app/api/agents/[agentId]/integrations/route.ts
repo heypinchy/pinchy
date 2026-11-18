@@ -6,6 +6,7 @@ import { db } from "@/db";
 import { agentConnectionPermissions, integrationConnections } from "@/db/schema";
 import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
+import { summarizeListForAudit } from "@/lib/audit-list-summary";
 import { parseRequestBody } from "@/lib/api-validation";
 import { setAgentIntegrationsSchema } from "@/lib/schemas/agent-integrations";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
@@ -128,6 +129,7 @@ export const PUT = withAdmin<RouteContext>(async (request, { params }, session) 
   const { connectionId, permissions } = parsed.data;
 
   let existingPerms: { model: string; operation: string }[];
+  let connectionName: string;
   try {
     // Validate connection exists
     const connRows = await db
@@ -137,6 +139,7 @@ export const PUT = withAdmin<RouteContext>(async (request, { params }, session) 
     if (connRows.length === 0) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 });
     }
+    connectionName = connRows[0].name;
 
     // MCP grants (model:"mcp") name a tool on THIS specific connection —
     // unlike Odoo/email operations, which are a fixed, model-independent
@@ -266,8 +269,10 @@ export const PUT = withAdmin<RouteContext>(async (request, { params }, session) 
     detail: {
       action: "agent_integration_permissions_updated",
       agentId,
+      agent: { id: agentId, name: agentOrError.name },
       connectionId,
-      changes: { added, removed },
+      connection: { id: connectionId, name: connectionName },
+      changes: { added: summarizeListForAudit(added), removed: summarizeListForAudit(removed) },
     },
     outcome: "success",
   };
@@ -327,7 +332,8 @@ export const DELETE = withAdmin<RouteContext>(async (_req, { params }, session) 
     detail: {
       action: "agent_integration_permissions_cleared",
       agentId,
-      removed,
+      agent: { id: agentId, name: agentOrError.name },
+      removed: summarizeListForAudit(removed),
     },
     outcome: "success",
   };
