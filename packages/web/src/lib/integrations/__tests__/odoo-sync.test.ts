@@ -466,7 +466,55 @@ describe("fetchOdooSchema", () => {
       expect(result.success).toBe(false);
       if (result.success) return;
       expect(result.isAuthError).toBe(false);
-      expect(result.error).toMatch(/Odoo did not answer within \d+ seconds\./);
+      expect(result.error).toMatch(
+        /^Could not reach Odoo: Odoo did not answer within \d+ seconds\./
+      );
+    });
+
+    it("counts Odoo's own error about a model as an answer", async () => {
+      // A model whose app is not installed: Odoo answered, so it stopped partway.
+      // sale.order is the catalog's first model, so it is always probed.
+      mockFields.mockImplementation((model: string) =>
+        Promise.reject(
+          model === "sale.order"
+            ? Object.assign(new Error("Object sale.order doesn't exist"), {
+                code: 200,
+                data: { name: "builtins.KeyError" },
+              })
+            : timedOut()
+        )
+      );
+
+      const result = await fetchOdooSchema(creds);
+
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect(result.error).toMatch(
+        /^Odoo stopped answering partway through reading its models: Odoo did not answer within \d+ seconds\./
+      );
+    });
+
+    it("does not restart a probe that was waiting to retry when another timed out", async () => {
+      // Retrying it would cost the whole bound again on an Odoo gone silent.
+      vi.useFakeTimers();
+      mockFields.mockImplementation((model: string) =>
+        model === "sale.order"
+          ? Promise.reject(new Error("ECONNRESET"))
+          : new Promise((_, reject) => setTimeout(() => reject(timedOut()), 100))
+      );
+
+      const promise = fetchOdooSchema(creds);
+      await vi.runAllTimersAsync();
+      const result = await promise;
+
+      vi.useRealTimers();
+      const saleOrderCalls = mockFields.mock.calls.filter(([model]) => model === "sale.order");
+      expect(saleOrderCalls).toHaveLength(1);
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect(result.error).toMatch(
+        /^Could not reach Odoo: Odoo did not answer within \d+ seconds\./
+      );
     });
   });
 
@@ -531,6 +579,52 @@ describe("fetchOdooSchema", () => {
       expect(result.error).toBe(
         "Reading Odoo's models failed partway through, so nothing was saved: " +
           "The Odoo address answered with an error: HTTP 504: Gateway Timeout"
+      );
+    });
+
+    it("says it failed partway when Odoo answered some model, even if none was readable", async () => {
+      // Odoo's own error about a model it lacks is an answer: the 504 came
+      // partway through, not before Odoo said anything.
+      vi.useFakeTimers();
+      mockFields.mockImplementation((model: string) =>
+        model === "stock.picking"
+          ? Promise.reject(Object.assign(new Error("HTTP 504: Gateway Timeout"), { code: 504 }))
+          : Promise.reject(
+              Object.assign(new Error(`Object ${model} doesn't exist`), {
+                code: 200,
+                data: { name: "builtins.KeyError" },
+              })
+            )
+      );
+
+      const promise = fetchOdooSchema(creds);
+      await vi.runAllTimersAsync();
+      const result = await promise;
+
+      vi.useRealTimers();
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect(result.error).toBe(
+        "Reading Odoo's models failed partway through, so nothing was saved: " +
+          "The Odoo address answered with an error: HTTP 504: Gateway Timeout"
+      );
+    });
+
+    it("does not say it failed partway when no model got an answer from Odoo", async () => {
+      vi.useFakeTimers();
+      mockFields.mockRejectedValue(
+        Object.assign(new Error("HTTP 504: Gateway Timeout"), { code: 504 })
+      );
+
+      const promise = fetchOdooSchema(creds);
+      await vi.runAllTimersAsync();
+      const result = await promise;
+
+      vi.useRealTimers();
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect(result.error).toBe(
+        "The Odoo address answered with an error: HTTP 504: Gateway Timeout"
       );
     });
 

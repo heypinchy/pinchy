@@ -80,3 +80,25 @@ describe("POST /api/integrations/list-databases against an Odoo that never answe
     }
   );
 });
+
+describe("POST /api/integrations/list-databases against a port nothing listens on", () => {
+  it("says Odoo refused the connection, as testing credentials does", async () => {
+    // The port the silent server had, closed again: a real ECONNREFUSED.
+    silent.closeAllConnections();
+    await new Promise((resolve) => silent.close(resolve));
+    silent = createServer(); // For afterEach to close.
+    const { POST } = await import("@/app/api/integrations/list-databases/route");
+
+    const res = await POST(
+      new NextRequest("http://localhost:7777/api/integrations/list-databases", {
+        method: "POST",
+        body: JSON.stringify({ url: origin }),
+      }),
+      routeContext()
+    );
+
+    const body = await res.json();
+    expect(body.success).toBe(false);
+    expect(body.error).toMatch(/^Odoo refused the connection \(ECONNREFUSED\)/);
+  });
+});

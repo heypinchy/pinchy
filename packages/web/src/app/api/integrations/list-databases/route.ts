@@ -6,6 +6,7 @@ import { pinnedFetch } from "@/lib/pinned-connection";
 import { parseRequestBody } from "@/lib/api-validation";
 import { listDatabasesSchema } from "@/lib/schemas/integrations";
 import {
+  describeOdooNetworkFailure,
   isOdooTimeout,
   odooRedirectRefusedMessage,
   odooTimeoutMessage,
@@ -86,6 +87,10 @@ export const POST = withAdmin(async (request) => {
     if (isOdooTimeout(err)) {
       return NextResponse.json({ success: false, error: odooTimeoutMessage() });
     }
-    return NextResponse.json({ success: false, error: "Could not list databases" });
+    const networkFailure = describeOdooNetworkFailure(err);
+    return NextResponse.json({
+      success: false,
+      error: networkFailure ?? "Could not list databases",
+    });
   }
 });

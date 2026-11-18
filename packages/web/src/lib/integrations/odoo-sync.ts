@@ -150,8 +150,11 @@ function isTransientOdooProbeError(error: unknown): boolean {
  * itself: no answer at all, or an HTTP-level one (a proxy's 502 or 504, a
  * page that is not JSON-RPC). Every model goes through the same endpoint, so
  * that is the connection failing, not a model to skip; probes already
- * running finish, none starts after it, and the sync fails. Only Odoo's own
- * error about one model (it is not installed, say) skips that model.
+ * running finish, none starts after it, and the sync fails, naming only those
+ * connection failures — Odoo's own errors about models it lacks would push
+ * them out of view. Only Odoo's own error about one model (it is not
+ * installed, say) skips that model. Either way, when Odoo itself answered
+ * some probe first, the error says the sync stopped partway through.
  * Limits concurrency to MAX_CONCURRENCY to avoid overwhelming the server.
  * Does NOT save anything — returns the data for the caller to handle.
  */
@@ -189,6 +192,10 @@ export async function fetchOdooSchema(credentials: {
     /**
      * Why the probe failed, when it failed for a reason other than access.
      * `unreachable`: it ran out of retries without any answer from Odoo.
+     * `connection`: it gave up on the connection rather than on this model —
+     * no answer at all, or an HTTP-level one (a proxy's 502 or 504, a page
+     * that is not JSON-RPC). Such a failure stops the sync; Odoo's own error
+     * about one model does not.
      */
     failure?: { text: string; unreachable: boolean; connection?: boolean };
     /** Never probed: an earlier probe gave up on the connection. */
@@ -291,15 +298,18 @@ export async function fetchOdooSchema(credentials: {
 
   const results = await runWithConcurrency(tasks, MAX_CONCURRENCY);
 
+  // Did Odoo itself answer any probe before the connection failed? A skipped
+  // probe never asked, and a proxy's status line is not Odoo answering; Odoo's
+  // own error about a model it lacks is. Picks "partway through" over "could
+  // not reach" for a sync that stops, whichever way it stopped.
+  const odooAnsweredSome = results.some(
+    (r) => !r.skipped && !r.failure?.unreachable && !r.failure?.connection
+  );
+
   if (stoppedAnswering) {
-    // A model Odoo itself answered for; a skipped probe never asked, and a
-    // proxy's status line is not Odoo answering.
-    const answeredFirst = results.some(
-      (r) => !r.skipped && !r.failure?.unreachable && !r.failure?.connection
-    );
     return {
       success: false,
-      error: answeredFirst
+      error: odooAnsweredSome
         ? `Odoo stopped answering partway through reading its models: ${odooTimeoutMessage()}`
         : `Could not reach Odoo: ${odooTimeoutMessage()}`,
       isAuthError: false,
@@ -332,10 +342,9 @@ export async function fetchOdooSchema(credentials: {
     const { texts, error } = summarize(failures);
     return {
       success: false,
-      error:
-        accessibleModels.length > 0
-          ? `Reading Odoo's models failed partway through, so nothing was saved: ${texts}`
-          : error,
+      error: odooAnsweredSome
+        ? `Reading Odoo's models failed partway through, so nothing was saved: ${texts}`
+        : error,
       isAuthError: false,
     };
   }
