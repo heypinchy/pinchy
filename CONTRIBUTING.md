@@ -24,7 +24,7 @@ First off — thank you! Every contribution matters, whether it's code, docs, bu
    - `feat: add plugin permission layer`
    - `fix: resolve cross-channel routing issue`
    - `docs: update getting started guide`
-4. **Keep commits atomic.** Each commit should represent one logical change and pass CI on its own. PRs are merged via rebase — the commit history lands verbatim on `main`, so individual commits must make sense in isolation.
+4. **Give the PR a Conventional Commit title.** PRs are squash-merged: the whole PR lands on `main` as one commit, titled after the PR (or after its only commit), with every commit message in its body. So the title is what `git log` shows, and an override trailer such as `Allow-test-deletion: #NNN` still reaches `main` from whichever commit carries it. To catch up with `main`, merge it into your branch — there's no need to rebase.
 5. **Add tests** for new features when applicable.
 6. **Update docs** if your change affects user-facing behavior.
 7. Submit your PR and fill out the template.
