@@ -99,6 +99,12 @@ vi.mock("@/lib/workspace", () => ({
   deleteWorkspace: vi.fn(),
 }));
 
+vi.mock("@/lib/domain", () => ({
+  getDomain: vi.fn().mockResolvedValue(null),
+  // auth.ts reads it in trustedOrigins when Better Auth initialises.
+  getCachedDomain: vi.fn(() => null),
+}));
+
 vi.mock("@/db", () => {
   const db: Record<string, unknown> = {
     select: vi.fn().mockReturnValue({
