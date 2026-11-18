@@ -52,10 +52,15 @@ const scheduleStatus = {
   enabled: true,
   time: "02:00",
   timezone: "Europe/Vienna",
-  nextRun: { date: "2026-10-17", time: "02:00", day: "tomorrow" },
+  nextRun: { date: "2026-10-17", time: "02:00", day: "tomorrow", at: "2026-10-17T00:00:00.000Z" },
   currentSweep: null,
   lastSweep: null,
 };
+
+const mockCountUnsupportedFilesByKind = vi.fn();
+vi.mock("@/lib/knowledge/unsupported-files", () => ({
+  countUnsupportedFilesByKind: (...args: unknown[]) => mockCountUnsupportedFilesByKind(...args),
+}));
 
 const mockDeferAuditLog = vi.fn();
 vi.mock("@/lib/audit-deferred", () => ({
@@ -98,7 +103,9 @@ function makeJob(overrides: Partial<KbIndexJob> = {}): KbIndexJob {
     totalBytes: null,
     processedBytes: 0,
     counts: null,
+    folderPlan: null,
     error: null,
+    artifactFormatVersion: null,
     createdAt: new Date("2026-07-17T10:00:00Z"),
     startedAt: null,
     finishedAt: null,
@@ -407,7 +414,12 @@ describe("GET /api/agents/[agentId]/knowledge/reindex", () => {
       enabled: true,
       time: "02:00",
       timezone: "Europe/Vienna",
-      nextRun: { date: "2026-10-17", time: "02:00", day: "tomorrow" },
+      nextRun: {
+        date: "2026-10-17",
+        time: "02:00",
+        day: "tomorrow",
+        at: "2026-10-17T00:00:00.000Z",
+      },
       included: true,
     });
   });
@@ -563,6 +575,60 @@ describe("GET /api/agents/[agentId]/knowledge/reindex", () => {
     expect(body.job.counts).toEqual(
       ingestResult({ indexed: 5, skipped: 1, unsearchable: 2, failed: 1 })
     );
+  });
+
+  // #1410: a run that finished before the split stored one `unsupported`
+  // number for documents and non-documents alike. Shown as is, a share of
+  // drivers reads as hundreds of documents Pinchy cannot read. The
+  // rows behind the number carry each file's type, so the split is read back
+  // from them — scoped to the folders that run walked.
+  it("splits a run's unsupported count recorded before #1410 into documents and ignored files", async () => {
+    mockCountUnsupportedFilesByKind.mockResolvedValueOnce({ unsupported: 1, ignored: 4 });
+    mockGetLatestIndexJobForAgent.mockResolvedValueOnce(
+      makeJob({
+        status: "succeeded",
+        paths: ["/data/hr"],
+        counts: ingestResult({ indexed: 3, unsupported: 5 }),
+        finishedAt: new Date("2026-07-17T11:00:00Z"),
+      })
+    );
+
+    const body = await (await GET(makeGetRequest(), ctx as never)).json();
+
+    expect(mockCountUnsupportedFilesByKind).toHaveBeenCalledWith(DEFAULT_ORG_ID, ["/data/hr"]);
+    expect(body.job.counts).toEqual(ingestResult({ indexed: 3, unsupported: 1, ignored: 4 }));
+  });
+
+  it("returns a run's split counts as recorded, without reading the file list", async () => {
+    mockGetLatestIndexJobForAgent.mockResolvedValueOnce(
+      makeJob({
+        status: "succeeded",
+        counts: ingestResult({ indexed: 3, unsupported: 1, ignored: 4 }),
+        finishedAt: new Date("2026-07-17T11:00:00Z"),
+      })
+    );
+
+    const body = await (await GET(makeGetRequest(), ctx as never)).json();
+
+    expect(mockCountUnsupportedFilesByKind).not.toHaveBeenCalled();
+    expect(body.job.counts).toEqual(ingestResult({ indexed: 3, unsupported: 1, ignored: 4 }));
+  });
+
+  // A run that predates unsupported files being counted at all did not look;
+  // the route must not invent a number for it.
+  it("leaves a run that never counted unsupported files without either count", async () => {
+    mockGetLatestIndexJobForAgent.mockResolvedValueOnce(
+      makeJob({
+        status: "succeeded",
+        counts: ingestResult({ indexed: 3 }),
+        finishedAt: new Date("2026-07-17T11:00:00Z"),
+      })
+    );
+
+    const body = await (await GET(makeGetRequest(), ctx as never)).json();
+
+    expect(mockCountUnsupportedFilesByKind).not.toHaveBeenCalled();
+    expect(body.job.counts).toEqual(ingestResult({ indexed: 3 }));
   });
 
   it("reports why a failed run failed", async () => {

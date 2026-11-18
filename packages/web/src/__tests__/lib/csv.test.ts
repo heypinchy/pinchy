@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { neutralizeFormula, csvField, csvEscape } from "@/lib/csv";
+import { neutralizeFormula, csvField, csvEscape, csvFileStem } from "@/lib/csv";
 
 describe("neutralizeFormula", () => {
   it.each(["=", "+", "-", "@", "\t", "\r"])(
@@ -46,5 +46,25 @@ describe("csvEscape (conditional quoting)", () => {
 
   it("leaves a plain value unwrapped", () => {
     expect(csvEscape("gpt-4o")).toBe("gpt-4o");
+  });
+});
+
+// Shared by every download named after an agent: the stem goes straight into
+// a Content-Disposition header, so it may hold nothing that needs quoting.
+describe("csvFileStem", () => {
+  it("folds accents and spaces into an ASCII slug", () => {
+    expect(csvFileStem("Wissensdatenbank Prüfung")).toBe("wissensdatenbank-prufung");
+  });
+
+  it("drops leading and trailing separators", () => {
+    expect(csvFileStem("  -Smithers!  ")).toBe("smithers");
+  });
+
+  it("caps the length", () => {
+    expect(csvFileStem("a".repeat(100))).toHaveLength(60);
+  });
+
+  it("falls back to a generic stem when nothing usable is left", () => {
+    expect(csvFileStem('"/\\')).toBe("agent");
   });
 });

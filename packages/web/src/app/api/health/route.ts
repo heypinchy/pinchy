@@ -2,8 +2,13 @@ import { NextResponse } from "next/server";
 import { getSecretsProvenance } from "@/lib/secret-source";
 import { openClawConnectionState } from "@/server/openclaw-connection-state";
 import { getConfigRegenState } from "@/lib/openclaw-config-health";
+import { getDiskReport, type DiskReport } from "@/lib/disk-space";
 
 export async function GET() {
+  const disk: DiskReport = await getDiskReport().catch(() => ({
+    status: "unknown" as const,
+    volumes: [],
+  }));
   return NextResponse.json({
     // Issue #651: `status` deliberately does NOT reflect OpenClaw gateway
     // connectivity. Brief disconnects during config.apply-triggered OpenClaw
@@ -33,5 +38,13 @@ export async function GET() {
     // instance otherwise reports healthy. `error` is operator-facing guidance
     // only — never secret material.
     configRegeneration: getConfigRegenState(),
+    // Issue #1379: an upgrade filled an install's disk and the container then
+    // crash-looped on ENOSPC with nothing having warned. `disk.status` turns
+    // "warning" below 15 GB free on any location Pinchy writes to, so an
+    // uptime monitor can alert on it. Top-level `status` stays "ok" for the
+    // same reason as above: the Docker healthcheck must not restart a
+    // container because its disk is getting full. Roles and coarse numbers
+    // only — this endpoint is public, so no paths.
+    disk,
   });
 }

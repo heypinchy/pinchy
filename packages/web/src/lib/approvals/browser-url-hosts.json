@@ -1,0 +1,1402 @@
+{
+  "generatedBy": "packages/web/scripts/generate-browser-url-hosts.mjs",
+  "engines": {
+    "node": "22.23.3",
+    "chromium": "153.0.8010.12",
+    "webkit": "26.5"
+  },
+  "rows": [
+    {
+      "text": "https://xn--a.evil.com/x",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://evil.com/x",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https://xn--a.evil.com",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://evil.com",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https://xn--a.evil.com/x\ty",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://evil.com/x\ty",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https://xn--a.evil.com/x y",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://evil.com/x y",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https://xn--a.evil.com/x y",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://evil.com/x y",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https://xn--a.evil.com/　x",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://evil.com/　x",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https://xn--a.evil.com/ see above",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://evil.com/ see above",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https://xn--a.evil.com see above",
+      "node": null,
+      "chromium": "xn--a.evil.com%20see%20above",
+      "webkit": null
+    },
+    {
+      "text": "https://evil.com see above",
+      "node": null,
+      "chromium": "evil.com%20see%20above",
+      "webkit": null
+    },
+    {
+      "text": "https://xn--a.evil.com, see above",
+      "node": null,
+      "chromium": "xn--a.evil.com,%20see%20above",
+      "webkit": null
+    },
+    {
+      "text": "https://evil.com, see above",
+      "node": null,
+      "chromium": "evil.com,%20see%20above",
+      "webkit": null
+    },
+    {
+      "text": "https://xn--a.evil.com/\tx",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://evil.com/\tx",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https://www.firma.at.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@xn--a.evil.com/\tx",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://www.firma.at.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@evil.com/\tx",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https://www.firma.at.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@xn--a.evil.com/x y",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://www.firma.at.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@evil.com/x y",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https://www.firma.at.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@xn--a.evil.com/x",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://www.firma.at.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@evil.com/x",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https://www.firma.at.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@xn--a.evil.com/ see above",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://www.firma.at.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@evil.com/ see above",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "ht\ttps://xn--a.evil.com/",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "ht\ttps://evil.com/",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "h\nttps://xn--a.evil.com/",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "h\nttps://evil.com/",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https:/\t/xn--a.evil.com/",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https:/\t/evil.com/",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https://\nxn--a.evil.com/",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://\nevil.com/",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https://xn--a.evil.com\r\n/x",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://evil.com\r\n/x",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https://xn--a.evil.com/\r\n",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://evil.com/\r\n",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "  https://xn--a.evil.com/  ",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "  https://evil.com/  ",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "\u0001https://xn--a.evil.com/",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "\u0001https://evil.com/",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https://xn--a.evil.com/\u0001",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://evil.com/\u0001",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "HTTPS://xn--a.evil.com/",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "HTTPS://evil.com/",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https:xn--a.evil.com/x",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https:evil.com/x",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https:/xn--a.evil.com/x",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https:/evil.com/x",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https:\\\\xn--a.evil.com\\x",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https:\\\\evil.com\\x",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https:///xn--a.evil.com/x",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https:///evil.com/x",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https://xn--a.evil.com\\x",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://evil.com\\x",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https://xn--a.evil.com?q",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://evil.com?q",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https://xn--a.evil.com#f",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://evil.com#f",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https://xn--a.evil.com?q y",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://evil.com?q y",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https://xn--a.evil.com#f y",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://evil.com#f y",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https://u@xn--a.evil.com:8080/x",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://u@evil.com:8080/x",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https://u:p@xn--a.evil.com/x",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://u:p@evil.com/x",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https://a@b@xn--a.evil.com/x",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://a@b@evil.com/x",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https://@xn--a.evil.com/x",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://@evil.com/x",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https://u@/xn--a.evil.com",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://u@/evil.com",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://xn--a.evil.com:/x",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://evil.com:/x",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https://xn--a.evil.com:443/x",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://evil.com:443/x",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https://xn--a.evil.com:8\t080/x",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://evil.com:8\t080/x",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https://xn--a.evil.com:abc/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://evil.com:abc/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://xn--a.evil.com:99999/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://evil.com:99999/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://xn--a.evil.com:8080x/",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://evil.com:8080x/",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://u\t@xn--a.evil.com/x",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://u\t@evil.com/x",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https://u y@xn--a.evil.com/x",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://u y@evil.com/x",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https://xn--a.evil.com./x",
+      "node": null,
+      "chromium": "xn--a.evil.com.",
+      "webkit": "xn--a.evil.com."
+    },
+    {
+      "text": "https://evil.com./x",
+      "node": "evil.com.",
+      "chromium": "evil.com.",
+      "webkit": "evil.com."
+    },
+    {
+      "text": "https://xn--a.evil.com。/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://evil.com。/x",
+      "node": "evil.com.",
+      "chromium": "evil.com.",
+      "webkit": "evil.com."
+    },
+    {
+      "text": "https://xn--a.evil.com．/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://evil.com．/x",
+      "node": "evil.com.",
+      "chromium": "evil.com.",
+      "webkit": "evil.com."
+    },
+    {
+      "text": "https://xn--a.evil.com /x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://evil.com /x",
+      "node": null,
+      "chromium": "evil.com%20",
+      "webkit": null
+    },
+    {
+      "text": "https://xn--a.evil.com　/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://evil.com　/x",
+      "node": null,
+      "chromium": "evil.com%20",
+      "webkit": null
+    },
+    {
+      "text": "https://xn--a.evil.com /x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://evil.com /x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://xn--a.evil.com​/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://evil.com​/x",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https://xn--a.evil.com﻿/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://evil.com﻿/x",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https://xn--a.evil.com%20/x",
+      "node": null,
+      "chromium": "xn--a.evil.com%20",
+      "webkit": null
+    },
+    {
+      "text": "https://evil.com%20/x",
+      "node": null,
+      "chromium": "evil.com%20",
+      "webkit": null
+    },
+    {
+      "text": "https://xn--a.evil.com%00/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://evil.com%00/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://xn--a.evil.com\u0000/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://evil.com\u0000/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://xn--a.evil.com|/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://evil.com|/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://xn--a.evil.com^/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://evil.com^/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://xn--a.evil.com</x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://evil.com</x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://xn--a.evil.com%/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://evil.com%/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://xn--a.evil.com_/x",
+      "node": null,
+      "chromium": "xn--a.evil.com_",
+      "webkit": "xn--a.evil.com_"
+    },
+    {
+      "text": "https://evil.com_/x",
+      "node": "evil.com_",
+      "chromium": "evil.com_",
+      "webkit": "evil.com_"
+    },
+    {
+      "text": "https://xn--a.evil.com*/x",
+      "node": null,
+      "chromium": "xn--a.evil.com%2A",
+      "webkit": "xn--a.evil.com*"
+    },
+    {
+      "text": "https://evil.com*/x",
+      "node": "evil.com*",
+      "chromium": "evil.com%2A",
+      "webkit": "evil.com*"
+    },
+    {
+      "text": "https://xn--a.evil.com!/x",
+      "node": null,
+      "chromium": "xn--a.evil.com!",
+      "webkit": "xn--a.evil.com!"
+    },
+    {
+      "text": "https://evil.com!/x",
+      "node": "evil.com!",
+      "chromium": "evil.com!",
+      "webkit": "evil.com!"
+    },
+    {
+      "text": "https://xn--a.evil.com$/x",
+      "node": null,
+      "chromium": "xn--a.evil.com$",
+      "webkit": "xn--a.evil.com$"
+    },
+    {
+      "text": "https://evil.com$/x",
+      "node": "evil.com$",
+      "chromium": "evil.com$",
+      "webkit": "evil.com$"
+    },
+    {
+      "text": "https://xn--a.evil.com'/x",
+      "node": null,
+      "chromium": "xn--a.evil.com'",
+      "webkit": "xn--a.evil.com'"
+    },
+    {
+      "text": "https://evil.com'/x",
+      "node": "evil.com'",
+      "chromium": "evil.com'",
+      "webkit": "evil.com'"
+    },
+    {
+      "text": "https://xn--a.evil.com(/x",
+      "node": null,
+      "chromium": "xn--a.evil.com(",
+      "webkit": "xn--a.evil.com("
+    },
+    {
+      "text": "https://evil.com(/x",
+      "node": "evil.com(",
+      "chromium": "evil.com(",
+      "webkit": "evil.com("
+    },
+    {
+      "text": "https://xn--a.evil.com~/x",
+      "node": null,
+      "chromium": "xn--a.evil.com~",
+      "webkit": "xn--a.evil.com~"
+    },
+    {
+      "text": "https://evil.com~/x",
+      "node": "evil.com~",
+      "chromium": "evil.com~",
+      "webkit": "evil.com~"
+    },
+    {
+      "text": "https://xn--a.evil.com=/x",
+      "node": null,
+      "chromium": "xn--a.evil.com=",
+      "webkit": "xn--a.evil.com="
+    },
+    {
+      "text": "https://evil.com=/x",
+      "node": "evil.com=",
+      "chromium": "evil.com=",
+      "webkit": "evil.com="
+    },
+    {
+      "text": "https://xn--a.evil.com\"/x",
+      "node": null,
+      "chromium": "xn--a.evil.com\"",
+      "webkit": "xn--a.evil.com\""
+    },
+    {
+      "text": "https://evil.com\"/x",
+      "node": "evil.com\"",
+      "chromium": "evil.com\"",
+      "webkit": "evil.com\""
+    },
+    {
+      "text": "https://xn--a.evil.com`/x",
+      "node": null,
+      "chromium": "xn--a.evil.com`",
+      "webkit": "xn--a.evil.com`"
+    },
+    {
+      "text": "https://evil.com`/x",
+      "node": "evil.com`",
+      "chromium": "evil.com`",
+      "webkit": "evil.com`"
+    },
+    {
+      "text": "https://xn--a.evil.com{/x",
+      "node": null,
+      "chromium": "xn--a.evil.com{",
+      "webkit": "xn--a.evil.com{"
+    },
+    {
+      "text": "https://evil.com{/x",
+      "node": "evil.com{",
+      "chromium": "evil.com{",
+      "webkit": "evil.com{"
+    },
+    {
+      "text": "https://xn--a.evil.com}/x",
+      "node": null,
+      "chromium": "xn--a.evil.com}",
+      "webkit": "xn--a.evil.com}"
+    },
+    {
+      "text": "https://evil.com}/x",
+      "node": "evil.com}",
+      "chromium": "evil.com}",
+      "webkit": "evil.com}"
+    },
+    {
+      "text": "https://xn--a.evil.com&/x",
+      "node": null,
+      "chromium": "xn--a.evil.com&",
+      "webkit": "xn--a.evil.com&"
+    },
+    {
+      "text": "https://evil.com&/x",
+      "node": "evil.com&",
+      "chromium": "evil.com&",
+      "webkit": "evil.com&"
+    },
+    {
+      "text": "https://xn--a.evil.com+/x",
+      "node": null,
+      "chromium": "xn--a.evil.com+",
+      "webkit": "xn--a.evil.com+"
+    },
+    {
+      "text": "https://evil.com+/x",
+      "node": "evil.com+",
+      "chromium": "evil.com+",
+      "webkit": "evil.com+"
+    },
+    {
+      "text": "https://xn--a.evil.com;/x",
+      "node": null,
+      "chromium": "xn--a.evil.com;",
+      "webkit": "xn--a.evil.com;"
+    },
+    {
+      "text": "https://evil.com;/x",
+      "node": "evil.com;",
+      "chromium": "evil.com;",
+      "webkit": "evil.com;"
+    },
+    {
+      "text": "https://xn--a.evil.com,/x",
+      "node": null,
+      "chromium": "xn--a.evil.com,",
+      "webkit": "xn--a.evil.com,"
+    },
+    {
+      "text": "https://evil.com,/x",
+      "node": "evil.com,",
+      "chromium": "evil.com,",
+      "webkit": "evil.com,"
+    },
+    {
+      "text": "https://xn--a.evil.com/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://evil.com/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://xn--a.evil.com/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://evil.com/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://xn--a.evil.com­/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://evil.com­/x",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https://[xn--a.evil.com]/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://[evil.com]/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://xn--a.evil.com.1/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://evil.com.1/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://xn--a.evil.com.0x7f/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://evil.com.0x7f/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://xn--a.evil.com.1.2/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://evil.com.1.2/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "http://xn--a.evil.com/x",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "http://evil.com/x",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "wss://xn--a.evil.com/x",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "wss://evil.com/x",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "ws://xn--a.evil.com/x",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "ws://evil.com/x",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "ftp://xn--a.evil.com/x",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "ftp://evil.com/x",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "file://xn--a.evil.com/x",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "file://evil.com/x",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "file:xn--a.evil.com",
+      "node": "",
+      "chromium": "",
+      "webkit": ""
+    },
+    {
+      "text": "file:evil.com",
+      "node": "",
+      "chromium": "",
+      "webkit": ""
+    },
+    {
+      "text": "file:/xn--a.evil.com",
+      "node": "",
+      "chromium": "",
+      "webkit": ""
+    },
+    {
+      "text": "file:/evil.com",
+      "node": "",
+      "chromium": "",
+      "webkit": ""
+    },
+    {
+      "text": "file:///xn--a.evil.com",
+      "node": "",
+      "chromium": "",
+      "webkit": ""
+    },
+    {
+      "text": "file:///evil.com",
+      "node": "",
+      "chromium": "",
+      "webkit": ""
+    },
+    {
+      "text": "file:\\\\xn--a.evil.com\\x",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "file:\\\\evil.com\\x",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "file://u@xn--a.evil.com/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "file://u@evil.com/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "file://xn--a.evil.com:80/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "file://evil.com:80/x",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "mailto:boss@xn--a.evil.com",
+      "node": "",
+      "chromium": "",
+      "webkit": ""
+    },
+    {
+      "text": "mailto:boss@evil.com",
+      "node": "",
+      "chromium": "",
+      "webkit": ""
+    },
+    {
+      "text": "foo://xn--a.evil.com/x",
+      "node": "xn--a.evil.com",
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "foo://evil.com/x",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "javascript://xn--a.evil.com/x",
+      "node": "xn--a.evil.com",
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "javascript://evil.com/x",
+      "node": "evil.com",
+      "chromium": "evil.com",
+      "webkit": "evil.com"
+    },
+    {
+      "text": "https://xn--a.ev\til.com/",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://xn--a.ev\nil.com/",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://xn--a.ev il.com/",
+      "node": null,
+      "chromium": "xn--a.ev%20il.com",
+      "webkit": null
+    },
+    {
+      "text": "https://xn--a.evil%2Ecom/",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://xn--a.evil%2ecom/x",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://xn--a%2Eevil.com/x",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://XN--A.Evil.com/x",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://Xn--a.evil.com/x",
+      "node": null,
+      "chromium": "xn--a.evil.com",
+      "webkit": "xn--a.evil.com"
+    },
+    {
+      "text": "https://xn--.evil.com/x",
+      "node": null,
+      "chromium": "xn--.evil.com",
+      "webkit": "xn--.evil.com"
+    },
+    {
+      "text": "https://xn---.evil.com/x",
+      "node": null,
+      "chromium": "xn---.evil.com",
+      "webkit": "xn---.evil.com"
+    },
+    {
+      "text": "https://xn--ab-cd.evil.com/x",
+      "node": null,
+      "chromium": "xn--ab-cd.evil.com",
+      "webkit": "xn--ab-cd.evil.com"
+    },
+    {
+      "text": "https://xn--a.fіrma.at/",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://fіrma.xn--a/",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://xn--a.xn--frma-l9d.at/",
+      "node": null,
+      "chromium": "xn--a.xn--frma-l9d.at",
+      "webkit": "xn--a.xn--frma-l9d.at"
+    },
+    {
+      "text": "https://xn--a.firma.at/",
+      "node": null,
+      "chromium": "xn--a.firma.at",
+      "webkit": "xn--a.firma.at"
+    },
+    {
+      "text": "https://xn--a/",
+      "node": null,
+      "chromium": "xn--a",
+      "webkit": "xn--a"
+    },
+    {
+      "text": "https://xn--a.1/",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://xn--a.0x7f.1/",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://xn--a.evil.сom/",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://xn--a.ev‍il.com/",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://xn--a.العربية.com/",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://xn--a.aا.com/",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://xn--a.-evil.com/",
+      "node": null,
+      "chromium": "xn--a.-evil.com",
+      "webkit": "xn--a.-evil.com"
+    },
+    {
+      "text": "https://xn--a.evil-.com/",
+      "node": null,
+      "chromium": "xn--a.evil-.com",
+      "webkit": "xn--a.evil-.com"
+    },
+    {
+      "text": "https://xn--a.ev--il.com/",
+      "node": null,
+      "chromium": "xn--a.ev--il.com",
+      "webkit": "xn--a.ev--il.com"
+    },
+    {
+      "text": "https://xn--a.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com/",
+      "node": null,
+      "chromium": "xn--a.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com",
+      "webkit": "xn--a.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com"
+    },
+    {
+      "text": "https://xn--a.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com/",
+      "node": null,
+      "chromium": "xn--a.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com",
+      "webkit": "xn--a.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com"
+    },
+    {
+      "text": "https://xn--a..evil.com/",
+      "node": null,
+      "chromium": "xn--a..evil.com",
+      "webkit": "xn--a..evil.com"
+    },
+    {
+      "text": "https://.xn--a.evil.com/",
+      "node": null,
+      "chromium": ".xn--a.evil.com",
+      "webkit": ".xn--a.evil.com"
+    },
+    {
+      "text": "https://xn--a.evil.com../",
+      "node": null,
+      "chromium": "xn--a.evil.com..",
+      "webkit": "xn--a.evil.com.."
+    },
+    {
+      "text": "https://xn--ls8h.xn--a/",
+      "node": null,
+      "chromium": "xn--ls8h.xn--a",
+      "webkit": "xn--ls8h.xn--a"
+    },
+    {
+      "text": "https://xn--a.①.com/",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://xn--a.Ａ.com/",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://xn--a.ß.com/",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://xn--a.ς.com/",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    },
+    {
+      "text": "https://xn--a.́a.com/",
+      "node": null,
+      "chromium": null,
+      "webkit": null
+    }
+  ]
+}

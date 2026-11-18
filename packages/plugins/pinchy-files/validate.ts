@@ -10,6 +10,11 @@ export interface AgentFileConfig {
   allowed_paths: string[];
   write_paths?: string[];
   allowed_extensions?: string[];
+  /**
+   * The agent holds `pinchy_memory`: its memory paths are in the lists above,
+   * and memory-prompt.ts puts the `## Memory` block into its every turn.
+   */
+  memory?: boolean;
 }
 
 export type AccessMode = "read" | "write";

@@ -81,4 +81,45 @@ describe("resolveAgentInfo", () => {
       model: "anthropic/claude-haiku-4-5-20251001",
     });
   });
+
+  it("reads the agent from OpenClaw 2026.9's keyed agents.entries", () => {
+    // 2026.9 stores agents under agents.entries, keyed by id. Its runtime
+    // config still attaches a non-enumerable agents.list projection, but any
+    // copy of the config (a spread, a JSON round trip) loses it, so the keyed
+    // roster is the one to read.
+    const cfg = {
+      agents: {
+        entries: {
+          "agent-1": { name: "Knowledge Base", model: "anthropic/claude-haiku-4-5-20251001" },
+          "agent-2": { name: "Other", model: "some-model" },
+        },
+      },
+    };
+
+    expect(resolveAgentInfo(cfg, "agent-1")).toEqual({
+      name: "Knowledge Base",
+      model: "anthropic/claude-haiku-4-5-20251001",
+    });
+  });
+
+  it("takes the primary model when the entry carries a model with fallbacks", () => {
+    const cfg = {
+      agents: {
+        entries: {
+          "agent-1": {
+            name: "Knowledge Base",
+            model: { primary: "anthropic/claude-haiku-4-5-20251001", fallbacks: ["openai/gpt-5"] },
+          },
+        },
+      },
+    };
+
+    expect(resolveAgentInfo(cfg, "agent-1").model).toBe("anthropic/claude-haiku-4-5-20251001");
+  });
+
+  it("returns undefined fields when the agent is not in agents.entries", () => {
+    const cfg = { agents: { entries: { other: { name: "Other", model: "m" } } } };
+
+    expect(resolveAgentInfo(cfg, "agent-1")).toEqual({ name: undefined, model: undefined });
+  });
 });

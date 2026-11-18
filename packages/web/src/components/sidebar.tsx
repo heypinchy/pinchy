@@ -122,7 +122,7 @@ export function AppSidebar({ isAdmin }: AppSidebarProps) {
                           </span>
                           {agent.tagline && (
                             <span
-                              className={`text-xs truncate ${isActive ? "text-muted-foreground" : "text-muted-foreground/70"}`}
+                              className="text-xs truncate text-muted-foreground"
                               title={agent.tagline}
                             >
                               {agent.tagline}

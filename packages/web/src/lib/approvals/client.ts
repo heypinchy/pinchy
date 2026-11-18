@@ -1,5 +1,5 @@
 import { apiGet, apiPost } from "@/lib/api-client";
-import type { DecisionBody } from "@/lib/schemas/approvals";
+import { MAX_KNOWN_APPROVALS, type DecisionBody } from "@/lib/schemas/approvals";
 
 export interface PendingApproval {
   id: string;
@@ -12,8 +12,19 @@ export interface PendingApproval {
   expiresAt: string;
 }
 
-export function fetchPendingApprovals(): Promise<{ approvals: PendingApproval[] }> {
-  return apiGet<{ approvals: PendingApproval[] }>("/api/approvals");
+/** A listed confirmation; `argsSummary` is absent for a card the poll named
+ * as already held (`known`) — a stored summary never changes. */
+export type ListedApproval = Omit<PendingApproval, "argsSummary"> &
+  Partial<Pick<PendingApproval, "argsSummary">>;
+
+export function fetchPendingApprovals(
+  known: readonly string[] = []
+): Promise<{ approvals: ListedApproval[] }> {
+  // Bounded like the route's read of it: an unbounded list could grow the
+  // request line past what a proxy accepts, and fail the poll outright.
+  const named = known.slice(0, MAX_KNOWN_APPROVALS);
+  const query = named.length > 0 ? `?known=${named.map(encodeURIComponent).join(",")}` : "";
+  return apiGet<{ approvals: ListedApproval[] }>(`/api/approvals${query}`);
 }
 
 export interface DecisionResult {

@@ -9,10 +9,7 @@
  * crafted trajectory replays into rows whose token sums equal the trajectory's
  * model.completed usage EXACTLY (the #483 acceptance oracle).
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { usageRecords } from "@/db/schema";
@@ -22,6 +19,34 @@ import {
   type InsertableUsageRow,
 } from "@/lib/usage-per-turn";
 import { _resetPricingCacheForTest } from "@/lib/usage";
+import { TRAJECTORY_READ_METHOD } from "@/lib/diagnostics/jsonl-reader";
+
+/**
+ * Answers `pinchy.trajectory.read` the way the pinchy-audit plugin does: a
+ * session key resolves to its session id, a session id to its events as JSONL
+ * (null when none are recorded). OpenClaw 2026.9 keeps both in a database only
+ * the gateway can read, so this is the boundary the recorder really talks to.
+ */
+function trajectoryGateway(sessions: Record<string, string>, trajectories: Record<string, string>) {
+  return async (method: string, params: Record<string, unknown>) => {
+    if (method !== TRAJECTORY_READ_METHOD) {
+      return {
+        type: "res",
+        id: "1",
+        ok: false,
+        error: { code: "INVALID_REQUEST", message: method },
+      };
+    }
+    const sessionId =
+      (params.sessionId as string | undefined) ?? sessions[params.sessionKey as string] ?? null;
+    return {
+      type: "res",
+      id: "1",
+      ok: true,
+      payload: { sessionId, jsonl: sessionId ? (trajectories[sessionId] ?? null) : null },
+    };
+  };
+}
 
 const AGENT = "agent-pt-1";
 const USER = "user-pt-1";
@@ -65,18 +90,12 @@ async function rowsForSession() {
 }
 
 describe("per-turn usage accounting (#483) — real Postgres", () => {
-  let stateDir: string;
-
   beforeEach(async () => {
     _resetPricingCacheForTest();
     await db.delete(usageRecords).where(eq(usageRecords.sessionKey, SESSION_KEY));
-    stateDir = mkdtempSync(join(tmpdir(), "pinchy-pt-state-"));
-    vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
   });
 
   afterEach(async () => {
-    vi.unstubAllEnvs();
-    rmSync(stateDir, { recursive: true, force: true });
     await db.delete(usageRecords).where(eq(usageRecords.sessionKey, SESSION_KEY));
   });
 
@@ -104,37 +123,34 @@ describe("per-turn usage accounting (#483) — real Postgres", () => {
   });
 
   it("recordSessionTurnsUsage replays a trajectory into exact per-turn rows, idempotently", async () => {
-    // Write the OpenClaw session index + a 3-turn trajectory into the temp state dir.
-    const dir = join(stateDir, "agents", AGENT, "sessions");
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(
-      join(dir, "sessions.json"),
-      JSON.stringify({ [SESSION_KEY]: { sessionId: SESSION_ID } })
-    );
-    writeFileSync(
-      join(dir, `${SESSION_ID}.trajectory.jsonl`),
-      [
-        JSON.stringify({ type: "session.started", seq: 1 }),
-        modelCompleted("run-a", 2, {
-          input: 5,
-          output: 100,
-          cacheRead: 1000,
-          cacheWrite: 200,
-          total: 1305,
-        }),
-        modelCompleted("run-b", 4, {
-          input: 7,
-          output: 200,
-          cacheRead: 2000,
-          cacheWrite: 0,
-          total: 2207,
-        }),
-        modelCompleted("run-c", 6, { input: 3, output: 50, total: 53 }), // no cache
-      ].join("\n")
+    // The session index + a 3-turn trajectory, as the gateway serves them.
+    const request = trajectoryGateway(
+      { [SESSION_KEY]: SESSION_ID },
+      {
+        [SESSION_ID]: [
+          JSON.stringify({ type: "session.started", seq: 1 }),
+          modelCompleted("run-a", 2, {
+            input: 5,
+            output: 100,
+            cacheRead: 1000,
+            cacheWrite: 200,
+            total: 1305,
+          }),
+          modelCompleted("run-b", 4, {
+            input: 7,
+            output: 200,
+            cacheRead: 2000,
+            cacheWrite: 0,
+            total: 2207,
+          }),
+          modelCompleted("run-c", 6, { input: 3, output: 50, total: 53 }), // no cache
+        ].join("\n"),
+      }
     );
 
     // Fake OpenClaw client: pricing for the model so cost is also exercised.
     const openclawClient = {
+      request,
       config: {
         get: async () => ({
           config: {
@@ -204,14 +220,13 @@ describe("per-turn usage accounting for SYSTEM sessions (#767) — real Postgres
   const SESSION_KEY = `agent:${AGENT}:cron:job-1`.toLowerCase();
   const SESSION_ID = "sess-pt-sys-1";
 
-  let stateDir: string;
-
   async function rowsForSession() {
     return db.select().from(usageRecords).where(eq(usageRecords.sessionKey, SESSION_KEY));
   }
 
-  function fakeOpenclawClient() {
+  function fakeOpenclawClient(trajectory: string) {
     return {
+      request: trajectoryGateway({ [SESSION_KEY]: SESSION_ID }, { [SESSION_ID]: trajectory }),
       config: { get: async () => ({ config: { models: { providers: {} } } }) },
     } as never;
   }
@@ -219,42 +234,29 @@ describe("per-turn usage accounting for SYSTEM sessions (#767) — real Postgres
   beforeEach(async () => {
     _resetPricingCacheForTest();
     await db.delete(usageRecords).where(eq(usageRecords.sessionKey, SESSION_KEY));
-    stateDir = mkdtempSync(join(tmpdir(), "pinchy-pt-sys-state-"));
-    vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
   });
 
   afterEach(async () => {
-    vi.unstubAllEnvs();
-    rmSync(stateDir, { recursive: true, force: true });
     await db.delete(usageRecords).where(eq(usageRecords.sessionKey, SESSION_KEY));
   });
 
   it("routes a system session through the trajectory recorder and gives it context_tokens", async () => {
-    const dir = join(stateDir, "agents", AGENT, "sessions");
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(
-      join(dir, "sessions.json"),
-      JSON.stringify({ [SESSION_KEY]: { sessionId: SESSION_ID } })
-    );
-    writeFileSync(
-      join(dir, `${SESSION_ID}.trajectory.jsonl`),
-      JSON.stringify({
-        type: "model.completed",
-        runId: "run-sys-1",
-        seq: 2,
-        sessionId: SESSION_ID,
-        sessionKey: SESSION_KEY,
-        provider: "anthropic",
-        modelId: "claude-sonnet-4-6",
-        data: {
-          usage: { input: 20, output: 40, total: 60 },
-          promptCache: { lastCallUsage: { input: 20, output: 40, cacheRead: 0, cacheWrite: 0 } },
-        },
-      })
-    );
+    const trajectory = JSON.stringify({
+      type: "model.completed",
+      runId: "run-sys-1",
+      seq: 2,
+      sessionId: SESSION_ID,
+      sessionKey: SESSION_KEY,
+      provider: "anthropic",
+      modelId: "claude-sonnet-4-6",
+      data: {
+        usage: { input: 20, output: 40, total: 60 },
+        promptCache: { lastCallUsage: { input: 20, output: 40, cacheRead: 0, cacheWrite: 0 } },
+      },
+    });
 
     const inserted = await recordSessionTurnsUsage({
-      openclawClient: fakeOpenclawClient(),
+      openclawClient: fakeOpenclawClient(trajectory),
       agentId: AGENT,
       userId: "system",
       agentName: "Cron Runner",
@@ -296,31 +298,22 @@ describe("per-turn usage accounting for SYSTEM sessions (#767) — real Postgres
 
     // A NEW turn now completes and gets scanned by the (post-#767) trajectory
     // path — a different turn from whatever the old gauge row summed.
-    const dir = join(stateDir, "agents", AGENT, "sessions");
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(
-      join(dir, "sessions.json"),
-      JSON.stringify({ [SESSION_KEY]: { sessionId: SESSION_ID } })
-    );
-    writeFileSync(
-      join(dir, `${SESSION_ID}.trajectory.jsonl`),
-      JSON.stringify({
-        type: "model.completed",
-        runId: "run-sys-new",
-        seq: 1,
-        sessionId: SESSION_ID,
-        sessionKey: SESSION_KEY,
-        provider: "anthropic",
-        modelId: "claude-sonnet-4-6",
-        data: {
-          usage: { input: 30, output: 15, total: 45 },
-          promptCache: { lastCallUsage: { input: 30, output: 15, cacheRead: 0, cacheWrite: 0 } },
-        },
-      })
-    );
+    const trajectory = JSON.stringify({
+      type: "model.completed",
+      runId: "run-sys-new",
+      seq: 1,
+      sessionId: SESSION_ID,
+      sessionKey: SESSION_KEY,
+      provider: "anthropic",
+      modelId: "claude-sonnet-4-6",
+      data: {
+        usage: { input: 30, output: 15, total: 45 },
+        promptCache: { lastCallUsage: { input: 30, output: 15, cacheRead: 0, cacheWrite: 0 } },
+      },
+    });
 
     const inserted = await recordSessionTurnsUsage({
-      openclawClient: fakeOpenclawClient(),
+      openclawClient: fakeOpenclawClient(trajectory),
       agentId: AGENT,
       userId: "system",
       agentName: "Cron Runner",
@@ -344,7 +337,7 @@ describe("per-turn usage accounting for SYSTEM sessions (#767) — real Postgres
 
     // Re-scanning is idempotent — no third row appears.
     const again = await recordSessionTurnsUsage({
-      openclawClient: fakeOpenclawClient(),
+      openclawClient: fakeOpenclawClient(trajectory),
       agentId: AGENT,
       userId: "system",
       agentName: "Cron Runner",

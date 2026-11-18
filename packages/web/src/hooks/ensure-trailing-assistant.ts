@@ -1,3 +1,5 @@
+import { isInFlightPlaceholder } from "@/hooks/in-flight-placeholder";
+
 /**
  * Anchor an in-flight run's assistant reply as the TRAILING message of the
  * reconciled history, so the list always ends with an assistant while the run
@@ -24,10 +26,17 @@
  * message, and future streaming chunks MERGE into this id via `mergeOrAppendChunk`
  * instead of appending a fresh bubble (another count lead).
  *
- * Content: when re-anchoring an assistant that's already in history, we adopt
- * whichever is MORE complete — the server's `partialContent` (authoritative,
- * up-to-the-millisecond) or the persisted history content — so a lagging or
- * empty resume buffer can never shrink a reply the user already saw.
+ * Content: when re-anchoring an assistant that's already in history, the
+ * server's `partialContent` is the base whenever the persisted reply merely
+ * runs AHEAD of it (the persisted text starts with the buffer). The buffer is
+ * snapshotted in the same synchronous block that joins this socket to the run,
+ * so every word after it still arrives as a delta and merges onto the anchor;
+ * adopting the longer transcript as the base would show those words twice —
+ * the "one two two three…" the reload E2E caught on OpenClaw 2026.9, where the
+ * history came back ahead of the buffer.
+ * Otherwise we adopt whichever is MORE complete, so an empty buffer (between
+ * the turns of a multi-turn run) or a text the buffer does not continue can
+ * never shrink a reply the user already saw.
  */
 export function ensureTrailingAssistant<T extends { id: string; role: string; content: string }>(
   messages: T[],
@@ -35,12 +44,40 @@ export function ensureTrailingAssistant<T extends { id: string; role: string; co
 ): T[] {
   const last = messages[messages.length - 1];
   if (last && last.role === "assistant") {
-    // The in-flight reply is already trailing — re-anchor its id and adopt the
-    // more complete content (resume buffer vs persisted partial).
-    const content = anchor.content.length >= last.content.length ? anchor.content : last.content;
+    // The in-flight reply is already trailing — re-anchor its id. A persisted
+    // reply that only runs ahead of the buffer is rebuilt by the deltas still
+    // to come; anything else keeps the more complete of the two.
+    const persistedRunsAhead = anchor.content !== "" && last.content.startsWith(anchor.content);
+    const content =
+      persistedRunsAhead || anchor.content.length >= last.content.length
+        ? anchor.content
+        : last.content;
     return [...messages.slice(0, -1), { ...last, id: anchor.id, content }];
   }
   // No trailing assistant (unpersisted reply, or a newer user turn trails it):
   // append the anchor so the list ends with an assistant.
   return [...messages, anchor];
+}
+
+/**
+ * Seed the in-flight reply in a LOCAL list the history reconcile keeps instead
+ * of adopting the server's (the local list is longer — typically because it
+ * starts with the client-only greeting the server never persists).
+ *
+ * Keeping the local list must not also discard the server's resume buffer: the
+ * words streamed while this tab was not listening exist only in
+ * `partialContent`, and the deltas still to come start where it ends. So the
+ * trailing local bubble takes the anchor, by the same rule as
+ * `ensureTrailingAssistant` — but only when it is this message's bubble (same
+ * id) or the empty in-flight placeholder no chunk has reached yet. Any other
+ * tail is left alone: it is not this reply, and overwriting it would replace
+ * words the user saw with a different message's.
+ */
+export function resumeInflightReplyInLocal<
+  T extends { id: string; role: string; content: string; error?: unknown },
+>(messages: T[], anchor: T): T[] {
+  const last = messages[messages.length - 1];
+  if (!last || last.role !== "assistant") return messages;
+  if (last.id !== anchor.id && !isInFlightPlaceholder(last)) return messages;
+  return ensureTrailingAssistant(messages, anchor);
 }

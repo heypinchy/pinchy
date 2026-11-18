@@ -28,6 +28,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { TemplateSelector } from "@/components/template-selector";
 import { DirectoryPicker } from "@/components/directory-picker";
 import { DocsLink } from "@/components/docs-link";
+import { WebSearchNotSetUpNotice } from "@/components/web-search-not-set-up-notice";
 import { ArrowLeft, Check, ExternalLink, Info, AlertTriangle, X } from "lucide-react";
 import { useRestart } from "@/components/restart-provider";
 import {
@@ -51,6 +52,7 @@ interface Template {
   requiresOdooConnection: boolean;
   requiresEmailConnection?: boolean;
   requiresWeb?: boolean;
+  webSearchConfigured?: boolean;
   odooAccessLevel?: string;
   defaultTagline: string | null;
 }
@@ -86,7 +88,7 @@ function PermissionPreview({ template }: { template?: Template }) {
         {items.map((item) => (
           <li key={item.text} className="flex items-center gap-2 text-sm text-muted-foreground">
             {item.icon === "check" && <Check className="size-4 text-green-600 shrink-0" />}
-            {item.icon === "cross" && <X className="size-4 text-muted-foreground/50 shrink-0" />}
+            {item.icon === "cross" && <X className="size-4 text-muted-foreground shrink-0" />}
             {item.icon === "warning" && (
               <AlertTriangle className="size-4 text-yellow-600 shrink-0" />
             )}
@@ -173,6 +175,20 @@ export function NewAgentForm() {
     },
     [router, searchParams]
   );
+  // Picking a template (or going back to the list) changes only a search
+  // param, so Next leaves the AppShell scroller where it was — and a template
+  // picked far down the list rendered the form with its heading scrolled up
+  // under whatever sits above the scroller, the trial banner (#1280). Every
+  // switch between list and form starts at the top. Layout effect, so the
+  // shifted frame is never painted.
+  const rootRef = useRef<HTMLDivElement>(null);
+  const shownTemplate = useRef(selectedTemplate);
+  useLayoutEffect(() => {
+    if (shownTemplate.current === selectedTemplate) return;
+    shownTemplate.current = selectedTemplate;
+    rootRef.current?.scrollIntoView?.({ block: "start" });
+  }, [selectedTemplate]);
+
   const [directories, setDirectories] = useState<Directory[]>([]);
   const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -497,7 +513,7 @@ export function NewAgentForm() {
     hasMissingModels;
 
   return (
-    <div className={"p-4 md:p-8 " + (selectedTemplate ? "max-w-lg" : "max-w-3xl")}>
+    <div ref={rootRef} className={"p-4 md:p-8 " + (selectedTemplate ? "max-w-lg" : "max-w-3xl")}>
       <h1 className="text-2xl font-bold mb-2">Create New Agent</h1>
 
       {!selectedTemplate ? (
@@ -689,11 +705,16 @@ export function NewAgentForm() {
                   {requiresDirectories && (
                     <div className="space-y-3">
                       <h4 className="text-sm font-medium">Data Directories</h4>
-                      <DirectoryPicker
-                        directories={directories}
-                        selected={selectedPaths}
-                        onChange={setSelectedPaths}
-                      />
+                      {/* One empty state, not two: the picker has its own, but
+                          this form's richer box replaces it here. */}
+                      {directories.length > 0 && (
+                        <DirectoryPicker
+                          directories={directories}
+                          selected={selectedPaths}
+                          onChange={setSelectedPaths}
+                          label="Data Directories"
+                        />
+                      )}
 
                       {directories.length === 0 && (
                         <div className="flex items-start gap-2 rounded-md border border-blue-200 bg-blue-50 p-3 dark:border-blue-800 dark:bg-blue-950">
@@ -720,6 +741,13 @@ export function NewAgentForm() {
                       </DocsLink>
                     </div>
                   )}
+
+                  {/* Not a blocker: page fetch works without a search
+                      provider, and search turns on once one is added (#1297). */}
+                  {selectedTemplateObj?.requiresWeb &&
+                    selectedTemplateObj.webSearchConfigured === false && (
+                      <WebSearchNotSetUpNotice />
+                    )}
 
                   <PermissionPreview template={selectedTemplateObj} />
 

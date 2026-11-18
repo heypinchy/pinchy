@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 //
 // Required: vitest.config.ts runs tests in node and jsdom is opt-in per file
-// (AGENTS.md § "Tests Run In Node; jsdom Is Opt-In Per File"). This file
+// (agent-rules/testing.md § "Tests Run In Node; jsdom Is Opt-In Per File"). This file
 // renders React, so it needs a DOM.
 //
 // Worth one note beyond that, because this file is a case where forgetting the
@@ -273,7 +273,7 @@ describe("SettingsApiKeys", () => {
         expect(screen.getByText(plaintextSecret)).toBeInTheDocument();
       });
 
-      await user.click(screen.getByRole("button", { name: "Copy" }));
+      await user.click(screen.getByRole("button", { name: "Copy key" }));
 
       await waitFor(() => {
         expect(writeText).toHaveBeenCalledWith(plaintextSecret);

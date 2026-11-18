@@ -21,7 +21,7 @@ import { usePendingApprovals } from "@/hooks/use-pending-approvals";
  */
 export function ThreadApprovals() {
   const agentId = useContext(AgentIdContext);
-  const { approvals, busy, decide } = usePendingApprovals();
+  const { approvals, openId, open, busy, decide } = usePendingApprovals();
 
   const mine = agentId ? approvals.filter((a) => a.agentId === agentId) : [];
   if (mine.length === 0) return null;
@@ -37,6 +37,8 @@ export function ThreadApprovals() {
           key={a.id}
           approval={a}
           busy={busy === a.id}
+          open={a.id === openId}
+          onOpen={() => open(a.id)}
           onDecide={(approval, decision) => void decide(approval, decision)}
         />
       ))}

@@ -110,7 +110,7 @@ vi.mock("@/server/model-unavailable-throttle", () => ({
 }));
 
 import { ActiveRuns } from "@/server/active-runs";
-import { ClientRouter } from "@/server/client-router";
+import { ClientRouter, RUN_ENDED_WITHOUT_RESPONSE } from "@/server/client-router";
 import { SessionCache } from "@/server/session-cache";
 
 interface MockWs extends WebSocket {
@@ -354,7 +354,7 @@ describe("ClientRouter reconnect liveness verdict via agentWait (Part 2)", () =>
     expect(verdict[0].state).toBe("completed");
   });
 
-  it("emits liveness:failed with stopReason when the gateway reports the run abandoned", async () => {
+  it("emits liveness:failed with a readable reason, never the raw stopReason, when the gateway reports the run abandoned", async () => {
     seedInflightRun();
     const result: AgentWaitResult = {
       status: "ok",
@@ -377,7 +377,155 @@ describe("ClientRouter reconnect liveness verdict via agentWait (Part 2)", () =>
     const verdict = liveness(ws);
     expect(verdict).toHaveLength(1);
     expect(verdict[0].state).toBe("failed");
-    expect(verdict[0].reason).toBe("agent gave up");
+    // `stopReason` is a gateway code ("rpc", "timeout"); it reached the chat
+    // verbatim as the whole error text (#1301).
+    expect(verdict[0].reason).toBe(RUN_ENDED_WITHOUT_RESPONSE);
+  });
+
+  it.each(["rpc", "stop", "aborted"])(
+    "emits liveness:completed, not failed, for a run OpenClaw reports stopped (stopReason %s)",
+    async (stopReason) => {
+      // OpenClaw normalises a stopped run's snapshot to `status: "error"`;
+      // only the cancellation stopReason tells it apart from a failure.
+      seedInflightRun();
+      const result: AgentWaitResult = { status: "error", endedAt: 1234, stopReason };
+      mockAgentWait.mockResolvedValue(result);
+
+      const router = new ClientRouter(
+        buildClient() as never,
+        "user-1",
+        "member",
+        sessionCache,
+        activeRuns
+      );
+      const ws = createMockWs();
+      await router.handleMessage(ws, { type: "history", agentId: "agent-1" });
+
+      expect(liveness(ws).map((f) => f.state)).toEqual(["completed"]);
+    }
+  );
+
+  it("emits liveness:completed, not failed, for a run the user stopped, whatever OpenClaw answers", async () => {
+    seedInflightRun();
+    activeRuns.markUserAborted(sessionKey);
+    const result: AgentWaitResult = { status: "error", endedAt: 1234 };
+    mockAgentWait.mockResolvedValue(result);
+
+    const router = new ClientRouter(
+      buildClient() as never,
+      "user-1",
+      "member",
+      sessionCache,
+      activeRuns
+    );
+    const ws = createMockWs();
+    await router.handleMessage(ws, { type: "history", agentId: "agent-1" });
+
+    expect(liveness(ws).map((f) => f.state)).toEqual(["completed"]);
+  });
+
+  it("emits no verdict when a newer turn replaced the run while agentWait was in flight", async () => {
+    seedInflightRun();
+    let answer!: (r: AgentWaitResult) => void;
+    mockAgentWait.mockReturnValue(new Promise<AgentWaitResult>((res) => (answer = res)));
+
+    const router = new ClientRouter(
+      buildClient() as never,
+      "user-1",
+      "member",
+      sessionCache,
+      activeRuns
+    );
+    const ws = createMockWs();
+    const handling = router.handleMessage(ws, { type: "history", agentId: "agent-1" });
+    // The history comes back empty for a known session, so `handleHistory`
+    // retries it once after 2s before it asks `agentWait`.
+    await vi.waitFor(() => expect(mockAgentWait).toHaveBeenCalled(), { timeout: 5_000 });
+    // The user sent the next message: its run now holds the session.
+    activeRuns.registerPending({
+      runId: "msg-next",
+      sessionKey,
+      agentId: "agent-1",
+      userId: "user-1",
+      agentName: "Smithers",
+      submittedAt: 2000,
+      currentMessageId: "msg-next",
+      ws,
+    });
+    answer({ status: "error", endedAt: 1234, stopReason: "provider exploded" });
+    await handling;
+
+    expect(liveness(ws)).toEqual([]);
+  });
+
+  it("skips the tab that already sent the next message, and still tells a second device", async () => {
+    seedInflightRun();
+    const other = createMockWs();
+    activeRuns.addListener(sessionKey, other);
+    const tab = createMockWs();
+    activeRuns.addListener(sessionKey, tab);
+    // The tab's next message is on its way, not yet in the registry.
+    activeRuns.get(sessionKey)!.handedOverTo = new Set([tab as unknown as WebSocket]);
+    const result: AgentWaitResult = { status: "error", endedAt: 1234 };
+    mockAgentWait.mockResolvedValue(result);
+
+    const router = new ClientRouter(
+      buildClient() as never,
+      "user-1",
+      "member",
+      sessionCache,
+      activeRuns
+    );
+    // The second device re-pulls history; the verdict goes to every listener.
+    await router.handleMessage(other, { type: "history", agentId: "agent-1" });
+
+    expect(liveness(tab)).toEqual([]);
+    expect(liveness(other).map((f) => f.state)).toEqual(["failed"]);
+  });
+
+  it("hands the tab back to the run when its next message is refused", async () => {
+    seedInflightRun();
+    const tab = createMockWs();
+    activeRuns.addListener(sessionKey, tab);
+    const router = new ClientRouter(
+      buildClient() as never,
+      "user-1",
+      "member",
+      sessionCache,
+      activeRuns
+    );
+    // Refused before it starts: the agent lookup finds nothing.
+    mockFindFirst.mockResolvedValueOnce(null);
+    await router.handleMessage(tab, { type: "message", content: "next", agentId: "agent-1" });
+
+    expect(activeRuns.get(sessionKey)?.runId).toBe("run-active");
+    expect(activeRuns.get(sessionKey)?.handedOverTo?.has(tab as unknown as WebSocket)).toBe(false);
+  });
+
+  it("emits no verdict when the run's pipe finished while agentWait was in flight", async () => {
+    seedInflightRun();
+    let answer!: (r: AgentWaitResult) => void;
+    mockAgentWait.mockReturnValue(new Promise<AgentWaitResult>((res) => (answer = res)));
+
+    const router = new ClientRouter(
+      buildClient() as never,
+      "user-1",
+      "member",
+      sessionCache,
+      activeRuns
+    );
+    const ws = createMockWs();
+    const handling = router.handleMessage(ws, { type: "history", agentId: "agent-1" });
+    // The history comes back empty for a known session, so `handleHistory`
+    // retries it once after 2s before it asks `agentWait`.
+    await vi.waitFor(() => expect(mockAgentWait).toHaveBeenCalled(), { timeout: 5_000 });
+    // The pipe sent its terminal frames to the run's listeners (this socket
+    // among them) and left the registry.
+    activeRuns.deleteIfRunId(sessionKey, "run-active");
+    answer({ status: "error", endedAt: 1234 });
+    await handling;
+
+    expect(liveness(ws)).toEqual([]);
   });
 
   it("emits liveness:failed when the gateway returns status:error", async () => {

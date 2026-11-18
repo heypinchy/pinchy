@@ -1,3 +1,14 @@
+import {
+  createPairingFindByCodeMethod,
+  createPairingRemoveRequestsMethod,
+  createPairingSetAllowFromMethod,
+  PAIRING_FIND_BY_CODE_METHOD,
+  PAIRING_REMOVE_REQUESTS_METHOD,
+  PAIRING_SET_ALLOW_FROM_METHOD,
+  type ResolveRoute,
+} from "./channel-pairing-store";
+import { createTrajectoryReadMethod, TRAJECTORY_READ_METHOD } from "./trajectory-reader";
+
 interface PluginConfig {
   apiBaseUrl: string;
   gatewayToken: string;
@@ -51,6 +62,26 @@ type GateDecision =
 interface PluginApi {
   pluginConfig?: PluginConfig;
   logger?: PluginLogger;
+  runtime: {
+    state: { resolveStateDir: () => string };
+    // Only the slices Pinchy uses; OpenClaw's own types are far wider.
+    config: { current: () => unknown };
+    channel: {
+      routing: {
+        resolveAgentRoute: (input: {
+          cfg: unknown;
+          channel: string;
+          accountId: string;
+          peer: { kind: "direct"; id: string };
+        }) => { agentId: string };
+      };
+    };
+  };
+  registerGatewayMethod: (
+    method: string,
+    handler: ReturnType<typeof createTrajectoryReadMethod>,
+    opts: { scope: "operator.admin" }
+  ) => void;
   on: {
     (
       hookName: "before_tool_call" | "after_tool_call",
@@ -239,9 +270,22 @@ function toolStartKey(
   return toolName;
 }
 
-const MAX_RETRIES = 2;
-// Deliberately short: this hook runs synchronously in the tool-call path, so
+// Exponential backoff from a short base: 250, 500, 1000, 2000 ms. The base
+// stays short because this hook runs synchronously in the tool-call path, so
 // every millisecond here is a millisecond the agent's tool call is blocked.
+//
+// Two retry budgets. A 5xx, a refused connection or a hang gets two retries
+// (0.75 s of backoff) — a hang already costs FETCH_TIMEOUT_MS per attempt. A
+// 401 gets four (3.75 s): it means Pinchy momentarily could not read the
+// shared gateway token during a config apply (see the 401 note in
+// postToolAuditEvent), and the growing backoff lets the attempts span that
+// moment instead of all landing inside it. Pinchy remembers the last token it
+// read for that moment, so with a warm Pinchy this rarely fires; it stays for
+// the case Pinchy cannot cover — each server module instance remembers its
+// own token, and one that has not read it since a restart has nothing to fall
+// back on.
+const MAX_RETRIES = 2;
+const MAX_UNAUTHORIZED_RETRIES = 4;
 const RETRY_BACKOFF_MS = 250;
 
 // Longest reason string worth putting in a warning/error. Pinchy's own API
@@ -300,6 +344,9 @@ function sleep(ms: number): Promise<void> {
  * into a platform-wide outage. `/api/internal/usage/record` already answers
  * 429 from a pre-auth rate limiter, so this is one sibling route away from
  * being live rather than hypothetical.
+ *
+ * 401 counts as definitive here, which the budget gate relies on. The audit
+ * hook still retries it — see the 401 note in postToolAuditEvent.
  */
 function isDefinitiveRejection(status: number): boolean {
   if (status === 408 || status === 429) return false;
@@ -311,6 +358,8 @@ function isDefinitiveRejection(status: number): boolean {
 // here blocks all tool dispatch indefinitely. Note the worst case is this
 // times MAX_RETRIES + 1, plus the backoff spent between those attempts — an
 // unreachable Pinchy costs ~30.75s per tool call before the hook fails closed.
+// A run that ends in 401s draws on MAX_UNAUTHORIZED_RETRIES instead, so a
+// Pinchy that answers 401 only after nearly timing out could cost ~53.75s.
 const FETCH_TIMEOUT_MS = 10_000;
 
 async function postToolAuditEvent(
@@ -321,8 +370,9 @@ async function postToolAuditEvent(
   const endpoint = `${normalizeBaseUrl(cfg.apiBaseUrl)}/api/internal/audit/tool-use`;
   let lastError: Error | undefined;
 
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+  for (let attempt = 0; ; attempt++) {
     let nonRetryable = false;
+    let unauthorized = false;
 
     try {
       const res = await fetch(endpoint, {
@@ -342,12 +392,21 @@ async function postToolAuditEvent(
       // way, so retrying only spends this hook's tool-call-blocking window
       // for nothing. Quote the body so the eventual error names the real
       // reason instead of a bare status code.
+      //
+      // Except a 401, which this hook retries, on the longer budget. The
+      // Bearer token is the one gateway token Pinchy and every plugin share (agent-rules/secrets.md,
+      // Pattern C), and Pinchy answers 401 while it momentarily cannot read
+      // it — OpenClaw rewrites openclaw.json root-only on every config apply.
+      // Stopping at the first 401 blocked the tool call of whichever agent hit
+      // that moment. The budget gate below keeps 401 definitive: it fails
+      // open, so its only question is what to log.
       if (isDefinitiveRejection(res.status)) {
         const reason = await readErrorBody(res);
         lastError = new Error(
           `[pinchy-audit] audit endpoint rejected ${payload.phase} ${payload.toolName} (${res.status}${reason ? `: ${reason}` : ""})`
         );
-        nonRetryable = true;
+        unauthorized = res.status === 401;
+        nonRetryable = !unauthorized;
       } else {
         lastError = new Error(
           `[pinchy-audit] audit endpoint returned ${res.status} for ${payload.phase} ${payload.toolName}`
@@ -359,12 +418,12 @@ async function postToolAuditEvent(
 
     if (nonRetryable) break;
 
-    if (attempt < MAX_RETRIES) {
-      logger?.warn?.(
-        `[pinchy-audit] audit failed (attempt ${attempt + 1}/${MAX_RETRIES + 1}), retrying: ${lastError?.message}`
-      );
-      await sleep(RETRY_BACKOFF_MS * (attempt + 1));
-    }
+    const maxRetries = unauthorized ? MAX_UNAUTHORIZED_RETRIES : MAX_RETRIES;
+    if (attempt >= maxRetries) break;
+    logger?.warn?.(
+      `[pinchy-audit] audit failed (attempt ${attempt + 1}/${maxRetries + 1}), retrying: ${lastError?.message}`
+    );
+    await sleep(RETRY_BACKOFF_MS * 2 ** attempt);
   }
 
   // Every attempt failed (or landed on a definitive rejection above). Throwing
@@ -533,6 +592,49 @@ const plugin = {
   },
 
   register(api: PluginApi) {
+    // Pinchy's per-turn usage and diagnostics export read session trajectories
+    // through this method since OpenClaw 2026.9 keeps them in a database only
+    // the gateway can open (see trajectory-reader.ts). Registered before the
+    // config check: it needs no Pinchy URL or token, and losing it would stop
+    // usage tracking, not just audit forwarding. Admin scope because a
+    // trajectory carries whole prompts and replies.
+    api.registerGatewayMethod(
+      TRAJECTORY_READ_METHOD,
+      createTrajectoryReadMethod(() => api.runtime.state.resolveStateDir()),
+      { scope: "operator.admin" }
+    );
+
+    // Telegram pairing codes and allow lists live in OpenClaw's state
+    // database since 2026.9 (see channel-pairing-store.ts). Same reasoning
+    // for registering them here: Telegram access must not depend on the audit
+    // config. Admin scope because setAllowFrom decides who reaches an agent.
+    const resolveStateDir = () => api.runtime.state.resolveStateDir();
+    api.registerGatewayMethod(
+      PAIRING_FIND_BY_CODE_METHOD,
+      createPairingFindByCodeMethod(resolveStateDir),
+      { scope: "operator.admin" }
+    );
+    api.registerGatewayMethod(
+      PAIRING_REMOVE_REQUESTS_METHOD,
+      createPairingRemoveRequestsMethod(resolveStateDir),
+      { scope: "operator.admin" }
+    );
+    // The same routing call and config snapshot Telegram uses for an inbound
+    // direct message, so a sender is let in only once their messages would
+    // reach the agent Pinchy meant.
+    const resolveRoute: ResolveRoute = ({ channel, accountId, peerId }) =>
+      api.runtime.channel.routing.resolveAgentRoute({
+        cfg: api.runtime.config.current(),
+        channel,
+        accountId,
+        peer: { kind: "direct", id: peerId },
+      }).agentId;
+    api.registerGatewayMethod(
+      PAIRING_SET_ALLOW_FROM_METHOD,
+      createPairingSetAllowFromMethod(resolveStateDir, resolveRoute),
+      { scope: "operator.admin" }
+    );
+
     const cfg = api.pluginConfig;
     if (!cfg?.apiBaseUrl || !cfg?.gatewayToken) {
       api.logger?.warn?.("[pinchy-audit] plugin config is missing apiBaseUrl or gatewayToken");

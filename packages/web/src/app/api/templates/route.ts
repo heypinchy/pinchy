@@ -6,7 +6,7 @@ import { integrationConnections } from "@/db/schema";
 import { AGENT_TEMPLATES } from "@/lib/agent-templates";
 import { validateOdooTemplate } from "@/lib/integrations/odoo-template-validation";
 import { getConnectionModels } from "@/lib/integrations/odoo-connection-models";
-import { getSetting } from "@/lib/settings";
+import { getUsableDefaultProvider } from "@/lib/model-resolver/usable-default-provider";
 import { type ProviderName } from "@/lib/providers";
 import { TemplateCapabilityUnavailableError } from "@/lib/model-resolver";
 import { resolveAvailableModelForTemplate } from "@/lib/model-resolver/resolve-available";
@@ -29,11 +29,21 @@ export const GET = withAuth(async () => {
 
   const hasEmailConnection = emailConnections.length > 0;
 
+  // Web templates do not need this to be creatable — pinchy_web_fetch works
+  // without a key — but the form says when search is not set up (#1297).
+  const webSearchConnections = await db
+    .select({ id: integrationConnections.id })
+    .from(integrationConnections)
+    .where(eq(integrationConnections.type, "web-search"))
+    .limit(1);
+
+  const hasWebSearchConnection = webSearchConnections.length > 0;
+
   // Load connection models for Odoo availability check
   const connectionModels = hasOdooConnection ? await getConnectionModels() : null;
 
   // Determine active provider for capability-based template filtering
-  const defaultProvider = (await getSetting("default_provider")) as ProviderName | null;
+  const defaultProvider = (await getUsableDefaultProvider()) as ProviderName | null;
 
   // Build templates with both Odoo and capability availability
   const templates = await Promise.all(
@@ -79,6 +89,7 @@ export const GET = withAuth(async () => {
         requiresOdooConnection: template.requiresOdooConnection ?? false,
         requiresEmailConnection: template.requiresEmailConnection ?? false,
         requiresWeb: template.pluginId === "pinchy-web",
+        webSearchConfigured: hasWebSearchConnection,
         odooAccessLevel: template.odooConfig?.accessLevel,
         defaultTagline: template.defaultTagline,
         available,

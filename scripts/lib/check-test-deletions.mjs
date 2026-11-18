@@ -1,6 +1,6 @@
 /**
  * Pure logic for the test-removal guard (see scripts/check-test-deletions.mjs
- * for the CLI/CI wrapper and AGENTS.md § "No Untracked Test Removal").
+ * for the CLI/CI wrapper and agent-rules/testing.md § "No Untracked Test Removal").
  *
  * The guard is a tripwire, not a precise metric: it counts test-case
  * invocations with a regex and fails CI when a PR removes tests on net,

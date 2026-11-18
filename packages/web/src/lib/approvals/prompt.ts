@@ -1,5 +1,15 @@
 import { TOOL_REGISTRY } from "@/lib/tool-registry";
-import { summarizeArgs } from "@/lib/approvals/summary";
+import { renderText, type CallSummary, type SummaryLimit } from "@/lib/approvals/summary";
+import {
+  displayScalar,
+  inStoredOrderPlain,
+  noteText,
+  quoted,
+  readNode,
+  refText,
+  secretText,
+  textOf,
+} from "@/lib/approvals/display";
 
 /**
  * Builds the two strings a person reads before approving a tool call.
@@ -21,10 +31,21 @@ import { summarizeArgs } from "@/lib/approvals/summary";
 export const APPROVAL_TITLE_MAX = 80;
 export const APPROVAL_DESCRIPTION_MAX = 256;
 
-/** Cuts at a word boundary where one is near, so the text ends readably. */
+/**
+ * The most of one host a cut description names: its end, where the domain it
+ * reaches is. A host has no length limit of its own, so a whole one could
+ * take the description's place.
+ */
+export const PROMPT_HOST_MAX = 100;
+
+/** Cuts at a word boundary where one is near, so the text ends readably —
+ * and never between the two halves of a surrogate pair. */
 function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
-  const cut = text.slice(0, max - 1);
+  let end = max - 1;
+  const last = text.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) end--;
+  const cut = text.slice(0, end);
   const lastSpace = cut.lastIndexOf(" ");
   return `${lastSpace > max * 0.6 ? cut.slice(0, lastSpace) : cut}…`;
 }
@@ -32,23 +53,97 @@ function truncate(text: string, max: number): string {
 /**
  * Renders the call's arguments as one readable clause.
  *
- * It goes through `summarizeArgs` rather than reading `params` directly, and
- * that is load-bearing: the approval prompt is delivered to every connected
- * approval surface — including chat channels — so it reaches strictly more
- * places than the in-app card does. Redacting less here than the card does
+ * It reads the summary the card draws (`summarizeCall`), never `params`
+ * directly, and that is load-bearing: the approval prompt is delivered to
+ * every connected approval surface — including chat channels — so it reaches
+ * strictly more places than the in-app card does. Redacting less here than the card does
  * would mean the safer surface hides what the riskier one prints.
  */
-function describeArgs(params: unknown): string {
-  const summary = summarizeArgs(params);
-  const parts = Object.entries(summary)
-    .filter(([, value]) => value !== undefined && value !== null && value !== "")
-    .map(([key, value]) => `${key}: ${String(value)}`);
-  return parts.join(", ");
+function inline(value: unknown): string {
+  // What Pinchy says about a value is printed OUTSIDE its quotes, so no quoted
+  // text can imitate it: `partner_id: (record reference: res.partner #7 "Acme
+  // GmbH")` is a ref, `partner_id: "(record reference: …)"` is a string
+  // pinchy-odoo would look up by name.
+  const node = readNode(value);
+  if (node === "unreadable") return "(a value this version cannot show)";
+  if (node?.["@"] === "ref") return refText(node);
+  if (node?.["@"] === "secret") return secretText(node);
+  if (node?.["@"] === "noted") {
+    return [quoted(textOf(node.text)), ...node.notes.map((note) => `(${noteText(note)})`)].join(
+      " "
+    );
+  }
+  // The prompt prints every text whole; only the card previews one.
+  if (node?.["@"] === "previewed") return quoted(node.text);
+  if (Array.isArray(value)) return `[${value.map(inline).join(", ")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value)
+      .map(([key, v]) => `${key}: ${inline(v)}`)
+      .join(", ")}}`;
+  }
+  // Every string is quoted, with its `"` and `\` escaped, so no string can print
+  // as structure. Printed bare, `name: "Acme, active: false"` would read exactly
+  // like `name: "Acme", active: false`, and `ids: ["7, 8"]` like `ids: [7, 8]`. The
+  // card needs no quotes: it draws each field and item in an element of its own.
+  // Line breaks stay line breaks — everything else that could hide is a marker
+  // already — and a key needs none either: it is a bare identifier or already
+  // quoted.
+  if (typeof value === "string") return quoted(value);
+  return displayScalar(value);
 }
 
-export function buildApprovalPrompt(
+function describeArgs(summary: Record<string, unknown>): string {
+  // Every argument is printed, `null` and empty ones included: leaving them out
+  // would let `active: null` read the same as no `active` at all. And in the
+  // order it was sent, as the card draws it: a chat client reorders
+  // `/data/חוזים/2024.md` into `/data/2024/חוזים.md` exactly as a browser does.
+  // That holds only where the client implements Unicode's isolates (6.3+) and
+  // overrides; one that drops them draws the text in the bidi algorithm's own
+  // order, and the card stays the view to decide on.
+  return inStoredOrderPlain(
+    Object.entries(summary)
+      .map(([key, value]) => `${key}: ${inline(value)}`)
+      .join(", ")
+  );
+}
+
+/** The last `max` UTF-16 units of `text`, never starting inside a surrogate pair. */
+function endOf(text: string, max: number): string {
+  if (text.length <= max) return text;
+  let start = text.length - max;
+  const first = text.charCodeAt(start);
+  if (first >= 0xdc00 && first <= 0xdfff) start++;
+  return `…${text.slice(start)}`;
+}
+
+/**
+ * Every host the call reaches, each once — `reaches "evil.com", "…aaaa.evil.org"
+ * — `. A host longer than PROMPT_HOST_MAX is named by its end, where the
+ * domain it reaches is. Empty when it reaches none.
+ */
+function reachesClause(hosts: string[]): string {
+  // In stored order, as the card draws a host: a host named as written can
+  // hold right-to-left letters, and printed bare two different ones draw alike.
+  const named = [...new Set(hosts)].map((host) =>
+    inStoredOrderPlain(quoted(endOf(host, PROMPT_HOST_MAX)))
+  );
+  return named.length > 0 ? `reaches ${named.join(", ")} — ` : "";
+}
+
+/** What a person reads before approving, on every approval surface. */
+export interface ApprovalPrompt {
+  title: string;
+  description: string;
+}
+
+/**
+ * The prompt for a call already summarized (`summarizeCall`). The gate builds
+ * the card's summary and the prompt from one summary: summarizing a large call
+ * costs real CPU on the server's one event loop, which every user shares.
+ */
+export function approvalPromptFor(
   toolName: string,
-  params: unknown,
+  call: Pick<CallSummary, "summary" | "hosts">,
   /**
    * The resources the gate resolved this call to touch (#1133). Naming them is
    * not decoration: once deletion can be gated per model, "Delete a record in
@@ -57,7 +152,7 @@ export function buildApprovalPrompt(
    * name and are left unsaid rather than printed.
    */
   resources: (string | null)[] = []
-): { title: string; description: string } {
+): ApprovalPrompt | { exceeded: SummaryLimit } {
   const known = TOOL_REGISTRY.find((tool) => tool.id === toolName);
 
   // An unknown tool still gets a card, and the card still has to say something.
@@ -65,15 +160,38 @@ export function buildApprovalPrompt(
   // Base template and appears in no registry, which is exactly how #865's
   // confirmation list rendered empty.
   const action = known?.label ?? `Run ${toolName}`;
-  const named = [...new Set(resources.filter((r): r is string => r !== null))];
+  // A model name comes from the call, so it is rendered like any other value:
+  // a bidi override or a typed marker in it is shown, not obeyed.
+  const named = [
+    ...new Set(resources.filter((r): r is string => r !== null).map((r) => renderText(r))),
+  ];
   const title = truncate(
     named.length > 0 ? `${action} — ${named.join(", ")}` : action,
     APPROVAL_TITLE_MAX
   );
 
-  const args = describeArgs(params);
+  const { summary, hosts } = call;
+  const args = describeArgs(summary);
   const lead = known?.description ?? `The agent wants to run ${toolName}.`;
-  const description = truncate(args ? `${lead} — ${args}` : lead, APPROVAL_DESCRIPTION_MAX);
+  const whole = args ? `${lead} — ${args}` : lead;
+  // A description that fits shows each address whole, with any note beside it.
+  if (whole.length <= APPROVAL_DESCRIPTION_MAX) return { title, description: whole };
 
-  return { title, description };
+  // Cut, it can end anywhere — inside the address itself, past
+  // `https://www.firma.at.` and before the domain it reaches, or in a long
+  // text before it. So it names every host the call reaches first, and only
+  // the arguments after them are cut. Every host, or no prompt: naming only
+  // the hosts that fit would leave out whichever came last, and the order is
+  // the call's to choose — decoys under `target` and `destination` ahead of a
+  // fetch's `url` would take the room, and the host it reaches would go
+  // unnamed. So a call whose hosts do not all fit is refused, like one too
+  // large for the card (`describeRefusal`): split, each part names its own.
+  const reaches = reachesClause(hosts);
+  if (!reaches) return { title, description: truncate(whole, APPROVAL_DESCRIPTION_MAX) };
+  const head = `${lead} — ${reaches}`;
+  // At least one character after the hosts: the `…` that says the rest is cut.
+  if (head.length >= APPROVAL_DESCRIPTION_MAX) {
+    return { exceeded: { kind: "too-many-hosts", count: new Set(hosts).size } };
+  }
+  return { title, description: head + truncate(args, APPROVAL_DESCRIPTION_MAX - head.length) };
 }

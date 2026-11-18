@@ -6,9 +6,9 @@
 // creator. Its output (`WorkflowForDispatch` + the connection's `sinceTs`) is
 // exactly what the mail lister (Brick C) and the dispatcher consume.
 //
-// The suite runs against the ephemeral integration Postgres; there is no global
-// truncate between tests, and the loader reads ALL enabled workflows, so every
-// assertion is scoped to the workflow ids the test itself seeded.
+// The suite runs against the ephemeral integration Postgres (emptied between
+// tests by the integration reset), and the loader reads ALL enabled workflows,
+// so every assertion is scoped to the workflow ids the test itself seeded.
 import { describe, it, expect } from "vitest";
 import { eq } from "drizzle-orm";
 

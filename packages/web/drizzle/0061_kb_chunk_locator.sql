@@ -15,7 +15,7 @@
 -- before 0062 drops `page`, so a run that dies between them leaves every anchor
 -- already carried over instead of destroyed. The shape of that conversion is
 -- pinned against rows written by the OLD code in
--- migration-kb-chunk-locator.integration.test.ts (AGENTS.md § "Test Migrations
+-- migration-kb-chunk-locator.integration.test.ts (agent-rules/testing.md § "Test Migrations
 -- Against Pre-Existing Data") — a fresh-DB run proves nothing here, since every
 -- row that needs converting predates the column.
 ALTER TABLE "kb_chunks" ADD COLUMN "locator" jsonb;--> statement-breakpoint

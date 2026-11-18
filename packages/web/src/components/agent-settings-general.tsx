@@ -47,6 +47,8 @@ interface AgentSettingsGeneralProps {
     isPersonal?: boolean;
     tagline?: string | null;
     starterPrompts?: string[];
+    /** Granted tool ids; `pinchy_memory` means the agent keeps memory. */
+    allowedTools?: string[];
   };
   providers: Array<{
     id: string;
@@ -243,7 +245,9 @@ export function AgentSettingsGeneral({
         <p className="text-sm text-muted-foreground">
           {agent.isPersonal
             ? "This agent is private to its owner. Memory and conversations are isolated."
-            : "All team members share this agent. Memory from all user conversations is shared across the team."}
+            : (agent.allowedTools ?? []).includes("pinchy_memory")
+              ? "All team members share this agent. Memory from all user conversations is shared across the team."
+              : "All team members share this agent. It doesn't keep memory, so it won't remember earlier conversations. It can still read the files in its workspace in every member's conversations."}
         </p>
       </div>
 

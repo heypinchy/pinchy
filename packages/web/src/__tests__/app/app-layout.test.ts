@@ -66,6 +66,8 @@ vi.mock("@/components/ui/sidebar", () => ({
 vi.mock("@/components/enterprise-banner", () => ({ EnterpriseBanner: () => null }));
 const { BudgetBannerStub } = vi.hoisted(() => ({ BudgetBannerStub: () => null }));
 vi.mock("@/components/budget-banner", () => ({ BudgetBanner: BudgetBannerStub }));
+const { DiskSpaceBannerStub } = vi.hoisted(() => ({ DiskSpaceBannerStub: () => null }));
+vi.mock("@/components/disk-space-banner", () => ({ DiskSpaceBanner: DiskSpaceBannerStub }));
 vi.mock("@/components/insecure-banner", () => ({ InsecureBanner: () => null }));
 vi.mock("@/components/dev-toolbar", () => ({ DevToolbar: () => null }));
 vi.mock("@/components/chat-session-provider", () => ({
@@ -157,5 +159,28 @@ describe("(app) layout auth guard", () => {
     };
     walk(result);
     expect(found).toEqual([{ isAdmin: true }]);
+  });
+  it.each([
+    ["admin", true],
+    ["member", false],
+  ])("mounts the disk-space banner once, for a signed-in %s", async (role, isAdmin) => {
+    mockGetSession.mockResolvedValue({
+      user: { id: "1", role },
+      session: { expiresAt: "2026-03-01" },
+    });
+    mockHeaders.mockResolvedValue(headersWithPathname("/agents"));
+
+    const result = await AppLayout({ children: null });
+
+    const found: Array<{ isAdmin: boolean }> = [];
+    const walk = (node: unknown): void => {
+      if (Array.isArray(node)) return node.forEach(walk);
+      if (!node || typeof node !== "object" || !("props" in node)) return;
+      const el = node as { type: unknown; props: { children?: unknown; isAdmin?: boolean } };
+      if (el.type === DiskSpaceBannerStub) found.push({ isAdmin: el.props.isAdmin! });
+      walk(el.props.children);
+    };
+    walk(result);
+    expect(found).toEqual([{ isAdmin }]);
   });
 });

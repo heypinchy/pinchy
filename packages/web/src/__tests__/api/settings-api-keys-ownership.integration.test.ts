@@ -18,9 +18,9 @@
 // `users` would be a category error AND would cascade-delete live automation
 // credentials the moment someone offboards.
 //
-// Provisioned by global-setup.ts and truncated between tests (setup.ts). Only
-// the session and `after()` are faked; the DB, the key plugin, and the audit
-// chain run for real.
+// Provisioned by global-setup.ts and emptied between tests by the integration
+// reset (setup.ts). Only the session and `after()` are faked; the DB, the key
+// plugin, and the audit chain run for real.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
@@ -192,6 +192,33 @@ describe("API key ownership (Model 2)", () => {
 
     // Offboarding as it usually happens: the account is disabled, not purged.
     await db.update(users).set({ banned: true }).where(eq(users.id, adminId));
+
+    const response = await GET(
+      new NextRequest("http://localhost/api/settings/api-keys"),
+      undefined
+    );
+    const { keys } = (await response.json()) as {
+      keys: { id: string; createdBy: { name: string; active: boolean } | null }[];
+    };
+
+    expect(keys.find((k) => k.id === created.id)?.createdBy).toEqual({
+      id: adminId,
+      name: "Cara Admin",
+      active: false,
+    });
+  });
+
+  it("flags a demoted creator inactive — a former admin is no longer someone who serves here", async () => {
+    const adminId = await seedAdminSession("Cara Admin");
+    const created = await issueKey("CI Deploy");
+
+    // Demotion, not deactivation: the account still logs in and is not
+    // banned, but it can no longer administer anything — and the key it
+    // minted is still a working org credential. That is exactly the key an
+    // admin reviewing this page must be prompted to rotate.
+    await db.update(users).set({ role: "member" }).where(eq(users.id, adminId));
+    // A second admin, still serving, opens the settings page.
+    await seedAdminSession("Dara Admin", "dara@test.local");
 
     const response = await GET(
       new NextRequest("http://localhost/api/settings/api-keys"),

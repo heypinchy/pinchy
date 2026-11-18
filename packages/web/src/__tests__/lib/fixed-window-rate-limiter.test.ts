@@ -88,4 +88,42 @@ describe("FixedWindowRateLimiter", () => {
       expect(limiter.isExpired(start + 5000)).toBe(true);
     });
   });
+  describe("release", () => {
+    it("gives a slot back within the current window", () => {
+      const limiter = new FixedWindowRateLimiter({ max: 2, windowMs: 1000 });
+      const now = 1_000_000;
+      limiter.tryAcquire(now);
+      limiter.tryAcquire(now);
+      expect(limiter.tryAcquire(now)).toBe(false);
+
+      limiter.release(now);
+
+      expect(limiter.tryAcquire(now)).toBe(true);
+      expect(limiter.tryAcquire(now)).toBe(false);
+    });
+
+    // A slot taken in an old window was already given back by the reset;
+    // releasing it again would hand the new window an extra one.
+    it("does nothing once the window has expired", () => {
+      const limiter = new FixedWindowRateLimiter({ max: 1, windowMs: 1000 });
+      const start = 1_000_000;
+      limiter.tryAcquire(start);
+
+      limiter.release(start + 5000);
+
+      expect(limiter.tryAcquire(start + 5000)).toBe(true);
+      expect(limiter.tryAcquire(start + 5000)).toBe(false);
+    });
+
+    it("never goes below zero", () => {
+      const limiter = new FixedWindowRateLimiter({ max: 1, windowMs: 1000 });
+      const now = 1_000_000;
+      limiter.tryAcquire(now);
+      limiter.release(now);
+      limiter.release(now);
+
+      expect(limiter.tryAcquire(now)).toBe(true);
+      expect(limiter.tryAcquire(now)).toBe(false);
+    });
+  });
 });

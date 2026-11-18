@@ -14,6 +14,8 @@ const mocks = vi.hoisted(() => ({
   checkSecretsVolumeWritable: vi.fn().mockReturnValue({ ok: true }),
   recordConfigRegenSuccess: vi.fn(),
   recordConfigRegenFailure: vi.fn(),
+  reportUnknownOriginUsers: vi.fn().mockResolvedValue(0),
+  stripUngrantablePaths: vi.fn().mockResolvedValue(0),
 }));
 
 vi.mock("@/lib/session-migration", () => ({ migrateSessionKeys: mocks.migrateSessionKeys }));
@@ -44,6 +46,14 @@ vi.mock("@/lib/openclaw-config-health", () => ({
   recordConfigRegenFailure: mocks.recordConfigRegenFailure,
 }));
 
+vi.mock("@/lib/user-provenance", () => ({
+  reportUnknownOriginUsers: mocks.reportUnknownOriginUsers,
+}));
+
+vi.mock("@/lib/strip-ungrantable-paths", () => ({
+  stripUngrantablePaths: mocks.stripUngrantablePaths,
+}));
+
 describe("bootInits", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -55,6 +65,120 @@ describe("bootInits", () => {
     mocks.migrateSmithersSoul.mockResolvedValue(undefined);
     mocks.regenerateOpenClawConfig.mockResolvedValue(undefined);
     mocks.checkSecretsVolumeWritable.mockReturnValue({ ok: true });
+    mocks.reportUnknownOriginUsers.mockResolvedValue(0);
+    mocks.stripUngrantablePaths.mockResolvedValue(0);
+  });
+
+  // #1272: rows written before the v0.9.0 lockdown can grant folders outside
+  // /data. The cleanup must run before the boot regenerate, so the config
+  // OpenClaw starts with is built from rows that no longer carry them.
+  it("removes pre-lockdown grants outside /data before regenerating the config", async () => {
+    const { bootInits } = await import("@/lib/boot-inits");
+    await bootInits();
+
+    expect(mocks.stripUngrantablePaths).toHaveBeenCalledOnce();
+    expect(mocks.stripUngrantablePaths.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.regenerateOpenClawConfig.mock.invocationCallOrder[0]
+    );
+  });
+
+  it("still regenerates the config when the grant cleanup throws", async () => {
+    mocks.stripUngrantablePaths.mockRejectedValue(new Error("db hiccup"));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const { bootInits } = await import("@/lib/boot-inits");
+    const result = await bootInits();
+
+    expect(result).toBe(true);
+    expect(mocks.regenerateOpenClawConfig).toHaveBeenCalledOnce();
+    expect(errorSpy).toHaveBeenCalledWith(
+      "[pinchy] Failed to remove file-access grants outside /data:",
+      "db hiccup"
+    );
+    errorSpy.mockRestore();
+  });
+
+  it("reports accounts of unknown origin on every boot once setup is complete", async () => {
+    // Accounts self-registered through the formerly open sign-up endpoint
+    // survive the upgrade that closed it. The boot is where an upgrade first
+    // runs, so that is where they get reported (once each — the function is
+    // idempotent, see user-provenance.integration.test.ts).
+    const { bootInits } = await import("@/lib/boot-inits");
+    await bootInits();
+
+    expect(mocks.reportUnknownOriginUsers).toHaveBeenCalledOnce();
+  });
+
+  it("does not look for unknown-origin accounts before setup", async () => {
+    // Without a setup admin every account would read as unknown.
+    mocks.isSetupComplete.mockResolvedValue(false);
+
+    const { bootInits } = await import("@/lib/boot-inits");
+    await bootInits();
+
+    expect(mocks.reportUnknownOriginUsers).not.toHaveBeenCalled();
+  });
+
+  it("still regenerates the config when the unknown-origin report throws", async () => {
+    mocks.reportUnknownOriginUsers.mockRejectedValue(new Error("db hiccup"));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const { bootInits } = await import("@/lib/boot-inits");
+    const result = await bootInits();
+    // The report runs in the background; let its rejection land.
+    await vi.waitFor(() =>
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[pinchy] Failed to check account provenance:",
+        "db hiccup"
+      )
+    );
+
+    expect(result).toBe(true);
+    expect(mocks.regenerateOpenClawConfig).toHaveBeenCalledOnce();
+    expect(mocks.markOpenClawConfigReady).toHaveBeenCalledOnce();
+    errorSpy.mockRestore();
+  });
+
+  it("runs the unknown-origin report only after readiness is signalled", async () => {
+    // The report scans every account and writes an audit row per flagged one.
+    // On an instance a bot filled with sign-ups that is minutes of work, and
+    // OpenClaw's container waits on markOpenClawConfigReady() to start.
+    const { bootInits } = await import("@/lib/boot-inits");
+    await bootInits();
+
+    expect(mocks.reportUnknownOriginUsers).toHaveBeenCalledOnce();
+    expect(mocks.markOpenClawConfigReady.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.reportUnknownOriginUsers.mock.invocationCallOrder[0]
+    );
+    expect(mocks.regenerateOpenClawConfig.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.reportUnknownOriginUsers.mock.invocationCallOrder[0]
+    );
+  });
+
+  it("does not wait for the unknown-origin report to finish", async () => {
+    mocks.reportUnknownOriginUsers.mockReturnValue(new Promise<number>(() => {}));
+
+    const { bootInits } = await import("@/lib/boot-inits");
+    const outcome = await Promise.race([
+      bootInits(),
+      new Promise((resolve) => setTimeout(() => resolve("blocked"), 1000)),
+    ]);
+
+    expect(outcome).toBe(true);
+    expect(mocks.markOpenClawConfigReady).toHaveBeenCalledOnce();
+  });
+
+  it("still reports unknown-origin accounts when the config regeneration fails", async () => {
+    // Setup is complete either way; a broken config is no reason to stay
+    // quiet about accounts nobody invited.
+    mocks.regenerateOpenClawConfig.mockRejectedValue(new Error("EACCES"));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const { bootInits } = await import("@/lib/boot-inits");
+    await bootInits();
+
+    expect(mocks.reportUnknownOriginUsers).toHaveBeenCalledOnce();
+    errorSpy.mockRestore();
   });
 
   it("runs all boot inits when setup is complete", async () => {

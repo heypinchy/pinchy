@@ -43,7 +43,7 @@
  *     That mutant is the reason this file compiles the query instead of
  *     inspecting the escaping in isolation.
  */
-import { sql } from "drizzle-orm";
+import { and, sql } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { describe, expect, it } from "vitest";
 
@@ -144,8 +144,8 @@ describe("buildPathFilter — LIKE pattern escaping (escapeLikePattern boundary)
     const { text, params } = compile(["/data/my_folder", "/data/50%off"]);
 
     expect(text).toBe(
-      "(c.source_path = $1 OR c.source_path LIKE $2 ESCAPE '\\') OR " +
-        "(c.source_path = $3 OR c.source_path LIKE $4 ESCAPE '\\')"
+      "((c.source_path = $1 OR c.source_path LIKE $2 ESCAPE '\\') OR " +
+        "(c.source_path = $3 OR c.source_path LIKE $4 ESCAPE '\\'))"
     );
     expect(params).toEqual([
       "/data/my_folder",
@@ -162,5 +162,20 @@ describe("buildPathFilter — LIKE pattern escaping (escapeLikePattern boundary)
     // agent whose allowedPaths entry is an exact file path containing `_`
     // or `%` — it would stop matching itself.
     expect(compile(["/data/my_folder"]).params[0]).toBe("/data/my_folder");
+  });
+
+  it("is one predicate, so a condition ANDed beside it still applies to every allowed path", () => {
+    // drizzle does not parenthesize an embedded fragment, and `and()` joins
+    // its conditions with a bare ` and `. An unwrapped OR chain would read as
+    // `x and <first path> OR <second path>`: everything under the second
+    // path, whatever `x` says.
+    const { sql: text } = new PgDialect().sqlToQuery(
+      and(sql`c.org_id = 'org'`, buildPathFilter(["/data/a", "/data/b"], COLUMN))!
+    );
+
+    expect(text).toBe(
+      "(c.org_id = 'org' and ((c.source_path = $1 OR c.source_path LIKE $2 ESCAPE '\\') OR " +
+        "(c.source_path = $3 OR c.source_path LIKE $4 ESCAPE '\\')))"
+    );
   });
 });

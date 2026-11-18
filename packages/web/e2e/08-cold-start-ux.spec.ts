@@ -7,7 +7,7 @@
  *   1. Immediately shows "Starting..." (yellow) — WS not yet open, no history
  *   2. Transitions to "Connected" (green) once WS opens, openclaw_status=true
  *      arrives, and history loads
- *   3. NEVER flashes red ("Reconnecting...") during the transition
+ *   3. NEVER flashes red (any error state) during the transition
  *
  * This test guards against a regression class where brief `isOpenClawConnected=false`
  * windows during startup triggered the 2s hysteresis timer early, causing
@@ -44,14 +44,17 @@ test.describe("cold-start UX — indicator sequence", () => {
 
     await seedProviderConfig();
 
-    // Track whether the red "Reconnecting..." state ever appeared.
+    // Track whether any red state ever appeared. The indicator marks every red
+    // state with data-error="true", so the guard does not depend on a label:
+    // a lost OpenClaw link with the socket open reads "The agent isn't
+    // reachable", not "Reconnecting...".
     // We inject a MutationObserver before page load so it catches even a
     // brief flash that would otherwise be invisible to a poll-based check.
     await page.addInitScript(() => {
       (window as unknown as Record<string, unknown>).__coldStartRedFlash = false;
 
       const observer = new MutationObserver(() => {
-        const btn = document.querySelector('button[aria-label="Reconnecting..."]');
+        const btn = document.querySelector('button[data-error="true"]');
         if (btn) {
           (window as unknown as Record<string, unknown>).__coldStartRedFlash = true;
         }
@@ -166,7 +169,7 @@ test.describe("cold-start UX — indicator sequence", () => {
       timeout: 5000,
     });
 
-    // 3. The red "Reconnecting..." state must never have appeared.
+    // 3. No red state may have appeared.
     const redFlashed = await page.evaluate(
       () => (window as unknown as Record<string, unknown>).__coldStartRedFlash
     );

@@ -198,6 +198,7 @@ export function AgentSettingsPersonality({
               your agent communicates.
             </p>
             <MarkdownEditor
+              label="Personality"
               value={content}
               onChange={handleContentChange}
               className="min-h-[300px]"

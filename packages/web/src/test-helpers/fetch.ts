@@ -7,7 +7,7 @@
  * and the failure is a rejected promise deep inside the helper rather than an
  * assertion that names the missing method — which is exactly why this lives in
  * one place: the next change to how api-client reads a response is a one-line
- * fix here instead of a sweep across ~250 inline literals (AGENTS.md § "Web
+ * fix here instead of a sweep across ~250 inline literals (agent-rules/testing.md § "Web
  * Test Files Are Type-Checked").
  *
  * Deliberately a stub rather than a real `new Response(...)`: a real Response

@@ -71,6 +71,41 @@ function disabledByOperator(): boolean {
 }
 
 /**
+ * Whether an index run started now would read scans with a vision model, and
+ * if not, why not.
+ *
+ * The two "not" answers need different fixes, which is the whole reason to
+ * tell them apart (#1362): `off` is the operator's decision (`PINCHY_KB_OCR`),
+ * and adding a provider changes nothing; `no_model` is fixed by making a
+ * vision model available. A model whose provider key is missing counts as no
+ * model — a run would read nothing with it, and the fix is the same.
+ */
+export type KbOcrAvailability =
+  { state: "off" } | { state: "no_model" } | { state: "on"; model: string };
+
+export async function kbOcrAvailability(): Promise<KbOcrAvailability> {
+  if (disabledByOperator()) return { state: "off" };
+
+  const model = (await resolveDefaultVisionModelChain())[0];
+  if (!model) return { state: "no_model" };
+
+  // Resolved once, before the run rather than per page: a chain entry whose
+  // key has since been removed would otherwise spend a render on every scanned
+  // page of the corpus before failing each one.
+  const provider = model.split("/")[0];
+  if (PROVIDER_KEY_SETTINGS.has(provider) && !(await resolveApiKey(provider))) {
+    return { state: "no_model" };
+  }
+  return { state: "on", model };
+}
+
+async function resolveApiKey(provider: string): Promise<string | null> {
+  const settingsKey = PROVIDER_KEY_SETTINGS.get(provider);
+  if (!settingsKey) return null;
+  return getSetting(settingsKey);
+}
+
+/**
  * Builds the OCR half of the ingest's PDF extractor, or null when index-time
  * OCR cannot or should not run.
  *
@@ -81,22 +116,9 @@ function disabledByOperator(): boolean {
  * unsearchable document rather than as a failed one.
  */
 export async function resolveKbOcr(deps: ResolveKbOcrDeps = {}): Promise<KbOcrSetup | null> {
-  if (disabledByOperator()) return null;
-
-  const model = (await resolveDefaultVisionModelChain())[0];
-  if (!model) return null;
-
-  const resolveApiKey = async (provider: string): Promise<string | null> => {
-    const settingsKey = PROVIDER_KEY_SETTINGS.get(provider);
-    if (!settingsKey) return null;
-    return getSetting(settingsKey);
-  };
-
-  // Resolved once, before the run rather than per page: a chain entry whose
-  // key has since been removed would otherwise spend a render on every scanned
-  // page of the corpus before failing each one.
-  const provider = model.split("/")[0];
-  if (PROVIDER_KEY_SETTINGS.has(provider) && !(await resolveApiKey(provider))) return null;
+  const availability = await kbOcrAvailability();
+  if (availability.state !== "on") return null;
+  const { model } = availability;
 
   const config: VisionApiConfig = { model, resolveApiKey };
   const describeImage = deps.describeImage ?? describePageImage;

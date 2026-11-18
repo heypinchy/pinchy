@@ -548,6 +548,151 @@ describe("webFetch", () => {
     });
   });
 
+  /**
+   * Special-purpose ranges the original private list never named.
+   *
+   * 100.64.0.0/10 is the one that matters in practice: Alibaba Cloud serves
+   * instance metadata (credentials included) from 100.100.100.200, and a docker
+   * host inside a tailnet makes every other Tailscale node a 100.x neighbour.
+   * The rest are not routable on the public internet, so a hit means somebody
+   * is steering the fetch at an internal path. The table lives in the shared
+   * classifier (./ip-address.ts); this block proves web_fetch actually asks it,
+   * for literal URLs AND for DNS answers.
+   */
+  describe("special-purpose ranges (shared classifier)", () => {
+    const BLOCKED_LITERALS = [
+      ["100.100.100.200", "Alibaba Cloud metadata"],
+      ["168.63.129.16", "Azure WireServer"],
+      ["[64:ff9b::a83f:8110]", "NAT64 wrapping Azure WireServer"],
+      ["100.64.0.1", "CGNAT, bottom of 100.64.0.0/10"],
+      ["100.127.255.255", "CGNAT, top of 100.64.0.0/10"],
+      // Private since the classifier reclassified it (admins may opt into it
+      // for Odoo/mail); web_fetch blocks the private class regardless.
+      ["198.18.0.1", "benchmarking 198.18.0.0/15"],
+      ["198.19.255.255", "benchmarking, top of the /15"],
+      ["192.0.0.1", "IETF protocol assignments 192.0.0.0/24"],
+      ["192.0.2.1", "TEST-NET-1"],
+      ["198.51.100.7", "TEST-NET-2"],
+      ["203.0.113.9", "TEST-NET-3"],
+      ["240.0.0.1", "reserved 240.0.0.0/4"],
+      ["255.255.255.255", "limited broadcast"],
+      ["224.0.0.1", "multicast 224.0.0.0/4"],
+      ["239.255.255.250", "multicast, top of the range"],
+      ["[fe80::1]", "link-local, the literal fe80 hextet"],
+      ["[fe90::1]", "link-local fe80::/10, second block"],
+      ["[febf::1]", "link-local fe80::/10, last block"],
+      ["[fe80:abcd::1]", "link-local with a non-zero second hextet"],
+      ["[fec0::1]", "deprecated site-local fec0::/10"],
+      ["[feff::1]", "site-local, top of fec0::/10"],
+      ["[ff02::1]", "IPv6 multicast"],
+      ["[ff00::1]", "IPv6 multicast, bottom of ff00::/8"],
+      ["[::1]", "loopback"],
+      ["[::]", "unspecified"],
+      ["[64:ff9b::7f00:1]", "NAT64 wrapping 127.0.0.1"],
+      ["[64:ff9b::a9fe:a9fe]", "NAT64 wrapping 169.254.169.254"],
+      ["[64:ff9b::6464:64c8]", "NAT64 wrapping 100.100.100.200"],
+      // `private`, not `reserved`, since the local-use prefix can be an
+      // operator's own network — either way never fetchable from here.
+      ["[64:ff9b:1::a9fe:a9fe]", "local-use NAT64 64:ff9b:1::/48"],
+      ["[::ffff:100.64.0.1]", "IPv4-mapped CGNAT"],
+      ["[::ffff:6464:64c8]", "IPv4-mapped CGNAT, hex spelling"],
+      ["[::ffff:169.254.169.254]", "IPv4-mapped metadata"],
+      ["[::7f00:1]", "IPv4-compatible loopback"],
+      ["[::100.100.100.200]", "IPv4-compatible Alibaba metadata"],
+      ["[2002:7f00:1::1]", "6to4 wrapping 127.0.0.1"],
+      ["[fd00:ec2::254]", "EC2 IPv6 metadata"],
+      ["[fd00:ec2::23]", "EKS Pod Identity Agent"],
+      ["[fd20:ce::254]", "GCP IPv6 metadata"],
+      ["[fd00:c1::a9fe:a9fe]", "OCI IPv6 metadata"],
+    ] as const;
+
+    it.each(BLOCKED_LITERALS)("blocks the literal %s (%s)", async (host) => {
+      const result = await webFetch(`http://${host}/latest/meta-data/`);
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("private network");
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it.each(BLOCKED_LITERALS)("blocks a DNS answer of %s (%s)", async (host) => {
+      const address = host.replace(/^\[|\]$/g, "");
+      const isV6 = address.includes(":");
+      resolve4Mock.mockReset().mockResolvedValue(isV6 ? [] : [address]);
+      resolve6Mock.mockReset().mockResolvedValue(isV6 ? [address] : []);
+
+      const result = await webFetch("https://rebind.example.com/page");
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("private network");
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("blocks a name whose records mix a public address with a CGNAT one", async () => {
+      resolve4Mock.mockReset().mockResolvedValue(["93.184.216.34", "100.100.100.200"]);
+      resolve6Mock.mockReset().mockResolvedValue([]);
+
+      const result = await webFetch("https://mixed.example.com/page");
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("private network");
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("blocks a CGNAT address that only /etc/hosts knows", async () => {
+      resolve4Mock.mockReset().mockResolvedValue([]);
+      resolve6Mock.mockReset().mockResolvedValue([]);
+      lookupMock.mockResolvedValue([{ address: "100.100.100.200", family: 4 }]);
+
+      const result = await webFetch("http://metadata.internal/");
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("private network");
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("blocks a redirect that lands on a CGNAT address", async () => {
+      resolve4Mock.mockReset().mockResolvedValueOnce(["93.184.216.34"]);
+      resolve6Mock.mockReset().mockResolvedValue([]);
+      fetchMock.mockResolvedValueOnce({
+        status: 302,
+        ok: false,
+        headers: new Map([["location", "http://100.100.100.200/latest/meta-data/"]]),
+      });
+
+      const result = await webFetch("https://example.com/start");
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("private network");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    // The other half of the table: the boundaries just outside each range, and
+    // ordinary public addresses, must still be fetched.
+    it.each([
+      ["93.184.216.34", "an ordinary public address"],
+      ["8.8.8.8", "a public resolver"],
+      ["100.63.255.255", "one below 100.64.0.0/10"],
+      ["100.128.0.1", "one above 100.64.0.0/10"],
+      ["198.17.255.255", "one below 198.18.0.0/15"],
+      ["198.20.0.1", "one above 198.18.0.0/15"],
+      ["192.0.1.1", "between 192.0.0.0/24 and 192.0.2.0/24"],
+      ["223.255.255.255", "the last unicast address before 224.0.0.0/4"],
+      ["2606:4700:4700::1111", "a public IPv6 address"],
+      ["64:ff9b::808:808", "NAT64 wrapping the public 8.8.8.8"],
+      ["::ffff:8.8.8.8", "IPv4-mapped public"],
+    ])("still fetches %s (%s)", async (address) => {
+      const isV6 = address.includes(":");
+      resolve4Mock.mockReset().mockResolvedValue(isV6 ? [] : [address]);
+      resolve6Mock.mockReset().mockResolvedValue(isV6 ? [address] : []);
+      mockHtmlResponse(ROUTING_FIXTURE);
+
+      const result = await webFetch("https://public.example.com/page");
+
+      expect(result.isError).toBeUndefined();
+      expect(fetchMock).toHaveBeenCalled();
+    });
+  });
+
   describe("pinnedLookup", () => {
     it("invokes the callback with the pinned address regardless of hostname", async () => {
       const lookup = pinnedLookup("93.184.216.34", 4);

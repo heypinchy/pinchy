@@ -19,7 +19,7 @@
  *   - Add a commit trailer referencing an issue:
  *       Allow-test-deletion: #1234
  *
- * See AGENTS.md § "No Untracked Test Removal".
+ * See agent-rules/testing.md § "No Untracked Test Removal".
  */
 
 import { execFileSync } from "node:child_process";
@@ -179,7 +179,7 @@ function main() {
       `        Allow-test-deletion: #<issue-number>\n` +
       `    (amend the commit or add an empty commit with the trailer), OR\n` +
       `  • apply the "allow-test-deletion" label to the PR.\n` +
-      `Otherwise, restore the tests. See AGENTS.md § "No Untracked Test Removal".`,
+      `Otherwise, restore the tests. See agent-rules/testing.md § "No Untracked Test Removal".`,
   );
   process.exit(1);
 }

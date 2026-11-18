@@ -116,8 +116,12 @@ function makeValidationRequest(provider: ProviderName, apiKey: string): Promise<
       });
     case "google":
       return fetch(
-        `${resolveProviderBaseUrl("google", "https://generativelanguage.googleapis.com")}/v1beta/models?key=${apiKey}`,
-        { signal: AbortSignal.timeout(PROVIDER_PROBE_TIMEOUT_MS) }
+        `${resolveProviderBaseUrl("google", "https://generativelanguage.googleapis.com")}/v1beta/models`,
+        {
+          // Header, not ?key=: query strings leak into proxy logs and error messages.
+          headers: { "x-goog-api-key": apiKey },
+          signal: AbortSignal.timeout(PROVIDER_PROBE_TIMEOUT_MS),
+        }
       );
     case "ollama-cloud":
       // /v1/models is a public catalog and returns 200 for any token, so it

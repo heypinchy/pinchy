@@ -622,6 +622,35 @@ export async function getGreenmailMailboxMessages(address: string): Promise<
 }
 
 /**
+ * The raw RFC 822 source of every message in a GreenMail mailbox, oldest
+ * first. For specs that need the body — the system mailer's invite link
+ * (#1309) — rather than the envelope `getGreenmailMailboxMessages` returns.
+ */
+export async function getGreenmailMailboxSource(address: string): Promise<string[]> {
+  const { ImapFlow } = await import("imapflow");
+  const client = new ImapFlow({
+    host: GREENMAIL_IMAP_HOST,
+    port: GREENMAIL_IMAP_PORT,
+    secure: false,
+    logger: false,
+    auth: { user: address, pass: "mock-password" },
+  });
+  await client.connect();
+  try {
+    await client.mailboxOpen("INBOX");
+    const uids = await client.search({ all: true }, { uid: true });
+    if (!uids || uids.length === 0) return [];
+    const sources: string[] = [];
+    for await (const msg of client.fetch(uids, { source: true }, { uid: true })) {
+      if (msg.source) sources.push(msg.source.toString("utf8"));
+    }
+    return sources;
+  } finally {
+    await client.logout();
+  }
+}
+
+/**
  * An IMAP connection whose stored credentials point straight at GreenMail.
  *
  * Deliberately NOT the `IMAP_MOCK_HOST` env redirect the pinchy-email plugin

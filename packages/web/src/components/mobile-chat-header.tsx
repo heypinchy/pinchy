@@ -2,6 +2,7 @@ import Link from "next/link";
 import { ArrowLeft, Settings } from "lucide-react";
 import { ChatSwitcher } from "@/components/chat-switcher";
 import { AiDisclosureLabel } from "@/components/ai-disclosure-label";
+import { KnowledgeSearchSheet } from "@/components/knowledge-search-sheet";
 
 interface MobileChatHeaderProps {
   agentId: string;
@@ -10,6 +11,8 @@ interface MobileChatHeaderProps {
   chatId?: string | null;
   avatarUrl?: string;
   canEdit?: boolean;
+  /** Offer "What can this agent search?" (#1386). */
+  searchesKnowledge?: boolean;
 }
 
 export function MobileChatHeader({
@@ -18,6 +21,7 @@ export function MobileChatHeader({
   chatId = null,
   avatarUrl,
   canEdit = false,
+  searchesKnowledge = false,
 }: MobileChatHeaderProps) {
   return (
     <header className="md:hidden shrink-0 flex items-center justify-between p-3 border-b">
@@ -34,13 +38,16 @@ export function MobileChatHeader({
         <AiDisclosureLabel />
       </div>
 
-      {canEdit ? (
-        <Link href={`/chat/${agentId}/settings`} aria-label="Settings" className="p-1">
-          <Settings className="size-5" />
-        </Link>
-      ) : (
-        <div className="p-1 size-7" />
-      )}
+      <div className="flex items-center shrink-0">
+        {searchesKnowledge && <KnowledgeSearchSheet agentId={agentId} className="p-1" />}
+        {canEdit ? (
+          <Link href={`/chat/${agentId}/settings`} aria-label="Settings" className="p-1">
+            <Settings className="size-5" />
+          </Link>
+        ) : (
+          !searchesKnowledge && <div className="p-1 size-7" />
+        )}
+      </div>
     </header>
   );
 }

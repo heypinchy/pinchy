@@ -1,0 +1,1 @@
+ALTER TABLE "kb_documents" ADD COLUMN "artifact_format_version" integer;

@@ -11,13 +11,14 @@ beforeEach(async () => {
 it("inserts a row for every built-in model on first run", async () => {
   await seedBuiltinModels();
   const rows = await db.select().from(models);
-  // Anthropic (3) + OpenAI (3) + Google (3) + ollama-cloud (18) = 27.
+  // Anthropic (3) + OpenAI (3) + Google (3) + ollama-cloud (9) = 18.
   // The floor was 30 when ollama-cloud carried ~33 models; the 2026-07-15
-  // retirement wave cut that to 18. A floor near the real total is just a
+  // retirement wave cut that to 18 and the 2026-11-16 one to 9, which took the
+  // total below the old floor of 20. A floor near the real total is just a
   // snapshot that breaks on every retirement — this guards "the seed inserted
   // every provider's models, not only the first provider's", so it only has to
   // sit above any single provider's count.
-  expect(rows.length).toBeGreaterThanOrEqual(20);
+  expect(rows.length).toBeGreaterThanOrEqual(15);
   expect(rows.every((r) => r.source === "builtin")).toBe(true);
 });
 
@@ -60,5 +61,23 @@ it("removes rows with source=builtin no longer in the registry", async () => {
   });
   await seedBuiltinModels();
   const rows = await db.select().from(models).where(eq(models.modelId, "removed-model"));
+  expect(rows).toHaveLength(0);
+});
+
+it("drops a stored row for an Ollama Cloud model that left the catalog (2026-11-16 retirement)", async () => {
+  // An upgrade, not a fresh install: the DB was seeded by the previous release,
+  // which still carried these models. The seed must delete their builtin rows
+  // so a retired model stops reading as vision-capable / tool-capable.
+  await db.insert(models).values({
+    provider: "ollama-cloud",
+    modelId: "qwen3.5:397b",
+    displayName: "qwen3.5:397b",
+    vision: true,
+    longContext: true,
+    tools: true,
+    source: "builtin",
+  });
+  await seedBuiltinModels();
+  const rows = await db.select().from(models).where(eq(models.modelId, "qwen3.5:397b"));
   expect(rows).toHaveLength(0);
 });

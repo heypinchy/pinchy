@@ -9,7 +9,7 @@ import {
 // The shared request schema for POST /api/automations. Both the route handler
 // (parseRequestBody) and — later — the client form / the conversational
 // create tool (#705) import it, so a drift between what a caller sends and what
-// the route accepts is a compile-time error, not a runtime 400 (AGENTS.md,
+// the route accepts is a compile-time error, not a runtime 400 (agent-rules/web-routes.md,
 // "Shared Schemas And Typed Client").
 describe("createAutomationSchema", () => {
   const valid = {

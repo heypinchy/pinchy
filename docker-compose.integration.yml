@@ -57,9 +57,9 @@ services:
     extra_hosts:
       # Pinchy probes ollama_local_url from regenerateOpenClawConfig(); when the
       # URL points at the host-side fake Ollama via host.docker.internal it must
-      # be reachable from inside the Pinchy container too.
+      # be reachable from inside the Pinchy container too. (`ollama.local`
+      # comes from docker-compose.yml, on both services.)
       - "host.docker.internal:host-gateway"
-      - "ollama.local:host-gateway"
 
   openclaw:
     extra_hosts:

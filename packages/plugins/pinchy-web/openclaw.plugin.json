@@ -32,6 +32,6 @@
         }
       }
     },
-    "required": ["apiBaseUrl", "gatewayToken", "connectionId", "agents"]
+    "required": ["apiBaseUrl", "gatewayToken", "agents"]
   }
 }

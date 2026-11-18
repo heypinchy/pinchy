@@ -7,7 +7,7 @@
 // with a per-connection watermark, plus scope-based RBAC that queries the
 // agent's ownership and its connection permissions. Mocking @/db would assert
 // nothing about any of that. So @/db runs for real against a freshly migrated
-// Postgres (global-setup.ts), truncated between cases (setup.ts).
+// Postgres (global-setup.ts), emptied between cases by the integration reset.
 //
 // What stays mocked, and why:
 //   - @/lib/auth.getSession — the only way to drive the withAuth scope branches

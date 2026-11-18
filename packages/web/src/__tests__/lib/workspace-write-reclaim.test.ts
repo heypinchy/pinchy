@@ -89,12 +89,13 @@ describe.skipIf(runningAsRoot)(
       expect(readFileSync(filePath, "utf-8")).toBe("# New personality\n");
     });
 
-    it("writeToolsFile replaces the unwritable TOOLS.md that caused the incident", () => {
-      // The exact production case: OpenClaw's bootstrap placeholder sits where
-      // Pinchy needs to write the mailbox context.
-      const filePath = seedUnwritable("TOOLS.md", "# TOOLS.md - Local Notes\n");
+    it("writeMailboxContext replaces an unwritable IDENTITY.md, the incident's file today", () => {
+      // The production case, moved: OpenClaw's bootstrap placeholder sits
+      // where Pinchy needs to write the mailbox context. That was TOOLS.md up
+      // to OpenClaw 2026.7; since 2026.9 the context lives in IDENTITY.md.
+      const filePath = seedUnwritable("IDENTITY.md", "# IDENTITY.md - Who Am I?\n");
 
-      workspace.writeToolsFile(AGENT_ID, [
+      workspace.writeMailboxContext(AGENT_ID, [
         {
           address: "commercial@example.com",
           label: "commercial@example.com",
@@ -102,9 +103,7 @@ describe.skipIf(runningAsRoot)(
         },
       ]);
 
-      const written = readFileSync(filePath, "utf-8");
-      expect(written).toContain("commercial@example.com");
-      expect(written).not.toContain("Local Notes");
+      expect(readFileSync(filePath, "utf-8")).toContain("commercial@example.com");
     });
 
     it("writeIdentityFile replaces an unwritable IDENTITY.md", () => {
@@ -143,12 +142,12 @@ describe.skipIf(runningAsRoot)(
       // Reclaiming once must actually fix the state. If the new file inherited
       // the old mode, every subsequent save would pay the same dance — and in
       // production the ownership would never return to Pinchy.
-      const filePath = seedUnwritable("TOOLS.md");
+      const filePath = seedUnwritable("IDENTITY.md");
 
-      workspace.writeToolsFile(AGENT_ID, [
+      workspace.writeMailboxContext(AGENT_ID, [
         { address: "a@example.com", label: "a@example.com", operations: ["read"] },
       ]);
-      workspace.writeToolsFile(AGENT_ID, [
+      workspace.writeMailboxContext(AGENT_ID, [
         { address: "b@example.com", label: "b@example.com", operations: ["read"] },
       ]);
 

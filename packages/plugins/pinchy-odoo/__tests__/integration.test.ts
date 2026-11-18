@@ -18,7 +18,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createRequire } from "module";
 import { createServer, type Server } from "http";
-import { AddressInfo } from "net";
+import { AddressInfo, isIP } from "net";
 import plugin from "../index";
 import { encodeRef } from "../integration-ref";
 
@@ -50,6 +50,7 @@ const PINCHY_GATEWAY_TOKEN = "test-gateway-token-integration";
 // Per-connection credentials served by the mock-pinchy. Tests can mutate
 // this to simulate broken/missing/rotated credentials.
 const credentialsByConnectionId = new Map<string, unknown>();
+const checkedAddressesByHost = new Map<string, string[]>();
 
 // Every agentId the mock-pinchy saw on a credentials request, in order — the
 // evidence that the plugin identifies itself (#987) on the real wire rather
@@ -118,7 +119,18 @@ beforeAll(async () => {
       return;
     }
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ type: "odoo", credentials }));
+    // Like the real route, answer the addresses the URL's host was checked
+    // against. An address literal is its own answer; a host name gets the
+    // addresses a test registered for it.
+    const host = new URL(String((credentials as { url?: unknown }).url ?? "http://x")).hostname;
+    const checked = isIP(host) ? [host] : checkedAddressesByHost.get(host);
+    res.end(
+      JSON.stringify({
+        type: "odoo",
+        credentials,
+        checkedAddresses: checked ? { url: checked } : {},
+      })
+    );
   });
   await new Promise<void>((resolve) => mockPinchy.listen(0, "127.0.0.1", resolve));
   mockPinchyPort = (mockPinchy.address() as AddressInfo).port;
@@ -196,6 +208,31 @@ describe("pinchy-odoo against real mock-odoo + mock-pinchy (#209 layer 2)", () =
     expect(data.name).toBe("Sales Order");
     expect(data._meta.returned).toBeGreaterThan(0);
     expect(Object.keys(data.fields)).toContain("name");
+  });
+
+  it("connects to the address Pinchy checked for a host name, not to what the name resolves to", async () => {
+    // `.test` never resolves: the call only reaches mock-odoo if the plugin
+    // hands the checked address to the client it builds.
+    const connectionId = "conn-pinned-host";
+    checkedAddressesByHost.set("odoo.pin.test", ["127.0.0.1"]);
+    credentialsByConnectionId.set(connectionId, {
+      url: `http://odoo.pin.test:${mockOdoo.jsonRpcPort}`,
+      db: "testdb",
+      uid: 2,
+      apiKey: "test-api-key",
+    });
+    try {
+      const tools = createApi({ [agentId]: { ...agentConfig, connectionId } });
+      const result = await findTool(tools, "odoo_describe_model", agentId).execute("call-1", {
+        model: "sale.order",
+      });
+
+      expect(result.isError).toBeFalsy();
+      expect(JSON.parse(result.content[0].text).name).toBe("Sales Order");
+    } finally {
+      credentialsByConnectionId.delete(connectionId);
+      checkedAddressesByHost.delete("odoo.pin.test");
+    }
   });
 
   it("identifies its agent to the credentials endpoint (#987)", async () => {
@@ -367,6 +404,192 @@ describe("pinchy-odoo against real mock-odoo + mock-pinchy (#209 layer 2)", () =
     // route is caught here too (same string the endpoint + pinchy-web tests use).
     expect(result.content[0].text).toMatch(/no longer connected/i);
   });
+});
+
+describe("pinchy-odoo against a server that does not answer JSON-RPC", () => {
+  // The real odoo-node, the real transport, an answer that is not JSON-RPC:
+  // what an Odoo URL that points at the wrong host gets back. The body must not
+  // reach the model — it is whatever that host chose to say.
+  let answer: { status: number; contentType: string; body: string };
+  let notJsonRpc: Server;
+  const connectionId = "conn-not-json-rpc";
+
+  beforeAll(async () => {
+    notJsonRpc = createServer((_req, res) => {
+      res.writeHead(answer.status, { "Content-Type": answer.contentType });
+      res.end(answer.body);
+    });
+    await new Promise<void>((resolve) => notJsonRpc.listen(0, "127.0.0.1", resolve));
+    credentialsByConnectionId.set(connectionId, {
+      url: `http://127.0.0.1:${(notJsonRpc.address() as AddressInfo).port}`,
+      db: "testdb",
+      uid: 2,
+      apiKey: "test-api-key",
+    });
+  });
+
+  afterAll(async () => {
+    credentialsByConnectionId.delete(connectionId);
+    await new Promise<void>((resolve, reject) =>
+      notJsonRpc.close((err) => (err ? reject(err) : resolve()))
+    );
+  });
+
+  it.each([
+    // What AWS's metadata service answers for /latest/meta-data/iam/security-credentials/.
+    ["a plain-text body", { status: 200, contentType: "text/plain", body: "my-ec2-role-name\n" }],
+    // JSON, but not a JSON-RPC envelope.
+    [
+      "a JSON body that is not JSON-RPC",
+      { status: 200, contentType: "application/json", body: '{"my-ec2-role-name":1}' },
+    ],
+    // A JSON-RPC envelope whose error carries no message: nothing Odoo said.
+    [
+      "a JSON-RPC error without a message",
+      {
+        status: 200,
+        contentType: "application/json",
+        body: '{"jsonrpc":"2.0","id":1,"error":{"my-ec2-role-name":1}}',
+      },
+    ],
+  ])("reports %s as not JSON-RPC without quoting it to the model", async (_label, served) => {
+    answer = served;
+    const tools = createApi({ [agentId]: { ...agentConfig, connectionId } });
+    const result = await findTool(tools, "odoo_read", agentId).execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).not.toContain("my-ec2-role-name");
+    expect(text).toContain("not a JSON-RPC response");
+    expect(text).toContain("Settings → Integrations");
+    expect(JSON.stringify(result.details)).not.toContain("my-ec2-role-name");
+  });
+
+  // Odoo's data.message is str(exception): empty for a bare `assert` or an
+  // exception raised without arguments. The envelope's own message stands in.
+  it("reports an Odoo error with an empty message by the envelope's message", async () => {
+    answer = {
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        error: {
+          code: 200,
+          message: "Odoo Server Error",
+          data: { name: "builtins.AssertionError", message: "" },
+        },
+      }),
+    };
+    const tools = createApi({ [agentId]: { ...agentConfig, connectionId } });
+    const result = await findTool(tools, "odoo_read", agentId).execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain("Odoo Server Error");
+    expect(text).not.toContain("Unknown error");
+  });
+
+  // The boundary is the envelope's message, not its `data`: a JSON-RPC error
+  // that names itself is quoted, only the rest of the body is withheld.
+  it("quotes the message of a JSON-RPC error that carries no data", async () => {
+    answer = {
+      status: 200,
+      contentType: "application/json",
+      body: '{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found","my-ec2-role-name":1}}',
+    };
+    const tools = createApi({ [agentId]: { ...agentConfig, connectionId } });
+    const result = await findTool(tools, "odoo_read", agentId).execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain("Method not found");
+    expect(text).not.toContain("not a JSON-RPC response");
+    expect(text).not.toContain("my-ec2-role-name");
+  });
+});
+
+describe("pinchy-odoo against an Odoo URL that redirects", () => {
+  // Pinchy validates the Odoo URL before saving it; a redirect would hand the
+  // request to an address nobody validated, and a 307/308 re-sends the POST
+  // body — the API key — along with it. The target stands in for loopback,
+  // link-local or a metadata service and records everything that reaches it.
+  const connectionId = "conn-redirecting";
+  const API_KEY = "redirect-test-api-key";
+  const SECRET = "SECRET-METADATA-TOKEN";
+  let status = 307;
+  const targetRequests: string[] = [];
+  let target: Server;
+  let redirecting: Server;
+
+  beforeAll(async () => {
+    target = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        targetRequests.push(`${req.method} ${req.url} ${body}`);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ jsonrpc: "2.0", id: 1, result: [] }));
+      });
+    });
+    await new Promise<void>((resolve) => target.listen(0, "127.0.0.1", resolve));
+    const targetOrigin = `http://127.0.0.1:${(target.address() as AddressInfo).port}`;
+    redirecting = createServer((_req, res) => {
+      res.writeHead(status, {
+        Location: `${targetOrigin}/latest/meta-data/`,
+        "Content-Type": "text/html",
+      });
+      res.end(`<html>${SECRET}</html>`);
+    });
+    await new Promise<void>((resolve) => redirecting.listen(0, "127.0.0.1", resolve));
+    credentialsByConnectionId.set(connectionId, {
+      url: `http://127.0.0.1:${(redirecting.address() as AddressInfo).port}`,
+      db: "testdb",
+      uid: 2,
+      apiKey: API_KEY,
+    });
+  });
+
+  afterAll(async () => {
+    credentialsByConnectionId.delete(connectionId);
+    for (const server of [redirecting, target]) {
+      await new Promise<void>((resolve, reject) =>
+        server.close((err) => (err ? reject(err) : resolve()))
+      );
+    }
+  });
+
+  it.each([302, 307, 308])(
+    "refuses a %i without a request to the target and tells the model why",
+    async (redirectStatus) => {
+      status = redirectStatus;
+      targetRequests.length = 0;
+      const tools = createApi({ [agentId]: { ...agentConfig, connectionId } });
+      const result = await findTool(tools, "odoo_read", agentId).execute("call-1", {
+        model: "sale.order",
+        filters: [],
+      });
+
+      expect(targetRequests).toEqual([]);
+      expect(result.isError).toBe(true);
+      const text = result.content[0].text;
+      expect(text).toMatch(/redirect/i);
+      expect(text).toContain(`HTTP ${redirectStatus}`);
+      expect(text).toContain("Settings → Integrations");
+      const everything = JSON.stringify(result);
+      expect(everything).not.toContain(SECRET);
+      expect(everything).not.toContain(API_KEY);
+    }
+  );
 });
 
 describe("pinchy-odoo mail.activity scheduling against real mock-odoo", () => {

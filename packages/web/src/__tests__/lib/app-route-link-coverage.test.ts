@@ -12,7 +12,7 @@
 // twice green.
 //
 // This is the same rule as § "Embeddable Serving Routes Need A next.config
-// Entry" in AGENTS.md, one layer up: assert what a concrete URL resolves to,
+// Entry" in agent-rules/web-routes.md, one layer up: assert what a concrete URL resolves to,
 // not what a component asked for.
 //
 // Known limitations, so nobody reads a green run as more than it is:

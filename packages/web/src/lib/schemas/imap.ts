@@ -2,10 +2,16 @@ import { z } from "zod";
 import type { LegResult, SmtpPortProbe } from "@/lib/integrations/imap-probe";
 import { senderNameSchema } from "@/lib/schemas/sender-name";
 
+/** A mail server host name: a DNS name is at most 253 characters. */
+export const mailHostSchema = z
+  .string()
+  .min(1)
+  .max(253, "The host name is too long — 253 characters at most.");
+
 export const imapTestSchema = z.object({
-  imapHost: z.string().min(1),
+  imapHost: mailHostSchema,
   imapPort: z.coerce.number().int().min(1).max(65535),
-  smtpHost: z.string().min(1),
+  smtpHost: mailHostSchema,
   smtpPort: z.coerce.number().int().min(1).max(65535),
   username: z.string().min(1),
   password: z.string().min(1),
@@ -27,7 +33,7 @@ export type ImapCreateInput = z.infer<typeof imapCreateSchema>;
 
 // Structured response of POST /api/integrations/imap/test, shared by the
 // route handler and the ImapConnectStep UI (typed client convention — see
-// AGENTS.md "Shared Schemas And Typed Client"). Consumed directly, not
+// agent-rules/web-routes.md "Shared Schemas And Typed Client"). Consumed directly, not
 // zod-validated on the client: this is a server-authored diagnostic, not
 // user input.
 export type ImapTestSuggestion =

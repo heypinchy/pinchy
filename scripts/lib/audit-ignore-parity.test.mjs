@@ -637,7 +637,7 @@ test("scannedLockfiles reads only what the vuln-scan job hands osv-scanner", () 
 });
 
 test("every acceptance in the repo names each route that pulls its package in", () => {
-  // AGENTS.md § "Two Scanners, One Acceptance": an acceptance that does not
+  // agent-rules/dependencies.md § "Two Scanners, One Acceptance": an acceptance that does not
   // name a path it accepts is not an acceptance of that path. The reason is
   // what osv-scanner prints; the comment above it is printed nowhere. The
   // routes are read from the lockfiles osv-scanner actually scans, so a new

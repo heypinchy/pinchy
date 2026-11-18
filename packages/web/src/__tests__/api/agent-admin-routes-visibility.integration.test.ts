@@ -1,5 +1,5 @@
 // Real-DB integration test for the four ADMIN-ONLY route families under
-// /api/agents/[agentId]/ — knowledge/reindex, knowledge/unsearchable,
+// /api/agents/[agentId]/ — knowledge/reindex, knowledge/unsearchable, knowledge/unsupported,
 // integrations, and connecting a Telegram bot.
 //
 // The verdict these pin: an admin may NOT reach into another user's personal
@@ -79,8 +79,18 @@ vi.mock("@/lib/knowledge/index-jobs", () => ({
 }));
 
 const mockListUnsearchableDocuments = vi.fn();
+const mockSummarizeUnsearchableDocuments = vi.fn();
+const mockUnsearchableDocumentPages = vi.fn();
 vi.mock("@/lib/knowledge/unsearchable", () => ({
   listUnsearchableDocuments: (...args: unknown[]) => mockListUnsearchableDocuments(...args),
+  summarizeUnsearchableDocuments: (...args: unknown[]) =>
+    mockSummarizeUnsearchableDocuments(...args),
+  unsearchableDocumentPages: (...args: unknown[]) => mockUnsearchableDocumentPages(...args),
+}));
+
+const mockListUnsupportedFiles = vi.fn();
+vi.mock("@/lib/knowledge/unsupported-files", () => ({
+  listUnsupportedFiles: (...args: unknown[]) => mockListUnsupportedFiles(...args),
 }));
 
 vi.mock("@/lib/knowledge/kb-embedder", () => ({
@@ -114,6 +124,8 @@ import {
   GET as REINDEX_GET,
 } from "@/app/api/agents/[agentId]/knowledge/reindex/route";
 import { GET as UNSEARCHABLE_GET } from "@/app/api/agents/[agentId]/knowledge/unsearchable/route";
+import { GET as UNSEARCHABLE_CSV_GET } from "@/app/api/agents/[agentId]/knowledge/unsearchable/csv/route";
+import { GET as UNSUPPORTED_GET } from "@/app/api/agents/[agentId]/knowledge/unsupported/route";
 import {
   GET as INTEGRATIONS_GET,
   PUT as INTEGRATIONS_PUT,
@@ -248,7 +260,48 @@ describe("admin-only agent management routes vs another user's personal agent (r
       UNSEARCHABLE_GET(makeRequest(id), makeParams(id))
     );
 
+    expect(mockSummarizeUnsearchableDocuments).not.toHaveBeenCalled();
     expect(mockListUnsearchableDocuments).not.toHaveBeenCalled();
+  });
+
+  // One folder's documents, asked for by name: the group a request picks must
+  // not be a way around the gate the summary sits behind.
+  it("GET knowledge/unsearchable for one folder answers alike and lists no document", async () => {
+    const foreign = await seedForeignPersonalAgent();
+
+    await expectIndistinguishable(foreign.id, (id) =>
+      UNSEARCHABLE_GET(
+        new NextRequest(
+          `http://localhost/api/agents/${id}/knowledge/unsearchable?root=%2Fdata%2Fhr`
+        ),
+        makeParams(id)
+      )
+    );
+
+    expect(mockListUnsearchableDocuments).not.toHaveBeenCalled();
+  });
+
+  // The download names every unsearchable document on the share at once.
+  it("GET knowledge/unsearchable/csv answers alike and never pages the index", async () => {
+    const foreign = await seedForeignPersonalAgent();
+
+    await expectIndistinguishable(foreign.id, (id) =>
+      UNSEARCHABLE_CSV_GET(makeRequest(id), makeParams(id))
+    );
+
+    expect(mockUnsearchableDocumentPages).not.toHaveBeenCalled();
+  });
+
+  // The CSV of files the index can't read names files on another user's share
+  // just as surely as the unsearchable list names documents.
+  it("GET knowledge/unsupported answers alike and never lists a file", async () => {
+    const foreign = await seedForeignPersonalAgent();
+
+    await expectIndistinguishable(foreign.id, (id) =>
+      UNSUPPORTED_GET(makeRequest(id), makeParams(id))
+    );
+
+    expect(mockListUnsupportedFiles).not.toHaveBeenCalled();
   });
 
   it("GET integrations answers alike", async () => {

@@ -3,7 +3,7 @@ import { BUDGET_ACTIONS } from "@/db/enums";
 
 /**
  * `PUT /api/budgets` — create or replace the instance budget (`agentId: null`)
- * or one agent's. Shared with the Budgets card (AGENTS.md § "Shared Schemas
+ * or one agent's. Shared with the Budgets card (agent-rules/web-routes.md § "Shared Schemas
  * And Typed Client"). The limit is USD per calendar month; the route stores it
  * rounded to cents.
  */

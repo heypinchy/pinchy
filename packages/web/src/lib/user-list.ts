@@ -14,6 +14,8 @@ export type UserListItem =
       role: UserRole;
       status: "active" | "deactivated";
       groups: UserGroup[];
+      /** Neither the setup wizard nor a claimed invite created this account. */
+      unknownOrigin: boolean;
     }
   | {
       kind: "invite";
@@ -29,16 +31,17 @@ export type UserListItem =
 // consts (db/enums.ts), and schema-hardening.integration.test.ts reads that
 // constraint back from Postgres — so narrowing the response type here is a
 // guarantee the server actually holds, not an assumption.
-interface ApiUser {
+export interface ApiUser {
   id: string;
   name: string;
   email: string;
   role: UserRole;
   banned: boolean;
   groups?: UserGroup[];
+  unknownOrigin?: boolean;
 }
 
-interface ApiInvite {
+export interface ApiInvite {
   id: string;
   email: string | null;
   role: InviteRole;
@@ -69,6 +72,7 @@ export function mergeUserList(
     role: u.role,
     status: u.banned ? "deactivated" : "active",
     groups: u.groups || [],
+    unknownOrigin: u.unknownOrigin ?? false,
   }));
 
   const inviteItems: UserListItem[] = invites

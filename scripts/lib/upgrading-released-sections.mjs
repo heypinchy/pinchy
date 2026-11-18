@@ -17,7 +17,7 @@
  * is the tripwire for what slips past it: for every section whose `to` is a
  * real tag, the body must still equal the body at that tag.
  *
- * See AGENTS.md § "A Released Upgrade Section Is Immutable".
+ * See agent-rules/release.md § "A Released Upgrade Section Is Immutable".
  */
 
 import { createHash } from "node:crypto";
@@ -451,7 +451,7 @@ export function formatProblems(problems) {
     `    PR CI and is then rejected by the merge queue. Use the trailer for anything\n` +
     `    that has to merge.\n` +
     `A [stale-allowlist] problem is never authorized this way — delete the entry.\n` +
-    `See AGENTS.md § "A Released Upgrade Section Is Immutable".`
+    `See agent-rules/release.md § "A Released Upgrade Section Is Immutable".`
   );
 }
 

@@ -1,7 +1,8 @@
-import { readFileSync, existsSync } from "fs";
-
-const PAIRING_FILE_PATH =
-  process.env.OPENCLAW_PAIRING_PATH || "/openclaw-config/credentials/telegram-pairing.json";
+import {
+  callPairingStore,
+  OpenClawNotConnectedError,
+  PAIRING_FIND_BY_CODE_METHOD,
+} from "@/lib/openclaw-pairing-store";
 
 /**
  * How long a pairing code stays redeemable — measured from the peer's last
@@ -34,19 +35,18 @@ interface PairingRequest {
   createdAt: string;
   /**
    * Bumped by OpenClaw on every message from that peer while the request is
-   * pending. Optional here because a file written by an older OpenClaw may
-   * predate the field — `createdAt` is the documented fallback (openclaw's
-   * own `resolveLastSeenAt` does the same).
+   * pending. A request written by an older OpenClaw may predate it, and the
+   * store keeps such rows as they were imported: `createdAt` is the
+   * documented fallback (openclaw's own `resolveLastSeenAt` does the same).
    */
   lastSeenAt?: string;
 }
 
-interface PairingFile {
-  version: number;
-  requests: PairingRequest[];
-}
-
-type PairingResult = { found: true; telegramUserId: string } | { found: false };
+/**
+ * `unavailable` means the lookup itself failed, so nothing is known about the
+ * code: the caller must not tell the user their code was wrong.
+ */
+type PairingResult = { found: true; telegramUserId: string } | { found: false; unavailable?: true };
 
 function parseTimestamp(value: string | undefined): number | null {
   if (!value) return null;
@@ -63,45 +63,39 @@ function resolveLastContactMs(request: PairingRequest): number | null {
 }
 
 /**
- * Resolve a pairing code to a Telegram user ID by reading OpenClaw's
- * pairing request file directly from the shared volume.
+ * Resolve a pairing code to a Telegram user ID by asking OpenClaw's pairing
+ * store (through the pinchy-audit plugin) for the pending request.
  *
  * `now` defaults to `Date.now()` and exists so tests can drive expiry
  * deterministically without mocking the system clock.
  */
-export function resolvePairingCode(code: string, now: number = Date.now()): PairingResult {
-  if (!existsSync(PAIRING_FILE_PATH)) {
-    return { found: false };
-  }
-
+export async function resolvePairingCode(
+  code: string,
+  now: number = Date.now()
+): Promise<PairingResult> {
+  let match: PairingRequest | null;
   try {
-    const data: PairingFile = JSON.parse(readFileSync(PAIRING_FILE_PATH, "utf-8"));
-    const normalizedCode = code.trim().toUpperCase();
-
-    const match = data.requests.find((r) => String(r.code ?? "").toUpperCase() === normalizedCode);
-
-    if (!match) return { found: false };
-
-    // Fail closed on an entry with no readable timestamp at all: expiry is a
-    // security control, so an entry we can't date is treated as already
-    // expired rather than as unexpiring.
-    const lastContactMs = resolveLastContactMs(match);
-    if (lastContactMs === null || now - lastContactMs >= PAIRING_CODE_MAX_AGE_MS) {
-      return { found: false };
-    }
-
-    return { found: true, telegramUserId: match.id };
+    const answer = await callPairingStore(PAIRING_FIND_BY_CODE_METHOD, { code: code.trim() });
+    match = (answer.request as PairingRequest | null | undefined) ?? null;
   } catch (err) {
-    // Log non-ENOENT errors loudly. The default bare-catch swallowed EACCES
-    // on v0.5.0 staging (file written root:0600 by OpenClaw, Pinchy uid 999
-    // can't read it) which surfaced as a misleading "Invalid pairing code"
-    // to the user — the file existed but was unreadable, not missing. ENOENT
-    // is filtered out because cold start (file not yet written) is normal.
-    const code = (err as NodeJS.ErrnoException)?.code;
-    if (code !== "ENOENT") {
+    // Log loudly: a bare catch once turned an unreadable pairing file into a
+    // misleading "Invalid pairing code" on staging (v0.5.0). A disconnected
+    // gateway is ordinary during a restart and needs no warning.
+    if (!(err instanceof OpenClawNotConnectedError)) {
       const message = err instanceof Error ? err.message : String(err);
-      console.warn("[telegram-pairing] failed to read pairing file:", message);
+      console.warn("[telegram-pairing] failed to look up pairing code:", message);
     }
+    return { found: false, unavailable: true };
+  }
+  if (!match) return { found: false };
+
+  // Fail closed on an entry with no readable timestamp at all: expiry is a
+  // security control, so an entry we can't date is treated as already
+  // expired rather than as unexpiring.
+  const lastContactMs = resolveLastContactMs(match);
+  if (lastContactMs === null || now - lastContactMs >= PAIRING_CODE_MAX_AGE_MS) {
     return { found: false };
   }
+
+  return { found: true, telegramUserId: match.id };
 }

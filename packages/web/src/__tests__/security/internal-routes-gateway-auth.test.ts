@@ -27,7 +27,7 @@
 // forgets to authenticate, not a proof that authentication is reached on every
 // code path; review owns the deliberate case.
 //
-// See AGENTS.md § "A Hand-Maintained List That Mirrors Code Will Be Wrong".
+// See agent-rules/docs.md § "A Hand-Maintained List That Mirrors Code Will Be Wrong".
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";

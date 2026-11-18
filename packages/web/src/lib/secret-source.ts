@@ -8,7 +8,7 @@
 
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
-import { getSecretSource, type SecretSource } from "@/lib/encryption";
+import { getSecretSource, type SecretSource, type EnvSecretPersistOutcome } from "@/lib/encryption";
 
 export type DbPasswordSource = "custom" | "default" | "generated";
 
@@ -106,6 +106,22 @@ export interface AuditSecretPolicyResult {
 }
 
 /**
+ * Where the startup warning sends an operator whose key file could not be
+ * written: the one procedure for switching the key. Exported so a docs test
+ * can check the heading still exists: the docs anchor check only reads links
+ * in the built site, never a URL in a log line.
+ */
+export const AUDIT_KEY_SWITCH_DOCS_URL =
+  "https://docs.heypinchy.com/concepts/audit-trail-verification/#switching-the-key";
+
+/**
+ * Where the startup notice sends an operator who did not mean to switch keys.
+ * Exported for the same docs test.
+ */
+export const AUDIT_KEY_SWITCH_BACK_DOCS_URL =
+  "https://docs.heypinchy.com/concepts/audit-trail-verification/#switching-back-to-the-earlier-key";
+
+/**
  * Pinning `AUDIT_HMAC_SECRET` over a secret Pinchy generated leaves the audit
  * log signed under two keys. `verifyIntegrity` handles that — rows signed with
  * the superseded key land in `previousKeyIds` instead of `invalidIds` — but
@@ -136,14 +152,190 @@ export function evaluateAuditSecretRotation(opts: {
 }): AuditSecretPolicyResult {
   if (!opts.hasSupersededSecret) return { action: "none" };
 
+  // Switching back is not a free undo. The previous key Pinchy verifies against
+  // is always the key file, so once the file key is active again, the rows
+  // signed with the variable's value verify under no key. Pinning the variable
+  // again later is worse: the file-key rows written in between sit after
+  // new-key rows, which is exactly what a forgery looks like. So the notice
+  // names the cost instead of offering "remove it and restart" as the fix.
   return {
     action: "warn",
     message:
       "NOTICE: AUDIT_HMAC_SECRET is set and differs from the audit signing key " +
-      "in the secrets volume. Entries written before this start are signed with " +
+      "in the secrets volume. Entries written before the switch are signed with " +
       "the older key — integrity verification reports them as signed with an " +
       "earlier secret, not as tampered. Verifying them depends on that key, so " +
       "keep backing up the pinchy-secrets volume. If you did not mean to change " +
-      "the key, remove AUDIT_HMAC_SECRET from your .env and restart.",
+      "the key, keeping the new one is usually the safer choice: switching back " +
+      "leaves the entries signed with it unverifiable, and switching forward " +
+      "again later breaks verification for everything written in between. " +
+      "Switch back only if you then stay on the key in the file for good. See " +
+      AUDIT_KEY_SWITCH_BACK_DOCS_URL,
   };
+}
+
+export interface IgnoredSecretEnvLog {
+  action: "warn" | "none";
+  message?: string;
+}
+
+/**
+ * Where the ignored-key-variable warnings send an operator: the steps that keep
+ * their stored credentials readable, and the case of an `AUDIT_HMAC_SECRET`
+ * that worked and broke later. Exported for the same docs test as the audit
+ * links above.
+ */
+export const KEY_VARIABLE_IGNORED_DOCS_URL =
+  "https://docs.heypinchy.com/reference/environment-variables/#when-pinchy-ignores-a-key-variable";
+
+/**
+ * The startup warning for a key variable Pinchy ignores. {@link getSecretSource}
+ * only accepts 64 hex characters and otherwise falls back to the key file,
+ * which is the right fallback but used to be a silent one: an operator with a
+ * 63-character value or a `0x` prefix saw nothing wrong and believed the
+ * variable was the key.
+ *
+ * The remedy differs per variable, because "fix the value and restart" is a
+ * key switch for both:
+ *
+ *   - `ENCRYPTION_KEY`: while the variable is ignored, everything Pinchy
+ *     encrypts goes under the key file. A corrected value is a different key,
+ *     and every credential stored so far stops decrypting. The only safe moves
+ *     keep the file's key in effect: drop the variable, or set it to the
+ *     file's exact contents. So this warning never suggests a new key. The
+ *     exception is a value that worked and broke later: the credentials saved
+ *     before that are encrypted with the original value, so setting it back
+ *     keeps most of them.
+ *   - `AUDIT_HMAC_SECRET`: a corrected value switches the signing key, which is
+ *     supported but has a procedure (current key in the file first, several
+ *     instances stop together). Until then the file is the signing key, and the
+ *     retire-the-earlier-key steps remove that file. The exception is a value
+ *     that worked and broke later: breaking it already switched Pinchy back to
+ *     the key file, and only the original value brings back what it signed.
+ *
+ * Quotes are deliberately not named as a cause: Compose strips surrounding
+ * quotes, a trailing CR and trailing spaces from a `.env` value before Pinchy
+ * sees it.
+ *
+ * Takes a boolean, never the value, for the reason
+ * {@link evaluateAuditSecretRotation} does. The message says only "not 64 hex
+ * characters", never the length or any part of what was set.
+ */
+export function describeIgnoredSecretEnv(opts: {
+  envVar: "ENCRYPTION_KEY" | "AUDIT_HMAC_SECRET";
+  ignored: boolean;
+}): IgnoredSecretEnvLog {
+  if (!opts.ignored) return { action: "none" };
+
+  const ignored =
+    `WARNING: ${opts.envVar} is set but is not a valid key, so Pinchy ignores it ` +
+    "and uses the key file in the secrets volume instead (creating one there if " +
+    "there is none). A valid key is 64 hex characters (0-9, a-f), with no 0x " +
+    "prefix or spaces.";
+
+  if (opts.envVar === "ENCRYPTION_KEY") {
+    return {
+      action: "warn",
+      message:
+        `${ignored} That file, .encryption_key, is the key Pinchy encrypts your ` +
+        "stored credentials with now. The safe fixes are removing ENCRYPTION_KEY from " +
+        "your .env, or setting it to the key file's exact contents, then running " +
+        "docker compose up -d. Any other value, even a valid one, makes everything " +
+        "encrypted with the key file unreadable, and those credentials can only be " +
+        "re-entered. If the variable held a working key before and only broke later, " +
+        "set it back to that exact value instead: the credentials saved before it " +
+        "broke are encrypted with it, and only the ones saved while it was broken " +
+        "then need re-entering. See " +
+        KEY_VARIABLE_IGNORED_DOCS_URL,
+    };
+  }
+
+  return {
+    action: "warn",
+    message:
+      `${ignored} Until it is, the key file is the audit signing key, so don't ` +
+      "remove .audit_hmac_secret from the volume. If the variable held a working " +
+      "key before and only broke later, set it back to that exact value, not a new " +
+      "one: Pinchy switched back to the key file when it broke, see " +
+      `${KEY_VARIABLE_IGNORED_DOCS_URL}. Otherwise, setting a valid value, such as ` +
+      "the output of openssl rand -hex 32, switches the signing key: follow " +
+      `${AUDIT_KEY_SWITCH_DOCS_URL} (on several instances against one database, ` +
+      "stop them all first).",
+  };
+}
+
+export interface AuditKeyFilePersistLog {
+  action: "info" | "warn" | "none";
+  message?: string;
+}
+
+/**
+ * The startup log line for {@link persistEnvSecretToKeyFile} on the audit
+ * secret. One line when it wrote the file, so the file appearing in the volume
+ * is never a mystery; a warning when it could not, because the write is what
+ * lets a later switch of the variable keep the old key, and an operator who
+ * does not know it failed would switch and lose verification of everything
+ * signed so far. The same warning, with the remedy, when an existing key file
+ * is not a valid key: Pinchy never overwrites it, so the value is not saved
+ * either. A different warning when the file cannot be read at all, because
+ * the fix is its owner, not moving it aside. Silent otherwise. Never the key,
+ * never the file's content.
+ */
+export function describeAuditKeyFilePersist(
+  outcome: EnvSecretPersistOutcome
+): AuditKeyFilePersistLog {
+  switch (outcome.status) {
+    case "written":
+      return {
+        action: "info",
+        message:
+          `Wrote the AUDIT_HMAC_SECRET value to .audit_hmac_secret in ${outcome.dir}. ` +
+          "Keep that directory on a persistent volume, so a later change of the " +
+          "variable keeps this key for verifying the entries signed with it.",
+      };
+    case "failed":
+      return {
+        action: "warn",
+        message:
+          "WARNING: Could not write the AUDIT_HMAC_SECRET value to " +
+          `.audit_hmac_secret (${outcome.reason}). Startup continues and audit ` +
+          "entries are signed as usual, but if you switch AUDIT_HMAC_SECRET to a " +
+          "new value before this works, the entries signed with the current value " +
+          "can't be verified any more. See " +
+          AUDIT_KEY_SWITCH_DOCS_URL,
+      };
+    case "file-invalid":
+      // Never overwritten, so this stays until someone looks at it. Named, not
+      // printed: whatever is in the file might be the remains of a key.
+      return {
+        action: "warn",
+        message:
+          "WARNING: .audit_hmac_secret in the secrets volume is not a valid key " +
+          "(expected 64 hex characters), so the current AUDIT_HMAC_SECRET value is " +
+          "not saved in it. Pinchy leaves the file as it is and signs audit entries " +
+          "as usual, but if you switch AUDIT_HMAC_SECRET to a new value, the entries " +
+          "signed with the current value can't be verified any more. Move it aside " +
+          "and restart Pinchy; it then writes the current value there. See " +
+          AUDIT_KEY_SWITCH_DOCS_URL,
+      };
+    case "file-unreadable":
+      // Not "invalid": a file Pinchy cannot read may be exactly the earlier
+      // key, typically restored from a backup as root. Moving it aside, the
+      // remedy for an invalid file, would throw a good key away.
+      return {
+        action: "warn",
+        message:
+          "WARNING: Could not read .audit_hmac_secret in the secrets volume " +
+          `(${outcome.code}), so the current AUDIT_HMAC_SECRET value is not saved ` +
+          "in it. Pinchy leaves the file as it is and signs audit entries as usual. " +
+          "The file may still hold a key you need, so don't remove it: check the " +
+          "file's owner and permissions (Pinchy runs as uid 999 and has to be able " +
+          "to read it), make sure it is a file and not a directory, and restart " +
+          "Pinchy. Until then, if you switch AUDIT_HMAC_SECRET to a new value, the " +
+          "entries signed with the current value can't be verified any more. See " +
+          AUDIT_KEY_SWITCH_DOCS_URL,
+      };
+    default:
+      return { action: "none" };
+  }
 }

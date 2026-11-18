@@ -14,6 +14,7 @@ import { setOpenClawClient } from "./src/server/openclaw-client";
 import { once } from "./src/lib/once";
 import { getActiveRunsSingleton } from "./src/server/active-runs-singleton";
 import { getSessionPokeBridgeSingleton } from "./src/server/session-poke-bridge-singleton";
+import { getUserSocketRegistry } from "./src/server/user-sockets";
 import { startRunWatchdog, DEFAULT_FIRST_CHUNK_TIMEOUT_MS } from "./src/server/run-watchdog";
 import {
   ChannelHealthMonitor,
@@ -24,14 +25,13 @@ import {
 } from "./src/server/channel-health-watchdog";
 import { setChannelHealthMonitor } from "./src/server/channel-health-singleton";
 import { createConflictRestartHandler } from "./src/server/channel-conflict-restart";
-import { appendAuditLog, safeProviderError } from "./src/lib/audit";
+import { appendAuditLog } from "./src/lib/audit";
 import { recordAuditFailure } from "./src/lib/audit-deferred";
 import { db, closeDb } from "./src/db";
 import { agents, auditLog } from "./src/db/schema";
 import { eq, and, desc } from "drizzle-orm";
-import { getSetting, setSetting } from "./src/lib/settings";
-import { updateTelegramChannelConfig } from "./src/lib/openclaw-config";
-import { clearAllowStoreForAccount } from "./src/lib/telegram-allow-store";
+import { getSetting } from "./src/lib/settings";
+import { autoDisableConflictedTelegramAccount } from "./src/server/telegram-auto-disable";
 import { WsRateLimiter } from "./src/server/ws-rate-limit";
 import { setupOpenClawDisconnectHandler } from "./src/server/openclaw-disconnect-handler";
 import {
@@ -51,11 +51,25 @@ import { buildShutdownSteps } from "./src/server/shutdown-steps";
 import { seedSessionCache } from "./src/server/session-cache-seeder";
 import { readGatewayToken } from "./src/lib/gateway-token-reader";
 import { regenerateOpenClawConfig } from "./src/lib/openclaw-config";
+import { regenerateOnConnect } from "./src/server/openclaw-connect-regenerate";
+import { syncTelegramAllowStoresOnConnect } from "./src/server/telegram-allow-store-on-connect";
+import { openClawClientOptions } from "./src/server/openclaw-client-options";
 import { SERVER_WS_MAX_PAYLOAD_BYTES } from "./src/lib/limits";
-import { evaluateAuditSecretRotation, evaluateDbPasswordPolicy } from "./src/lib/secret-source";
-import { getPreviousSecret } from "./src/lib/encryption";
+import {
+  describeAuditKeyFilePersist,
+  describeIgnoredSecretEnv,
+  evaluateAuditSecretRotation,
+  evaluateDbPasswordPolicy,
+} from "./src/lib/secret-source";
+import {
+  getPreviousSecret,
+  isSecretEnvIgnored,
+  persistEnvSecretToKeyFile,
+} from "./src/lib/encryption";
 import { exitOnStartupFailure } from "./src/server/startup-failure";
 import { getTrustedProxies, stampClientIp, TRUSTED_PROXIES_ENV_VAR } from "./src/server/client-ip";
+import { answerAppHeartbeat, startWsHeartbeat } from "./src/server/ws-heartbeat";
+import { refuseUpgrade } from "./src/server/ws-reject";
 
 logCapture.install();
 
@@ -97,6 +111,32 @@ const dbPasswordPolicy = evaluateDbPasswordPolicy({
 });
 if (dbPasswordPolicy.action === "warn") {
   console.warn(dbPasswordPolicy.message);
+}
+
+// A key variable that is set but not 64 hex characters is ignored in favour of
+// the key file. Say so: the operator set it to be the key, and without this
+// line nothing tells them it isn't. Before the steps below, which only act on
+// a variable that is in effect.
+for (const [envVar, name] of [
+  ["ENCRYPTION_KEY", "encryption_key"],
+  ["AUDIT_HMAC_SECRET", "audit_hmac_secret"],
+] as const) {
+  const ignoredEnvLog = describeIgnoredSecretEnv({ envVar, ignored: isSecretEnvIgnored(name) });
+  if (ignoredEnvLog.action === "warn") {
+    console.warn(ignoredEnvLog.message);
+  }
+}
+
+// The earlier key Pinchy verifies against is always the key file. When
+// AUDIT_HMAC_SECRET is set and no key file exists yet, write the variable's
+// value there, so a later change of the variable keeps this key as the earlier
+// one. Never overwrites, never throws: a failed write is a warning, not a
+// reason to stay down. Runs before the notice below, which reads the same file.
+const auditKeyFileLog = describeAuditKeyFilePersist(persistEnvSecretToKeyFile("audit_hmac_secret"));
+if (auditKeyFileLog.action === "info") {
+  console.log(auditKeyFileLog.message);
+} else if (auditKeyFileLog.action === "warn") {
+  console.warn(auditKeyFileLog.message);
 }
 
 // An operator who pins AUDIT_HMAC_SECRET over the generated key changes what
@@ -172,6 +212,9 @@ const startup = app.prepare().then(async () => {
   // across all ClientRouter instances (one per ws) and the watchdog.
   const activeRuns = getActiveRunsSingleton();
   const pokeBridge = getSessionPokeBridgeSingleton();
+  // Open browser sockets per user, shared with the API routes through
+  // globalThis — deactivating an account closes its open chats (user-sockets.ts).
+  const userSockets = getUserSocketRegistry();
 
   const wss = new WebSocketServer({
     noServer: true,
@@ -191,6 +234,10 @@ const startup = app.prepare().then(async () => {
       }
     },
   });
+
+  // Cuts off sockets whose peer vanished without a close frame, so they stop
+  // holding a per-user connection slot (#1422). Stops itself when `wss` closes.
+  startWsHeartbeat(wss);
 
   function broadcastToClients(message: Record<string, unknown>) {
     const payload = JSON.stringify(message);
@@ -225,8 +272,7 @@ const startup = app.prepare().then(async () => {
       // (#825).
       const ip = client.address ?? "unknown";
       if (!wsRateLimiter.allowUpgrade(ip)) {
-        socket.write("HTTP/1.1 429 Too Many Requests\r\n\r\n");
-        socket.destroy();
+        refuseUpgrade(socket);
         return;
       }
 
@@ -277,14 +323,17 @@ const startup = app.prepare().then(async () => {
       // Limit concurrent connections per user
       const { userId, userRole } = sessionInfo;
       if (!wsRateLimiter.allowConnection(userId)) {
-        socket.write("HTTP/1.1 429 Too Many Requests\r\n\r\n");
-        socket.destroy();
+        refuseUpgrade(socket);
         return;
       }
 
       wss.handleUpgrade(request, socket, head, (ws) => {
         wsRateLimiter.trackConnection(userId);
         sessionMap.set(ws, { userId, userRole });
+        // So DELETE /api/users/:id can close this chat when it deactivates the
+        // account: the session check above runs once, at the upgrade. A user
+        // deactivated in the moment since gets the socket closed right here.
+        userSockets.register(userId, ws);
         wss.emit("connection", ws, request);
       });
     }
@@ -315,6 +364,9 @@ const startup = app.prepare().then(async () => {
     clientWs.on("message", (data) => {
       try {
         const parsed = JSON.parse(data.toString());
+        // Before the router check: the client's liveness probe must be
+        // answered even while OpenClaw is not configured.
+        if (answerAppHeartbeat(clientWs, parsed)) return;
         if (!router) {
           clientWs.send(JSON.stringify({ type: "error", message: "OpenClaw not configured" }));
           return;
@@ -509,17 +561,13 @@ const startup = app.prepare().then(async () => {
         "[pinchy] Gateway token not available — setup wizard required before OpenClaw connects"
       );
     }
-    openclawClient = new OpenClawClient({
-      url: OPENCLAW_WS_URL,
-      token: gatewayToken ?? "",
-      clientId: "gateway-client",
-      clientVersion: "0.1.0",
-      scopes: ["operator.admin"],
-      deviceIdentityPath: process.env.DEVICE_IDENTITY_PATH || "/app/secrets/device-identity.json",
-      autoReconnect: true,
-      reconnectIntervalMs: 1000,
-      maxReconnectAttempts: Infinity,
-    });
+    openclawClient = new OpenClawClient(
+      openClawClientOptions({
+        url: OPENCLAW_WS_URL,
+        token: gatewayToken ?? "",
+        deviceIdentityPath: process.env.DEVICE_IDENTITY_PATH || "/app/secrets/device-identity.json",
+      })
+    );
 
     setOpenClawClient(openclawClient);
     // #7: one shared disconnect signal for every ClientRouter (one listener on
@@ -550,8 +598,7 @@ const startup = app.prepare().then(async () => {
       },
       broadcastNoFirstChunk: (run) => {
         // B-1: a run the backend accepted but never streamed within the
-        // first-chunk timeout. Send a RETRYABLE error frame (no `runTimedOut`
-        // flag — that's the terminal 15-min path). The client auto-classifies
+        // first-chunk timeout. Send a RETRYABLE error frame. The client auto-classifies
         // a `providerError` frame with no prior chunk as `send_failure`, so the
         // user gets an inline "retry" affordance instead of an endless spinner.
         const payload = JSON.stringify({
@@ -678,48 +725,9 @@ const startup = app.prepare().then(async () => {
             return null;
           }
         },
-        // #477 layer 2: disable the account so it survives a restart (build.ts
-        // skips it on regen), stop the poller promptly via the same
-        // config.apply/reload path connect/disconnect already use, and clear
-        // its allow-store. Non-request context — try/catch + recordAuditFailure
-        // per AGENTS.md, not a bare .catch(console.error).
-        autoDisableConflictedAccount: async (channel, accountId, lastError) => {
-          // Defensive: skip if already disabled (e.g. a race with a manual
-          // disconnect, or the monitor somehow re-entering for the same episode).
-          const already = await getSetting(`telegram_conflict_disabled:${accountId}`);
-          if (already) return;
-
-          await setSetting(
-            `telegram_conflict_disabled:${accountId}`,
-            JSON.stringify({
-              reason: "polling_conflict",
-              lastError: safeProviderError(lastError),
-              disabledAt: new Date().toISOString(),
-            })
-          );
-          updateTelegramChannelConfig(accountId, null);
-          clearAllowStoreForAccount(accountId);
-
-          const name = await resolveAccountName(channel, accountId);
-          const entry = {
-            actorType: "system" as const,
-            actorId: "channel-watchdog",
-            eventType: "channel.auto_disabled" as const,
-            resource: `agent:${accountId}`,
-            outcome: "success" as const,
-            detail: {
-              channel,
-              account: { id: accountId, name },
-              reason: "polling_conflict",
-              lastError: safeProviderError(lastError),
-            },
-          };
-          try {
-            await appendAuditLog(entry);
-          } catch (err) {
-            recordAuditFailure(err, entry);
-          }
-        },
+        // #477 layer 2: see autoDisableConflictedTelegramAccount.
+        autoDisableConflictedAccount: (channel, accountId, lastError) =>
+          autoDisableConflictedTelegramAccount(channel, accountId, lastError, resolveAccountName),
       },
       Number(process.env.CHANNEL_HEALTH_INTERVAL_MS) || CHANNEL_HEALTH_INTERVAL_MS
     );
@@ -792,19 +800,15 @@ const startup = app.prepare().then(async () => {
         } catch {
           // Non-critical — approval loop has a safety timeout
         }
-
-        // Push full config via config.apply on the FIRST connection only. This
-        // seeds OC's currentCompareConfig with the complete Pinchy payload so
-        // subsequent config.apply calls show only field-level diffs — not a
-        // massive diff against the baked-in startup config that triggers
-        // gateway/discovery/update/canvasHost restart rules (openclaw#75534,
-        // PR #279). Scoped to firstConnect to prevent a cascade: if this push
-        // triggers an OC restart (large diff on fresh install), the reconnect
-        // (firstConnect=false) won't fire again, terminating the loop.
-        regenerateOpenClawConfig().catch((err) => {
-          console.warn("[server] on-connected regenerateOpenClawConfig failed:", err);
-        });
       }
+
+      // Full config push via config.apply — see regenerateOnConnect for when
+      // a connect owes one.
+      regenerateOnConnect({ firstConnect }, regenerateOpenClawConfig);
+
+      // Telegram allow lists live in OpenClaw's store; writes skipped while it
+      // was away land now (see syncTelegramAllowStoresOnConnect).
+      void syncTelegramAllowStoresOnConnect();
 
       // Start global usage poller. Idempotent — a reconnect won't spawn a
       // second poller. The poller handles sessions.list() failures gracefully.

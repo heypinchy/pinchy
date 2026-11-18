@@ -32,7 +32,7 @@ import { GET } from "@/app/api/agents/route";
 describe("GET /api/agents", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("sets a short private Cache-Control header to absorb navigation (#261)", async () => {
+  it("is never served from the browser cache, so the next user on a shared browser never sees this one's list (#1286)", async () => {
     mockGetSession.mockResolvedValueOnce({
       user: { id: "user-1", role: "admin" },
       expires: "",
@@ -42,6 +42,10 @@ describe("GET /api/agents", () => {
     const response = await GET(request, routeContext());
 
     expect(response.status).toBe(200);
-    expect(response.headers.get("Cache-Control")).toBe("private, max-age=5, must-revalidate");
+    // The browser keys its cache by URL, not by user: a private max-age handed
+    // the previous user's list to whoever signed in next on the same browser.
+    // The list lives in AgentsProvider's client state, so the cache bought
+    // nothing (#261's navigation case no longer refetches).
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
   });
 });

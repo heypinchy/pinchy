@@ -63,7 +63,9 @@ describe("createAgentReadinessGate", () => {
 
   it("reports ready once the agent is present in the runtime", async () => {
     const client = makeClient({
-      agents: { list: vi.fn().mockResolvedValue({ agents: [{ id: "agent-1" }] }) },
+      agents: {
+        list: vi.fn().mockResolvedValue({ agents: [{ id: "agent-1", name: "Inbox" }] }),
+      },
     });
 
     await expect(createAgentReadinessGate(client)("agent-1")).resolves.toBe(true);
@@ -73,6 +75,25 @@ describe("createAgentReadinessGate", () => {
     // A real miss must stay `false`: the adapter defers, the row stays
     // `processing`, and the next sweep retries it. Nothing is lost.
     const client = makeClient();
+
+    await expect(createAgentReadinessGate(client, { deadlineMs: 0 })("agent-1")).resolves.toBe(
+      false
+    );
+  });
+
+  it("reports NOT ready for an agent OpenClaw only found on disk", async () => {
+    // While OC's runtime agents.list is empty, `agents.list` lists every agent
+    // directory under its state dir — without a name — and the dispatch handler
+    // still rejects those ids. Reading them as ready would dispatch the already
+    // claimed email into the race and fail the run on `unknown agent id`.
+    const client = makeClient({
+      agents: {
+        list: vi.fn().mockResolvedValue({
+          defaultId: "main",
+          agents: [{ id: "main" }, { id: "agent-1" }],
+        }),
+      },
+    });
 
     await expect(createAgentReadinessGate(client, { deadlineMs: 0 })("agent-1")).resolves.toBe(
       false

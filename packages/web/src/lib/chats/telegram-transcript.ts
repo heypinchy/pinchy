@@ -12,6 +12,7 @@ export type RawHistoryMessage = {
   role: string;
   content?: unknown;
   timestamp?: number;
+  stopReason?: string;
 };
 
 /**
@@ -58,7 +59,7 @@ function extractText(content: unknown): string {
 export function mapTelegramTranscript(
   rawMessages: RawHistoryMessage[]
 ): TelegramTranscriptMessage[] {
-  return rawMessages
+  return collapseRetriedTurns(rawMessages)
     .filter((msg) => msg.role === "user" || msg.role === "assistant")
     .map((msg) => {
       let text = extractText(msg.content);
@@ -80,4 +81,46 @@ export function mapTelegramTranscript(
     })
     .filter((msg) => msg.text.length > 0)
     .filter((msg) => !(msg.role === "user" && msg.text.startsWith(QUEUED_RETRY_PREFIX)));
+}
+
+/**
+ * When a run fails without output, OpenClaw resubmits it (`[empty-error-retry]`,
+ * up to three times) and RE-RECORDS the user turn on every attempt. So one
+ * Telegram message reads back as `user, failure, user, failure, …`. A Telegram
+ * user turn carries the message's `date` (whole seconds) while assistant turns
+ * carry Date.now(), so every repeat also steps back in time behind the failure
+ * before it — the mirror showed the message four times, out of order.
+ *
+ * A user turn is a resubmission when it repeats the previous user turn's text
+ * and timestamp and only failed assistant turns lie between them. It is dropped
+ * along with the failures it superseded: the user sees one message and the
+ * outcome of the last attempt. A real reply in between means the user did send
+ * the same thing twice, and both stay.
+ */
+function collapseRetriedTurns(rawMessages: RawHistoryMessage[]): RawHistoryMessage[] {
+  const kept: RawHistoryMessage[] = [];
+  let previousUser: RawHistoryMessage | undefined;
+  // Everything kept after `previousUser`: the turns a resubmission supersedes.
+  let since: RawHistoryMessage[] = [];
+  for (const msg of rawMessages) {
+    if (msg.role === "user") {
+      if (
+        previousUser &&
+        since.every((m) => m.role === "assistant" && m.stopReason === "error") &&
+        previousUser.timestamp === msg.timestamp &&
+        extractText(previousUser.content) === extractText(msg.content)
+      ) {
+        kept.length -= since.length;
+        since = [];
+        continue;
+      }
+      previousUser = msg;
+      since = [];
+      kept.push(msg);
+      continue;
+    }
+    kept.push(msg);
+    if (previousUser) since.push(msg);
+  }
+  return kept;
 }

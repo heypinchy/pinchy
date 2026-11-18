@@ -6,7 +6,7 @@
 // ignores tools that are not declared in contracts.tools, causing tools to
 // appear registered but never callable.
 //
-// See AGENTS.md § "Tool dispatch coverage" for the developer recipe.
+// See agent-rules/plugins.md § "Tool dispatch coverage" for the developer recipe.
 import { describe, it, expect } from "vitest";
 import {
   KNOWN_PINCHY_PLUGINS,

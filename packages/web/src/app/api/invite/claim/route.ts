@@ -1,8 +1,3 @@
-// audit-exempt: new-user claim is a self-service action covered by the
-// inviter's `user.invited` audit row on the creation side. The reset
-// branch is NOT exempt and writes an `auth.password_reset_completed`
-// row below, because a password change is security-sensitive regardless
-// of who triggers it.
 import { NextRequest, NextResponse } from "next/server";
 import { hashPassword } from "better-auth/crypto";
 import { auth } from "@/lib/auth";
@@ -12,12 +7,13 @@ import { eq, and } from "drizzle-orm";
 import { resolveInviteFlow, claimInvite, getInviteGroupIds } from "@/lib/invites";
 import { seedPersonalAgent } from "@/lib/personal-agent";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
-import { waitForAgentInRuntime } from "@/lib/wait-for-agent-in-runtime";
+import { waitForAgentInRuntimeOnClient } from "@/server/agent-readiness";
 import { getOpenClawClient } from "@/server/openclaw-client";
 import { validatePassword } from "@/lib/validate-password";
 import { parseRequestBody } from "@/lib/api-validation";
 import { claimInviteSchema } from "@/lib/schemas/invite";
-import { appendAuditLog } from "@/lib/audit";
+import { appendAuditLog, safeProviderError } from "@/lib/audit";
+import { deferAuditLog } from "@/lib/audit-deferred";
 
 export async function POST(request: NextRequest) {
   const parsed = await parseRequestBody(claimInviteSchema, request);
@@ -34,6 +30,9 @@ export async function POST(request: NextRequest) {
   // user is gone).
   const flow = await resolveInviteFlow(token);
   if (!flow.ok) {
+    if (flow.reason === "invite_has_no_email") {
+      await auditFailedAccountCreation(flow.invite, name, "invite_has_no_email", flow.error);
+    }
     return NextResponse.json({ error: flow.error }, { status: flow.status });
   }
   const { invite } = flow;
@@ -81,10 +80,10 @@ export async function POST(request: NextRequest) {
         actorType: "user",
         actorId: existingUser.id,
         eventType: "auth.password_reset_completed",
-        resource: existingUser.id,
+        resource: `user:${existingUser.id}`,
         outcome: "failure",
         error: { message },
-        detail: { inviteId: invite.id, type: "reset" },
+        detail: { invite: { id: invite.id }, type: "reset" },
       });
       return NextResponse.json({ error: "Password reset failed" }, { status: 500 });
     }
@@ -93,12 +92,13 @@ export async function POST(request: NextRequest) {
       actorType: "user",
       actorId: existingUser.id,
       eventType: "auth.password_reset_completed",
-      resource: existingUser.id,
+      resource: `user:${existingUser.id}`,
       outcome: "success",
       detail: {
-        inviteId: invite.id,
+        invite: { id: invite.id },
         type: "reset",
-        target: { id: existingUser.id, name: existingUser.name },
+        // The actor is the target: its raw id stays in `resource`, never in detail (#824).
+        target: { name: existingUser.name },
       },
     });
 
@@ -112,13 +112,41 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Name is required" }, { status: 400 });
   }
 
-  const result = await auth.api.signUpEmail({
-    body: { name: name.trim(), email: invite.email!, password },
-  });
+  let result: Awaited<ReturnType<typeof auth.api.signUpEmail>> | null = null;
+  // Kept when signUpEmail resolves without a user rather than throwing.
+  let signUpError = "Sign-up returned no user";
+  try {
+    result = await auth.api.signUpEmail({
+      // `flow`, not the destructured `invite`: only the narrowed flow knows
+      // the email is present.
+      body: { name: name.trim(), email: flow.invite.email, password },
+    });
+  } catch (err) {
+    // A library message is not ours to vouch for: scrub any address it carries.
+    signUpError = safeProviderError(err instanceof Error ? err.message : "unknown");
+  }
 
   if (!result?.user) {
-    return NextResponse.json({ error: "Failed to create user" }, { status: 500 });
+    await auditFailedAccountCreation(invite, name, "sign_up_failed", signUpError);
+    return NextResponse.json({ error: "Failed to create account" }, { status: 500 });
   }
+
+  // The inviter's `user.invited` row says an invite was issued; this one says
+  // it became an account. Deferred: the account exists and cannot be rolled
+  // back. Actor is the new user (pseudonymized on write) — so no raw user id
+  // and no email in detail (#824).
+  deferAuditLog({
+    actorType: "user",
+    actorId: result.user.id,
+    eventType: "user.created",
+    detail: {
+      name: auditSafeName(name),
+      role: invite.role,
+      via: "invite",
+      invite: { id: invite.id },
+    },
+    outcome: "success",
+  });
 
   if (invite.role !== "member") {
     await db.update(users).set({ role: invite.role }).where(eq(users.id, result.user.id));
@@ -150,8 +178,51 @@ export async function POST(request: NextRequest) {
     // OC client not initialised — skip the wait.
   }
   if (personalAgent?.id) {
-    await waitForAgentInRuntime(client, personalAgent.id);
+    await waitForAgentInRuntimeOnClient(client, personalAgent.id);
   }
 
   return NextResponse.json({ success: true }, { status: 201 });
+}
+
+const AUDIT_NAME_MAX_CHARS = 200;
+
+/**
+ * Cap by code point, not UTF-16 unit, so the cut never splits an emoji, and
+ * replace any lone surrogate or NUL the client sent: Postgres jsonb refuses
+ * them, and the audit write would throw.
+ */
+function auditSafeName(name: string): string {
+  return Array.from(name.trim())
+    .slice(0, AUDIT_NAME_MAX_CHARS)
+    .join("")
+    .replace(/[\uD800-\uDFFF\u0000]/gu, "\uFFFD");
+}
+
+/**
+ * The failure twin of the `user.created` row a successful claim writes. There
+ * is no account to act as, so the actor is the claim flow itself. No email in
+ * detail, as on the success row.
+ */
+async function auditFailedAccountCreation(
+  invite: { id: string; role: string },
+  name: string | undefined,
+  reason: "invite_has_no_email" | "sign_up_failed",
+  message: string
+): Promise<void> {
+  await appendAuditLog({
+    actorType: "system",
+    actorId: "invite-claim",
+    eventType: "user.created",
+    detail: {
+      // The name is whoever holds the link's to choose; cap it so it can't
+      // push the detail past the size limit and take invite and reason with it.
+      ...(name?.trim() ? { name: auditSafeName(name) } : {}),
+      role: invite.role,
+      via: "invite",
+      invite: { id: invite.id },
+      reason,
+    },
+    outcome: "failure",
+    error: { message },
+  });
 }

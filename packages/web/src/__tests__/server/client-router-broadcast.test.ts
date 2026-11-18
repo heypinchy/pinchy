@@ -204,6 +204,48 @@ describe("ClientRouter pipeStream broadcast (#310 Tier 2b)", () => {
     expect(wsReconnect.sent.some((f) => f.type === "complete")).toBe(true);
   });
 
+  it("tells each chunk frame where in its message's text it starts (offset), per message", async () => {
+    // A resuming client seeds the in-flight bubble with `partialContent` and
+    // must know which deltas that text already holds. `offset` is the length
+    // of the text emitted for the same messageId before this chunk — the very
+    // accumulator `partialContent` is snapshotted from — so it restarts at 0
+    // when a multi-turn run rotates to the next message.
+    const chunks: ChatChunk[] = [
+      { type: "text", text: "Hello", runId: "r" },
+      { type: "text", text: " world.", runId: "r" },
+      { type: "done", text: "", runId: "r" },
+      { type: "text", text: "Next turn.", runId: "r" },
+      { type: "done", text: "", runId: "r" },
+    ];
+    mockChat.mockReturnValue(makeChunkStream(chunks));
+    const router = new ClientRouter(
+      buildClient() as never,
+      "user-1",
+      "member",
+      sessionCache,
+      activeRuns
+    );
+    const ws = createMockWs();
+
+    await router.handleMessage(ws, { type: "message", content: "hi", agentId: "agent-1" });
+
+    const frames = ws.sent.filter((f) => f.type === "chunk") as Array<{
+      content: string;
+      messageId: string;
+      offset: number;
+    }>;
+    const messageIds = [...new Set(frames.map((f) => f.messageId))];
+    expect(messageIds).toHaveLength(2);
+    for (const id of messageIds) {
+      let emitted = 0;
+      for (const frame of frames.filter((f) => f.messageId === id)) {
+        expect(frame.offset).toBe(emitted);
+        emitted += frame.content.length;
+      }
+    }
+    expect(frames.map((f) => f.content).join("")).toBe("Hello world.Next turn.");
+  });
+
   it("falls back to the originating ws when no run is registered yet (pre-first-chunk frames)", async () => {
     // The initial "thinking" frame is sent BEFORE any chunk arrives, so
     // the registry is empty at that moment. The frame must still reach

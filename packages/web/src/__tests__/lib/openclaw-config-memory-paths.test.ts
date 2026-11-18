@@ -75,7 +75,6 @@ vi.mock("fs", async (importOriginal) => {
 vi.mock("@/lib/openai-compatible-providers", () => ({
   listOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
   listProvidersWithApiKeys: vi.fn().mockResolvedValue([]),
-  getDecryptedApiKey: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock("@/db", () => ({
@@ -213,7 +212,7 @@ describe("regenerateOpenClawConfig materializes the agent memory paths", () => {
 
   it("creates memory/ on a workspace that predates the memory grants", async () => {
     // The regression, exactly: build.ts grants this path to a write-capable
-    // agent and memory-prompt.ts tells the agent it may use it, but nothing
+    // agent and pinchy-files/memory-prompt.ts tells the agent it may use it, but nothing
     // ever created it.
     seedLegacyWorkspace("scout");
     mockDb([agentRow("scout")]);

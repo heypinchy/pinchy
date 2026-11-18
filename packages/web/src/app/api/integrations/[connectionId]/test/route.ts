@@ -1,16 +1,22 @@
 // audit-exempt: audit writes happen indirectly via setIntegrationAuthFailed (integration.auth_failed)
 // and clearIntegrationAuthError (integration.auth_recovered) on status transitions. The Odoo uid
 // self-heal path intentionally writes no audit entry — it is a one-time bootstrap, not a
-// user-initiated change.
+// user-initiated change. A refused stored destination changes no state either: it is answered
+// to the admin who clicked, and nothing is written.
 import { NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
-import { OdooClient } from "odoo-node";
 import { withAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { decrypt, encrypt } from "@/lib/encryption";
 import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
+import {
+  describeOdooAuthenticateFailure,
+  describeOdooError,
+  isOdooAuthFailure,
+} from "@/lib/integrations/odoo-error";
 import { probeIntegrationCredentials } from "@/lib/integrations/probe";
+import { checkStoredDestination } from "@/lib/integrations/stored-destination";
 import { clearIntegrationAuthError, setIntegrationAuthFailed } from "@/lib/integrations/auth-state";
 import { isTokenExpired } from "@/lib/integrations/oauth-token";
 import {
@@ -18,6 +24,8 @@ import {
   OAuthSettingsMissingError,
   type MicrosoftCredentials,
 } from "@/lib/integrations/microsoft-refresh";
+import { authenticateOdoo } from "@/lib/integrations/odoo-calls";
+import { withPinnedOdoo } from "@/lib/integrations/odoo-pin";
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
 
@@ -37,6 +45,26 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
   try {
     let decrypted = JSON.parse(decrypt(connection.credentials));
 
+    // The stored Odoo URL / IMAP / SMTP host was validated when it was saved,
+    // not since — and both the self-heal below and the probe connect to it.
+    // A refusal is a configuration problem, not evidence the credentials are
+    // bad, so it is answered without touching the auth state: flagging
+    // auth_failed would send the admin to re-enter a perfectly good key.
+    const destination = await checkStoredDestination(connection.type, decrypted);
+    if (!destination.allowed) {
+      return NextResponse.json({ success: false, error: destination.message }, { status: 200 });
+    }
+
+    // `checkStoredDestination` hands an Odoo URL back with the addresses it
+    // classified; everything below that connects to it is pinned to them.
+    const pin = destination.pin;
+    if (connection.type === "odoo" && !pin) {
+      return NextResponse.json(
+        { success: false, error: "Could not verify the Odoo server's address." },
+        { status: 200 }
+      );
+    }
+
     // Odoo uid self-heal: if the authenticate call returns a different uid than
     // what is stored (e.g. first connection with a placeholder), update the stored
     // credentials. This must happen before the probe so the probe uses the correct uid.
@@ -44,12 +72,30 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
       const parsed = odooCredentialsSchema.safeParse(decrypted);
       if (parsed.success) {
         const creds = parsed.data;
-        const uid = await OdooClient.authenticate({
-          url: creds.url,
-          db: creds.db,
-          login: creds.login,
-          apiKey: creds.apiKey,
-        });
+        let uid: number;
+        try {
+          // Connects to the address the destination check classified, not to
+          // the name — one lookup serves the check, this login and the probe.
+          uid = await withPinnedOdoo(pin!.origin, pin!.target, (pinned) =>
+            authenticateOdoo({
+              url: creds.url,
+              db: creds.db,
+              login: creds.login,
+              apiKey: creds.apiKey,
+              fetch: pinned,
+            })
+          );
+        } catch (err) {
+          // Odoo refusing the login: re-thrown with a message fit for the
+          // admin, which the catch below shows and records as the auth-failure
+          // reason. Anything else — a redirect, a proxy error, a non-JSON-RPC
+          // answer — says nothing about the credentials: report it the way the
+          // probe does and leave the status alone. Neither quotes a response
+          // body. See odoo-error.ts.
+          if (isOdooAuthFailure(err)) throw new Error(describeOdooError(err));
+          const { reason } = describeOdooAuthenticateFailure(err);
+          return NextResponse.json({ success: false, error: reason }, { status: 200 });
+        }
         if (uid !== creds.uid) {
           decrypted.uid = uid;
           await db
@@ -91,7 +137,13 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
       }
     }
 
-    const probe = await probeIntegrationCredentials(connection.type, decrypted);
+    // Only an Odoo destination comes back with a pin.
+    const probe =
+      connection.type === "odoo" && pin
+        ? await withPinnedOdoo(pin.origin, pin.target, (pinned) =>
+            probeIntegrationCredentials(connection.type, decrypted, { odooFetch: pinned })
+          )
+        : await probeIntegrationCredentials(connection.type, decrypted);
 
     if (probe.success) {
       await clearIntegrationAuthError({ connectionId, actor });

@@ -192,7 +192,7 @@ echo "  ✅ Presets applied"
 echo "📁 Configuring directories and permissions..."
 
 # Create directories in OpenClaw container with human-friendly names
-# scan_data_directories() uses basename as label, so name the folders nicely
+# The picker labels each folder with its own name, so name the folders nicely
 docker compose exec -T openclaw sh -c '
   mkdir -p "/data/Reactor Operations" "/data/Safety Protocols" "/data/Employee Handbook" \
            "/data/NRC Inspections" "/data/Executive Memos" "/data/Budget Reports"
@@ -214,17 +214,9 @@ docker compose cp "$SCRIPT_DIR/fixtures/emergency-shutdown-procedure.pdf" \
 docker compose cp "$SCRIPT_DIR/fixtures/coolant-system-overview.pdf" \
   "openclaw:/data/Reactor Operations/coolant-system-overview.pdf" > /dev/null
 echo "  ✅ Knowledge Base fixtures placed"
-# Trigger rescan so data-directories.json picks them up
-docker compose exec -T openclaw sh -c '
-  ls -d /data/*/ 2>/dev/null | sed "s|/$||" | \
-    node -e "const lines=require(\"fs\").readFileSync(\"/dev/stdin\",\"utf8\").trim().split(\"\n\").filter(Boolean); \
-    const dirs=lines.map(p=>({path:p,name:require(\"path\").basename(p)})); \
-    console.log(JSON.stringify({directories:dirs}))" \
-    > /root/.openclaw/data-directories.json
-'
-
-# Verify
-DIR_COUNT=$(docker compose exec -T pinchy sh -c 'cat /openclaw-config/data-directories.json' 2>/dev/null | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('directories',[])))" 2>/dev/null || echo "0")
+# Verify. The picker lists /data live from the pinchy container (#1363), so
+# the count read there is the count the screenshots will show.
+DIR_COUNT=$(docker compose exec -T pinchy sh -c 'ls -d /data/*/ 2>/dev/null | wc -l' 2>/dev/null | tr -d ' ' || echo "0")
 echo "  ✅ $DIR_COUNT directories configured"
 
 # Web Search integration (enables hasApiKey path in Web Search UI for screenshots)
@@ -310,14 +302,38 @@ fi
 # =====================================================
 # 8. Create users (directly in DB for active status)
 # =====================================================
+# Every account here must look the way a real one does: the setup admin first,
+# everyone else through an invite they claimed. Settings → Users flags any
+# other account as one "nobody invited" (lib/user-provenance.ts), and the
+# capture would photograph that banner into user-management.png.
+# scripts/lib/screenshots-seed-provenance.test.mjs fails if a user inserted
+# here has no claimed invite.
 echo "👥 Creating demo users..."
 
 docker compose exec -T db psql -U pinchy -d pinchy <<'SQL'
+-- Monty ran setup on day 1 of the audit-trail story below, before anyone
+-- else joined. /api/setup stamps him NOW(); move him to where the story has him.
+UPDATE "user" SET created_at = NOW() - interval '14 days 3 hours'
+  WHERE email = 'monty@snpp.com';
+
 INSERT INTO "user" (id, name, email, role, email_verified, created_at, updated_at) VALUES
-  ('usr_carl_carlson', 'Carl Carlson', 'carl@snpp.com', 'admin', true, NOW() - interval '14 days', NOW() - interval '2 hours'),
+  ('usr_carl_carlson', 'Carl Carlson', 'carl@snpp.com', 'admin', true, NOW() - interval '12 days 20 hours', NOW() - interval '2 hours'),
   ('usr_homer_jay', 'Homer Jay', 'homer@snpp.com', 'member', true, NOW() - interval '10 days', NOW() - interval '1 day'),
-  ('usr_lenny_leonard', 'Lenny Leonard', 'lenny@snpp.com', 'member', true, NOW() - interval '7 days', NOW() - interval '3 days')
+  ('usr_lenny_leonard', 'Lenny Leonard', 'lenny@snpp.com', 'member', true, NOW() - interval '6 days 20 hours', NOW() - interval '3 days')
 ON CONFLICT (email) DO NOTHING;
+
+-- The invites they claimed, sent by Monty at the times the audit trail shows.
+INSERT INTO invites (id, token_hash, email, role, type, created_by, created_at, expires_at, claimed_at, claimed_by_user_id) VALUES
+  ('inv_carl', 'hash_carl', 'carl@snpp.com', 'admin', 'invite',
+   (SELECT id FROM "user" WHERE email = 'monty@snpp.com'),
+   NOW() - interval '13 days', NOW() - interval '6 days', NOW() - interval '12 days 20 hours', 'usr_carl_carlson'),
+  ('inv_homer', 'hash_homer', 'homer@snpp.com', 'member', 'invite',
+   (SELECT id FROM "user" WHERE email = 'monty@snpp.com'),
+   NOW() - interval '12 days', NOW() - interval '5 days', NOW() - interval '10 days', 'usr_homer_jay'),
+  ('inv_lenny', 'hash_lenny', 'lenny@snpp.com', 'member', 'invite',
+   (SELECT id FROM "user" WHERE email = 'monty@snpp.com'),
+   NOW() - interval '7 days', NOW(), NOW() - interval '6 days 20 hours', 'usr_lenny_leonard')
+ON CONFLICT DO NOTHING;
 
 -- Pending invite (Frank hasn't joined yet)
 INSERT INTO invites (id, token_hash, email, role, type, created_by, created_at, expires_at) VALUES

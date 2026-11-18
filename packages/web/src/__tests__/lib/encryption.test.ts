@@ -22,28 +22,48 @@ vi.mock("fs", async (importOriginal) => {
   // The file-secret cache invalidates on mtime — default to a fixed value so
   // every existing test (one getOrCreateSecret call each) is unaffected.
   const fstatSyncMock = vi.fn(() => ({ mtimeMs: 1 }));
-  return {
-    ...actual,
-    default: {
-      ...actual,
-      existsSync: existsSyncMock,
-      readFileSync: readFileSyncMock,
-      writeFileSync: writeFileSyncMock,
-      openSync: openSyncMock,
-      fstatSync: fstatSyncMock,
-      closeSync: closeSyncMock,
-    },
+  // A generated key goes through a temp file (write, fsync, link, unlink). The
+  // fds above are fake, so these must never reach the real fs.
+  // Reports every byte it was handed as written, as a real write usually does:
+  // the implementation loops on the returned count.
+  const writeSyncMock = vi.fn(
+    (_fd: number, data: string | Buffer, offset = 0, length?: number): number =>
+      typeof data === "string" ? Buffer.byteLength(data) : (length ?? data.length - offset)
+  );
+  const fsyncSyncMock = vi.fn();
+  const linkSyncMock = vi.fn();
+  const unlinkSyncMock = vi.fn();
+  const fileMocks = {
     existsSync: existsSyncMock,
     readFileSync: readFileSyncMock,
     writeFileSync: writeFileSyncMock,
     openSync: openSyncMock,
     fstatSync: fstatSyncMock,
     closeSync: closeSyncMock,
+    writeSync: writeSyncMock,
+    fsyncSync: fsyncSyncMock,
+    linkSync: linkSyncMock,
+    unlinkSync: unlinkSyncMock,
+  };
+  return {
+    ...actual,
+    default: { ...actual, ...fileMocks },
+    ...fileMocks,
     __fdToPath: (fd: number) => fdPaths.get(fd),
   };
 });
 
-import { existsSync, readFileSync, writeFileSync, openSync, fstatSync } from "fs";
+import {
+  existsSync,
+  readFileSync,
+  openSync,
+  fstatSync,
+  writeSync,
+  fsyncSync,
+  linkSync,
+  unlinkSync,
+} from "fs";
+import { dirname } from "path";
 
 const { __fdToPath } = (await import("fs")) as unknown as {
   __fdToPath: (fd: number) => string | undefined;
@@ -51,9 +71,40 @@ const { __fdToPath } = (await import("fs")) as unknown as {
 
 const mockedExistsSync = vi.mocked(existsSync);
 const mockedReadFileSync = vi.mocked(readFileSync);
-const mockedWriteFileSync = vi.mocked(writeFileSync);
 const mockedOpenSync = vi.mocked(openSync);
 const mockedFstatSync = vi.mocked(fstatSync);
+
+/**
+ * A generated key is written to a 0600 temp file next to the key file,
+ * fsynced, then linked into place (never replacing an existing file), the
+ * directory fsynced so the new name survives a power cut, and the temp file
+ * removed: no partial key file, even on a full disk.
+ */
+function expectGeneratedKeyWritten(keyFilePath: string, keyHex: string) {
+  const tmpOpens = mockedOpenSync.mock.calls.filter(([, flags]) => flags === "wx");
+  expect(tmpOpens).toHaveLength(1);
+  const [tmpPath, , mode] = tmpOpens[0];
+  const fdOpenedFor = (path: string, flags: string) =>
+    mockedOpenSync.mock.results[
+      mockedOpenSync.mock.calls.findIndex(([p, f]) => p === path && f === flags)
+    ]?.value as number;
+  const tmpFd = fdOpenedFor(String(tmpPath), "wx");
+  const dirFd = fdOpenedFor(dirname(keyFilePath), "r");
+  const suffix = String(tmpPath).slice(keyFilePath.length);
+  expect(String(tmpPath).startsWith(`${keyFilePath}.`)).toBe(true);
+  expect(suffix).toMatch(/^\.\d+\.[0-9a-f]{8}\.tmp$/);
+  expect(mode).toBe(0o600);
+  expect(keyHex).toMatch(/^[0-9a-f]{64}$/);
+  const written = (vi.mocked(writeSync).mock.calls as unknown as [number, Buffer, number, number][])
+    .filter(([fd]) => fd === tmpFd)
+    .map(([, data, offset, length]) => data.subarray(offset, offset + length));
+  expect(Buffer.concat(written).toString()).toBe(keyHex);
+  expect(vi.mocked(fsyncSync)).toHaveBeenCalledWith(tmpFd);
+  expect(dirFd).toEqual(expect.any(Number));
+  expect(vi.mocked(fsyncSync)).toHaveBeenCalledWith(dirFd);
+  expect(vi.mocked(linkSync)).toHaveBeenCalledWith(tmpPath, keyFilePath);
+  expect(vi.mocked(unlinkSync)).toHaveBeenCalledWith(tmpPath);
+}
 
 describe("encryption", () => {
   const TEST_KEY = "a".repeat(64); // 32 bytes in hex
@@ -63,7 +114,9 @@ describe("encryption", () => {
     vi.stubEnv("ENCRYPTION_KEY", TEST_KEY);
     mockedExistsSync.mockReturnValue(false);
     mockedReadFileSync.mockReset();
-    mockedWriteFileSync.mockReset();
+    for (const m of [mockedOpenSync, writeSync, fsyncSync, linkSync, unlinkSync]) {
+      vi.mocked(m).mockClear();
+    }
     mockedFstatSync.mockReset();
     mockedFstatSync.mockReturnValue({ mtimeMs: 1 } as ReturnType<typeof fstatSync>);
   });
@@ -162,11 +215,7 @@ describe("encryption", () => {
       const secret = mod.getOrCreateSecret(SECRET_NAME);
       expect(secret).toBeInstanceOf(Buffer);
       expect(secret.length).toBe(32);
-      expect(mockedWriteFileSync).toHaveBeenCalledWith(
-        expect.stringContaining(FILE_NAME),
-        expect.stringMatching(/^[0-9a-f]{64}$/),
-        { mode: 0o600 }
-      );
+      expectGeneratedKeyWritten(`/app/secrets/${FILE_NAME}`, secret.toString("hex"));
     });
 
     it("should throw when env var is invalid hex", async () => {
@@ -315,7 +364,7 @@ describe("encryption", () => {
       const key = mod.getEncryptionKey();
       expect(key).toBeInstanceOf(Buffer);
       expect(key.length).toBe(32); // 256-bit key
-      expect(mockedWriteFileSync).toHaveBeenCalledOnce();
+      expectGeneratedKeyWritten("/app/secrets/.encryption_key", key.toString("hex"));
     });
 
     it("should write auto-generated key file with mode 0o600", async () => {
@@ -324,13 +373,9 @@ describe("encryption", () => {
       });
 
       const mod = await import("@/lib/encryption");
-      mod.getEncryptionKey();
+      const key = mod.getEncryptionKey();
 
-      expect(mockedWriteFileSync).toHaveBeenCalledWith(
-        expect.stringContaining(".encryption_key"),
-        expect.stringMatching(/^[0-9a-f]{64}$/),
-        { mode: 0o600 }
-      );
+      expectGeneratedKeyWritten("/app/secrets/.encryption_key", key.toString("hex"));
     });
   });
 

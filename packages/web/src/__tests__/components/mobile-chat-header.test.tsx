@@ -4,6 +4,14 @@ import { render, screen } from "@testing-library/react";
 import "@testing-library/jest-dom";
 import { MobileChatHeader } from "@/components/mobile-chat-header";
 
+vi.mock("@/components/knowledge-search-sheet", () => ({
+  KnowledgeSearchSheet: ({ agentId }: { agentId: string }) => (
+    <button type="button" data-testid="knowledge-search" data-agent-id={agentId}>
+      What can this agent search?
+    </button>
+  ),
+}));
+
 // The header now renders <ChatSwitcher>, which uses the app router and fetches
 // the chat list. Stub both so the header renders in isolation.
 vi.mock("next/navigation", () => ({
@@ -86,5 +94,14 @@ describe("MobileChatHeader", () => {
     const img = screen.getByRole("img");
     expect(img).toHaveAttribute("alt", "Smithers");
     expect(img).toHaveClass("size-8");
+  });
+
+  it("offers 'What can this agent search?' only for a knowledge-base agent", () => {
+    const { unmount } = render(<MobileChatHeader {...defaultProps} searchesKnowledge />);
+    expect(screen.getByTestId("knowledge-search")).toHaveAttribute("data-agent-id", "agent-123");
+    unmount();
+
+    render(<MobileChatHeader {...defaultProps} />);
+    expect(screen.queryByTestId("knowledge-search")).not.toBeInTheDocument();
   });
 });

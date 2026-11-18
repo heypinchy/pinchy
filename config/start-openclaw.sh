@@ -86,33 +86,43 @@ fi
 # OpenClaw creates openclaw.json with 600 (root-only). Pinchy needs write access
 # to update provider keys and agent configuration via regenerateOpenClawConfig().
 #
-# Also fixes the telegram-pairing.json file (OpenClaw 2026.4.12 writes it as
-# root:0600, but Pinchy needs to read it to look up Telegram user IDs from
-# pairing codes) and the per-agent directory OWNERSHIP that lets Pinchy write
-# agents/<id>/agent/auth-profiles.json at all (#934).
+# Also fixes the per-agent directory ownership of #934. credentials/ is no
+# longer opened: up to OpenClaw 2026.8 Pinchy read Telegram pairing codes there,
+# 2026.9 keeps them in its state database (restore_credentials_privacy).
 #
 # Extracted to config/fix-config-permissions.sh (same pattern as
 # install-plugin-deps.sh / stage-llama-cpp-provider.sh) so each of those
 # cross-uid invariants is unit-testable — see
 # packages/web/src/__tests__/lib/fix-config-permissions.test.ts. Defines
-# fix_config_permissions() into this shell; it reads $SECRETS_FILE from above.
+# fix_config_permissions(), remove_retired_auth_profiles(),
+# restore_gateway_lock_ownership() and restore_credentials_privacy() into this
+# shell;
+# it reads $SECRETS_FILE from above.
 # shellcheck source=fix-config-permissions.sh
 source /fix-config-permissions.sh
 fix_config_permissions
 
-# Scan /data/ for available directories and write to shared config
-# so Pinchy can read them without needing a /data mount
-scan_data_directories() {
-  if [ -d /data ]; then
-    ls -d /data/*/ 2>/dev/null | sed 's|/$||' | \
-      node -e "const lines=require('fs').readFileSync('/dev/stdin','utf8').trim().split('\n').filter(Boolean); \
-      const dirs=lines.map(p=>({path:p,name:require('path').basename(p)})); \
-      console.log(JSON.stringify({directories:dirs}))" \
-      > /root/.openclaw/data-directories.json
-  else
-    echo '{"directories":[]}' > /root/.openclaw/data-directories.json
-  fi
-}
+# One-time import of pre-2026.9 OpenClaw state (session stores, workspace setup
+# state) into SQLite. OpenClaw 2026.9 refuses to start while that state is on
+# disk and only `openclaw doctor --fix` imports it, so an install upgraded from
+# Pinchy v0.10.x would crash-loop without this. Detection mirrors the gateway's
+# guards and costs one `node -e` on a migrated install; doctor runs against a
+# throwaway copy of openclaw.json. Called after restore_credentials_privacy
+# (doctor resolves secrets, which must be root-owned by then) and before every
+# gateway start. See config/migrate-openclaw-state.sh. Defines
+# migrate_legacy_openclaw_state() into this shell.
+# shellcheck source=migrate-openclaw-state.sh
+source /migrate-openclaw-state.sh
+
+# Rebuilds agent memory indexes OpenClaw will not rebuild on its own — ones
+# stamped "fts-only" after a failed embed, which memory_search then answers
+# with nothing until `openclaw memory index` runs. Costs one
+# `openclaw memory status --json` when every index is fine. Runs once per
+# container start, before the first gateway start: the CLI's llama-server must
+# not share the provider's port with a running gateway. See
+# config/heal-memory-indexes.sh. Defines heal_memory_indexes() into this shell.
+# shellcheck source=heal-memory-indexes.sh
+source /heal-memory-indexes.sh
 
 # Auto-approve pending device pairing requests (needed for Docker networking
 # where connections come from container IPs, not localhost).
@@ -210,7 +220,6 @@ mark_bootstrap_when_ready() {
 
 install_plugin_deps
 stage_llama_cpp_provider
-scan_data_directories
 
 # OpenClaw rewrites openclaw.json with root-only permissions on every startup
 # and internal restart. Run a tight background loop that fixes permissions
@@ -225,9 +234,11 @@ scan_data_directories
 # bootInits (cascade-prevention seed in `seedRestartClassOverridesIfMissing`,
 # more file activity = more 600-mode windows for OpenClaw's restart writes).
 # 50 ms is well under the 5 s `docker compose exec stat` round-trip the
-# test uses, so the race is effectively closed. Cost is ~80 chmod calls/s
-# on an idle gateway — measured negligible (chmod on a known path is a
-# kernel-only operation, no syscalls past inode lookup).
+# test uses, so the race is effectively closed. A repair in this tick is not
+# free just because the syscall is cheap: each chmod or chown is an attribute
+# event, 20 a second. On OpenClaw 2026.9 the ungated chmod of openclaw.json
+# starved the config watcher, which is why that repair, like the secrets one,
+# only fires when the mode is actually wrong (see fix_config_permissions).
 (while true; do sleep 0.05; fix_config_permissions; done) &
 
 # Defense in depth for the secrets owner race (#200): the 0.2 s tick above
@@ -281,15 +292,22 @@ scan_data_directories
     sleep 1
 done) &
 
-# Start auto-approver in background — stops when Pinchy signals connection
-# (writes pinchy-device-approved). Safety timeout: 5 minutes.
-auto_approve_devices &
-
 # Start gateway in the background so the health-check loop below can run.
 # OpenClaw 2026.4.26 keeps `openclaw gateway` in the foreground (it does NOT
 # daemonize), so without `&` the script would block here and the loop below
 # would never run — a crashed gateway would never get restarted.
 ensure_secrets_root_owned
+remove_retired_auth_profiles
+restore_gateway_lock_ownership
+restore_credentials_privacy
+migrate_legacy_openclaw_state
+heal_memory_indexes
+# Start auto-approver in background — stops when Pinchy signals connection
+# (writes pinchy-device-approved). Safety timeout: 5 minutes, counted from
+# here, so it starts after the migration and the memory-index rebuild: either
+# can take long enough to use up the cap, and each tick's openclaw CLI would
+# run its own migration preflight beside doctor.
+auto_approve_devices &
 echo "Starting OpenClaw Gateway..."
 openclaw gateway --port 18789 &
 mark_bootstrap_when_ready
@@ -317,8 +335,11 @@ while true; do
             fix_config_permissions
             install_plugin_deps
             stage_llama_cpp_provider
-            scan_data_directories
             ensure_secrets_root_owned
+            remove_retired_auth_profiles
+            restore_gateway_lock_ownership
+            restore_credentials_privacy
+            migrate_legacy_openclaw_state
             openclaw gateway --port 18789 &
             mark_bootstrap_when_ready
         fi

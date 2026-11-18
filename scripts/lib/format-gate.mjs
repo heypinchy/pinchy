@@ -21,7 +21,7 @@
  * produces a diff the gate then rejects.
  *
  * Read-side sibling of the no-untracked-skips / no-test-deletion /
- * web-typecheck-gate guards (see AGENTS.md): it makes a silent narrowing of the
+ * web-typecheck-gate guards (see agent-rules/): it makes a silent narrowing of the
  * gate into a loud, deliberate act.
  */
 

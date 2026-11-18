@@ -7,8 +7,10 @@ vi.mock("@/lib/api-auth", () => ({
 }));
 
 const mockVerifyIntegrity = vi.fn();
+const mockIsActiveKeySeenBefore = vi.fn();
 vi.mock("@/lib/audit", () => ({
   verifyIntegrity: mockVerifyIntegrity,
+  isActiveKeySeenBefore: mockIsActiveKeySeenBefore,
 }));
 
 import { requireAdmin } from "@/lib/api-auth";
@@ -16,6 +18,7 @@ import { requireAdmin } from "@/lib/api-auth";
 describe("GET /api/audit/verify", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockIsActiveKeySeenBefore.mockResolvedValue(false);
     vi.mocked(requireAdmin).mockResolvedValue(
       mockSession({ user: { id: "admin-1", role: "admin" } })
     );
@@ -99,7 +102,46 @@ describe("GET /api/audit/verify", () => {
     const response = await GET(request as any);
 
     expect(response.status).toBe(200);
-    expect(mockVerifyIntegrity).toHaveBeenCalledWith(10, 20);
+    expect(mockVerifyIntegrity).toHaveBeenCalledWith(10, 20, { seedActiveKeySeen: false });
+  });
+
+  // The previous signing key is only valid for the rows before the key change.
+  // A range that starts after the change can't see that from its own rows, so
+  // it takes the key context from the row in front of it, as the background
+  // sweep does from its checkpoint. Without it, `?fromId=` past the change point
+  // would accept rows re-signed with the old key as pre-change history.
+  it("seeds a partial range with the key context of the row before fromId", async () => {
+    mockIsActiveKeySeenBefore.mockResolvedValue(true);
+    mockVerifyIntegrity.mockResolvedValue({
+      valid: false,
+      totalChecked: 5,
+      invalidIds: [10],
+      chainBreakIds: [],
+      previousKeyIds: [],
+    });
+
+    const { GET } = await import("@/app/api/audit/verify/route");
+    const request = new Request("http://localhost/api/audit/verify?fromId=10");
+    await GET(request as any);
+
+    expect(mockIsActiveKeySeenBefore).toHaveBeenCalledWith(10);
+    expect(mockVerifyIntegrity).toHaveBeenCalledWith(10, undefined, { seedActiveKeySeen: true });
+  });
+
+  it("does not look for a predecessor when the range starts at the beginning", async () => {
+    mockVerifyIntegrity.mockResolvedValue({
+      valid: true,
+      totalChecked: 5,
+      invalidIds: [],
+      chainBreakIds: [],
+      previousKeyIds: [],
+    });
+
+    const { GET } = await import("@/app/api/audit/verify/route");
+    await GET(new Request("http://localhost/api/audit/verify?toId=5") as any);
+
+    expect(mockIsActiveKeySeenBefore).not.toHaveBeenCalled();
+    expect(mockVerifyIntegrity).toHaveBeenCalledWith(undefined, 5);
   });
 
   it("returns 400 for a non-numeric fromId instead of crashing (NaN into SQL)", async () => {

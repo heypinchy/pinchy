@@ -45,14 +45,15 @@
  * it, but its IDENTITY stays the original: the row and every chunk carry the
  * source path, because the artifact is not a file the reader has.
  */
-import { createHash } from "node:crypto";
-import { readdir, readFile, stat } from "node:fs/promises";
-import { basename, dirname, join, sep } from "node:path";
+import { lstat, readdir, realpath, stat } from "node:fs/promises";
+import { basename, dirname, extname, join, sep } from "node:path";
 
 import { and, count, eq, inArray, sql } from "drizzle-orm";
 
 import { db } from "@/db";
 import { kbChunks, kbDocuments } from "@/db/schema";
+import { inBatches, rowsPerInsert } from "@/db/insert-batches";
+import { errorLine, LOG_PATH_MAX, LOG_REASON_MAX, oneLine } from "@/lib/log-line";
 
 import {
   DEFAULT_ALLOWED_EXTENSIONS,
@@ -61,23 +62,46 @@ import {
   isDenylistedFileName,
   isHiddenSegment,
 } from "./exclude-globs";
-import { isArchivedPath, statusForPath } from "./archive-paths";
+import { statusForPath } from "./archive-paths";
+import { orderForIngest } from "./ingest-order";
+import type { QueuedFile } from "./folder-plan";
 import { buildPathFilter } from "./path-filter";
+import { recordUnsupportedFiles, unsupportedFileType } from "./unsupported-files";
+import { unsupportedFileKind } from "./unsupported-kind";
 import { chunkPages } from "./chunk";
 import { DEFAULT_BATCH_SIZE } from "./embeddings";
 import { detectLang } from "./lid";
 import { collectHeadingSections, headingLocatorAt } from "./heading-sections";
 import {
+  isLegacyWorkbook,
   isOfficeFile,
+  isOoxmlWordFile,
+  needsConversion,
+  OfficeFileRejectedError,
   isPresentationFile,
+  isMsgFile,
+  isScanFile,
   isSpreadsheetFile,
+  isTextFile,
   isWordFile,
   OFFICE_CONVERT_BATCH_SIZE,
 } from "./office-formats";
 import type { ChunkLocator } from "./locator";
+import { OFFICE_ARTIFACT_FORMAT_VERSION, SCAN_ARTIFACT_FORMAT_VERSION } from "./office-artifacts";
 import type { ConversionOutcome, OfficeSource } from "./office-convert";
 import type { XlsxExtraction } from "./xlsx-extract";
+import { readTextFile } from "./text-extract";
+import { emailContextLine, formatEmailText, type ParsedEmail } from "./msg-extract";
+import { isContentRejection, toStorableLocator, toStorableText } from "./stored-text";
+import { databaseErrorBehind, systemicIngestError } from "./ingest-errors";
 import type { IngestPage, IngestResult } from "./types";
+import {
+  copyVerifiedSource,
+  hashVerifiedSource,
+  SourceRefusedError,
+  type SourceRefusal,
+  type VerifiedCopy,
+} from "./verified-source";
 
 // IngestPage/IngestResult live in ./types (a runtime-free module) because
 // db/schema.ts persists IngestResult as a jsonb column and cannot import from
@@ -85,9 +109,30 @@ import type { IngestPage, IngestResult } from "./types";
 // keep treating the ingest module as the contract's home.
 export type { IngestPage, IngestResult } from "./types";
 
+/** What `IngestDeps.convertScan` made of a scanned TIFF. */
+export interface ScanConversion {
+  /** The PDF of its frames, one page each, where a citation will find it. */
+  pdfPath: string;
+  /** How many frames the TIFF has. */
+  frames: number;
+  /** How many of them are pages of `pdfPath`: the first `converted`, in order. */
+  converted: number;
+}
+
 export interface IngestDeps {
   /** Batch-embeds chunk texts into dense vectors (embeddinggemma-300m, 768-dim). Prod: `(t) => embedTexts(t, embedCfg)`. */
   embed: (texts: string[]) => Promise<number[][]>;
+  /**
+   * Cuts each chunk text the embedder could not take whole into pieces it can,
+   * one list per input (a text that fits is a list of one). Each piece is
+   * stored as a chunk of its own under the original chunk's locator, so the
+   * rows written are exactly the texts embedded. Prod:
+   * `(t) => fitTextsForEmbedding(t, embedCfg)` — measured with the embedding
+   * model's own tokenizer, because the chunker's 4-characters-per-token
+   * estimate is what let a chunk past the local context in #1380. Unset =
+   * chunks are embedded as they are.
+   */
+  fitForEmbedding?: (texts: string[]) => Promise<string[][]>;
   /**
    * Extracts per-page text from a PDF at an absolute path. Prod: pdfjs-based
    * (./pdf-extract.ts).
@@ -125,6 +170,49 @@ export interface IngestDeps {
    */
   convertOffice: (sources: readonly OfficeSource[]) => Promise<ConversionOutcome[]>;
   /**
+   * Turns a scanned TIFF into a PDF of its frames, stored under `contentHash`
+   * where a citation opens it (#1409). Prod: `tiffToPdfIsolated` into the scan
+   * artifact store (kb-index-worker.ts). Called only when `ocrModel` is set —
+   * a scan has no text layer, so without OCR there is nothing to convert for.
+   *
+   * A refusal of the file (not a TIFF inside, too large) is an
+   * `OfficeFileRejectedError`; anything else is about the machine, and the
+   * file counts as failed.
+   *
+   * Required for the same reason `convertOffice` is: once
+   * `DEFAULT_ALLOWED_EXTENSIONS` names `.tif`, every caller's ingest WILL meet
+   * one.
+   */
+  convertScan: (copyPath: string, contentHash: string) => Promise<ScanConversion>;
+  /**
+   * Reads a saved Outlook message into its headers and body (#1409). Prod:
+   * `readMsgIsolated`, the fenced reader child (kb-index-worker.ts) — the
+   * parser walks an untrusted Compound File.
+   *
+   * A refusal of the file (not a Compound File, too large, damaged) is an
+   * `OfficeFileRejectedError`; anything else is about the machine, and the
+   * file counts as failed. Required for the same reason `convertScan` is: once
+   * `DEFAULT_ALLOWED_EXTENSIONS` names `.msg`, every caller's ingest WILL meet
+   * one.
+   */
+  readEmail: (copyPath: string) => Promise<ParsedEmail>;
+  /**
+   * The text of a `.docx`, read straight from the source (#1406). Prod:
+   * `readDocxTextIsolated`, the fenced reader child — the same mammoth read,
+   * through the same guard, as the conversion's word-count oracle.
+   *
+   * Asked only when the converted PDF came out SHORT: the tripwire keeps that
+   * PDF out of the index and the viewer, and this text is what keeps the
+   * document searchable without it — no preview, so no locator either. A
+   * refusal of the file is an `OfficeFileRejectedError`; anything else is
+   * about the machine, and the file counts as failed.
+   *
+   * Required for the same reason `convertOffice` is: every deployment that
+   * holds Word files meets a short conversion sooner or later, and an optional
+   * reader would turn it back into a document nobody can find.
+   */
+  readDocxText: (copyPath: string) => Promise<string>;
+  /**
    * The vision model `extractPdf` reads scanned pages with this run, or null
    * when it reads the text layer only (no vision model, or `PINCHY_KB_OCR=off`).
    *
@@ -135,7 +223,18 @@ export interface IngestDeps {
    * one without, and the blank scans it reads would be read again every run.
    */
   ocrModel: string | null;
+  /**
+   * Where the run puts the private copies its readers open (verified-source.ts
+   * `copyVerifiedSource`). Prod: the artifact volume's `staging/`
+   * (`stagingDirOf()`), which the index worker clears at start — so a copy a
+   * killed run left behind does not outlive it, as it would in the
+   * container's `/tmp` on the writable layer.
+   */
+  stagingDir: string;
 }
+
+/** Why ingest left a granted root out of a run; see `IngestOptions.onSkippedRoot`. */
+export type SkippedRootReason = "missing" | "unreadable" | "emptied";
 
 export interface IngestOptions {
   /**
@@ -157,16 +256,37 @@ export interface IngestOptions {
    */
   onProgress?: (progress: IngestProgress) => void | Promise<void>;
   /**
-   * Called for every root the run left out: `unreadable` (it could not be
-   * looked at — missing, unmounted, a read error mid-walk) or `emptied` (see
-   * `keepEmptiedFolders`). Such a root contributes no files AND no removal pass.
+   * Called once, before the first file is touched, with every queued path in
+   * the order the run will process them. `processed` in a later progress
+   * report is a position in this list, which is what lets a caller say which
+   * folder the run is in without a write per file (folder-plan.ts, #1386).
+   * Each entry says whether the archive rule put the file in an archived
+   * subfolder, which the run reads last (#1405).
+   */
+  onQueue?: (queue: readonly QueuedFile[]) => void | Promise<void>;
+  /**
+   * Further knowledge-base folders the archive rule reads paths relative to,
+   * besides this run's own roots (archive-paths.ts, #1420). A document's
+   * status is one value for the whole org while runs go agent by agent, so
+   * the index worker passes every folder any agent searches: otherwise a
+   * document under two nested grants would be classified differently by each
+   * agent's run, and flip every night. Not ingested, not removed from.
+   */
+  archiveRoots?: readonly string[];
+  /**
+   * Called for every root the run left out: `missing` (nothing is there — the
+   * folder was renamed or removed, or a link to it dangles), `unreadable`
+   * (something is there but could not be looked at — permissions, a read
+   * error mid-walk) or `emptied` (see `keepEmptiedFolders`). Such a root
+   * contributes no files AND no removal pass. `missing` and `unreadable` are
+   * apart because their fixes are: remove the grant, or fix the share (#1363).
    *
    * Ingest only reports; what a skipped root means for the run is the
    * caller's call. Without this, a run whose every root was skipped reads as
    * "0 indexed, success", which is exactly what an unmounted share looks like
    * night after night.
    */
-  onSkippedRoot?: (rootDir: string, reason: "unreadable" | "emptied") => void;
+  onSkippedRoot?: (rootDir: string, reason: SkippedRootReason) => void;
   /**
    * Treat a folder that turns up with nothing in it at all, while the index
    * still holds documents from under it, as unavailable rather than emptied:
@@ -187,6 +307,15 @@ export interface IngestOptions {
   keepEmptiedFolders?: boolean;
   /** Called once per folder below a root whose documents `keepEmptiedFolders` kept. */
   onKeptFolder?: (folder: string) => void;
+  /**
+   * Called for every file the run refused to read because its path no longer
+   * led to a regular file inside its folder — swapped for a link, reached
+   * through a folder swapped for one, or no longer a regular file
+   * (verified-source.ts). A file merely saved again since discovery is read.
+   * The file is ALSO counted `failed`, and its indexed version is kept; this
+   * only says why, so the caller can count refusals apart from broken files.
+   */
+  onRefusedFile?: (absPath: string, refusal: SourceRefusal) => void;
 }
 
 export interface IngestProgress {
@@ -225,27 +354,54 @@ export interface IngestProgress {
   counts: IngestResult;
 }
 
-/** Applies the per-file eligibility rules (skip-hidden + A/B denylist + extension allowlist) to a basename. */
-function isEligibleFile(name: string, allowedExtensions: readonly string[]): boolean {
-  if (isHiddenSegment(name)) return false;
-  if (isDenylistedFileName(name)) return false;
-  return isAllowedExtension(name, allowedExtensions);
+/**
+ * What discovery makes of a basename: a document to ingest, a file whose type
+ * the indexer cannot read (#1267), or something that was never a document — a
+ * hidden file, an OS or temp artifact (exclude-globs.ts).
+ *
+ * The middle answer is the one that used to vanish. It is a file somebody put
+ * on the share for a reason, so it is counted and listed; the last answer is
+ * noise, and listing it would bury the scans an admin has to convert.
+ */
+function classifyFile(
+  name: string,
+  allowedExtensions: readonly string[]
+): "eligible" | "unsupported" | "ignored" {
+  if (isHiddenSegment(name)) return "ignored";
+  if (isDenylistedFileName(name)) return "ignored";
+  return isAllowedExtension(name, allowedExtensions) ? "eligible" : "unsupported";
+}
+
+/** One root as discovery found it: the files to ingest, and the ones it cannot (path → type). */
+interface RootListing {
+  files: Map<string, DiscoveredFile>;
+  unsupported: Map<string, string>;
 }
 
 /**
- * Bytes on disk, or 0 when the size cannot be read.
+ * One file as discovery found it: its weight for progress, and the REAL path
+ * every later read opens (verified-source.ts) — the root's real path plus the
+ * names walked below it.
+ */
+interface DiscoveredFile {
+  bytes: number;
+  realPath: string;
+}
+
+/**
+ * Describes a listed file by an `lstat`, so a link is described as itself and
+ * never as whatever it points at.
  *
  * Discovery must not fail over a single file: one that vanished between the
- * readdir and this stat stays in the queue and is counted `failed` at read time,
- * exactly as before. It simply carries no weight, which is the honest thing to
- * do about a size we do not know — unlike dropping the file, which would make
- * the removal pass believe it is gone.
+ * readdir and this lstat stays in the queue with no weight, and is counted
+ * `failed` at read time, exactly as before. Dropping it instead would make the
+ * removal pass believe it is gone.
  */
-async function fileSize(absPath: string): Promise<number> {
+async function describeFile(realPath: string): Promise<DiscoveredFile> {
   try {
-    return (await stat(absPath)).size;
+    return { bytes: (await lstat(realPath)).size, realPath };
   } catch {
-    return 0;
+    return { bytes: 0, realPath };
   }
 }
 
@@ -259,30 +415,37 @@ async function fileSize(absPath: string): Promise<number> {
  */
 async function walkDir(
   dir: string,
-  allowedExtensions: readonly string[]
-): Promise<Map<string, number>> {
-  const entries = await readdir(dir, { withFileTypes: true });
-  const files = new Map<string, number>();
+  realDir: string,
+  allowedExtensions: readonly string[],
+  listing: RootListing
+): Promise<void> {
+  const entries = await readdir(realDir, { withFileTypes: true });
 
   for (const entry of entries) {
     if (isHiddenSegment(entry.name)) continue;
     const absPath = join(dir, entry.name);
+    const realPath = join(realDir, entry.name);
 
+    // A symlink is neither: `Dirent` describes the link itself, so a link to a
+    // file or to a folder is skipped here, and never followed.
     if (entry.isDirectory()) {
       if (isDenylistedDirName(entry.name)) continue;
-      for (const [path, size] of await walkDir(absPath, allowedExtensions)) files.set(path, size);
+      await walkDir(absPath, realPath, allowedExtensions, listing);
     } else if (entry.isFile()) {
-      if (isEligibleFile(entry.name, allowedExtensions))
-        files.set(absPath, await fileSize(absPath));
+      // No stat for an unsupported file: nothing reads it, and on a network
+      // share an lstat per file is a round trip per file.
+      const kind = classifyFile(entry.name, allowedExtensions);
+      if (kind === "eligible") listing.files.set(absPath, await describeFile(realPath));
+      else if (kind === "unsupported")
+        listing.unsupported.set(absPath, unsupportedFileType(entry.name));
     }
   }
-
-  return files;
 }
 
 /**
  * Lists ingest-eligible files for a root that may be a directory OR a single
- * file, or returns null if the root could not be read at all.
+ * file, or says why the root could not be read at all: `missing` when nothing
+ * is there, `unreadable` when something is but could not be listed.
  *
  * An `allowed_paths` grant (pinchy-files) can point at either shape; a naive
  * `readdir(root)` throws ENOTDIR on a file root (surfacing as an opaque 500
@@ -301,28 +464,38 @@ async function walkDir(
 async function discoverFiles(
   rootDir: string,
   allowedExtensions: readonly string[]
-): Promise<Map<string, number> | null> {
+): Promise<RootListing | "missing" | "unreadable"> {
+  // The ROOT may be a link — it is the admin's grant, and a share mounted
+  // elsewhere is a normal way to set one up — so it is resolved once, here.
+  // Everything below it is walked by real path and never through a link.
+  let realRoot;
   let rootStat;
   try {
-    rootStat = await stat(rootDir);
-  } catch {
-    return null;
+    realRoot = await realpath(rootDir);
+    rootStat = await stat(realRoot);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    return code === "ENOENT" || code === "ENOTDIR" ? "missing" : "unreadable";
   }
 
+  const listing: RootListing = { files: new Map(), unsupported: new Map() };
   if (rootStat.isFile()) {
-    return isEligibleFile(basename(rootDir), allowedExtensions)
-      ? new Map([[rootDir, rootStat.size]])
-      : new Map();
+    const name = basename(rootDir);
+    const kind = classifyFile(name, allowedExtensions);
+    if (kind === "eligible") listing.files.set(rootDir, await describeFile(realRoot));
+    else if (kind === "unsupported") listing.unsupported.set(rootDir, unsupportedFileType(name));
+    return listing;
   }
   // A socket, device, or dangling symlink: readable, and holds no documents.
-  if (!rootStat.isDirectory()) return new Map();
+  if (!rootStat.isDirectory()) return listing;
 
   try {
-    return await walkDir(rootDir, allowedExtensions);
+    await walkDir(rootDir, realRoot, allowedExtensions, listing);
+    return listing;
   } catch {
     // The root vanished or turned unreadable mid-walk. Same reasoning as
     // above: a partial listing must not be mistaken for the whole truth.
-    return null;
+    return "unreadable";
   }
 }
 
@@ -420,10 +593,29 @@ interface ExtractedDocument {
   incomplete: boolean;
   /**
    * What read it, for the record of an empty read: OCR can change what a PDF
-   * page yields, and nothing about a spreadsheet's hidden sheets or a document
-   * the converter could not convert.
+   * page yields, and nothing about a spreadsheet's hidden sheets, a document
+   * the converter could not convert, a scan whose bytes were refused, a
+   * text file, or an Outlook message.
    */
-  reader: "pdf" | "sheets" | "converter";
+  reader: "pdf" | "sheets" | "converter" | "image" | "text" | "email";
+}
+
+/**
+ * The artifact format version a document's chunks are read from: the current
+ * one for every format the converter turns into something else first (an
+ * Office document into a PDF, a legacy `.xls` into an `.xlsx`), the scan
+ * store's own for a TIFF, none for every other format.
+ *
+ * Recorded on the row (`kb_documents.artifact_format_version`) and compared on
+ * every run, because the artifact store alone cannot carry a change of rules
+ * to an unchanged document: its hash matches, it has chunks, and it never asks
+ * the store for anything. A row whose version is not this one is converted and
+ * read again — its chunks, and the artifact a citation opens, then both come
+ * from the current rules.
+ */
+function artifactFormatVersionFor(absPath: string): number | null {
+  if (isScanFile(absPath)) return SCAN_ARTIFACT_FORMAT_VERSION;
+  return needsConversion(absPath) ? OFFICE_ARTIFACT_FORMAT_VERSION : null;
 }
 
 /** The fields every page-shaped extraction derives from its pages alike. */
@@ -435,7 +627,8 @@ function fromPages(pages: readonly IngestPage[]): Pick<ExtractedDocument, "text"
 }
 
 /**
- * Hands out the converted PDF for an Office source, converting in batches as
+ * Hands out the converted artifact (a PDF, or an `.xlsx` for a legacy `.xls`)
+ * for a source the converter takes, converting in batches as
  * the queue reaches them.
  *
  * Lazy rather than a pre-pass over the whole corpus, and that is a progress
@@ -451,22 +644,45 @@ function fromPages(pages: readonly IngestPage[]): Pick<ExtractedDocument, "text"
  * of the queue — a skipped document never asks, so a batch cut from the front
  * would convert exactly what the run is about to leave alone.
  *
+ * Nor does a document its own turn will skip join a later document's batch
+ * (`turnWillSkip`): an unchanged indexed document would cost a full verified
+ * copy, and a settled refusal — one the converter could not convert, read as
+ * often as it is owed — a LibreOffice run, on every run that converts anything,
+ * for an answer its turn never asks for.
+ *
  * Every document in a batch is answered by that batch, including when the
  * converter rejects outright. One event, one answer: an unanswered document
  * would come back for a slice of its own.
+ *
+ * The converter is handed private copies, never paths on the share — the
+ * asking document's own, and one streamed here for each other document in the
+ * batch through the same checks as every other source read
+ * (`copyVerifiedSource`). A document that cannot be copied that way is left
+ * out of the batch and NOT answered: its own turn reads it again, and books
+ * the refusal or the failure then, once. Each copy goes with its path on the
+ * share (`displayPath`), so what the converter logs and answers names the file
+ * an admin can find, not the copy.
+ *
+ * Each answer is kept with the hash of the copy it was converted from, and is
+ * given only to a turn asking with that same hash. A batch mate's own turn
+ * takes a fresh copy, and a save in between would otherwise pair the new
+ * bytes' hash with the old bytes' artifact: chunks from the old version that
+ * no later run re-reads, and a viewer that hashes the file it opens and finds
+ * no artifact for it. A mismatch converts the asking document's own copy.
  */
 function officeArtifacts(
-  queue: readonly { absPath: string }[],
+  queue: readonly { absPath: string; realPath: string }[],
   deps: IngestDeps,
+  turnWillSkip: (file: { absPath: string; realPath: string }) => Promise<boolean>,
   batchSize = OFFICE_CONVERT_BATCH_SIZE
 ): ResolveArtifact {
-  const pending = queue.map((file) => file.absPath).filter(isOfficeFile);
-  const positionOf = new Map(pending.map((absPath, i) => [absPath, i]));
-  const done = new Map<string, ConversionOutcome>();
+  const pending = queue.filter((file) => needsConversion(file.absPath));
+  const positionOf = new Map(pending.map((file, i) => [file.absPath, i]));
+  const done = new Map<string, { hash: string; outcome: ConversionOutcome }>();
 
-  return async (absPath, contentHash) => {
+  return async (absPath, contentHash, copyPath) => {
     const known = done.get(absPath);
-    if (known) return known;
+    if (known?.hash === contentHash) return known.outcome;
 
     const start = positionOf.get(absPath);
     if (start === undefined) {
@@ -478,30 +694,50 @@ function officeArtifacts(
     // The batch begins at the document that ASKED, not at the head of the
     // queue. Everything before it was either converted already or skipped as
     // unchanged — and a skipped document never asks, so converting it ahead of
-    // time is work this run throws away. It is not free work either: the
-    // converter hashes every source it is handed, a full read each, even for a
-    // cache hit.
-    const batch: string[] = [];
-    for (let i = start; i < pending.length && batch.length < batchSize; i++) {
-      if (!done.has(pending[i])) batch.push(pending[i]);
-    }
+    // time is work this run throws away. It is not free work either: every
+    // document in a batch is read in full and copied before the converter sees
+    // it, even one the artifact store already holds.
+    const batch: { path: string; hash: string }[] = [{ path: absPath, hash: contentHash }];
+    const sources: OfficeSource[] = [{ absPath: copyPath, contentHash, displayPath: absPath }];
+    const copies: VerifiedCopy[] = [];
 
     try {
-      const outcomes = await deps.convertOffice(
-        batch.map((path) =>
-          // Only the asking document's hash is known: the ingest has read
-          // exactly that file so far. The converter hashes the rest itself.
-          path === absPath && contentHash ? { absPath: path, contentHash } : { absPath: path }
-        )
-      );
-      batch.forEach((path, i) => {
+      // The look-ahead is bounded by the window a full batch would span, not
+      // only by the batch: each mate looked at is read to learn whether its
+      // turn will skip it, and a scan that ran on until it found a batch's
+      // worth to read would hash the rest of an unchanged corpus here, inside
+      // this one document's turn.
+      let examined = 0;
+      for (let i = start + 1; i < pending.length && examined < batchSize - 1; i++) {
+        const mate = pending[i];
+        if (done.has(mate.absPath)) continue;
+        examined++;
+        let copy;
+        try {
+          if (await turnWillSkip(mate)) continue;
+          copy = await copyVerifiedSource(mate.realPath, mate.absPath, deps.stagingDir);
+        } catch {
+          // Refused, unreadable, no room for the copy, or its row could not
+          // be looked up. Not answered: see the doc comment above.
+          continue;
+        }
+        copies.push(copy);
+        batch.push({ path: mate.absPath, hash: copy.hash });
+        sources.push({ absPath: copy.path, contentHash: copy.hash, displayPath: mate.absPath });
+      }
+
+      const outcomes = await deps.convertOffice(sources);
+      batch.forEach(({ path, hash }, i) => {
         if (outcomes[i]) {
-          done.set(path, outcomes[i]);
+          done.set(path, { hash, outcome: outcomes[i] });
         } else {
           // The converter returned fewer outcomes than it was given sources,
           // which is a broken contract rather than a statement about this
           // document. Retryable, so it must not be recorded as unreadable.
-          done.set(path, unavailable(path, "converter returned no outcome for this document"));
+          done.set(path, {
+            hash,
+            outcome: unavailable(path, "converter returned no outcome for this document"),
+          });
         }
       });
     } catch (err) {
@@ -514,11 +750,18 @@ function officeArtifacts(
       // same thing. Every one of them stays retryable, so no row is written
       // and nothing is branded unreadable (#936).
       const reason = `converter did not answer: ${err instanceof Error ? err.message : String(err)}`;
-      for (const path of batch) done.set(path, unavailable(path, reason));
+      for (const { path, hash } of batch) {
+        done.set(path, { hash, outcome: unavailable(path, reason) });
+      }
+    } finally {
+      // The artifact is in the store by now; the copies it was made from are
+      // not needed past this batch. The asking document's copy is its caller's.
+      await Promise.all(copies.map((copy) => copy.dispose()));
     }
 
     return (
-      done.get(absPath) ?? unavailable(absPath, "converter returned no outcome for this document")
+      done.get(absPath)?.outcome ??
+      unavailable(absPath, "converter returned no outcome for this document")
     );
   };
 }
@@ -531,9 +774,29 @@ function unavailable(sourcePath: string, reason: string): ConversionOutcome {
 /**
  * Resolves the converted PDF for one Office source. `contentHash` is the sha256
  * the caller has already computed for its own idempotency check — the artifact
- * key, passed on so the converter need not read the file a second time.
+ * key, passed on so the converter need not read the file a second time — and
+ * `copyPath` the private copy of exactly those bytes, which is what the
+ * converter reads.
  */
-type ResolveArtifact = (absPath: string, contentHash?: string) => Promise<ConversionOutcome>;
+type ResolveArtifact = (
+  absPath: string,
+  contentHash: string,
+  copyPath: string
+) => Promise<ConversionOutcome>;
+
+/**
+ * The server log's line for a file refused before anything was indexed from
+ * it, or indexed without part of what it should have had (a .docx read from
+ * its own text, without a preview). The path is whatever name the file was given on the share, newlines
+ * included, and a reason can quote the file or the file system — so neither is
+ * printed as it stands: one refusal is one bounded line, and cannot pass for
+ * another.
+ */
+function logRefusal(absPath: string, verdict: string, reason: string): void {
+  console.warn(
+    `[kb-ingest] ${oneLine(absPath, LOG_PATH_MAX)}: ${verdict} — ${oneLine(reason, LOG_REASON_MAX)}`
+  );
+}
 
 /**
  * Reads one file into chunks with locators, dispatching on its extension.
@@ -544,36 +807,84 @@ type ResolveArtifact = (absPath: string, contentHash?: string) => Promise<Conver
  *   PDF           `chunkPages` on the page the text came from
  *   spreadsheet   `extractXlsx`, sheet + row range — `XlsxChunk` IS the
  *                 locator field-for-field, so that half is a spread
+ *   legacy `.xls` the `.xlsx` the converter made of it, read like any other
+ *                 workbook — exceljs cannot parse BIFF (#1373)
  *   presentation  the converted PDF, slide N = page N
  *   Word          the converted PDF's outline, heading path — never a page,
  *                 which the renderer decides and the reader's Word disagrees
  *                 with
+ *   TIFF scan     the PDF of its frames, through the PDF path: frame N =
+ *                 page N
+ *   plain text    no locator — it has no pages, so a citation opens the file
+ *   Outlook mail  no locator, like plain text; headers above the body
+ *
+ * `absPath` is the document's identity and decides the dispatch; `copyPath`
+ * is what the readers open — a private copy of the verified bytes, so none of
+ * them is ever handed a path on the share.
  */
 async function extractDocument(
   absPath: string,
+  copyPath: string,
+  deps: IngestDeps,
+  resolveArtifact: ResolveArtifact,
+  contentHash: string
+): Promise<ExtractedDocument> {
+  const read = await readDocument(absPath, copyPath, deps, resolveArtifact, contentHash);
+  // The one place every reader's output passes through on its way to the
+  // database (#1366). A NUL in a text layer or a sheet name is refused by
+  // Postgres, and the other control characters are noise no search matches.
+  // A chunk that held nothing else is not written at all: it would be a row
+  // whose text says nothing, and an embedding of the empty string.
+  const chunks = read.chunks
+    .map((chunk) => ({
+      text: toStorableText(chunk.text),
+      locator: toStorableLocator(chunk.locator),
+    }))
+    .filter((chunk) => chunk.text.trim() !== "");
+  return { ...read, chunks, text: toStorableText(read.text) };
+}
+
+/** The dispatch described above, as the readers return it — before it is made storable. */
+async function readDocument(
+  absPath: string,
+  copyPath: string,
   deps: IngestDeps,
   resolveArtifact: ResolveArtifact,
   contentHash: string
 ): Promise<ExtractedDocument> {
   if (isOfficeFile(absPath)) {
-    return extractOfficeDocument(absPath, deps, resolveArtifact, contentHash);
+    return extractOfficeDocument(absPath, copyPath, deps, resolveArtifact, contentHash);
   }
 
-  if (isSpreadsheetFile(absPath)) {
-    const extraction = await deps.extractXlsx(absPath);
-    return {
-      chunks: extraction.chunks.map(({ text, sheet, startRow, endRow }) => ({
-        text,
-        locator: { kind: "sheet", sheet, startRow, endRow },
-      })),
-      pageCount: null,
-      text: extraction.chunks.map((chunk) => chunk.text).join("\n"),
-      incomplete: false,
-      reader: "sheets",
-    };
+  if (isLegacyWorkbook(absPath)) {
+    const artifactPath = await convertedArtifact(absPath, copyPath, resolveArtifact, contentHash);
+    if (artifactPath === null) {
+      return { chunks: [], pageCount: null, text: "", incomplete: true, reader: "converter" };
+    }
+    // The converted workbook is untrusted input like any other: the same
+    // reader, behind the same limits, refuses it the same way.
+    return readWorkbook(absPath, artifactPath, deps);
   }
 
-  const pages = await deps.extractPdf(absPath);
+  if (isSpreadsheetFile(absPath)) return readWorkbook(absPath, copyPath, deps);
+
+  if (isScanFile(absPath)) {
+    return extractScan(absPath, copyPath, deps, contentHash);
+  }
+
+  if (isTextFile(absPath)) {
+    return extractTextFile(absPath, copyPath);
+  }
+
+  if (isMsgFile(absPath)) {
+    return extractEmail(absPath, copyPath, deps);
+  }
+
+  return readPdfPages(await deps.extractPdf(copyPath));
+}
+
+/** A PDF's pages as chunks, each anchored on the page its text came from. */
+function readPdfPages(pages: IngestPage[]): ExtractedDocument {
   return {
     chunks: chunkPages(pages).map((chunk) => ({
       text: chunk.text,
@@ -582,6 +893,252 @@ async function extractDocument(
     pageCount: pages.length,
     ...fromPages(pages),
     reader: "pdf",
+  };
+}
+
+/**
+ * Reads an OOXML workbook — the original, or the `.xlsx` the converter made of
+ * a legacy `.xls` — into chunks anchored on sheet and row range.
+ *
+ * `absPath` names the document in the log; `workbookPath` is what is opened.
+ */
+async function readWorkbook(
+  absPath: string,
+  workbookPath: string,
+  deps: IngestDeps
+): Promise<ExtractedDocument> {
+  const extraction = await deps.extractXlsx(workbookPath).catch((err: unknown) => {
+    if (!(err instanceof OfficeFileRejectedError)) throw err;
+    // Refused unread: too large to load (a compressed bomb is the case that
+    // matters), or not the workbook its name says (a broken archive, a
+    // number format exceljs would choke on). That is a verdict on THIS file,
+    // and a final one — retrying reads the same bytes — so it becomes a row
+    // with no chunks, which is exactly how the unreadable list
+    // (unsearchable.ts) finds it, with its reason in the server log.
+    logRefusal(absPath, "not read", err.message);
+    return null;
+  });
+  if (extraction === null) {
+    return { chunks: [], pageCount: null, text: "", incomplete: false, reader: "sheets" };
+  }
+  return {
+    chunks: extraction.chunks.map(({ text, sheet, startRow, endRow }) => ({
+      text,
+      locator: { kind: "sheet", sheet, startRow, endRow },
+    })),
+    pageCount: null,
+    text: extraction.chunks.map((chunk) => chunk.text).join("\n"),
+    incomplete: false,
+    reader: "sheets",
+  };
+}
+
+/**
+ * Reads a scanned TIFF through the PDF its frames make (#1409): the scanned-PDF
+ * path's OCR, page budget, retry rule and page citations, without a second OCR
+ * path. Frame N is page N, and the citation opens that PDF on it.
+ */
+async function extractScan(
+  absPath: string,
+  copyPath: string,
+  deps: IngestDeps,
+  contentHash: string
+): Promise<ExtractedDocument> {
+  // A scan has no text layer, so a run without OCR would decode it for
+  // nothing. Recorded as an empty PDF read without OCR — exactly a blank
+  // scanned PDF's record — so the first run with a vision model reads it.
+  if (!deps.ocrModel) {
+    return { chunks: [], pageCount: null, text: "", incomplete: false, reader: "pdf" };
+  }
+
+  const conversion = await deps.convertScan(copyPath, contentHash).catch((err: unknown) => {
+    if (!(err instanceof OfficeFileRejectedError)) throw err;
+    // Not a TIFF inside, or over a limit: a verdict on these bytes, as final
+    // as a refused workbook — and no vision model reads them differently.
+    logRefusal(absPath, "not read", err.message);
+    return null;
+  });
+  if (conversion === null) {
+    return { chunks: [], pageCount: null, text: "", incomplete: false, reader: "image" };
+  }
+
+  const read = readPdfPages(await deps.extractPdf(conversion.pdfPath));
+  // The frames past the OCR budget are not pages of the PDF, but they are
+  // pages of the document.
+  return { ...read, pageCount: conversion.frames };
+}
+
+/**
+ * Reads a plain-text file in the encoding its author saved it in
+ * (text-extract.ts). It has no pages, so its chunks carry no locator, and the
+ * citation names the file without linking it: the viewer shows PDFs only.
+ */
+async function extractTextFile(absPath: string, copyPath: string): Promise<ExtractedDocument> {
+  const text = await readTextFile(copyPath).catch((err: unknown) => {
+    if (!(err instanceof OfficeFileRejectedError)) throw err;
+    logRefusal(absPath, "not read", err.message);
+    return null;
+  });
+  if (text === null) {
+    return { chunks: [], pageCount: null, text: "", incomplete: false, reader: "text" };
+  }
+  return {
+    chunks: chunkPages([{ page: 1, text }]).map((chunk) => ({ text: chunk.text, locator: null })),
+    pageCount: null,
+    text,
+    incomplete: false,
+    reader: "text",
+  };
+}
+
+/**
+ * The converter's artifact for a document, or `null` when the converter
+ * refused THIS document. Throws when the converter never got to judge it.
+ *
+ * - Unavailable (out of memory, timed out, binary missing): throwing keeps the
+ *   existing row and its chunks untouched and counts the file `failed`, so a
+ *   memory squeeze cannot brand a perfectly good document as permanently
+ *   unreadable (#936).
+ * - Refused: there is nothing to index. The caller returns an empty
+ *   extraction — rather than throwing — which gives it a row with no chunks,
+ *   exactly how the unreadable list finds it (unsearchable.ts). Incomplete
+ *   all the same: `failed` also covers causes that are not about the document
+ *   — a source briefly unreadable on a network share, LibreOffice exiting
+ *   without an artifact — so it is retried a few runs before it is taken as
+ *   final.
+ *
+ * The unreadable list never says why, and the admin-facing counts must not
+ * name paths, so the refusal log is the only place an operator learns which
+ * document was refused and for what — logged on every run that refuses it,
+ * not only the last. The reason holds no document text, but it can quote
+ * names read from the file and the file's own path, so `logRefusal` keeps it
+ * to one line.
+ */
+async function convertedArtifact(
+  absPath: string,
+  copyPath: string,
+  resolveArtifact: ResolveArtifact,
+  contentHash: string
+): Promise<string | null> {
+  const outcome = await conversionOf(absPath, copyPath, resolveArtifact, contentHash);
+  if (outcome.status !== "converted" || !outcome.artifactPath) {
+    logRefusal(absPath, "not converted", outcome.reason ?? "unknown");
+    return null;
+  }
+  return outcome.artifactPath;
+}
+
+/** The converter's answer for one document; throws when it never judged it (see above). */
+async function conversionOf(
+  absPath: string,
+  copyPath: string,
+  resolveArtifact: ResolveArtifact,
+  contentHash: string
+): Promise<ConversionOutcome> {
+  const outcome = await resolveArtifact(absPath, contentHash, copyPath);
+  if (outcome.status === "infrastructure") {
+    throw new Error(`office conversion unavailable: ${outcome.reason ?? "unknown"}`);
+  }
+  return outcome;
+}
+
+/**
+ * Whether a refused conversion leaves the source text to index (#1406): a
+ * `.docx` or `.docm` whose PDF came out SHORT against the word-count oracle.
+ *
+ * Short and nothing else, because only then has the reader child already read
+ * these bytes through its guard and found them whole — the oracle's count is
+ * that read, of the same private copy `readDocxText` gets here, not the
+ * sanitized one the converter got (`oracleInput`). A document refused before
+ * conversion (a bomb, HTML renamed `.docx`) or one LibreOffice could not load
+ * must not reach mammoth by a back door. `.doc` and `.ppt` have oracles too,
+ * but catdoc and catppt under-count and mangle the diacritics a search matches
+ * on: fit for a lower bound, not for the text a document is found by.
+ */
+function hasSourceTextFallback(absPath: string, outcome: ConversionOutcome): boolean {
+  return outcome.verification?.status === "short" && isOoxmlWordFile(absPath);
+}
+
+/**
+ * A `.docx` or `.docm` read straight from its source, after its PDF failed the tripwire
+ * (#1406). The tripwire is right to keep that PDF out of the index and the
+ * viewer — a third of the text may be missing from it — and wrong to leave the
+ * document with nothing. So it is indexed like a text file: no pages, no
+ * locator, and a citation names the file without a page-accurate preview.
+ *
+ * Final, like a converted document: the converter judged these bytes, and the
+ * next run would convert them to the same short PDF. A source the reader
+ * refuses as well is left as the refused conversion always was — no chunks,
+ * retried a few runs — with both causes in the log.
+ */
+async function extractDocxSourceText(
+  absPath: string,
+  copyPath: string,
+  deps: IngestDeps,
+  outcome: ConversionOutcome
+): Promise<ExtractedDocument> {
+  const reason = outcome.reason ?? "unknown";
+  const text = await deps.readDocxText(copyPath).catch((err: unknown) => {
+    if (!(err instanceof OfficeFileRejectedError)) throw err;
+    logRefusal(absPath, "not converted", reason);
+    logRefusal(absPath, "not read from the .docx either", err.message);
+    return null;
+  });
+  if (text === null) {
+    return { chunks: [], pageCount: null, text: "", incomplete: true, reader: "converter" };
+  }
+  logRefusal(
+    absPath,
+    `indexed from the ${extname(absPath).toLowerCase()} text, without a preview`,
+    reason
+  );
+  return {
+    chunks: chunkPages([{ page: 1, text }]).map((chunk) => ({ text: chunk.text, locator: null })),
+    pageCount: null,
+    text,
+    incomplete: false,
+    reader: "text",
+  };
+}
+
+/**
+ * Reads a saved Outlook message (#1409): a header block — subject, sender,
+ * recipients, date, attachment names — above the body (msg-extract.ts). Like
+ * a text file it has no pages, so its chunks carry no locator and the citation
+ * names the file. Every chunk after the first lost the header block, so it
+ * starts with one line naming the mail.
+ *
+ * Attachment contents are not read: a citation could not point inside the
+ * mail at them. Their names are in the header block, so a search for the file
+ * name still finds the mail.
+ */
+async function extractEmail(
+  absPath: string,
+  copyPath: string,
+  deps: IngestDeps
+): Promise<ExtractedDocument> {
+  const email = await deps.readEmail(copyPath).catch((err: unknown) => {
+    if (!(err instanceof OfficeFileRejectedError)) throw err;
+    logRefusal(absPath, "not read", err.message);
+    return null;
+  });
+  if (email === null) {
+    return { chunks: [], pageCount: null, text: "", incomplete: false, reader: "email" };
+  }
+  if (email.bodyTruncated) {
+    logRefusal(absPath, "body cut", "longer than an indexed mail body may be");
+  }
+  const text = formatEmailText(email);
+  const context = emailContextLine(email);
+  return {
+    chunks: chunkPages([{ page: 1, text }]).map((chunk, i) => ({
+      text: i === 0 ? chunk.text : `${context}\n${chunk.text}`,
+      locator: null,
+    })),
+    pageCount: null,
+    text,
+    incomplete: false,
+    reader: "email",
   };
 }
 
@@ -603,35 +1160,23 @@ async function extractDocument(
  */
 async function extractOfficeDocument(
   absPath: string,
+  copyPath: string,
   deps: IngestDeps,
   resolveArtifact: ResolveArtifact,
   contentHash: string
 ): Promise<ExtractedDocument> {
-  const outcome = await resolveArtifact(absPath, contentHash);
-
-  if (outcome.status === "infrastructure") {
-    // The converter never got to judge this document (out of memory, timed
-    // out, binary missing). Throwing keeps the existing row and its chunks
-    // untouched and counts the file `failed`, so a memory squeeze cannot brand
-    // a perfectly good document as permanently unreadable (#936).
-    throw new Error(`office conversion unavailable: ${outcome.reason ?? "unknown"}`);
-  }
-
+  const outcome = await conversionOf(absPath, copyPath, resolveArtifact, contentHash);
   if (outcome.status !== "converted" || !outcome.artifactPath) {
-    // A verdict about THIS document: it cannot be converted, so there is
-    // nothing to index. Returning an empty extraction — rather than throwing —
-    // is what gives it a row with no chunks, which is exactly how the
-    // unreadable list finds it (unsearchable.ts), with nothing to wire up.
-    //
-    // Incomplete all the same: `failed` also covers causes that are not about
-    // the document — a source briefly unreadable on a network share,
-    // LibreOffice exiting without a PDF — so it is retried a few runs before
-    // it is taken as final.
+    if (hasSourceTextFallback(absPath, outcome)) {
+      return extractDocxSourceText(absPath, copyPath, deps, outcome);
+    }
+    logRefusal(absPath, "not converted", outcome.reason ?? "unknown");
     return { chunks: [], pageCount: null, text: "", incomplete: true, reader: "converter" };
   }
+  const artifactPath = outcome.artifactPath;
 
   const word = isWordFile(absPath);
-  const pages = await deps.extractPdf(outcome.artifactPath, { outline: word });
+  const pages = await deps.extractPdf(artifactPath, { outline: word });
   const sections = word ? collectHeadingSections(pages) : [];
 
   return {
@@ -652,26 +1197,51 @@ async function extractOfficeDocument(
 }
 
 /**
- * Embeds every chunk and inserts the resulting kb_chunks rows for
- * `documentId`. Returns the number of chunks written — zero means the
- * document is indexed but unsearchable (e.g. an image-only scan whose text
- * layer is empty, or a workbook whose every sheet is hidden), which callers
- * must report as such rather than as a successful index.
+ * Replaces every chunk the embedder cannot take whole with the pieces it can,
+ * each under the original chunk's locator (#1380). Without
+ * `deps.fitForEmbedding` the chunks pass through unchanged.
+ */
+async function fitChunksForEmbedding(
+  chunks: LocatedChunk[],
+  deps: IngestDeps
+): Promise<LocatedChunk[]> {
+  if (!deps.fitForEmbedding || chunks.length === 0) return chunks;
+  const fitted = await deps.fitForEmbedding(chunks.map((chunk) => chunk.text));
+  if (fitted.length !== chunks.length) {
+    throw new Error(
+      `fitForEmbedding returned ${fitted.length} piece lists for ${chunks.length} chunks`
+    );
+  }
+  return chunks.flatMap((chunk, i) => fitted[i].map((text) => ({ text, locator: chunk.locator })));
+}
+
+/**
+ * Embeds every chunk, then writes the document row (`writeDocument`, which
+ * returns its id) and the resulting kb_chunks rows in ONE transaction. Returns
+ * the number of chunks written — zero means the document is indexed but
+ * unsearchable (e.g. an image-only scan whose text layer is empty, or a
+ * workbook whose every sheet is hidden), which callers must report as such
+ * rather than as a successful index.
+ *
+ * Embedded first, written together: an embedder that goes down halfway, or a
+ * database that refuses the rows, leaves the stored document — its record and
+ * its chunks — exactly as it was, and a new document without a row at all.
+ *
+ * A refusal of THIS file's values (`isContentRejection`) is the file's failure,
+ * not the run's (#1366), and so is anything else that is not systemic
+ * (`systemicIngestError`, #1380): the per-file boundary in `ingestPaths`
+ * decides. The database's own error is what travels, never the query
+ * builder's wrapper, whose message quotes the document's text.
  */
 async function writeChunks(
-  documentId: string,
+  writeDocument: (tx: Transaction) => Promise<string>,
   orgId: string,
   sourcePath: string,
   chunks: LocatedChunk[],
   deps: IngestDeps,
-  onChunkProgress?: ChunkProgressCallback,
-  rewrite?: ChunkRewrite
+  onChunkProgress?: ChunkProgressCallback
 ): Promise<number> {
-  if (chunks.length === 0) {
-    if (rewrite) await db.transaction((tx) => applyRewrite(tx, documentId, rewrite));
-    return 0;
-  }
-
+  chunks = await fitChunksForEmbedding(chunks, deps);
   const vectors: number[][] = [];
   for (let i = 0; i < chunks.length; i += EMBED_PROGRESS_BATCH) {
     const batch = chunks.slice(i, i + EMBED_PROGRESS_BATCH);
@@ -682,27 +1252,39 @@ async function writeChunks(
     if (vectors.length < chunks.length) await onChunkProgress?.(vectors.length, chunks.length);
   }
 
-  // Embedded first, written in one transaction: an embedder that goes down
-  // halfway leaves the stored chunks — and the record that says what they
-  // are — exactly as they were.
-  const rows = chunks.map((chunk, i) => ({
-    documentId,
-    orgId,
-    sourcePath,
-    chunkText: chunk.text,
-    // Decided by `extractDocument`, per format, against the closed union in
-    // locator.ts (#933): a page for a PDF, a sheet + row range for a
-    // spreadsheet. This function no longer knows which, which is the point —
-    // adding the heading and slide producers (#938) touches the dispatch and
-    // not the write.
-    locator: chunk.locator,
-    lang: detectLang(chunk.text),
-    embedding: vectors[i],
-  }));
-  await db.transaction(async (tx) => {
-    if (rewrite) await applyRewrite(tx, documentId, rewrite);
-    await tx.insert(kbChunks).values(rows);
-  });
+  try {
+    await db.transaction(async (tx) => {
+      const documentId = await writeDocument(tx);
+      const rows = chunks.map((chunk, i) => ({
+        documentId,
+        orgId,
+        sourcePath,
+        chunkText: chunk.text,
+        // Decided by `extractDocument`, per format, against the closed union
+        // in locator.ts (#933): a page for a PDF, a sheet + row range for a
+        // spreadsheet. This function does not know which, which is the point
+        // — adding the heading and slide producers (#938) touched the
+        // dispatch and not the write.
+        locator: chunk.locator,
+        lang: detectLang(chunk.text),
+        embedding: vectors[i],
+      }));
+      // In batches, because one statement binds at most 65,533 parameters
+      // (insert-batches.ts) and a long document has more chunks than that —
+      // inside this one transaction, so a refused batch still leaves the
+      // stored document exactly as it was.
+      for (const batch of inBatches(rows, rowsPerInsert(kbChunks))) {
+        await tx.insert(kbChunks).values(batch);
+      }
+    });
+  } catch (err) {
+    const rejection = isContentRejection(err);
+    // The database's own error, not the query builder's wrapper around it: the
+    // wrapper's message quotes every parameter — the document's text and its
+    // vectors — and would push the reason out of the bounded log line.
+    if (rejection) throw new FileIngestError(sourcePath, rejection);
+    throw databaseErrorBehind(err);
+  }
 
   return chunks.length;
 }
@@ -725,10 +1307,11 @@ async function applyRewrite(tx: Transaction, documentId: string, rewrite: ChunkR
 
 /**
  * A file-level ingest failure: THIS file could not be read or parsed (corrupt
- * PDF, permission denied, vanished between the walk and the read). Distinct
- * from the errors ingestDirectory deliberately lets escape — embedding and DB
- * failures are systemic, and reporting an Ollama outage as "193 corrupt files"
- * would bury the one fact an operator needs.
+ * PDF, permission denied, vanished between the walk and the read), or the
+ * database refused the values read from it (`writeChunks`). It names the file
+ * for the log line. Since #1380 it is no longer the only error the per-file
+ * boundary contains — everything that is not systemic is — but a systemic
+ * cause inside one (a database connection lost mid-file) still stops the run.
  */
 class FileIngestError extends Error {
   constructor(
@@ -740,7 +1323,19 @@ class FileIngestError extends Error {
   }
 }
 
-/** Runs a file-scoped step, tagging anything it throws as a FileIngestError so the per-file boundary in ingestDirectory can catch exactly those. */
+/**
+ * A progress write that failed inside a file's work. Carried out of the file
+ * unwrapped, so the per-file boundary does not count the run's own
+ * bookkeeping failing as that file's failure.
+ */
+class ProgressReportError extends Error {
+  constructor(cause: unknown) {
+    super("Reporting index progress failed", { cause });
+    this.name = "ProgressReportError";
+  }
+}
+
+/** Runs a file-scoped step, tagging anything it throws as a FileIngestError so the log line names the file it happened on. */
 async function fileStep<T>(sourcePath: string, step: () => Promise<T>): Promise<T> {
   try {
     return await step();
@@ -758,7 +1353,11 @@ function ocrSetup(deps: IngestDeps): string {
 }
 
 /** What a read leaves on its document row (`kb_documents`). */
-type ExtractionRecord = { emptyExtractionBy: string | null; incompleteReads: number };
+type ExtractionRecord = {
+  emptyExtractionBy: string | null;
+  incompleteReads: number;
+  artifactFormatVersion: number | null;
+};
 
 /**
  * What to record about a read, given how many reads before it in a row did
@@ -771,6 +1370,7 @@ type ExtractionRecord = { emptyExtractionBy: string | null; incompleteReads: num
  * it is still rebuilt.
  */
 function extractionRecord(
+  absPath: string,
   extracted: ExtractedDocument,
   deps: IngestDeps,
   previousIncompleteReads: number
@@ -782,6 +1382,7 @@ function extractionRecord(
     emptyExtractionBy:
       extracted.chunks.length === 0 && settled ? `${EXTRACTION_VERSION}|${reader}` : null,
     incompleteReads,
+    artifactFormatVersion: artifactFormatVersionFor(absPath),
   };
 }
 
@@ -805,23 +1406,120 @@ function couldReadDifferently(recorded: string, deps: IngestDeps): boolean {
 }
 
 /**
+ * Whether a document's row owes it another read even if the bytes on disk are
+ * the ones it records, or lets it be skipped. `ingestFile` asks once the hash
+ * has matched; `turnWillSkip` asks before hashing, since a row that owes a
+ * read owes it whatever the bytes are — so a batch of Office conversions never
+ * converts on the way a document its own turn will skip.
+ *
+ * `current` is whether the row's chunks came from the current artifact rules;
+ * `storedChunks` how many it has. Both are returned only when a read is owed.
+ */
+async function readOwed(
+  existing: typeof kbDocuments.$inferSelect,
+  absPath: string,
+  deps: IngestDeps
+): Promise<{ owed: false } | { owed: true; current: boolean; storedChunks: number }> {
+  // Chunks read from an artifact the current conversion rules did not make
+  // are owed a new read, whatever else is on record: the rules changed
+  // because of what such an artifact may hold.
+  const current = existing.artifactFormatVersion === artifactFormatVersionFor(absPath);
+
+  // A read that did not finish is owed another one, chunks or not: a scan
+  // with a typed cover sheet has chunks of its own even when every vision
+  // call behind it failed.
+  const retryOwed =
+    !current || (existing.incompleteReads > 0 && existing.incompleteReads < MAX_INCOMPLETE_READS);
+
+  // A file with no text at all: the last read found nothing. Reading it
+  // again with the same setup would find the same nothing — and under the
+  // nightly reindex, a blank scan would be rendered and sent to the vision
+  // model again every night. So it is skipped like any unchanged file unless
+  // this run could read it differently. Checked before the chunk count: on a
+  // corpus of thousands of blank scans that is a query per document per night.
+  if (
+    !retryOwed &&
+    existing.emptyExtractionBy !== null &&
+    !couldReadDifferently(existing.emptyExtractionBy, deps)
+  ) {
+    return { owed: false };
+  }
+
+  const [{ value: storedChunks }] = await db
+    .select({ value: count() })
+    .from(kbChunks)
+    .where(eq(kbChunks.documentId, existing.id));
+
+  if (!retryOwed && storedChunks > 0) return { owed: false };
+  return { owed: true, current, storedChunks };
+}
+
+/**
+ * Whether this file's own turn will skip it: its row records the bytes on
+ * disk now, and owes them no read (`readOwed`). A row that owes a read
+ * whatever the bytes are answers without them; otherwise the file is read once
+ * to hash it. That read comes on top of the one its own turn takes — worth it
+ * against the verified copy, and possibly the conversion, a batch would
+ * otherwise spend on a document nobody reads.
+ */
+async function turnWillSkip(
+  orgId: string,
+  file: { absPath: string; realPath: string },
+  deps: IngestDeps
+): Promise<boolean> {
+  const [existing] = await db
+    .select()
+    .from(kbDocuments)
+    .where(and(eq(kbDocuments.orgId, orgId), eq(kbDocuments.sourcePath, file.absPath)))
+    .limit(1);
+  if (!existing) return false;
+  if ((await readOwed(existing, file.absPath, deps)).owed) return false;
+  const { hash } = await hashVerifiedSource(file.realPath);
+  return existing.contentHash === hash;
+}
+
+/**
  * Ingests one file: hash it, decide skip/recover/replace/insert, and write its
- * chunks. Reading and PDF extraction are wrapped in fileStep() so a failure
- * THIS file owns surfaces as a FileIngestError; embedding and DB calls are
- * deliberately left bare so a systemic outage aborts the whole run.
+ * chunks. Whatever it throws is this file's failure unless
+ * `systemicIngestError` says otherwise — the per-file boundary in
+ * `ingestPaths` decides (#1380).
  */
 async function ingestFile(
   orgId: string,
   absPath: string,
+  realPath: string,
+  status: "active" | "archived",
   deps: IngestDeps,
   resolveArtifact: ResolveArtifact,
   onChunkProgress?: ChunkProgressCallback
 ): Promise<FileOutcome> {
-  const { buffer, fileStat } = await fileStep(absPath, async () => ({
-    buffer: await readFile(absPath),
-    fileStat: await stat(absPath),
-  }));
-  const contentHash = createHash("sha256").update(buffer).digest("hex");
+  // Every read goes through a verified open (verified-source.ts), and none
+  // holds the file whole: a whole-file buffer here stayed alive across every
+  // await below — through an Office file's conversion and the embedding.
+  //
+  // First the hash, streamed, which is all an unchanged file costs. Only a
+  // file that must be read is then streamed into a private copy, the one path
+  // the extractors are handed — verified again, so a link swapped in between
+  // the two is refused too. A row's hash always names the bytes that were
+  // actually read: should the file have changed between hash and copy, the
+  // COPY's hash and mtime are stored, through the replace path below.
+  const { hash: contentHash } = await fileStep(absPath, () => hashVerifiedSource(realPath));
+  const extract = () =>
+    fileStep(absPath, async () => {
+      const copy = await copyVerifiedSource(realPath, absPath, deps.stagingDir);
+      try {
+        const extracted = await extractDocument(
+          absPath,
+          copy.path,
+          deps,
+          resolveArtifact,
+          copy.hash
+        );
+        return { extracted, contentHash: copy.hash, mtime: copy.mtime };
+      } finally {
+        await copy.dispose();
+      }
+    });
 
   const [existing] = await db
     .select()
@@ -829,112 +1527,108 @@ async function ingestFile(
     .where(and(eq(kbDocuments.orgId, orgId), eq(kbDocuments.sourcePath, absPath)))
     .limit(1);
 
+  // Set when a rebuild in place read bytes other than the ones it hashed.
+  let reread: Awaited<ReturnType<typeof extract>> | undefined;
   if (existing && existing.contentHash === contentHash) {
-    // Self-healing status: the status is a pure function of the path
-    // (archive-paths.ts), so a stored value can only disagree after a rule
-    // change or a pre-backfill row. The content-hash skip below would
-    // otherwise freeze that disagreement forever.
-    const status = statusForPath(absPath);
+    // Self-healing status: the status is a pure function of the path and the
+    // searched folders (archive-paths.ts), so a stored value can only disagree
+    // after a rule change, a grant change, or a pre-backfill row — including
+    // every row the whole-path rule archived before #1420. The content-hash
+    // skip below would otherwise freeze that disagreement forever.
     if (existing.status !== status) {
       await db.update(kbDocuments).set({ status }).where(eq(kbDocuments.id, existing.id));
     }
 
-    // A read that did not finish is owed another one, chunks or not: a scan
-    // with a typed cover sheet has chunks of its own even when every vision
-    // call behind it failed.
-    const retryOwed =
-      existing.incompleteReads > 0 && existing.incompleteReads < MAX_INCOMPLETE_READS;
-
-    // A file with no text at all: the last read found nothing. Reading it
-    // again with the same setup would find the same nothing — and under the
-    // nightly reindex, a blank scan would be rendered and sent to the vision
-    // model again every night. So it is skipped like any unchanged file unless
-    // this run could read it differently. Checked before the chunk count: on a
-    // corpus of thousands of blank scans that is a query per document per night.
-    if (
-      !retryOwed &&
-      existing.emptyExtractionBy !== null &&
-      !couldReadDifferently(existing.emptyExtractionBy, deps)
-    ) {
-      return "skipped";
-    }
-
-    const [{ value: storedChunks }] = await db
-      .select({ value: count() })
-      .from(kbChunks)
-      .where(eq(kbChunks.documentId, existing.id));
-
-    if (!retryOwed && storedChunks > 0) return "skipped";
+    const verdict = await readOwed(existing, absPath, deps);
+    if (!verdict.owed) return "skipped";
+    const { current, storedChunks } = verdict;
+    // Retries already spent were spent under the earlier rules.
+    const previousIncompleteReads = current ? existing.incompleteReads : 0;
 
     // Robustness case: a document row survives with zero chunks and no
-    // empty read on record (a prior ingest crashed after the document insert
-    // but before chunk writes, an operator hand-deleted kb_chunks rows, or
-    // the row predates the record), or its last read is owed a retry. The
+    // empty read on record (written by a version that inserted the document
+    // before its chunks and crashed in between, an operator hand-deleted
+    // kb_chunks rows, or the row predates the record), or its last read is
+    // owed a retry — which
+    // a read from an earlier artifact format always is. The
     // content hash still matches the file on disk, so a naive "hash matches ->
     // skip" would leave this document unsearchable while silently reporting
     // success. We read it again instead and rebuild its chunks in place (same
     // id, no duplicate row).
-    const extracted = await fileStep(absPath, () =>
-      extractDocument(absPath, deps, resolveArtifact, contentHash)
-    );
-    // A retry that fails worse than the read before it must not cost the text
-    // that read found: an outage that returned keeps what is stored.
-    const keepStored =
-      storedChunks > 0 && extracted.incomplete && extracted.chunks.length < storedChunks;
-    const record = extractionRecord(extracted, deps, existing.incompleteReads);
-    const written = await writeChunks(
-      existing.id,
-      orgId,
-      absPath,
-      keepStored ? [] : extracted.chunks,
-      deps,
-      onChunkProgress,
-      {
+    const read = await extract();
+    // Unless the file was saved between the hash and the copy: then the reader
+    // was handed NEW bytes, and rebuilding in place would file their text
+    // under the old hash — which a revert matches, so every later run would
+    // skip the document with text no longer on disk. New bytes are a change
+    // like any other, and take the replace path below with what was read.
+    if (read.contentHash !== contentHash) {
+      reread = read;
+    } else {
+      const { extracted } = read;
+      // A retry that fails worse than the read before it must not cost the text
+      // that read found: an outage that returned keeps what is stored. Never
+      // chunks from an earlier artifact format, though — what the current rules
+      // refuse must not stay searchable through what the earlier ones made.
+      const keepStored =
+        current &&
+        storedChunks > 0 &&
+        extracted.incomplete &&
+        extracted.chunks.length < storedChunks;
+      const record = extractionRecord(absPath, extracted, deps, previousIncompleteReads);
+      const rewrite: ChunkRewrite = {
         // A document that keeps its chunks is not an empty one.
         record: keepStored ? { ...record, emptyExtractionBy: null } : record,
         replaceStored: storedChunks > 0 && !keepStored,
-      }
-    );
-    if (keepStored) return "skipped";
-    return written > 0 ? "indexed" : "unsearchable";
+      };
+      const written = await writeChunks(
+        async (tx) => {
+          await applyRewrite(tx, existing.id, rewrite);
+          return existing.id;
+        },
+        orgId,
+        absPath,
+        keepStored ? [] : extracted.chunks,
+        deps,
+        onChunkProgress
+      );
+      if (keepStored) return "skipped";
+      return written > 0 ? "indexed" : "unsearchable";
+    }
   }
 
   // Extract BEFORE deleting the old version: a file that changed into
   // something unparseable throws here and stays a `failed` update, with the
   // last good document and its chunks still searchable. Deleting first would
   // turn that same failure into silent data loss on a success response.
-  const extracted = await fileStep(absPath, () =>
-    extractDocument(absPath, deps, resolveArtifact, contentHash)
-  );
-
-  if (existing) {
-    // Content changed since the last ingest: replace wholesale. Deleting
-    // the document row cascades to its (now stale) chunks via the
-    // kb_chunks.document_id FK.
-    await db.delete(kbDocuments).where(eq(kbDocuments.id, existing.id));
-  }
-
-  const [doc] = await db
-    .insert(kbDocuments)
-    .values({
-      orgId,
-      contentHash,
-      sourcePath: absPath,
-      status: statusForPath(absPath),
-      pageCount: extracted.pageCount,
-      mtime: fileStat.mtime,
-      lang: detectLang(extracted.text),
-      // Written with the row rather than after the chunks: an empty read is
-      // only ever recorded when there are NO chunks to write, so there is no
-      // window in which a crash could leave it claiming a read that did not
-      // finish. A crash before the chunks leaves a row the zero-chunk branch
-      // rebuilds.
-      ...extractionRecord(extracted, deps, 0),
-    })
-    .returning();
+  const { extracted, contentHash: readHash, mtime } = reread ?? (await extract());
 
   const written = await writeChunks(
-    doc.id,
+    async (tx) => {
+      if (existing) {
+        // Content changed since the last ingest: replace wholesale. Deleting
+        // the document row cascades to its (now stale) chunks via the
+        // kb_chunks.document_id FK — inside the transaction that writes the
+        // new version, so a refused write keeps the last good one searchable.
+        await tx.delete(kbDocuments).where(eq(kbDocuments.id, existing.id));
+      }
+      const [doc] = await tx
+        .insert(kbDocuments)
+        .values({
+          orgId,
+          contentHash: readHash,
+          sourcePath: absPath,
+          status,
+          pageCount: extracted.pageCount,
+          mtime,
+          lang: detectLang(extracted.text),
+          // Written with the row and its chunks, in one transaction: an empty
+          // read is only ever recorded when there are NO chunks to write, and
+          // the row never exists without the chunks it was read with.
+          ...extractionRecord(absPath, extracted, deps, 0),
+        })
+        .returning({ id: kbDocuments.id });
+      return doc.id;
+    },
     orgId,
     absPath,
     extracted.chunks,
@@ -963,7 +1657,7 @@ async function ingestFile(
 async function removeVanishedDocuments(
   orgId: string,
   rootDir: string,
-  discovered: ReadonlyMap<string, number>,
+  discovered: ReadonlyMap<string, DiscoveredFile>,
   emptyFolders: EmptyFolderCheck | null
 ): Promise<number> {
   const existingForOrg = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, orgId));
@@ -1072,13 +1766,18 @@ export async function ingestPaths(
   // no files to ingest AND no removal pass, because we have no evidence about
   // what is under it. See discoverFiles for why that distinction is not
   // pedantry.
-  const perRoot: Array<{ rootDir: string; discovered: Map<string, number> }> = [];
+  const perRoot: Array<{
+    rootDir: string;
+    discovered: Map<string, DiscoveredFile>;
+    unsupported: Map<string, string>;
+  }> = [];
   for (const rootDir of rootDirs) {
-    const discovered = await discoverFiles(rootDir, allowedExtensions);
-    if (discovered === null) {
-      opts.onSkippedRoot?.(rootDir, "unreadable");
+    const listing = await discoverFiles(rootDir, allowedExtensions);
+    if (listing === "missing" || listing === "unreadable") {
+      opts.onSkippedRoot?.(rootDir, listing);
       continue;
     }
+    const discovered = listing.files;
     if (
       opts.keepEmptiedFolders &&
       discovered.size === 0 &&
@@ -1087,27 +1786,41 @@ export async function ingestPaths(
       opts.onSkippedRoot?.(rootDir, "emptied");
       continue;
     }
-    perRoot.push({ rootDir, discovered });
+    perRoot.push({ rootDir, discovered, unsupported: listing.unsupported });
   }
 
-  // Deduplicated across roots, but ordered so each file is ingested while its
-  // first root is being processed — the order only matters for readability of
-  // the progress stream, not for correctness. Deduplication covers the byte
-  // total too: a file granted under both /data and /data/hr is one unit of
-  // work and must be weighed once, or the run would stop short of its total.
-  const queue: Array<{ absPath: string; bytes: number }> = [];
-  const seen = new Set<string>();
+  // Counted once however many overlapping roots found a file, like `total`,
+  // and split by whether the file is a document at all (#1410).
+  const unreadable = new Map(perRoot.flatMap((root) => [...root.unsupported]));
+  let unsupported = 0;
+  let ignored = 0;
+  for (const type of unreadable.values()) {
+    if (unsupportedFileKind(type) === "unsupported") unsupported++;
+    else ignored++;
+  }
+
+  // Deduplicated across roots: a file granted under both /data and /data/hr is
+  // one unit of work and must be weighed once, or the run would stop short of
+  // its total. Then ordered across ALL roots — current files before archived
+  // ones, folder by folder — so a first index that runs for days has the part
+  // people search complete first (ingest-order.ts, #1385).
+  const unique = new Map<string, DiscoveredFile>();
   for (const { discovered } of perRoot) {
-    for (const [absPath, bytes] of discovered) {
-      if (seen.has(absPath)) continue;
-      seen.add(absPath);
-      queue.push({ absPath, bytes });
+    for (const [absPath, file] of discovered) {
+      if (!unique.has(absPath)) unique.set(absPath, file);
     }
   }
+  // Every folder the archive rule may cut a path at: this run's roots, and the
+  // ones other agents search (see `archiveRoots`).
+  const classifyRoots = [...rootDirs, ...(opts.archiveRoots ?? [])];
+  const queue = orderForIngest(
+    [...unique].map(([absPath, file]) => ({ absPath, ...file })),
+    classifyRoots
+  );
 
   // Converts in queue order, in batches, as the loop below reaches Office
   // documents — see officeArtifacts for why this is not a pre-pass.
-  const resolveArtifact = officeArtifacts(queue, deps);
+  const resolveArtifact = officeArtifacts(queue, deps, (file) => turnWillSkip(orgId, file, deps));
 
   const tally: Record<FileOutcome, number> = { indexed: 0, skipped: 0, unsearchable: 0 };
   let failed = 0;
@@ -1121,7 +1834,14 @@ export async function ingestPaths(
   let archived = 0;
   const total = queue.length;
   const totalBytes = queue.reduce((sum, file) => sum + file.bytes, 0);
-  const snapshot = (): IngestResult => ({ ...tally, removed, failed, archived });
+  const snapshot = (): IngestResult => ({
+    ...tally,
+    removed,
+    failed,
+    archived,
+    unsupported,
+    ignored,
+  });
 
   /** `inFlightBytes` is the part of the CURRENT file already embedded — see the callback below. */
   const report = (inFlightBytes = 0) =>
@@ -1136,37 +1856,67 @@ export async function ingestPaths(
   // Reported before any work: "0 of N" is what tells a caller the run started
   // and how big it is. A caller that hears nothing until the first file lands
   // cannot tell a slow run from a dead one.
+  await opts.onQueue?.(
+    queue.map((file) => ({
+      path: file.absPath,
+      archived: statusForPath(file.absPath, classifyRoots) === "archived",
+    }))
+  );
   await report();
 
-  for (const { absPath, bytes } of queue) {
+  for (const { absPath, bytes, realPath } of queue) {
+    const status = statusForPath(absPath, classifyRoots);
     try {
       const outcome = await ingestFile(
         orgId,
         absPath,
+        realPath,
+        status,
         deps,
         resolveArtifact,
-        (embedded, chunkTotal) =>
-          // Credit this file's bytes in proportion to the chunks embedded from
-          // it. Its chunk count IS known once it is split, and that is the one
-          // thing chunk-level progress is uniquely good for: without it the
-          // compilation PDF worth 38% of the corpus would hold both bar and ETA
-          // still for over an hour (#907).
-          report(chunkTotal > 0 ? Math.round((bytes * embedded) / chunkTotal) : 0)
+        async (embedded, chunkTotal) => {
+          try {
+            // Credit this file's bytes in proportion to the chunks embedded
+            // from it. Its chunk count IS known once it is split, and that is
+            // the one thing chunk-level progress is uniquely good for: without
+            // it the compilation PDF worth 38% of the corpus would hold both
+            // bar and ETA still for over an hour (#907).
+            await report(chunkTotal > 0 ? Math.round((bytes * embedded) / chunkTotal) : 0);
+          } catch (err) {
+            // A progress write that fails is the run's bookkeeping failing,
+            // not this file: it would fail the same way for every file after.
+            throw new ProgressReportError(err);
+          }
+        }
       );
       tally[outcome]++;
-      if (isArchivedPath(absPath)) archived++;
+      if (status === "archived") archived++;
     } catch (err) {
-      // One unreadable or corrupt file is a normal property of a real corpus,
-      // so it costs itself and nothing else: without this boundary a single
-      // bad PDF aborts the reindex for every other file, and under a retrying
-      // job runner it would fail identically forever. Systemic errors
-      // (embedding outage, DB gone) are NOT FileIngestErrors and still escape
-      // — see ingestFile. The tally reported so far is the caller's last
+      // One unreadable or corrupt file, one chunk the embedder refuses, one
+      // row the database will not take — each is a normal property of a real
+      // corpus, so it costs itself and nothing else: without this boundary a
+      // single bad file aborts the reindex for every other file, and under a
+      // retrying job runner it fails identically forever (#1380: a first
+      // reindex stopped at the same file on every run). Only an error that
+      // would fail every remaining file the same way stops the run — see
+      // ingest-errors.ts. The tally reported so far is the caller's last
       // honest word on what the run achieved before that happened.
-      if (!(err instanceof FileIngestError)) throw err;
+      if (err instanceof ProgressReportError) throw err.cause;
+      const systemic = systemicIngestError(err);
+      if (systemic) throw systemic;
+      const cause = err instanceof FileIngestError ? err.cause : err;
       // The admin-facing counts must not name paths (audit PII rule), so this
       // server log is the only place that says WHICH file failed and why.
-      console.error(`[kb-ingest] ${err.message}`, err.cause);
+      // The path and the cause — a file-system error, a reader's — can quote
+      // the file name, so both go through the same escaping as a refusal: a
+      // newline in a file name cannot write a line of its own. Never the
+      // content: the cause is the database's own error or the embedder's,
+      // not a wrapper that quotes the chunk text.
+      console.error(
+        `[kb-ingest] ${oneLine(`Ingest failed for ${absPath}`, LOG_PATH_MAX + 32)}`,
+        errorLine(cause)
+      );
+      if (cause instanceof SourceRefusedError) opts.onRefusedFile?.(absPath, cause.refusal);
       failed++;
     }
     processed++;
@@ -1181,7 +1931,16 @@ export async function ingestPaths(
   // look at each folder once and report it once. An emptied ROOT counts here
   // too: /data/hr was skipped as a root, and /data's pass must not delete what
   // was under it either.
-  const emptyFolders = opts.keepEmptiedFolders ? emptyFolderCheck(opts.onKeptFolder) : null;
+  //
+  // The folders it keeps are collected as well: the list of unsupported files
+  // follows the same rule as the documents, below.
+  const keptFolders: string[] = [];
+  const emptyFolders = opts.keepEmptiedFolders
+    ? emptyFolderCheck((folder) => {
+        keptFolders.push(folder);
+        opts.onKeptFolder?.(folder);
+      })
+    : null;
   const skippedEmptiedRoots = new Set(
     rootDirs.filter((root) => !perRoot.some((kept) => kept.rootDir === root))
   );
@@ -1197,6 +1956,17 @@ export async function ingestPaths(
       }
     );
   }
+
+  // Last, beside the removal pass and for the same reason: it says what is on
+  // the share NOW, so it is written only by a run that got to the end. A run
+  // that died halfway leaves the previous list in place rather than half a new
+  // one. A folder the run left as it was keeps its rows — a share that failed
+  // to mount is no evidence that its files are gone.
+  await recordUnsupportedFiles(
+    orgId,
+    perRoot.map(({ rootDir, unsupported: files }) => ({ rootDir, files })),
+    [...skippedEmptiedRoots, ...keptFolders]
+  );
 
   return snapshot();
 }

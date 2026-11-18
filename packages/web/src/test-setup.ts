@@ -1,5 +1,22 @@
 import "@testing-library/jest-dom";
-import { vi } from "vitest";
+import { afterEach, vi } from "vitest";
+import { _resetProcessWideCaches } from "@/lib/process-wide-cache";
+import { _resetRegenerateQueue } from "@/lib/openclaw-config/regenerate-queue";
+
+// The regenerate queue and the caches a regenerate reads live on globalThis,
+// because one Pinchy process loads `src/lib` twice and both instances must
+// share them (see process-wide-cache.ts, regenerate-queue.ts). The flip side in
+// tests: `vi.resetModules()` gives a file a fresh module instance, and that
+// instance finds the previous test's in-flight regenerate and stale model lists
+// waiting on globalThis. Reset both after every test, so no test inherits
+// either — a test that failed mid-regenerate would otherwise make every later
+// regenerate in the worker queue behind a run that never settles. Both resets
+// are a handful of property writes. The push generation is deliberately NOT
+// reset: it is a monotonic cancellation token (see push-state.ts).
+afterEach(() => {
+  _resetRegenerateQueue();
+  _resetProcessWideCaches();
+});
 
 // Ensure consistent date/time behavior across all test environments
 process.env.TZ = "UTC";
@@ -58,6 +75,11 @@ if (typeof EventTarget !== "undefined") {
 // Radix UI Checkbox uses ResizeObserver which is not available in jsdom
 if (typeof window !== "undefined") {
   global.ResizeObserver = class {
+    // Same signature as the real constructor, so callers that pass their
+    // callback (ui/table.tsx) match it.
+    constructor(callback: ResizeObserverCallback) {
+      void callback;
+    }
     observe() {}
     unobserve() {}
     disconnect() {}
@@ -65,7 +87,7 @@ if (typeof window !== "undefined") {
 
   // Radix UI Select uses pointer capture APIs not available in jsdom
   if (!HTMLElement.prototype.hasPointerCapture) {
-    HTMLElement.prototype.hasPointerCapture = vi.fn().mockReturnValue(false);
+    HTMLElement.prototype.hasPointerCapture = vi.fn(() => false);
   }
   if (!HTMLElement.prototype.setPointerCapture) {
     HTMLElement.prototype.setPointerCapture = vi.fn();
@@ -98,7 +120,7 @@ if (typeof window !== "undefined") {
 if (typeof window !== "undefined") {
   Object.defineProperty(window, "matchMedia", {
     writable: true,
-    value: vi.fn().mockImplementation((query: string) => ({
+    value: vi.fn((query: string) => ({
       matches: false,
       media: query,
       onchange: null,

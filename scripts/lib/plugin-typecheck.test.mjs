@@ -54,7 +54,7 @@ test("validateTsconfigShape flags __tests__ in exclude", () => {
 });
 
 test("validateTsconfigShape flags any exclude key, even one that only names non-test paths", () => {
-  // AGENTS.md's "Typecheck gate" section requires `include: ["**/*.ts"]` with
+  // agent-rules/plugins.md's "Typecheck gate" section requires `include: ["**/*.ts"]` with
   // NO `exclude` at all. An exclude that only names a non-test-looking path
   // (e.g. "dist" or "helpers") still silently drops those files from the
   // typecheck, so the presence of the key itself is the problem — not just
@@ -140,7 +140,7 @@ test("validatePluginDir reports a missing tsconfig.json", () => {
 
 // Drift guard: every real Pinchy plugin must be wired for the typecheck gate,
 // so a new plugin cannot silently escape it (the read-side sibling of the
-// no-untracked-skips guard — see AGENTS.md). If this fails, the plugin named
+// no-untracked-skips guard — see agent-rules/testing.md). If this fails, the plugin named
 // in the message needs the uniform tsconfig (`include: ["**/*.ts"]`, no test
 // exclude, skipLibCheck, types: ["node", "vitest"]) plus an @types/node devDep.
 test("every packages/plugins/pinchy-* plugin is wired for the typecheck gate", () => {

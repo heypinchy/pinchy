@@ -40,7 +40,7 @@
  * and that is the act this guard makes loud.
  *
  * Read-side sibling of the format-gate / ci-path-filter / plugin-typecheck
- * guards (see AGENTS.md).
+ * guards (see agent-rules/).
  */
 
 /**

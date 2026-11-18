@@ -20,7 +20,7 @@ import { getExhaustedBlockingBudget } from "@/lib/budgets";
 import { createEmailPort } from "@/lib/email-workflows/port";
 import { createOpenClawRunAgent } from "@/lib/email-workflows/run-adapter";
 import type { SweepDeps } from "@/lib/email-workflows/sweep";
-import { waitForAgentInRuntime } from "@/server/agent-readiness";
+import { dispatchableAgentIds, waitForAgentInRuntime } from "@/server/agent-readiness";
 
 /** The slice of the gateway client the sweep's dependencies need. */
 export type SweepGatewayClient = Pick<
@@ -87,7 +87,7 @@ export function createAgentReadinessGate(
       agentId,
       {
         hasAgentsListRpc: () => true,
-        listRuntimeAgentIds: async () => (await client.agents.list()).agents.map((a) => a.id),
+        listRuntimeAgentIds: async () => dispatchableAgentIds(await client.agents.list()),
       },
       { deadlineMs: opts.deadlineMs ?? DEFAULT_READINESS_DEADLINE_MS }
     );

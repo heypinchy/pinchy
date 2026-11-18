@@ -5,7 +5,7 @@ import { parseRequestBody } from "@/lib/api-validation";
 import { decisionSchema } from "@/lib/schemas/approvals";
 import { resolveDecision, awaitApprovalLink } from "@/lib/approvals/service";
 import { resolvePluginApproval } from "@/server/resolve-plugin-approval";
-import { type AuditLogEntry } from "@/lib/audit";
+import { scrubEmails, type AuditLogEntry } from "@/lib/audit";
 import { deferAuditLog } from "@/lib/audit-deferred";
 import { db } from "@/db";
 import { agents, toolApproval, users } from "@/db/schema";
@@ -99,11 +99,15 @@ export const POST = withAuth<RouteContext>(async (request, { params }, session) 
     detail: {
       request: { id },
       agent: { id: req.agentId, name: agent?.name ?? null },
-      requester: { id: req.requesterId, name: requester?.name ?? null },
-      approver: { id: session.user.id!, name: session.user.name ?? null },
+      // Names only, never a users.id: `detail` is immutable, so an id here is
+      // out of reach of crypto-erasure (#824). The approver is this row's actor.
+      requester: { name: requester?.name ?? null },
+      approver: { name: session.user.name ?? null },
       toolName: req.toolName,
       argsDigest: req.argsDigest,
-      ...(reason ? { reason } : {}),
+      // Free text the person typed: an address in it would be just as
+      // permanent as an id.
+      ...(reason ? { reason: scrubEmails(reason) } : {}),
       // A decision the parked run never received changed nothing the user can
       // see, so the row has to say which of the two happened.
       resumed: resumed.delivered,

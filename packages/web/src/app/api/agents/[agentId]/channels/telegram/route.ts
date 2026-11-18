@@ -170,18 +170,30 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ age
   // [Reconnect] path referenced in the disabled-state UI.
   await deleteSetting(`telegram_conflict_disabled:${agentId}`);
 
-  // Update only Telegram channel config (targeted write — preserves OpenClaw-enriched
+  // A personal agent's bot (the main bot) hands each linked user their own
+  // agent through per-peer bindings, and the allow store lets a user in only
+  // once OpenClaw routes them there. The targeted write carries only the
+  // account-wide binding, so after a reconnect or a token change every linked
+  // member would stay locked out until some unrelated change regenerated the
+  // config. The full regeneration writes the account and its peer bindings
+  // together.
+  //
+  // A shared agent's bot needs just the one account-wide binding: update only
+  // the Telegram channel config (targeted write — preserves OpenClaw-enriched
   // fields like agents.defaults to avoid hot-reloads that break polling).
   // updateTelegramChannelConfig() also notifies restart-state on actual write so
   // /api/health/openclaw reflects the pending OC restart.
-  const targetedResult = updateTelegramChannelConfig(agentId, { botToken });
-  if (targetedResult === "agent-not-in-config") {
-    // The on-disk agents.list predates this agent (its create-regen is still
-    // in flight). OpenClaw ≥2026.7.1 rejects a config whose bindings
-    // reference an agent missing from agents.list, so the targeted patch was
-    // not written — regenerate the full config instead, which emits
-    // agents.list, the account, and the binding consistently from the DB
-    // (the token is already stored above).
+  //
+  // The targeted write also falls back to the full one when the on-disk
+  // roster predates this agent (its create-regen is still in flight):
+  // OpenClaw ≥2026.7.1 rejects a config whose bindings reference an agent
+  // missing from the roster, so the targeted patch was not written. The full
+  // regeneration emits the roster, the account and its bindings consistently
+  // from the DB (the token is already stored above).
+  const needsFullConfig =
+    agent.isPersonal ||
+    updateTelegramChannelConfig(agentId, { botToken }) === "agent-not-in-config";
+  if (needsFullConfig) {
     await regenerateOpenClawConfig();
   }
 
@@ -206,6 +218,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ age
     botId: validation.botId,
   });
 }
+
+// The audit row is immutable, so it gets a fixed message rather than the
+// error's, which can carry a file system path.
+const CONFIG_WRITE_FAILED = "Could not remove the bot from the OpenClaw config";
 
 export const DELETE = withAuth<{ params: Promise<{ agentId: string }> }>(
   async (_req, { params }, session) => {
@@ -238,11 +254,27 @@ export const DELETE = withAuth<{ params: Promise<{ agentId: string }> }>(
     // been fully disconnected and may later be reconnected with a fresh token.
     await deleteSetting(`telegram_conflict_disabled:${agentId}`);
 
-    // Clear only this account's allow-from store (other agents' bots are unaffected)
-    clearAllowStoreForAccount(agentId);
-    // Remove this account from config (other accounts preserved).
-    // updateTelegramChannelConfig() notifies restart-state on actual write.
-    updateTelegramChannelConfig(agentId, null);
+    // Take this account out of the config (other accounts stay) and empty its
+    // allow list (other bots are unaffected), each whichever way the other
+    // goes. The config reaches OpenClaw in the background, up to a minute
+    // later, and until then the empty list is what keeps the bot from
+    // answering anyone. A failing clear must not undo the removal: once the
+    // config lands the bot no longer runs, and the next recalculation drops
+    // its list. updateTelegramChannelConfig() notifies restart-state on actual
+    // write. A config write that fails doesn't stop the rest: the token is
+    // already gone from the database, so the disconnect is audited, marked
+    // failed, and the error reaches the caller afterwards.
+    let configError: unknown = null;
+    try {
+      updateTelegramChannelConfig(agentId, null);
+    } catch (err) {
+      configError = err;
+    }
+    try {
+      await clearAllowStoreForAccount(agentId);
+    } catch (err) {
+      console.error("[telegram] could not clear the allow list of a removed bot:", err);
+    }
 
     // Gap 3 (#476): if this was the last Telegram bot, clear the user↔telegram-user
     // channel_links so a later re-registered bot can't re-grant access to stale
@@ -277,8 +309,11 @@ export const DELETE = withAuth<{ params: Promise<{ agentId: string }> }>(
         // attributable, not silent — 0 when other bots remain.
         channelLinksCleared,
       },
-      outcome: "success",
+      ...(configError
+        ? { outcome: "failure" as const, error: { message: CONFIG_WRITE_FAILED } }
+        : { outcome: "success" as const }),
     });
+    if (configError) throw configError;
 
     return NextResponse.json({ success: true });
   }

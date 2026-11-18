@@ -1,8 +1,9 @@
-import { NextResponse, after } from "next/server";
+import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { getSetting } from "@/lib/settings";
 import { setDomainAndRefreshCache, deleteDomainAndRefreshCache } from "@/lib/domain";
-import { appendAuditLog } from "@/lib/audit";
+import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
+import { recordAuditFailure } from "@/lib/audit-deferred";
 import { readRequestHostFromHeaders } from "@/server/forwarded-host";
 import { normalizeLockableHost } from "@/lib/domain-validation";
 
@@ -54,18 +55,23 @@ export async function POST(req: Request) {
   const previousDomain = await getSetting("domain");
   await setDomainAndRefreshCache(domain);
 
-  after(() =>
-    appendAuditLog({
-      actorType: "user",
-      actorId: session.user.id!,
-      eventType: "settings.updated",
-      resource: "settings:domain",
-      detail: {
-        changes: { domain: { from: previousDomain, to: domain } },
-      },
-      outcome: "success",
-    })
-  );
+  // Not deferAuditLog: after() would race the restart armed below. Written
+  // before it, a failure is counted instead of skipping the restart.
+  const entry: AuditLogEntry = {
+    actorType: "user",
+    actorId: session.user.id!,
+    eventType: "settings.updated",
+    resource: "settings:domain",
+    detail: {
+      changes: { domain: { from: previousDomain, to: domain } },
+    },
+    outcome: "success",
+  };
+  try {
+    await appendAuditLog(entry);
+  } catch (err) {
+    recordAuditFailure(err, entry);
+  }
 
   if (process.env.PINCHY_E2E_DISABLE_DOMAIN_RESTART !== "1") {
     // Schedule a restart so useSecureCookies picks up the new domain.
@@ -89,18 +95,23 @@ export async function DELETE(_req: Request) {
 
   await deleteDomainAndRefreshCache();
 
-  after(() =>
-    appendAuditLog({
-      actorType: "user",
-      actorId: session.user.id!,
-      eventType: "settings.updated",
-      resource: "settings:domain",
-      detail: {
-        changes: { domain: { from: previousDomain, to: null } },
-      },
-      outcome: "success",
-    })
-  );
+  // Not deferAuditLog: after() would race the restart armed below. Written
+  // before it, a failure is counted instead of skipping the restart.
+  const entry: AuditLogEntry = {
+    actorType: "user",
+    actorId: session.user.id!,
+    eventType: "settings.updated",
+    resource: "settings:domain",
+    detail: {
+      changes: { domain: { from: previousDomain, to: null } },
+    },
+    outcome: "success",
+  };
+  try {
+    await appendAuditLog(entry);
+  } catch (err) {
+    recordAuditFailure(err, entry);
+  }
 
   if (process.env.PINCHY_E2E_DISABLE_DOMAIN_RESTART !== "1") {
     // Schedule a restart so useSecureCookies picks up the removed domain.

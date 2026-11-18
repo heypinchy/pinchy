@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect } from "react";
-import { useRouter } from "next/navigation";
 import { useForm, useFormState } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -17,7 +16,7 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
-import { authClient } from "@/lib/auth-client";
+import { leaveAccount } from "@/lib/account-switch";
 import { passwordSchema } from "@/lib/validate-password";
 import { apiPost, apiPatch, errorMessage } from "@/lib/api-client";
 import type { UpdateMeInput, ChangePasswordInput } from "@/lib/schemas/settings";
@@ -48,8 +47,6 @@ interface SettingsProfileProps {
 }
 
 export function SettingsProfile({ userName, onDirtyChange }: SettingsProfileProps) {
-  const router = useRouter();
-
   const nameForm = useForm<NameFormValues>({
     resolver: zodResolver(nameSchema),
     defaultValues: { name: userName },
@@ -212,13 +209,7 @@ export function SettingsProfile({ userName, onDirtyChange }: SettingsProfileProp
           <CardTitle>Session</CardTitle>
         </CardHeader>
         <CardContent>
-          <Button
-            variant="outline"
-            onClick={async () => {
-              await authClient.signOut();
-              router.push("/login");
-            }}
-          >
+          <Button variant="outline" onClick={() => leaveAccount()}>
             Log out
           </Button>
         </CardContent>

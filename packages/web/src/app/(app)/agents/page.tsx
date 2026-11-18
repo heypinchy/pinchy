@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { headers } from "next/headers";
 import { requireAuth } from "@/lib/require-auth";
 import { getVisibleAgents } from "@/lib/visible-agents";
+import { sortAgents } from "@/lib/sort-agents";
 import { getInstancePolicy } from "@/lib/instance-policy";
 import { AgentsPageContent } from "./agents-page-content";
 
@@ -29,7 +30,7 @@ export default async function AgentsPage() {
     userRole !== "admin" && !(await getInstancePolicy()).memberPersonalAgents;
 
   if (!isMobile && visibleAgents.length > 0 && !personalAgentsOff) {
-    redirect(`/chat/${visibleAgents[0].id}`);
+    redirect(`/chat/${sortAgents(visibleAgents)[0].id}`);
   }
 
   return <AgentsPageContent agents={visibleAgents} personalAgentsOff={personalAgentsOff} />;

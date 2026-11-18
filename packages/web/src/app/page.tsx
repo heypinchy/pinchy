@@ -3,6 +3,7 @@ import { headers } from "next/headers";
 import { isSetupComplete, isProviderConfigured } from "@/lib/setup";
 import { requireAuth } from "@/lib/require-auth";
 import { getVisibleAgents } from "@/lib/visible-agents";
+import { sortAgents } from "@/lib/sort-agents";
 
 export const dynamic = "force-dynamic";
 
@@ -31,7 +32,8 @@ export default async function Home() {
     const userRole = session?.user?.role ?? "member";
     const visibleAgents = await getVisibleAgents(userId!, userRole);
     if (visibleAgents.length > 0) {
-      redirect(`/chat/${visibleAgents[0].id}`);
+      // Same order as the sidebar: personal agent first, then by name.
+      redirect(`/chat/${sortAgents(visibleAgents)[0].id}`);
     }
   }
 

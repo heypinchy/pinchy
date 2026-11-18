@@ -19,6 +19,8 @@ vi.mock("@/lib/auth", () => {
   };
 });
 
+vi.mock("@/lib/audit-deferred", () => ({ deferAuditLog: vi.fn() }));
+
 vi.mock("@/lib/invites", () => ({
   createInvite: vi.fn(),
 }));

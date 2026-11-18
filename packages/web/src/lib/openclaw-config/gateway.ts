@@ -1,4 +1,8 @@
-import { OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS } from "./paths";
+import {
+  OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS,
+  OPENCLAW_GATEWAY_BIND,
+  OPENCLAW_GATEWAY_MODE,
+} from "./paths";
 
 /**
  * Builds the `gateway` block for openclaw.json.
@@ -38,8 +42,8 @@ export function buildGatewayBlock(
   const existingTerminal = (existingGateway.terminal as Record<string, unknown>) || {};
   return {
     ...existingGateway,
-    mode: "local",
-    bind: "lan",
+    mode: OPENCLAW_GATEWAY_MODE,
+    bind: OPENCLAW_GATEWAY_BIND,
     auth: {
       mode: "token",
       token: gatewayTokenValue || "",

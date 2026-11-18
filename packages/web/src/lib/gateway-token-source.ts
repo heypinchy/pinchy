@@ -1,6 +1,6 @@
 import { randomBytes } from "crypto";
 import { getSetting, setSetting } from "@/lib/settings";
-import { readGatewayToken } from "@/lib/gateway-token-reader";
+import { readGatewayTokenUncached } from "@/lib/gateway-token-reader";
 
 const SETTING_KEY = "openclaw_gateway_token";
 
@@ -14,12 +14,22 @@ const SETTING_KEY = "openclaw_gateway_token";
  *      a token, OpenClaw fills it in). Adopting this token keeps the client
  *      connection intact when regenerateOpenClawConfig() runs during setup.
  *   3. Fresh random token (48 hex chars, 24 random bytes).
+ *
+ * Step 2 reads the files uncached (`readGatewayTokenUncached`), never the
+ * token `readGatewayToken` remembers while openclaw.json is mid-rewrite: what
+ * lands here is persisted as the authoritative token, so it comes only from
+ * what the files say now. The conscious trade-off: if the DB setting is still
+ * empty (a legacy install whose migrateGatewayTokenToDb() found nothing) and
+ * that first call meets an unreadable openclaw.json, Pinchy generates a
+ * fresh token once instead of adopting the remembered one. The next config
+ * regeneration writes it out and the gateway picks it up — a one-time token
+ * change, exactly what happened here before the reader remembered tokens.
  */
 export async function getOrCreateGatewayToken(): Promise<string> {
   const existing = await getSetting(SETTING_KEY);
   if (existing) return existing;
 
-  const configToken = readGatewayToken();
+  const configToken = readGatewayTokenUncached();
   if (configToken) {
     await setSetting(SETTING_KEY, configToken);
     return configToken;

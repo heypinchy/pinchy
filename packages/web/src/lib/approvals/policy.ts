@@ -32,7 +32,7 @@ const KEY_SEPARATOR = ":";
  *
  * Reads the pre-#1133 `confirmTools: string[]` when no map has been written
  * yet. That fallback is not politeness — it is the read side of a storage
- * switch, and AGENTS.md § "Test Migrations Against Pre-Existing Data" exists
+ * switch, and agent-rules/testing.md § "Test Migrations Against Pre-Existing Data" exists
  * for exactly this: every agent whose admin turned confirmation on before
  * #1133 carries the old key, and without the fallback the map comes back
  * empty, the gate allows, and a policy an admin set stops applying silently.

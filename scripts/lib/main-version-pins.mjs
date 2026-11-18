@@ -14,7 +14,7 @@
  * This is deliberately NOT a PR gate: the question needs the network (the
  * latest release), the answer changes without anyone touching the repo, and
  * a check that can go red between two identical commits does not belong in
- * front of a merge button (see AGENTS.md § "Forward-looking claims need an
+ * front of a merge button (see agent-rules/docs.md § "Forward-looking claims need an
  * issue"). `scripts/check-main-version-pins.mjs` runs it from the weekly
  * `docs-freshness.yml` cron instead.
  *

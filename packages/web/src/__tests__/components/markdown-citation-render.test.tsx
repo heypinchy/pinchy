@@ -53,8 +53,8 @@ const ANSWER = [
   "",
   "**Quellen:**",
   "",
-  "- [1] noack/PPR/document.pdf — p. 510",
-  "- [2] noack/PF LAB/afnor_update_&_support.pdf — p. 44",
+  "- [1] customer/PPR/document.pdf — p. 510",
+  "- [2] customer/PF LAB/afnor_update_&_support.pdf — p. 44",
 ].join("\n");
 
 function renderAnswer(agentId: string | null, text = ANSWER) {
@@ -81,8 +81,8 @@ describe("a cited source rendered through the real markdown pipeline", () => {
     // rescans the whole tree on every retry, which is slow enough under load to
     // exhaust the timeout before the assertion ever runs. The tag check below
     // keeps the guarantee that matters.
-    const first = await screen.findByText("noack/PPR/document.pdf");
-    const second = await screen.findByText("noack/PF LAB/afnor_update_&_support.pdf");
+    const first = await screen.findByText("customer/PPR/document.pdf");
+    const second = await screen.findByText("customer/PF LAB/afnor_update_&_support.pdf");
 
     // A citation opens the lightbox rather than navigating away from the answer
     // it belongs to, so the trigger is a button and not an anchor.
@@ -105,18 +105,18 @@ describe("a cited source rendered through the real markdown pipeline", () => {
     // renderer half of the chain arriving first — and the half that would fail
     // silently: an unlinkified citation is not an error, it is flat text
     // nobody notices until someone asks why the .doc is not clickable.
-    renderAnswer("agent-1", "- [1] noack/QF_2012/Angebot.doc — S. 3");
+    renderAnswer("agent-1", "- [1] customer/archive-2012/Angebot.doc — S. 3");
 
-    expect((await screen.findByText("noack/QF_2012/Angebot.doc")).tagName).toBe("BUTTON");
+    expect((await screen.findByText("customer/archive-2012/Angebot.doc")).tagName).toBe("BUTTON");
   });
 
   it("does not touch a path shown as code", async () => {
     // Inside backticks a path is being displayed, not referenced. remark gives
     // it its own node type, and the plugin has to respect that in the real tree
     // and not only in a hand-built one.
-    renderAnswer("agent-1", "Der Pfad `noack/PPR/document.pdf` liegt im Korpus.");
+    renderAnswer("agent-1", "Der Pfad `customer/PPR/document.pdf` liegt im Korpus.");
 
-    expect(await screen.findByText("noack/PPR/document.pdf")).toBeInTheDocument();
+    expect(await screen.findByText("customer/PPR/document.pdf")).toBeInTheDocument();
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 });

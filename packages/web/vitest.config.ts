@@ -18,7 +18,7 @@ export default defineConfig({
     // This needs no drift guard: a file that needs a DOM and forgets the
     // docblock fails immediately and unmissably with "document is not defined".
     // The exception is feature-detected code, which quietly takes its
-    // non-browser branch instead of failing — see AGENTS.md for that caveat.
+    // non-browser branch instead of failing — see agent-rules/testing.md for that caveat.
     environment: "node",
     setupFiles: ["./src/test-setup.ts"],
     // Vitest's 5s default left no headroom, and failures showed up scattered
@@ -70,6 +70,11 @@ export default defineConfig({
       "../plugins/pinchy-*/**/node_modules/**",
       "e2e",
       "**/*.integration.test.{ts,tsx,js,jsx}",
+      // The LibreOffice suites drive a real `soffice` and run on their own,
+      // one file at a time: `pnpm test:libreoffice` (vitest.libreoffice.config.ts).
+      // Here they ran in parallel workers on any machine with LibreOffice and
+      // timed out against each other.
+      "**/*.libreoffice.test.{ts,tsx}",
     ],
     server: {
       deps: {

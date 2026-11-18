@@ -196,21 +196,14 @@ describe("POST /api/users/invite", () => {
     });
   });
 
-  it("succeeds without email (email is optional)", async () => {
+  it("rejects an invite without an email (#1263)", async () => {
+    // Claiming the invite creates the account with its email, so an
+    // email-less invite is a link that can never work. Refuse it before a
+    // token exists.
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "admin-1", role: "admin" },
       expires: "",
     } as any);
-
-    const fakeInvite = {
-      id: "invite-2",
-      role: "member",
-      type: "invite",
-      token: "def456",
-      createdAt: new Date(),
-      expiresAt: new Date(),
-    };
-    vi.mocked(createInvite).mockResolvedValueOnce(fakeInvite as never);
 
     const request = new NextRequest("http://localhost:7777/api/users/invite", {
       method: "POST",
@@ -218,16 +211,10 @@ describe("POST /api/users/invite", () => {
     });
 
     const response = await POST(request);
-    expect(response.status).toBe(201);
-
+    expect(response.status).toBe(400);
     const body = await response.json();
-    expect(body.id).toBe("invite-2");
-
-    expect(createInvite).toHaveBeenCalledWith({
-      email: undefined,
-      role: "member",
-      createdBy: "admin-1",
-    });
+    expect(body.details.fieldErrors.email).toBeDefined();
+    expect(createInvite).not.toHaveBeenCalled();
   });
 
   it("passes groupIds to createInvite when provided", async () => {

@@ -3,100 +3,78 @@
  *
  * OpenClaw has a dual allowFrom system:
  * 1. Config allowFrom (channels.telegram.allowFrom in JSON) — triggers channel restart on change
- * 2. Store allowFrom (credentials/telegram-<accountId>-allowFrom.json) — no config change, no restart
+ * 2. Store allowFrom (OpenClaw's pairing store) — no config change, no restart
  *
  * We use the store to avoid triggering OpenClaw's broken channel restart
  * (openclaw/openclaw#47458) which kills Telegram long-polling.
  *
- * Multi-account: Each agent with a Telegram bot gets its own store file.
+ * Multi-account: each agent with a Telegram bot is one account in the store.
  * The central recalculateTelegramAllowStores() function computes the correct
- * state from DB (agents, groups, channelLinks) and writes all store files.
+ * state from DB (agents, groups, channelLinks) and writes it in one call.
+ *
+ * Since OpenClaw 2026.9 the store is a table in OpenClaw's state database, not
+ * a JSON file per account, and the pinchy-audit plugin writes it for us (see
+ * openclaw-pairing-store.ts). While the gateway is disconnected the writes are
+ * skipped: server.ts recalculates whenever the connection comes back, which
+ * also carries the lists over from the files an older OpenClaw used.
  */
 
-import {
-  readFileSync,
-  writeFileSync,
-  renameSync,
-  existsSync,
-  mkdirSync,
-  unlinkSync,
-  readdirSync,
-} from "fs";
-import { dirname, join } from "path";
 import { db } from "@/db";
 import { agents, channelLinks, agentGroups, userGroups, users } from "@/db/schema";
-import { eq, and, isNull } from "drizzle-orm";
-import { getSettingsByPrefix } from "@/lib/settings";
+import { eq, isNull } from "drizzle-orm";
+import { getSettingsByKeys, getSettingsByPrefix } from "@/lib/settings";
 import { getInstancePolicy, isPausedPersonalAgent } from "@/lib/instance-policy";
+import { personalAgentsByOwner, telegramDirectTarget } from "@/lib/telegram-routing";
+import {
+  callPairingStore,
+  OpenClawNotConnectedError,
+  PAIRING_REMOVE_REQUESTS_METHOD,
+  PAIRING_SET_ALLOW_FROM_METHOD,
+} from "@/lib/openclaw-pairing-store";
 
-const CONFIG_PATH = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
-const CREDENTIALS_DIR = join(dirname(CONFIG_PATH), "credentials");
-
-interface AllowFromStore {
-  version: 1;
-  allowFrom: string[];
-}
-
-// ── Per-account store paths ─────────────────────────────────────────
-
-export function getStorePathForAccount(accountId: string): string {
-  return join(CREDENTIALS_DIR, `telegram-${accountId}-allowFrom.json`);
-}
-
-// ── Low-level store I/O ─────────────────────────────────────────────
-
-function readStoreAt(path: string): AllowFromStore | null {
+/**
+ * Write allow lists. `replaceAll` drops every account the map leaves out;
+ * without it, only the named accounts change. `routeTo` names, per account and
+ * sender, the agent the sender must reach: pinchy-audit holds back a sender
+ * OpenClaw does not route there yet and answers with them as `withheld`.
+ * Skipped, with a log line, while OpenClaw is disconnected; any other failure
+ * throws, because a revocation that silently did not land would leave a user
+ * with access they lost. Answers how many senders were held back.
+ */
+async function writeAllowFrom(
+  allowFrom: Record<string, string[]>,
+  replaceAll: boolean,
+  routeTo?: Record<string, Record<string, string>>
+): Promise<number> {
+  let response: unknown;
   try {
-    return JSON.parse(readFileSync(path, "utf-8"));
+    response = await callPairingStore(PAIRING_SET_ALLOW_FROM_METHOD, {
+      allowFrom,
+      replaceAll,
+      ...(routeTo ? { routeTo } : {}),
+    });
   } catch (err) {
-    const code = (err as NodeJS.ErrnoException)?.code;
-    if (code !== "ENOENT") {
-      const message = err instanceof Error ? err.message : String(err);
-      console.warn("[telegram-allow-store]", `failed to read store at ${path}:`, message);
+    if (err instanceof OpenClawNotConnectedError) {
+      console.warn(
+        "[telegram-allow-store]",
+        "OpenClaw is not connected; the allow lists are rewritten when it reconnects"
+      );
+      return 0;
     }
-    return null;
+    throw err;
   }
-}
-
-function writeStoreAt(path: string, store: AllowFromStore) {
-  const dir = dirname(path);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
-  // Atomic write: write to temp file then rename
-  const tmpPath = path + ".tmp";
-  writeFileSync(tmpPath, JSON.stringify(store, null, 2), { encoding: "utf-8", mode: 0o644 });
-  renameSync(tmpPath, path);
+  const withheld = (response as { withheld?: unknown } | null)?.withheld;
+  return Array.isArray(withheld) ? withheld.length : 0;
 }
 
 // ── Per-account store functions ─────────────────────────────────────
 
-export function clearAllowStoreForAccount(accountId: string) {
-  const path = getStorePathForAccount(accountId);
-  const store = readStoreAt(path);
-  if (!store) return;
-  writeStoreAt(path, { ...store, allowFrom: [] });
+export async function clearAllowStoreForAccount(accountId: string): Promise<void> {
+  await writeAllowFrom({ [accountId]: [] }, false);
 }
 
-export function clearAllAllowStores() {
-  if (!existsSync(CREDENTIALS_DIR)) return;
-  let files: string[];
-  try {
-    files = readdirSync(CREDENTIALS_DIR);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.warn("[telegram-allow-store]", "failed to read credentials dir:", message);
-    return;
-  }
-  for (const file of files) {
-    if (file.match(/^telegram-.*allowFrom\.json$/)) {
-      const path = join(CREDENTIALS_DIR, file);
-      const store = readStoreAt(path);
-      if (store) {
-        writeStoreAt(path, { ...store, allowFrom: [] });
-      }
-    }
-  }
+export async function clearAllAllowStores(): Promise<void> {
+  await writeAllowFrom({}, true);
 }
 
 // ── Central recalculate function ────────────────────────────────────
@@ -109,20 +87,81 @@ export function clearAllAllowStores() {
  * group membership changes, agent visibility changes, etc.
  *
  * Idempotent: always produces the correct state regardless of prior state.
- * Serialized via in-process mutex to prevent concurrent writes from producing
- * inconsistent store files.
+ * Serialized via in-process mutex so an older computation never lands after a
+ * newer one.
  */
 let recalculateMutex: Promise<void> = Promise.resolve();
 
 export function recalculateTelegramAllowStores(): Promise<void> {
+  return enqueueRecalculation(false);
+}
+
+// While pinchy-audit holds a sender back, the run is repeated: soon at first,
+// since OpenClaw usually loads the new bindings within seconds, at least every
+// 15 s while a push may sit behind config.apply's rate limit (33–53 s), then
+// rarely, so a binding that never arrives costs one call every five minutes.
+// A run that fails is repeated on the same schedule: a revocation that did not
+// land must not wait for the next permission change. Any run that lands
+// replaces the pending retry, and one that lets everyone through ends it.
+const RETRY_DELAYS_MS = [2_000, 5_000, 10_000, 15_000, 15_000, 15_000, 30_000, 60_000, 300_000];
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+let retryAttempt = 0;
+
+function enqueueRecalculation(isRetry: boolean): Promise<void> {
   // Serialize concurrent calls — each waits for the previous to complete
   recalculateMutex = recalculateMutex
     .catch(() => {}) // don't let a failed previous run block the next
-    .then(() => recalculateTelegramAllowStoresImpl());
+    .then(async () => {
+      let withheld: number;
+      try {
+        withheld = await recalculateTelegramAllowStoresImpl();
+      } catch (err) {
+        // A failed retry backs off further; a failed regular run starts the
+        // retries, or keeps the one already counting down.
+        if (isRetry || !retryTimer) {
+          scheduleRetry(isRetry, "the last attempt to write the allow lists failed");
+        }
+        throw err;
+      }
+      if (withheld > 0) {
+        scheduleRetry(
+          isRetry,
+          "OpenClaw does not route every linked Telegram user to their agent yet"
+        );
+      } else {
+        cancelRetry();
+      }
+    });
   return recalculateMutex;
 }
 
-async function recalculateTelegramAllowStoresImpl(): Promise<void> {
+function cancelRetry(): void {
+  if (retryTimer) clearTimeout(retryTimer);
+  retryTimer = null;
+  retryAttempt = 0;
+}
+
+/** Drops a pending retry and its backoff. Intended for tests. */
+export function resetTelegramAllowStoreRetryForTest(): void {
+  cancelRetry();
+}
+
+function scheduleRetry(isRetry: boolean, reason: string): void {
+  if (retryTimer) clearTimeout(retryTimer);
+  retryAttempt = isRetry ? retryAttempt + 1 : 0;
+  const delay = RETRY_DELAYS_MS[Math.min(retryAttempt, RETRY_DELAYS_MS.length - 1)];
+  console.info("[telegram-allow-store]", `${reason}; asking again in ${delay / 1000} s`);
+  retryTimer = setTimeout(() => {
+    retryTimer = null;
+    enqueueRecalculation(true).catch((err) =>
+      console.error("[telegram-allow-store] retrying the allow lists failed:", err)
+    );
+  }, delay);
+  retryTimer.unref?.();
+}
+
+/** Answers how many senders pinchy-audit held back (see writeAllowFrom). */
+async function recalculateTelegramAllowStoresImpl(): Promise<number> {
   // 1. Get all non-deleted agents (including personal ones like Smithers,
   // which can have Telegram bots connected via Settings → Telegram)
   const allAgents = await db.select().from(agents).where(isNull(agents.deletedAt));
@@ -142,22 +181,20 @@ async function recalculateTelegramAllowStoresImpl(): Promise<void> {
     }
   }
 
-  // 3. If no bots, just clean up orphaned files and return
+  // 3. The whole channel is written at once and replaces what was there, so
+  // an account without a bot (deleted agent, disconnected bot) loses its list.
+  const allowFrom: Record<string, string[]> = {};
+  for (const agent of agentsWithBots) allowFrom[agent.id] = [];
   if (agentsWithBots.length === 0) {
-    cleanupOrphanedStoreFiles([]);
-    return;
+    return writeAllowFrom(allowFrom, true);
   }
 
   // 4. Get all Telegram-linked users
   const links = await db.select().from(channelLinks).where(eq(channelLinks.channel, "telegram"));
 
   if (links.length === 0) {
-    // No linked users — write empty stores for all agents with bots
-    for (const agent of agentsWithBots) {
-      writeStoreAt(getStorePathForAccount(agent.id), { version: 1, allowFrom: [] });
-    }
-    cleanupOrphanedStoreFiles(agentsWithBots.map((a) => a.id));
-    return;
+    // No linked users — every bot gets an empty list
+    return writeAllowFrom(allowFrom, true);
   }
 
   // 5. Get all users (for role check and ban status)
@@ -185,22 +222,24 @@ async function recalculateTelegramAllowStoresImpl(): Promise<void> {
   // Member access). Read once, and only when a personal-agent bot exists — it
   // narrows that branch below and nothing else.
   const policy = agentsWithBots.some((a) => a.isPersonal) ? await getInstancePolicy() : null;
+  const personalAgents = personalAgentsByOwner(allAgents);
 
   // 7. For each agent with a bot, compute allowed Telegram user IDs
   for (const agent of agentsWithBots) {
-    const allowedTelegramIds: string[] = [];
+    const allowedTelegramIds = allowFrom[agent.id];
 
     for (const link of links) {
       const user = userMap.get(link.userId);
       if (!user || user.banned) continue;
 
       if (agent.isPersonal) {
-        // Personal agents (e.g. Smithers): all linked users get access.
-        // Smithers is personal but the Telegram bot serves everyone — each
-        // user's DMs are routed to their OWN personal agent (build.ts). A
-        // member whose personal agent is paused is left out entirely: the
-        // routing would otherwise fall back to the bot owner's agent.
+        // Personal agents (e.g. Smithers): the Telegram bot serves every
+        // linked user, routing each one's DMs to their OWN personal agent
+        // (build.ts). Left out entirely: a member whose personal agent is
+        // paused, and a user without one — the bot's own agent is its owner's
+        // private one, and nothing else would answer them.
         if (policy && isPausedPersonalAgent(agent, user.role, policy)) continue;
+        if (telegramDirectTarget(agent, link.userId, personalAgents) === null) continue;
         allowedTelegramIds.push(link.channelUserId);
       } else if (agent.visibility === "all") {
         // All non-banned linked users get access
@@ -222,92 +261,63 @@ async function recalculateTelegramAllowStoresImpl(): Promise<void> {
         }
       }
     }
-
-    writeStoreAt(getStorePathForAccount(agent.id), {
-      version: 1,
-      allowFrom: allowedTelegramIds,
-    });
   }
 
-  // 8. Clean up orphaned store files and legacy file
-  cleanupOrphanedStoreFiles(agentsWithBots.map((a) => a.id));
+  return writeAllowFrom(
+    allowFrom,
+    true,
+    await personalBotRoutes(personalAgents, agentsWithBots, links)
+  );
 }
 
 /**
- * Remove store files for accounts that no longer have bots,
- * and the legacy single-store file.
+ * The agent each sender of a personal-agent bot must reach before pinchy-audit
+ * lets them in (see writeAllowFrom). The bindings that send a linked user to
+ * their own agent reach OpenClaw in the background, up to a minute after the
+ * link; until then the bot's account-wide binding would hand them the bot
+ * owner's agent. A shared agent's bot has no such gap: its one binding arrives
+ * with the bot itself. Neither has a bot OpenClaw is not running after a
+ * polling conflict (build.ts leaves it out of the config), so it gets no route
+ * to wait for.
  */
-function cleanupOrphanedStoreFiles(activeAccountIds: string[]) {
-  if (!existsSync(CREDENTIALS_DIR)) return;
-
-  const activeFiles = new Set(activeAccountIds.map((id) => `telegram-${id}-allowFrom.json`));
-  let files: string[];
-  try {
-    files = readdirSync(CREDENTIALS_DIR);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.warn("[telegram-allow-store]", "failed to read credentials dir:", message);
-    return;
-  }
-
-  for (const file of files) {
-    // Match per-account files and legacy file
-    if (file.match(/^telegram-.*allowFrom\.json$/) && !activeFiles.has(file)) {
-      try {
-        unlinkSync(join(CREDENTIALS_DIR, file));
-      } catch {
-        // File may have been removed concurrently
-      }
+async function personalBotRoutes(
+  personalAgents: ReadonlyMap<string, string>,
+  agentsWithBots: ReadonlyArray<{ id: string; isPersonal: boolean }>,
+  links: ReadonlyArray<{ userId: string; channelUserId: string }>
+): Promise<Record<string, Record<string, string>>> {
+  const personalBots = agentsWithBots.filter((a) => a.isPersonal);
+  if (personalBots.length === 0) return {};
+  const conflictDisabled = await getSettingsByKeys(
+    personalBots.map((bot) => `telegram_conflict_disabled:${bot.id}`)
+  );
+  const routeTo: Record<string, Record<string, string>> = {};
+  for (const bot of personalBots) {
+    if (conflictDisabled.has(`telegram_conflict_disabled:${bot.id}`)) continue;
+    const routes: Record<string, string> = {};
+    for (const link of links) {
+      const target = telegramDirectTarget(bot, link.userId, personalAgents);
+      if (target !== null) routes[link.channelUserId] = target;
     }
+    routeTo[bot.id] = routes;
   }
+  return routeTo;
 }
 
 // ── Pairing store ───────────────────────────────────────────────────
 
 /**
- * Remove a pairing request from OpenClaw's pairing store.
+ * Remove a Telegram user's pending pairing requests from OpenClaw's store.
  *
- * When a user unlinks their Telegram account, the old pairing code must be
- * removed. Otherwise, upsertPairingRequest() in OpenClaw returns created:false
- * for the existing code and no new pairing message is sent.
+ * Called when a user links (the code is spent) and when they unlink: OpenClaw
+ * keeps handing back an existing pending request instead of sending a new
+ * pairing message, so a stale one would leave the user without a fresh code.
+ * Cleanup only — a failure is logged and never fails the link or unlink.
  */
-const PAIRING_PATH = join(dirname(CONFIG_PATH), "credentials", "telegram-pairing.json");
-
-interface PairingStore {
-  version: number;
-  requests: Array<{ id: string; code: string; [key: string]: unknown }>;
-}
-
-function readPairingStore(): PairingStore | null {
+export async function removePairingRequest(telegramUserId: string): Promise<void> {
   try {
-    return JSON.parse(readFileSync(PAIRING_PATH, "utf-8"));
+    await callPairingStore(PAIRING_REMOVE_REQUESTS_METHOD, { requestId: telegramUserId });
   } catch (err) {
-    const code = (err as NodeJS.ErrnoException)?.code;
-    if (code !== "ENOENT") {
-      const message = err instanceof Error ? err.message : String(err);
-      console.warn(
-        "[telegram-allow-store]",
-        `failed to read pairing store at ${PAIRING_PATH}:`,
-        message
-      );
-    }
-    return null;
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn("[telegram-allow-store]", "failed to remove pairing request:", message);
   }
-}
-
-export function removePairingRequest(telegramUserId: string) {
-  const store = readPairingStore();
-  if (!store?.requests) return;
-  const filtered = store.requests.filter((r) => r.id !== telegramUserId);
-  if (filtered.length === store.requests.length) return; // not found
-  const tmpPath = PAIRING_PATH + ".tmp";
-  const dir = dirname(PAIRING_PATH);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
-  writeFileSync(tmpPath, JSON.stringify({ ...store, requests: filtered }, null, 2), {
-    encoding: "utf-8",
-    mode: 0o644,
-  });
-  renameSync(tmpPath, PAIRING_PATH);
 }

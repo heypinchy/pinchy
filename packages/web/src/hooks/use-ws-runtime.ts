@@ -10,9 +10,18 @@ import {
   stripTrailingPlaceholder,
 } from "@/hooks/in-flight-placeholder";
 import { DELAY_HINT_MS } from "@/lib/chat-liveness";
+import {
+  ACCOUNT_DEACTIVATED_CLOSE_CODE,
+  SESSION_CHECK_AFTER_FAILED_RECONNECTS,
+  leaveDeactivatedAccount,
+  sessionIsGone,
+} from "@/lib/account-deactivated";
 import { mergeOrAppendChunk } from "@/hooks/merge-chunk";
 import { attachDeliveredFile } from "@/hooks/attach-delivered-file";
-import { ensureTrailingAssistant } from "@/hooks/ensure-trailing-assistant";
+import {
+  ensureTrailingAssistant,
+  resumeInflightReplyInLocal,
+} from "@/hooks/ensure-trailing-assistant";
 import { uploadAttachment } from "@/lib/upload-attachment";
 import { oversizeAttachmentError } from "@/lib/attachment-size-check";
 import { useDraftId } from "@/hooks/use-draft-id";
@@ -154,8 +163,64 @@ function convertMessage(msg: WsMessage): ThreadMessageLike {
   };
 }
 
-const MAX_RECONNECT_ATTEMPTS = 10;
 const MAX_BUNDLED_MESSAGES = 200;
+
+/**
+ * Reconnect backoff (#1422). There is no attempt budget: while the tab is
+ * visible the chat keeps dialing for as long as it takes, because the only
+ * thing an exhausted budget ever bought a user was a dead end that a reload
+ * fixed. Delay doubles from 1 s up to the cap; jitter only ever shortens it, so
+ * the nominal delay is always enough to see the next attempt.
+ */
+const RECONNECT_BASE_DELAY_MS = 1000;
+const RECONNECT_MAX_DELAY_MS = 15_000;
+const RECONNECT_MIN_JITTER = 0.8;
+
+function reconnectDelay(attempt: number): number {
+  const nominal = Math.min(RECONNECT_BASE_DELAY_MS * Math.pow(2, attempt), RECONNECT_MAX_DELAY_MS);
+  return Math.round(nominal * (RECONNECT_MIN_JITTER + (1 - RECONNECT_MIN_JITTER) * Math.random()));
+}
+
+/**
+ * A handshake that has not finished by now is not going to (a proxy holding
+ * the upgrade, a slow session lookup, a route that died with the old network).
+ * The browser's own timeout is minutes away, if it exists at all.
+ */
+const CONNECT_TIMEOUT_MS = 10_000;
+
+/**
+ * How often the safety net looks for "visible, online, not connected, nothing
+ * scheduled" (#1422 cases 5 and 6). Recovery must not depend on any single
+ * platform event having fired; this is what runs when none of them did.
+ */
+const WATCHDOG_INTERVAL_MS = 5_000;
+
+/**
+ * Application heartbeat (#1422 case 8). A browser cannot send a protocol ping
+ * and cannot see one, so a half-open socket reports OPEN while everything sent
+ * goes nowhere. We send `{ "type": "ping" }`; a server that supports it answers
+ * `{ "type": "pong" }`. The deadline is only enforced on a connection that has
+ * already ponged once, so a server without the heartbeat is never cut.
+ */
+const HEARTBEAT_INTERVAL_MS = 25_000;
+const PONG_DEADLINE_MS = 10_000;
+
+/** Application close code for a handshake the server accepted and then refused. */
+const REJECTED_CLOSE_CODE = 4429;
+
+export type ConnectionRejection = "too_many_connections" | "rate_limited";
+
+/**
+ * The reason sits in the close frame so the browser can read it (a raw HTTP 429
+ * on the upgrade surfaces only as 1006). Anything unreadable means the account
+ * limit, the common cause.
+ */
+function parseRejection(reason: string | undefined): ConnectionRejection {
+  return reason === "rate_limited" ? "rate_limited" : "too_many_connections";
+}
+
+/** What a server without the heartbeat answers a frame it does not know with. */
+const UNKNOWN_FRAME_ERROR_MESSAGE = "OpenClaw not configured";
 
 /**
  * Deadline for the server's answer to a `history` request (#956).
@@ -412,7 +477,18 @@ export function useWsRuntime(
    * turn green before the initial greeting/history is committed (issue #197).
    */
   hasInitialContent: boolean;
-  reconnectExhausted: boolean;
+  /**
+   * The browser reports no network (`navigator.onLine`, `offline`/`online`).
+   * Its own state: no reconnect is attempted until the network is back, and the
+   * UI must not blame the server (#1422).
+   */
+  isOffline: boolean;
+  /**
+   * The server accepted the handshake and closed it with 4429 (#1422): the
+   * account's connection cap or the address's upgrade rate. Cleared once a
+   * later connection is actually served. Retrying continues in the background.
+   */
+  connectionRejection: ConnectionRejection | null;
   payloadRejected: boolean;
   /**
    * The client's deadline for the server's answer to a `history` request
@@ -422,7 +498,10 @@ export function useWsRuntime(
    * self-heal reconnect the expiry triggers.
    */
   historyTimedOut: boolean;
-  /** Reconnect and re-request history after a stalled load (#956). */
+  /**
+   * "Try again": drop the current socket, dial a fresh one right now and start
+   * the backoff over (#956, #1422). Works from every unavailable state.
+   */
   retryHistory: () => void;
   /**
    * True while an inline turn-failure bubble is in the thread (#583). Lets the
@@ -432,6 +511,8 @@ export function useWsRuntime(
   hasInlineError: boolean;
   onRetryContinue: (reason: "orphan" | "partial_stream_failure" | "send_failure") => void;
   onRetryResend: (messageId: string) => void;
+  /** A message waits for the next connection; only this instance holds it (#957). */
+  hasQueuedMessage: boolean;
   pendingUploads: PendingUpload[];
   addPendingUpload: (file: File) => void;
   removePendingUpload: (localId: string) => void;
@@ -482,14 +563,44 @@ export function useWsRuntime(
   /** Self-heal reconnects spent on the current stall; reset by an answer. */
   const historySelfHealsRef = useRef(0);
   const [isOpenClawConnected, setIsOpenClawConnected] = useState(false);
-  const [reconnectExhausted, setReconnectExhausted] = useState(false);
+  const [isOffline, setIsOffline] = useState(
+    () => typeof navigator !== "undefined" && navigator.onLine === false
+  );
+  const [connectionRejection, setConnectionRejection] = useState<ConnectionRejection | null>(null);
   const [payloadRejected, setPayloadRejected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const connectRef = useRef<(() => void) | null>(null);
+  /** Drop the current socket and dial a new one now, backoff restarted (#1422). */
+  const reconnectNowRef = useRef<(() => void) | null>(null);
   const delayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** When the current dial started, and the timer that aborts it if it hangs. */
+  const connectStartedAtRef = useRef(0);
+  const connectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pongDeadlineRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** This connection has been ponged at least once, so a missing pong is a verdict. */
+  const connectionPongedRef = useRef(false);
+  /** The first ping of a connection is a probe; an old server answers it with an error frame. */
+  const probeOutstandingRef = useRef(false);
   const mountedRef = useRef(true);
+  /** Backoff exponent. Reset by anything that earns a fresh start (open, return, Try again). */
   const reconnectAttemptRef = useRef(0);
+  /**
+   * Failures since the last successful open. Deliberately NOT the backoff
+   * counter: focus, visibility and Try again all reset that one, and the
+   * session check (below) must still trigger after N failures in a row (#1422).
+   */
+  const failedSinceOpenRef = useRef(0);
+  /** Heartbeat capability, per hook: has any connection of ours ever been ponged? */
+  const everPongedRef = useRef(false);
+  /** A first ping went unanswered on a connection that never ponged: stop pinging. */
+  const pingUnsupportedRef = useRef(false);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Session check after repeated failed reconnects (see
+  // SESSION_CHECK_AFTER_FAILED_RECONNECTS): one request at a time, and once
+  // the tab is leaving for /login nothing reconnects or asks again.
+  const sessionCheckInFlightRef = useRef(false);
+  const leavingForLoginRef = useRef(false);
   // #895: armed on every `visibilitychange` → hidden, cleared on visible or on
   // firing. Fires `suspendForPageLifecycle()` (the same deliberate-close path
   // pagehide/offline already use) once the tab has been hidden continuously
@@ -501,6 +612,15 @@ export function useWsRuntime(
   const shouldRecoverFromHistoryRef = useRef(false);
   const lifecycleSuspendedRef = useRef(false);
   const pendingMessageRef = useRef<string | null>(null);
+  // Mirrors `pendingMessageRef` for consumers (#957): a queued payload lives
+  // only in this instance, so the chat must not be unmounted while one waits.
+  const [hasQueuedMessage, setHasQueuedMessage] = useState(false);
+
+  // The socket the server has answered on (#1422). `open` only means the
+  // handshake finished; a refused connection is opened and then closed. Every
+  // accepted connection gets a first frame, so only that frame makes a socket
+  // count: it is what flushes the queued message and resets the backoff.
+  const servedSocketRef = useRef<WebSocket | null>(null);
   // Latest slash-command handler (#611). Kept in a ref so `onNew` (memoized
   // without it in its deps) always calls the freshest version.
   const onSlashCommandRef = useRef<((command: SlashCommand) => void) | undefined>(onSlashCommand);
@@ -520,6 +640,18 @@ export function useWsRuntime(
    */
   const pendingHistoryRef = useRef(false);
   const frameBufferRef = useRef<unknown[]>([]);
+  /**
+   * How much of the in-flight message's text the bubble already shows, as of
+   * the last history frame that seeded it with `activeRun.partialContent`.
+   * Every chunk frame carries `offset` (the text emitted for its message before
+   * it), so a delta that the seed already holds is dropped instead of appended
+   * a second time. That happens whenever the history request goes out on a
+   * socket that is already one of the run's listeners — a tab refocus, a
+   * lifecycle recovery, a catch-up — where every word between the request and
+   * the server's snapshot arrives both as a buffered delta and inside
+   * `partialContent`.
+   */
+  const resumeCursorRef = useRef<{ messageId: string; length: number } | null>(null);
   // Multi-device live-sync: the messageId of the poke we last acted on, so a
   // duplicate poke for the same finished message does not trigger a redundant
   // history re-pull. Dedup is keyed on the globally-unique messageId rather than
@@ -636,30 +768,20 @@ export function useWsRuntime(
     // Synchronous timer cleanup is the entire point of doing this in render
     // (see comment above). Deferring it to useEffect would defeat the
     // race-prevention this block exists for.
-    // eslint-disable-next-line react-hooks/refs
     if (reconcileApplyTimerRef.current) {
-      // eslint-disable-next-line react-hooks/refs
       clearTimeout(reconcileApplyTimerRef.current);
-      // eslint-disable-next-line react-hooks/refs
       reconcileApplyTimerRef.current = null;
     }
-    // eslint-disable-next-line react-hooks/refs
     if (reconcileFinishTimerRef.current) {
-      // eslint-disable-next-line react-hooks/refs
       clearTimeout(reconcileFinishTimerRef.current);
-      // eslint-disable-next-line react-hooks/refs
       reconcileFinishTimerRef.current = null;
     }
     // The previous session's history deadline must not fire into the new one —
     // it would drop a healthy socket the new session just opened (#956).
-    // eslint-disable-next-line react-hooks/refs
     if (historyWatchdogRef.current) {
-      // eslint-disable-next-line react-hooks/refs
       clearTimeout(historyWatchdogRef.current);
-      // eslint-disable-next-line react-hooks/refs
       historyWatchdogRef.current = null;
     }
-    // eslint-disable-next-line react-hooks/refs
     historySelfHealsRef.current = 0;
     // Revoke object URLs from previous agent's pending uploads and clear the list.
     setPendingUploads((prev) => {
@@ -751,16 +873,15 @@ export function useWsRuntime(
   }, [clearHistoryWatchdog, forceReconnect]);
 
   /**
-   * User-triggered escape from a stalled load (#956): reconnect with a fresh
-   * self-heal and reconnect budget, so a chat that gave up can be revived
-   * without reloading the page.
+   * "Try again" (#956, #1422): the user's escape from every unavailable state.
+   * Drops whatever socket we hold, dials a new one immediately — not after the
+   * pending backoff — and restarts the backoff and the self-heal budget.
    */
   const retryHistory = useCallback(() => {
     setHistoryTimedOut(false);
     historySelfHealsRef.current = 0;
-    reconnectAttemptRef.current = 0;
-    setReconnectExhausted(false);
-    forceReconnect();
+    if (reconnectNowRef.current) reconnectNowRef.current();
+    else forceReconnect();
   }, [forceReconnect]);
 
   useEffect(() => {
@@ -769,6 +890,7 @@ export function useWsRuntime(
     agentIdRef.current = agentId;
     mountedRef.current = true;
     reconnectAttemptRef.current = 0;
+    failedSinceOpenRef.current = 0;
     shouldRecoverFromHistoryRef.current = false;
 
     // Snapshot the ack-timers Map at effect start so the cleanup can iterate
@@ -942,28 +1064,17 @@ export function useWsRuntime(
 
     // #895: tab visible → always reset the reconnect counter and reconnect
     // (or recover) immediately, so a returning user never waits out stale
-    // backoff and the `reconnectExhausted` dead end becomes recoverable.
+    // backoff.
     function handleTabVisible() {
       clearHiddenGraceTimer();
 
-      // Reset unconditionally, BEFORE any of the branches below — including
-      // the lifecycleSuspendedRef one, which delegates to
-      // recoverFromPageLifecycle() and never touches this counter itself
-      // (that helper predates #895 and is shared with pageshow/online).
-      // Without this hoist, exhausting the counter while visible, then going
-      // hidden past the grace period (closing the socket), then returning
-      // while the server is STILL down would reuse the stale attempt count
-      // left over from the earlier exhaustion: onclose would see it already
-      // at MAX_RECONNECT_ATTEMPTS and flip straight back to
-      // reconnectExhausted after exactly one attempt instead of restarting
-      // the full capped-backoff budget. Resetting here is a no-op on the
-      // OPEN path (nothing to recover) and matches what a successful
-      // ws.onopen already does, so it's safe on every branch — including
-      // CONNECTING, where a still-in-flight dial that happens to fail now
-      // gets the fresh budget rather than the count from whichever backoff
-      // attempt started it.
+      // Reset the BACKOFF unconditionally, before any branch below — including
+      // the suspended one, which delegates to recoverFromPageLifecycle() and
+      // never touches the counter itself. A returning user must not wait out
+      // the delay a long absence left behind. This is only the backoff:
+      // `failedSinceOpenRef` survives, so the session check still sees
+      // consecutive failures however often the user comes back (#1422).
       reconnectAttemptRef.current = 0;
-      setReconnectExhausted(false);
 
       if (lifecycleSuspendedRef.current) {
         // Connection was deliberately closed (grace-period close, pagehide,
@@ -990,8 +1101,13 @@ export function useWsRuntime(
       }
 
       if (wsRef.current?.readyState === WebSocket.CONNECTING) {
-        // A connect() is already in flight; let it resolve naturally.
-        return;
+        // A dial is in flight: let it finish — unless it has outlived its
+        // deadline. A frozen or throttled tab may never have run the timer that
+        // aborts it, and "let it resolve naturally" is the hang of #1422 case 4.
+        if (Date.now() - connectStartedAtRef.current < CONNECT_TIMEOUT_MS) return;
+        // Overdue: count it as a failed attempt and fall through to dial again
+        // right away — the tab is visible and the backoff was just reset.
+        abortSocket(wsRef.current);
       }
 
       // Disconnected: either a backoff attempt was deferred while hidden (see
@@ -1022,26 +1138,221 @@ export function useWsRuntime(
     }
 
     function handleOffline() {
+      setIsOffline(true);
       suspendForPageLifecycle();
     }
 
     function handleOnline() {
-      recoverFromPageLifecycle();
+      setIsOffline(false);
+      // `recoverFromPageLifecycle` only acts on a suspended tab; a network that
+      // returns while a backoff is pending should not wait that backoff out.
+      if (lifecycleSuspendedRef.current) {
+        recoverFromPageLifecycle();
+      } else if (!isSocketAlive(wsRef.current)) {
+        reconnectNow();
+      }
+    }
+
+    function isSocketAlive(ws: WebSocket | null) {
+      return ws?.readyState === WebSocket.OPEN || ws?.readyState === WebSocket.CONNECTING;
+    }
+
+    /**
+     * Give up on a socket without waiting for the browser to say so. A dial
+     * that hangs, or a connection the OS tore down silently, may take minutes
+     * to fire `onclose` — or never — so the close is driven by hand. The real
+     * event, should it ever arrive, is ignored as stale (`wsRef` has moved on).
+     */
+    function abortSocket(ws: WebSocket | null) {
+      if (!ws || wsRef.current !== ws) return;
+      try {
+        ws.close();
+      } catch {
+        // already closing
+      }
+      ws.onclose?.(new CloseEvent("close", { code: 1006 }));
+    }
+
+    /**
+     * "Try again": drop the socket we hold, dial a new one immediately and
+     * restart the backoff. Stands in for every platform event that may not have
+     * fired, so it also lifts a lingering suspend.
+     */
+    function reconnectNow() {
+      if (leavingForLoginRef.current) return;
+      setIsOffline(typeof navigator !== "undefined" && navigator.onLine === false);
+      reconnectAttemptRef.current = 0;
+      shouldRecoverFromHistoryRef.current = true;
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      const current = wsRef.current;
+      if (current) {
+        // Not `abortSocket`: a deliberate drop is not a failed attempt.
+        wsRef.current = null;
+        try {
+          current.close();
+        } catch {
+          // already closing
+        }
+        stopConnectionTimers();
+        pendingHistoryRef.current = false;
+        frameBufferRef.current = [];
+        clearHistoryWatchdog();
+        setIsConnected(false);
+        setIsOpenClawConnected(false);
+      }
+      connect();
+    }
+
+    /**
+     * Safety net (#1422 cases 5b and 6): recovery must not depend on one
+     * platform event. Visible, online, and nothing connected, connecting or
+     * scheduled — whatever left it that way — means nobody is going to dial.
+     */
+    function watchdogTick() {
+      if (!mountedRef.current || leavingForLoginRef.current) return;
+      const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+      setIsOffline(offline);
+      if (offline || isTabHidden()) return;
+      if (lifecycleSuspendedRef.current) {
+        recoverFromPageLifecycle();
+        return;
+      }
+      if (isSocketAlive(wsRef.current) || reconnectTimerRef.current) return;
+      shouldRecoverFromHistoryRef.current = true;
+      connect();
+    }
+
+    function scheduleReconnect(delay: number) {
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = setTimeout(() => {
+        reconnectTimerRef.current = null;
+        // #895: a tab hidden while this backoff was pending must not dial —
+        // burning attempts in the background is what the grace-period close
+        // exists to avoid. The watchdog and `handleTabVisible` dial once the tab
+        // is visible again.
+        if (isTabHidden()) return;
+        connect();
+      }, delay);
+    }
+
+    function stopConnectionTimers() {
+      if (connectTimerRef.current) {
+        clearTimeout(connectTimerRef.current);
+        connectTimerRef.current = null;
+      }
+      if (heartbeatTimerRef.current) {
+        clearInterval(heartbeatTimerRef.current);
+        heartbeatTimerRef.current = null;
+      }
+      if (pongDeadlineRef.current) {
+        clearTimeout(pongDeadlineRef.current);
+        pongDeadlineRef.current = null;
+      }
+      connectionPongedRef.current = false;
+      probeOutstandingRef.current = false;
+    }
+
+    /**
+     * Application heartbeat: a browser cannot see a half-open socket (no FIN,
+     * no RST), and a server older than the ping frame answers it with an error.
+     * So the first ping is a probe — a connection is only cut for silence after
+     * it has itself proven it can answer — and a server that never answers it is
+     * simply not pinged again. Any inbound frame counts as alive.
+     */
+    function startHeartbeat(ws: WebSocket) {
+      heartbeatTimerRef.current = setInterval(() => {
+        if (wsRef.current !== ws || ws.readyState !== WebSocket.OPEN) return;
+        if (pingUnsupportedRef.current) return;
+        if (probeOutstandingRef.current) {
+          // Last probe went unanswered on a connection that never ponged.
+          pingUnsupportedRef.current = true;
+          probeOutstandingRef.current = false;
+          return;
+        }
+        if (!connectionPongedRef.current && !everPongedRef.current) {
+          probeOutstandingRef.current = true;
+        }
+        try {
+          ws.send(JSON.stringify({ type: "ping" }));
+        } catch {
+          return;
+        }
+        if (connectionPongedRef.current) {
+          if (pongDeadlineRef.current) clearTimeout(pongDeadlineRef.current);
+          pongDeadlineRef.current = setTimeout(() => {
+            pongDeadlineRef.current = null;
+            abortSocket(ws);
+          }, PONG_DEADLINE_MS);
+        }
+      }, HEARTBEAT_INTERVAL_MS);
+    }
+
+    /** Stop everything and go to /login: this tab's account can't sign in any more. */
+    function leaveForLogin() {
+      if (leavingForLoginRef.current) return;
+      leavingForLoginRef.current = true;
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      isRunningRef.current = false;
+      setIsRunning(false);
+      leaveDeactivatedAccount();
+    }
+
+    /**
+     * A tab whose socket was already closed when the account was deactivated
+     * never got the 4403 — and its reconnects fail as a bare 1006, the same
+     * as a server that is down. So after a few failed reconnects in a row,
+     * ask: a positive "no session" leaves for /login; anything else keeps
+     * the ordinary backoff running alongside.
+     */
+    function checkSessionAfterFailedReconnects() {
+      if (sessionCheckInFlightRef.current || leavingForLoginRef.current) return;
+      sessionCheckInFlightRef.current = true;
+      void sessionIsGone().then((gone) => {
+        sessionCheckInFlightRef.current = false;
+        if (gone && mountedRef.current) leaveForLogin();
+      });
     }
 
     function connect() {
+      if (leavingForLoginRef.current) return;
+      // One socket at a time (#1422). A live socket or a pending backoff
+      // already owns the next connection; a second dial would hold a slot of
+      // the per-user limit with no handler that ever closes it. A caller that
+      // wants a fresh socket now drops the old one and the timer first.
+      if (isSocketAlive(wsRef.current) || reconnectTimerRef.current) return;
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       const ws = new WebSocket(`${protocol}//${window.location.host}/api/ws?agentId=${agentId}`);
       // Snapshot the agentId at connection time. Handlers compare this against
       // agentIdRef.current to detect stale connections after an agent switch.
       const connectionAgentId = agentId;
 
+      // An explicit dial is a decision to be connected: it may not run under a
+      // suspend flag whose paired recover event never came (#1422 case 5a).
+      lifecycleSuspendedRef.current = false;
+      stopConnectionTimers();
+      connectStartedAtRef.current = Date.now();
+      // A dial that neither opens nor fails can sit in CONNECTING for minutes.
+      connectTimerRef.current = setTimeout(() => {
+        connectTimerRef.current = null;
+        if (wsRef.current === ws && ws.readyState === WebSocket.CONNECTING) abortSocket(ws);
+      }, CONNECT_TIMEOUT_MS);
+
       ws.onopen = () => {
         if (connectionAgentId !== agentIdRef.current || wsRef.current !== ws) return;
+        if (connectTimerRef.current) {
+          clearTimeout(connectTimerRef.current);
+          connectTimerRef.current = null;
+        }
         setIsConnected(true);
-        setReconnectExhausted(false);
         setPayloadRejected(false);
-        reconnectAttemptRef.current = 0;
+        failedSinceOpenRef.current = 0;
+        startHeartbeat(ws);
         // Tier 2b: arm the pre-history buffer on EVERY open, then drain it
         // when the history response lands. The server's handleHistory does
         // `addListener` and THEN async-fetches chat.history before replying,
@@ -1060,18 +1371,18 @@ export function useWsRuntime(
         // genuinely fresh load nothing is streaming, so the buffer drains empty
         // on the (always-sent) history response — no stall, no benefit lost.
         sendHistoryRequest(ws);
-
-        // Flush any message that was queued while disconnected/connecting
-        if (pendingMessageRef.current) {
-          ws.send(pendingMessageRef.current);
-          pendingMessageRef.current = null;
-        }
+        // The queued message and the backoff reset wait for the server's first
+        // frame (see `servedSocketRef`).
       };
 
       ws.onclose = (event?: CloseEvent) => {
         if (connectionAgentId !== agentIdRef.current || wsRef.current !== ws) return;
         if (wsRef.current === ws) wsRef.current = null;
+        stopConnectionTimers();
         setIsConnected(false);
+        // The upstream flag belongs to the connection that carried it; kept, it
+        // would flash "connected" on the next socket before that says anything.
+        setIsOpenClawConnected(false);
         setIsDelayed(false);
         // Tier 2b: drop any pre-history buffer from the dying connection
         // so it can't bleed into the next ws's drain. The next onopen
@@ -1088,11 +1399,39 @@ export function useWsRuntime(
           delayTimerRef.current = null;
         }
 
+        // Close-code 4403: the account was deactivated (server/user-sockets.ts).
+        // Its sessions are gone, so every reconnect would fail the upgrade —
+        // ten tries behind a "reconnecting" status for something no retry can
+        // fix. Leave for the login page instead, where an expired session ends
+        // up too and where a deactivated account is told it can't sign in.
+        if (event?.code === ACCOUNT_DEACTIVATED_CLOSE_CODE) {
+          leaveForLogin();
+          return;
+        }
+        if (leavingForLoginRef.current) return;
+
         if (lifecycleSuspendedRef.current) {
           isRunningRef.current = false;
           setIsRunning(false);
           setIsHistoryLoaded(false);
           setKnownEmptyHistory(false);
+          return;
+        }
+
+        // Close-code 4429: the server refused this connection (too many open,
+        // or the rate limit) and said why. Not a failed attempt — the session is
+        // fine — and not a reason to hammer: retry at the capped interval until
+        // the limit lets us in.
+        if (event?.code === REJECTED_CLOSE_CODE) {
+          isRunningRef.current = false;
+          setIsRunning(false);
+          setIsHistoryLoaded(false);
+          setKnownEmptyHistory(false);
+          setConnectionRejection(parseRejection(event.reason));
+          if (mountedRef.current) {
+            shouldRecoverFromHistoryRef.current = true;
+            scheduleReconnect(reconnectDelay(Number.POSITIVE_INFINITY));
+          }
           return;
         }
 
@@ -1145,24 +1484,20 @@ export function useWsRuntime(
         setKnownEmptyHistory(false);
         setPayloadRejected(false);
 
-        if (mountedRef.current && reconnectAttemptRef.current < MAX_RECONNECT_ATTEMPTS) {
-          shouldRecoverFromHistoryRef.current = true;
-          const delay = Math.min(1000 * Math.pow(2, reconnectAttemptRef.current), 5000);
-          reconnectAttemptRef.current++;
-          reconnectTimerRef.current = setTimeout(() => {
-            reconnectTimerRef.current = null;
-            // #895: a tab hidden while this backoff was pending must not
-            // dial — burning attempts in the background is exactly what the
-            // grace-period close exists to avoid. Drop this deferred attempt
-            // rather than reschedule it; `handleTabVisible` resets the
-            // counter and reconnects immediately once the tab is visible
-            // again.
-            if (isTabHidden()) return;
-            connect();
-          }, delay);
-        } else if (mountedRef.current) {
-          setReconnectExhausted(true);
+        if (!mountedRef.current) return;
+        // Counted apart from the backoff: focus, visibility and Try again all
+        // reset that, and the check must still see failures in a row (#1422).
+        if (failedSinceOpenRef.current >= SESSION_CHECK_AFTER_FAILED_RECONNECTS) {
+          checkSessionAfterFailedReconnects();
         }
+        failedSinceOpenRef.current++;
+
+        // Never give up while the tab is visible: the delay is capped, not the
+        // number of attempts.
+        shouldRecoverFromHistoryRef.current = true;
+        const delay = reconnectDelay(reconnectAttemptRef.current);
+        reconnectAttemptRef.current++;
+        scheduleReconnect(delay);
       };
 
       ws.onerror = () => {
@@ -1334,7 +1669,18 @@ export function useWsRuntime(
               };
             }
           ).activeRun;
-          if (activeRun) {
+          const resumeAnchor: WsMessage | null = activeRun
+            ? {
+                id: activeRun.messageId,
+                role: "assistant",
+                content: activeRun.partialContent ?? "",
+                timestamp: new Date().toISOString(),
+              }
+            : null;
+          resumeCursorRef.current = resumeAnchor
+            ? { messageId: resumeAnchor.id, length: resumeAnchor.content.length }
+            : null;
+          if (activeRun && resumeAnchor) {
             // Anchor the in-flight reply as the TRAILING assistant message, seeded
             // with the server's resume buffer (`partialContent`) — the text
             // already streamed before this reload, which the server won't replay
@@ -1347,12 +1693,7 @@ export function useWsRuntime(
             // ThreadPrimitive.Messages (tapClientLookup index out of bounds).
             // Future chunks merge into this id via mergeOrAppendChunk. See
             // ensure-trailing-assistant.ts (#470).
-            const anchored = ensureTrailingAssistant(historyMessages, {
-              id: activeRun.messageId,
-              role: "assistant",
-              content: activeRun.partialContent ?? "",
-              timestamp: new Date().toISOString(),
-            });
+            const anchored = ensureTrailingAssistant(historyMessages, resumeAnchor);
             historyMessages.length = 0;
             historyMessages.push(...anchored);
             isRunningRef.current = true;
@@ -1503,8 +1844,13 @@ export function useWsRuntime(
               // future chunks still merge into the trailing assistant by id. This
               // also guards the concurrent-render case where `prev` is longer than
               // the messagesRef snapshot the staging decision used.
+              //
+              // Keeping `prev` must still resume the in-flight reply: the words
+              // streamed while this tab was not listening exist only in the
+              // anchor's `partialContent`, and the deltas still to come start
+              // where it ends.
               if (next.length < prev.length) {
-                return prev;
+                return resumeAnchor ? resumeInflightReplyInLocal(prev, resumeAnchor) : prev;
               }
               return next;
             }
@@ -1625,6 +1971,16 @@ export function useWsRuntime(
           }
           setIsDelayed(false);
 
+          // Drop whatever the resume seed already shows (see resumeCursorRef). A
+          // frame without `offset` is applied whole, as before.
+          let content: string = data.content;
+          const cursor = resumeCursorRef.current;
+          if (cursor && cursor.messageId === data.messageId && typeof data.offset === "number") {
+            content = content.slice(Math.max(0, cursor.length - data.offset));
+            cursor.length = Math.max(cursor.length, data.offset + data.content.length);
+          }
+          if (content === "") return;
+
           setMessages((prev) => {
             // A successful chunk auto-dismisses any prior error bubble — the
             // retry succeeded, so the previous failure no longer reflects state.
@@ -1649,7 +2005,7 @@ export function useWsRuntime(
               mergeOrAppendChunk(filtered, {
                 id: data.messageId,
                 role: "assistant",
-                content: data.content,
+                content,
                 timestamp: new Date().toISOString(),
               })
             );
@@ -1817,8 +2173,44 @@ export function useWsRuntime(
 
       ws.onmessage = (event) => {
         if (connectionAgentId !== agentIdRef.current || wsRef.current !== ws) return;
+        if (servedSocketRef.current !== ws) {
+          servedSocketRef.current = ws;
+          reconnectAttemptRef.current = 0;
+          // Flush any message that was queued while disconnected/connecting.
+          if (pendingMessageRef.current) {
+            ws.send(pendingMessageRef.current);
+            pendingMessageRef.current = null;
+            setHasQueuedMessage(false);
+          }
+        }
         try {
           const data = JSON.parse(event.data);
+          // Any frame proves the connection is alive and being served.
+          if (pongDeadlineRef.current) {
+            clearTimeout(pongDeadlineRef.current);
+            pongDeadlineRef.current = null;
+          }
+          if (data.type === "pong") {
+            everPongedRef.current = true;
+            connectionPongedRef.current = true;
+            probeOutstandingRef.current = false;
+            setConnectionRejection(null);
+            return;
+          }
+          // A server that predates `ping` routes it like a chat message and
+          // answers with one of these code-less errors. It answers the probe,
+          // not the user: swallow it and stop pinging.
+          if (
+            probeOutstandingRef.current &&
+            data.type === "error" &&
+            data.code === undefined &&
+            (data.message === UNKNOWN_FRAME_ERROR_MESSAGE || data.message === "Agent not found")
+          ) {
+            probeOutstandingRef.current = false;
+            pingUnsupportedRef.current = true;
+            return;
+          }
+          setConnectionRejection(null);
           processFrame(data);
         } catch {
           // Ignore unparseable messages
@@ -1829,7 +2221,9 @@ export function useWsRuntime(
     }
 
     connectRef.current = connect;
+    reconnectNowRef.current = reconnectNow;
     connect();
+    const watchdogTimer = setInterval(watchdogTick, WATCHDOG_INTERVAL_MS);
     document.addEventListener("visibilitychange", handleVisibilityChange);
     window.addEventListener("pagehide", handlePageHide);
     window.addEventListener("pageshow", handlePageShow);
@@ -1844,6 +2238,11 @@ export function useWsRuntime(
       if (connectRef.current === connect) {
         connectRef.current = null;
       }
+      if (reconnectNowRef.current === reconnectNow) {
+        reconnectNowRef.current = null;
+      }
+      clearInterval(watchdogTimer);
+      stopConnectionTimers();
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       window.removeEventListener("pagehide", handlePageHide);
       window.removeEventListener("pageshow", handlePageShow);
@@ -1872,7 +2271,11 @@ export function useWsRuntime(
         clearTimeout(timer);
       }
       ackTimers.clear();
-      wsRef.current?.close();
+      // Released, not just closed: the next effect's connect() must not see it
+      // as the live socket while its close is still in flight.
+      const ws = wsRef.current;
+      wsRef.current = null;
+      ws?.close();
     };
     // chatId (#508) is intentionally in the deps: switching the chat must tear
     // down the old WS and reconnect so the fresh connect() sends a history
@@ -1901,9 +2304,8 @@ export function useWsRuntime(
 
   /**
    * Send a JSON-serialised payload over the WebSocket if it's open, otherwise
-   * queue it for delivery the moment the next connection completes the
-   * handshake (see `connect()` in the main effect — it flushes
-   * pendingMessageRef on open).
+   * queue it for delivery on the first frame of the next connection the server
+   * accepts (see `servedSocketRef`).
    */
   const sendOrQueue = useCallback(
     (payload: string) => {
@@ -1928,6 +2330,7 @@ export function useWsRuntime(
         ws.send(payload);
       } else {
         pendingMessageRef.current = payload;
+        setHasQueuedMessage(true);
         if (
           ws?.readyState === WebSocket.CONNECTING ||
           ws?.readyState === WebSocket.CLOSING ||
@@ -2481,7 +2884,8 @@ export function useWsRuntime(
     isReconcilingMessages,
     hasInitialContent,
     isOpenClawConnected,
-    reconnectExhausted,
+    isOffline,
+    connectionRejection,
     payloadRejected,
     historyTimedOut,
     retryHistory,
@@ -2491,6 +2895,7 @@ export function useWsRuntime(
     hasInlineError: messages.some((m) => m.error),
     onRetryContinue,
     onRetryResend,
+    hasQueuedMessage,
     pendingUploads,
     addPendingUpload,
     removePendingUpload,

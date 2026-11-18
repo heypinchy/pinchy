@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useForm } from "react-hook-form";
+import { useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
 import {
@@ -38,6 +38,11 @@ import {
   imapEditSchema,
 } from "@/lib/schemas/integration-edit";
 import type { IntegrationConnection } from "@/lib/integrations/types";
+import {
+  canonicalDestinationUrl,
+  integrationDestinationChange,
+  secretRequiredMessage,
+} from "@/lib/secret-destination";
 import type { z } from "zod";
 
 interface EditCredentialsDialogProps {
@@ -80,7 +85,13 @@ type ImapFormValues = {
 function useCredentialUpdate(
   connectionId: string,
   onSuccess: () => void,
-  onOpenChange: (open: boolean) => void
+  onOpenChange: (open: boolean) => void,
+  /**
+   * Puts a server field error next to its input (e.g. the 422 asking for the
+   * API key again after a destination change). Returns false for a field this
+   * form does not render, which then falls back to the form-wide message.
+   */
+  onFieldError?: (field: string, message: string) => boolean
 ) {
   const [serverError, setServerError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -95,7 +106,12 @@ function useCredentialUpdate(
       onOpenChange(false);
     } catch (err) {
       if (err instanceof ApiError) {
-        setServerError(err.message);
+        const fieldErrors = (err.details as { fieldErrors?: Record<string, string[]> } | undefined)
+          ?.fieldErrors;
+        const placed = Object.entries(fieldErrors ?? {}).filter(
+          ([field, messages]) => messages[0] && onFieldError?.(field, messages[0])
+        );
+        if (placed.length === 0) setServerError(err.message);
       } else {
         setServerError("Something went wrong. Please try again.");
       }
@@ -122,6 +138,27 @@ function AuthFailedAlert({ status }: { status: IntegrationConnection["status"] }
       </AlertDescription>
     </Alert>
   );
+}
+
+/**
+ * The stored secret is bound to where it is sent (lib/secret-destination.ts):
+ * once the edit moves the destination, the secret field stops offering "leave
+ * empty to keep current". The server enforces the same rule with a 422.
+ */
+function secretRequirement(
+  type: "odoo" | "imap",
+  stored: Record<string, unknown>,
+  current: Record<string, unknown>
+): string | null {
+  // An empty field means "keep current", and a URL that does not parse yet is
+  // the server's to reject as invalid — neither is a destination change.
+  const incoming = Object.fromEntries(
+    Object.entries(current).filter(
+      ([field, value]) =>
+        value !== "" && (field !== "url" || canonicalDestinationUrl(String(value)) !== null)
+    )
+  );
+  return integrationDestinationChange(type, stored, incoming) ? secretRequiredMessage(type) : null;
 }
 
 /** Cancel + Save, with Save carrying the in-flight spinner. */
@@ -154,8 +191,6 @@ function OdooForm({
   onSuccess: () => void;
   onOpenChange: (open: boolean) => void;
 }) {
-  const { serverError, saving, save } = useCredentialUpdate(connection.id, onSuccess, onOpenChange);
-
   const maskedCreds =
     connection.credentials && typeof connection.credentials === "object"
       ? (connection.credentials as { url?: string; db?: string; login?: string })
@@ -171,7 +206,25 @@ function OdooForm({
     },
   });
 
+  const { serverError, saving, save } = useCredentialUpdate(
+    connection.id,
+    onSuccess,
+    onOpenChange,
+    (field, message) => {
+      if (field !== "apiKey") return false;
+      form.setError("apiKey", { message });
+      return true;
+    }
+  );
+
+  const [url, db] = useWatch({ control: form.control, name: ["url", "db"] });
+  const keyRequired = secretRequirement("odoo", maskedCreds, { url, db });
+
   async function onSubmit(values: OdooFormValues) {
+    if (keyRequired && !values.apiKey) {
+      form.setError("apiKey", { message: keyRequired });
+      return;
+    }
     const credentials: Record<string, string> = {};
     if (values.url) credentials.url = values.url;
     if (values.db) credentials.db = values.db;
@@ -231,8 +284,14 @@ function OdooForm({
             <FormItem>
               <FormLabel>API Key</FormLabel>
               <FormControl>
-                <Input type="password" placeholder="Leave empty to keep current" {...field} />
+                <Input
+                  type="password"
+                  placeholder={keyRequired ? "" : "Leave empty to keep current"}
+                  aria-required={!!keyRequired}
+                  {...field}
+                />
               </FormControl>
+              <SecretRequiredHint message={keyRequired} hasError={!!form.formState.errors.apiKey} />
               <FormMessage />
             </FormItem>
           )}
@@ -244,6 +303,17 @@ function OdooForm({
       </form>
     </Form>
   );
+}
+
+/**
+ * Muted explanation under a secret field that must be re-entered; the error
+ * replaces it. The input carries `aria-required`, not `required`: native
+ * validation would pre-empt submit with a browser bubble, and the inline error
+ * this dialog shows for every other field would never render.
+ */
+function SecretRequiredHint({ message, hasError }: { message: string | null; hasError: boolean }) {
+  if (!message || hasError) return null;
+  return <p className="text-xs text-muted-foreground">{message}</p>;
 }
 
 function WebSearchForm({
@@ -304,11 +374,6 @@ function ImapForm({
   onSuccess: () => void;
   onOpenChange: (open: boolean) => void;
 }) {
-  const { serverError, setServerError, saving, save } = useCredentialUpdate(
-    connection.id,
-    onSuccess,
-    onOpenChange
-  );
   const [showPassword, setShowPassword] = useState(false);
 
   // Masked credentials (server strips the password). Ports arrive as strings.
@@ -343,7 +408,34 @@ function ImapForm({
     },
   });
 
+  const { serverError, setServerError, saving, save } = useCredentialUpdate(
+    connection.id,
+    onSuccess,
+    onOpenChange,
+    (field, message) => {
+      if (field !== "password") return false;
+      form.setError("password", { message });
+      return true;
+    }
+  );
+
+  const [imapHost, imapPort, smtpHost, smtpPort, security] = useWatch({
+    control: form.control,
+    name: ["imapHost", "imapPort", "smtpHost", "smtpPort", "security"],
+  });
+  const passwordRequired = secretRequirement("imap", maskedCreds, {
+    imapHost,
+    imapPort,
+    smtpHost,
+    smtpPort,
+    security,
+  });
+
   async function onSubmit(values: ImapFormValues) {
+    if (passwordRequired && !values.password) {
+      form.setError("password", { message: passwordRequired });
+      return;
+    }
     // Build only the non-empty/edited fields, then coerce ports to numbers and
     // validate the subset with imapEditSchema before sending. senderName
     // follows the same "leave empty to keep current" convention as every
@@ -473,7 +565,8 @@ function ImapForm({
                   <Input
                     type={showPassword ? "text" : "password"}
                     className="pr-10"
-                    placeholder="Leave empty to keep current"
+                    placeholder={passwordRequired ? "" : "Leave empty to keep current"}
+                    aria-required={!!passwordRequired}
                     {...field}
                   />
                 </FormControl>
@@ -486,6 +579,10 @@ function ImapForm({
                   {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
                 </button>
               </div>
+              <SecretRequiredHint
+                message={passwordRequired}
+                hasError={!!form.formState.errors.password}
+              />
               <FormMessage />
             </FormItem>
           )}

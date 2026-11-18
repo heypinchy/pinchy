@@ -52,7 +52,7 @@ const ISSUER = "heypinchy.com";
  * Two rules hang off it, and together they are the fix for #1083. Only the
  * second is enforced here — say which is which, because a comment that claims
  * coverage the code lacks is how the unbounded Gmail fetch survived a review
- * (AGENTS.md § "Every plugin `fetch()` passes a signal"):
+ * (agent-rules/plugins.md § "Every plugin `fetch()` passes a signal"):
  *
  *   - CONVENTION: we mint development licenses for this subject and no other.
  *     Nothing checks it, and nothing needs to — the development private key is
@@ -91,8 +91,11 @@ function readClaims(payload: jose.JWTPayload): Omit<LicenseStatus, "active" | "e
   const paidUntilAt =
     typeof payload.paidUntil === "number" ? new Date(payload.paidUntil * 1000) : undefined;
   const now = new Date();
+  // Round up: a partial day still counts as a day the key works. Rounding
+  // down showed "6 days remaining" on a 7-day trial issued seconds ago (#1278),
+  // and "0 days" for a key with hours left. 0 means expired.
   const daysRemaining = expiresAt
-    ? Math.max(0, Math.floor((expiresAt.getTime() - now.getTime()) / 86400000))
+    ? Math.max(0, Math.ceil((expiresAt.getTime() - now.getTime()) / 86400000))
     : undefined;
 
   return {

@@ -1,7 +1,8 @@
-import { NextRequest, NextResponse, after } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { createInvite } from "@/lib/invites";
-import { appendAuditLog, redactEmail } from "@/lib/audit";
+import { redactEmail } from "@/lib/audit";
+import { deferAuditLog } from "@/lib/audit-deferred";
 import { getLicenseStatus } from "@/lib/enterprise";
 import { getSeatUsage } from "@/lib/seat-usage";
 import { evaluateSeatPressure } from "@/lib/seat-grace";
@@ -10,6 +11,7 @@ import { groups } from "@/db/schema";
 import { inArray } from "drizzle-orm";
 import { parseRequestBody } from "@/lib/api-validation";
 import { inviteUserSchema } from "@/lib/schemas/users";
+import type { EmailDelivery } from "@/lib/schemas/system-mail";
 
 export async function POST(request: NextRequest) {
   const sessionOrError = await requireAdmin();
@@ -18,7 +20,7 @@ export async function POST(request: NextRequest) {
 
   const parsed = await parseRequestBody(inviteUserSchema, request);
   if ("error" in parsed) return parsed.error;
-  const { email, role, groupIds } = parsed.data;
+  const { email, role, groupIds, sendEmail } = parsed.data;
 
   const license = await getLicenseStatus();
   if (license.active && license.maxUsers > 0) {
@@ -28,23 +30,21 @@ export async function POST(request: NextRequest) {
     // procurement. Existing users are never deactivated or degraded.
     const pressure = evaluateSeatPressure(usage.used, license.maxUsers);
     if (!pressure.inviteAllowed) {
-      after(() =>
-        appendAuditLog({
-          actorType: "user",
-          actorId: session.user.id!,
-          eventType: "user.invite_blocked",
-          detail: {
-            ...(email ? redactEmail(email) : {}),
-            role,
-            reason: "seat_cap",
-            seatsUsed: usage.used,
-            maxUsers: license.maxUsers,
-            graceCap: pressure.graceCap,
-          },
-          outcome: "failure",
-          error: { message: "Seat cap reached" },
-        })
-      );
+      deferAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "user.invite_blocked",
+        detail: {
+          ...redactEmail(email),
+          role,
+          reason: "seat_cap",
+          seatsUsed: usage.used,
+          maxUsers: license.maxUsers,
+          graceCap: pressure.graceCap,
+        },
+        outcome: "failure",
+        error: { message: "Seat cap reached" },
+      });
       return NextResponse.json(
         {
           error: "Seat limit reached",
@@ -70,19 +70,42 @@ export async function POST(request: NextRequest) {
     auditGroups = groupIds.map((id: string) => ({ id, name: nameMap.get(id) ?? id }));
   }
 
-  after(() =>
-    appendAuditLog({
-      actorType: "user",
-      actorId: session.user.id!,
-      eventType: "user.invited",
-      detail: {
-        ...(email ? redactEmail(email) : {}),
-        role,
-        ...(auditGroups.length > 0 ? { groups: auditGroups } : {}),
-      },
-      outcome: "success",
-    })
-  );
+  deferAuditLog({
+    actorType: "user",
+    actorId: session.user.id!,
+    eventType: "user.invited",
+    detail: {
+      ...redactEmail(email),
+      role,
+      ...(auditGroups.length > 0 ? { groups: auditGroups } : {}),
+    },
+    outcome: "success",
+  });
 
-  return NextResponse.json(invite, { status: 201 });
+  // The invite exists from here on. Emailing it is a second, separate step:
+  // whatever the mail server does, the response still carries the token so
+  // the admin can copy the link (#1309).
+  let emailDelivery: EmailDelivery | undefined;
+  if (sendEmail) {
+    // Loaded only when an email is asked for: with the mailer off, this route
+    // must not pull in the mail stack (nodemailer, the domain lookup) at all.
+    emailDelivery = await import("@/lib/system-mail/deliver")
+      .then(({ deliverLinkEmail }) =>
+        deliverLinkEmail({
+          request,
+          kind: "invite",
+          to: email,
+          token: invite.token,
+          expiresAt: invite.expiresAt,
+          inviteId: invite.id,
+          actor: { id: session.user.id, name: session.user.name, email: session.user.email },
+        })
+      )
+      .catch((err: unknown): EmailDelivery => {
+        console.error("[invite] email delivery crashed:", err);
+        return { sent: false, error: "Something went wrong sending the email." };
+      });
+  }
+
+  return NextResponse.json(emailDelivery ? { ...invite, emailDelivery } : invite, { status: 201 });
 }

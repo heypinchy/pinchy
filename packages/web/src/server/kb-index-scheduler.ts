@@ -45,7 +45,7 @@ import {
   isSlotDue,
   latestPassedSlot,
   localClock,
-  type IndexSchedule,
+  sameIndexSchedule,
 } from "@/lib/knowledge/index-schedule";
 import {
   getIndexSchedule,
@@ -74,10 +74,6 @@ async function listScheduledIndexAgentIds(): Promise<string[]> {
     .where(isNull(agents.deletedAt))
     .orderBy(asc(agents.createdAt));
   return rows.filter(isScheduledIndexAgent).map((row) => row.id);
-}
-
-function sameSchedule(a: IndexSchedule | null, b: IndexSchedule): boolean {
-  return a !== null && a.enabled === b.enabled && a.time === b.time;
 }
 
 /** Writes an audit row outside any request — the AGENTS.md non-request pattern. */
@@ -226,11 +222,18 @@ async function advance(now: Date): Promise<void> {
   // A last slot that is not a plain date, or lies in the future, is re-taken
   // too: either would sort after every real slot and keep the night from ever
   // being due — a malformed row, or a host clock that was briefly wrong.
+  //
+  // "In the future" means after TODAY, not after the latest passed slot. On
+  // the fall-back night a slot inside the repeated hour (02:30 in Vienna)
+  // passes, the clock goes back, and for half an hour the latest passed slot
+  // is yesterday again while the last slot taken is today. Re-taking then
+  // would hand the second 02:30 a slot it could fire on: two full sweeps in
+  // one night.
   if (
     state.lastSlot === null ||
     !SLOT_PATTERN.test(state.lastSlot) ||
-    state.lastSlot > passed ||
-    !sameSchedule(state.schedule, schedule) ||
+    state.lastSlot > clock.date ||
+    !sameIndexSchedule(state.schedule, schedule) ||
     state.timezone !== timezone
   ) {
     state = { ...state, lastSlot: latestPassedSlot(retakeClock, schedule), schedule, timezone };

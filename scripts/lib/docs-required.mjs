@@ -1,6 +1,6 @@
 /**
  * Pure logic for the docs-required guard (see scripts/check-docs-required.mjs
- * for the CI wrapper and AGENTS.md § "A User-Visible Change Needs A Docs
+ * for the CI wrapper and agent-rules/docs.md § "A User-Visible Change Needs A Docs
  * Change").
  *
  * AGENTS.md has said "when behavior changes, update docs in the same PR" for

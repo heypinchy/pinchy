@@ -17,8 +17,8 @@ export default defineConfig({
   // may be mid-reconnect to OpenClaw (openclaw-node exponential backoff
   // makes worst-case reconnect ~90s after a SIGUSR1) when a bot reply
   // round-trips through pinchy plugins.
-  // Skip @llm tests in CI — they require real Anthropic API auth that
-  // OpenClaw's per-agent auth-profiles system doesn't pick up from env vars.
+  // Skip @llm tests in CI — they require a real Anthropic API key, which
+  // OpenClaw does not pick up from env vars.
   // Pairing tests (no LLM needed) run in all environments.
   grepInvert: process.env.CI ? /@llm|@channel-restart/ : undefined,
   use: {

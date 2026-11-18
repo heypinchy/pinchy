@@ -81,7 +81,7 @@ export async function resetStack(): Promise<void> {
   // when it finds openclaw.json missing on restart. If OpenClaw's OLD process
   // is still running when that 42-byte seed lands, its file-watcher sees a
   // size-drop (4.9 KB → 42 B) whose diff is missing every restart-class field
-  // (gateway.controlUi/auth, discovery, update, canvasHost) → OpenClaw fires a
+  // (gateway.controlUi/auth, discovery, update) → OpenClaw fires a
   // SIGUSR1 gateway restart, and the cascade (compounded by the first-time
   // secrets.json bootstrap pkill) keeps the freshly-created Smithers agent out
   // of OC's runtime `agents.list` for >90 s → the wizard's first chat times out
@@ -308,7 +308,14 @@ export async function runProviderSmokeTest(page: Page, spec: ProviderSmokeTestSp
   // The submit button label in ProviderKeyForm is "Continue" (the default
   // submitLabel) on the setup-wizard path — not "Connect" or "Save", those
   // only appear in /settings/providers where `configuredProviders` is passed.
-  await page.getByRole("button", { name: spec.buttonName }).click();
+  // The provider click is retried: signing in is a full page load (#1286), so
+  // the URL can match before the page has hydrated, and a click that lands
+  // first is silently dropped (same fix as 03-provider.spec.ts). The retry
+  // waits on the field the next step fills.
+  await expect(async () => {
+    await page.getByRole("button", { name: spec.buttonName }).click();
+    await expect(page.getByPlaceholder(spec.placeholderRegex)).toBeVisible({ timeout: 1000 });
+  }).toPass({ timeout: 15000 });
   await page.getByPlaceholder(spec.placeholderRegex).fill(spec.keyValue);
   await page.getByRole("button", { name: /^continue$/i }).click();
   await expect(page.getByText(/provider connected/i)).toBeVisible({ timeout: 15000 });

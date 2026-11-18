@@ -14,7 +14,7 @@
 // graph-adapter.ts, gmail-adapter.ts, imap-adapter.ts)". gmail-adapter.ts did
 // not: it talks through googleapis, whose transport documents `timeout` as "No
 // timeout by default". The prose asserted coverage the code did not have, and
-// nothing could contradict it. Same shape as AGENTS.md § "A Hand-Maintained
+// nothing could contradict it. Same shape as agent-rules/docs.md § "A Hand-Maintained
 // List That Mirrors Code Will Be Wrong" — the one list with a guard is the one
 // list that stays correct.
 //

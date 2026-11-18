@@ -2,7 +2,7 @@
  * Shared types for WebSocket frames exchanged between the Pinchy server
  * (`server/client-router.ts`) and the browser runtime (`hooks/use-ws-runtime.ts`).
  *
- * AGENTS.md §"Shared Schemas And Typed Client" advises lifting cross-boundary
+ * agent-rules/web-routes.md §"Shared Schemas And Typed Client" advises lifting cross-boundary
  * shapes here so server-side emit and client-side render agree at compile time.
  *
  * This file currently exports only the model-unavailable error payload because

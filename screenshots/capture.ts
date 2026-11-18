@@ -460,6 +460,51 @@ test.describe("Feature screenshots", () => {
     await screenshot(page, "focus/agent-settings-knowledge-base.png", kb);
   });
 
+  test("tool confirmation card", async ({ page }) => {
+    // A pending confirmation needs an agent parked mid-turn on a gated tool,
+    // which no seeded agent does. The card draws only what /api/approvals
+    // hands it, so the shot serves it a stored summary in the shape the gate
+    // writes (plain strings and numbers need no summary node) — the picture is
+    // the card, not the gate. Nothing is decided: the shot never clicks
+    // Approve or Deny.
+    await page.route(/\/api\/approvals(\?.*)?$/, (route) =>
+      route.fulfill({
+        json: {
+          approvals: [
+            {
+              id: "screenshot-approval",
+              agentId: "screenshot-agent",
+              agentName: "Scout",
+              toolName: "pinchy_generate_file",
+              argsSummary: {
+                filename: "open-invoices",
+                format: "csv",
+                columns: ["Customer", "Invoice", "Amount"],
+                rows: [
+                  ["Acme GmbH", "INV-2026-118", 1240],
+                  ["Nordwind AG", "INV-2026-121", 860],
+                ],
+              },
+              sessionKey: "agent:screenshot-agent:direct:screenshot",
+              createdAt: new Date().toISOString(),
+              expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+            },
+          ],
+        },
+      }),
+    );
+    await page.goto(`${BASE_URL}/audit`);
+    const inbox = page.getByRole("region", { name: "Pending approvals" });
+    await inbox
+      .getByRole("button", { name: /review the request from Scout/i })
+      .click();
+    // Wait for Approve to arm, so the shot shows the card as it is decided on.
+    await expect(
+      inbox.getByRole("button", { name: "Approve" }),
+    ).not.toHaveAttribute("aria-disabled", "true", { timeout: 5000 });
+    await screenshot(page, "focus/tool-confirmation-card.png", inbox);
+  });
+
   // The Knowledge Base answer — 0.9.0's headline feature, and the one shot
   // that shows what it actually does: an answer synthesised from two documents
   // with inline citations and a resolvable Sources list.

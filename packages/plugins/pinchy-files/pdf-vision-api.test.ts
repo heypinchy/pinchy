@@ -338,6 +338,26 @@ describe("describePageImage", () => {
     );
   });
 
+  it("sends the Google API key in the x-goog-api-key header, never in the URL", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        candidates: [{ content: { parts: [{ text: "Google extracted text" }] } }],
+      }),
+    });
+
+    await describePageImage("base64data", {
+      model: "google/gemini-2.5-flash",
+      resolveApiKey: async () => "secret-google-key",
+    });
+
+    const [url, init] = vi.mocked(globalThis.fetch).mock.calls[0] as [string, RequestInit];
+    expect(url).not.toContain("key=");
+    expect(url).not.toContain("secret-google-key");
+    expect((init.headers as Record<string, string>)["x-goog-api-key"]).toBe("secret-google-key");
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
   it("rejects invalid model IDs to prevent URL injection", async () => {
     await expect(
       describePageImage("base64data", {
@@ -640,6 +660,44 @@ describe("createVisionConfig", () => {
       model: "ollama/llava:7b",
     });
     expect(config.ollamaBaseUrl).toBe("http://host.docker.internal:11434");
+  });
+
+  it("resolves provider keys as the reading agent through cfg, the only field OpenClaw forwards", async () => {
+    // OpenClaw 2026.9's plugin runtime forwards only {provider, cfg,
+    // workspaceDir} to the key lookup, which then takes its owner from
+    // cfg.agents.defaults.systemAgent. With none set on a multi-agent install
+    // it throws AgentSelectionRequiredError.
+    const resolveApiKeyForProvider = vi.fn().mockResolvedValue({ apiKey: "k" });
+    const cfg = {
+      agents: { list: [{ id: "agent-1" }, { id: "agent-2" }], defaults: { model: "x/y" } },
+      models: { providers: { anthropic: { api: "anthropic" } } },
+    };
+    const config = createVisionConfig({
+      modelAuth: { resolveApiKeyForProvider },
+      cfg,
+      model: "anthropic/claude-haiku-4-5-20251001",
+      ownerAgentId: "agent-1",
+    });
+    await expect(config.resolveApiKey("anthropic")).resolves.toBe("k");
+    const passed = resolveApiKeyForProvider.mock.calls[0][0];
+    expect(passed.cfg.agents.defaults.systemAgent).toEqual({ agentId: "agent-1" });
+    // Everything else in the config is the same, and the live config is untouched.
+    expect(passed.cfg.agents.list).toBe(cfg.agents.list);
+    expect(passed.cfg.agents.defaults.model).toBe("x/y");
+    expect(passed.cfg.models).toBe(cfg.models);
+    expect(cfg.agents.defaults).toEqual({ model: "x/y" });
+  });
+
+  it("passes cfg through unchanged when no owner is known", async () => {
+    const resolveApiKeyForProvider = vi.fn().mockResolvedValue({ apiKey: "k" });
+    const cfg = {};
+    const config = createVisionConfig({
+      modelAuth: { resolveApiKeyForProvider },
+      cfg,
+      model: "anthropic/claude-haiku-4-5-20251001",
+    });
+    await config.resolveApiKey("anthropic");
+    expect(resolveApiKeyForProvider).toHaveBeenCalledWith({ provider: "anthropic", cfg });
   });
 
   it("sets ollamaBaseUrl to undefined when no ollama provider configured", () => {

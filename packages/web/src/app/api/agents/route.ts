@@ -1,24 +1,27 @@
-import { NextResponse, after } from "next/server";
+import { NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
 import { withAuth, withAdmin } from "@/lib/api-auth";
 import { parseRequestBody } from "@/lib/api-validation";
 import { createAgent } from "@/lib/agents";
 import { createAgentSchema } from "@/lib/schemas/agents";
-import { appendAuditLog } from "@/lib/audit";
 import { deferAuditLog } from "@/lib/audit-deferred";
 import {
   incompletePermissionsDetail,
   incompletePermissionsWarning,
 } from "@/lib/agent-permission-gaps";
 import { getVisibleAgents } from "@/lib/visible-agents";
+import { queueFirstIndex } from "@/lib/knowledge/first-index";
 
 export const GET = withAuth(async (_req, _ctx, session) => {
   const visibleAgents = await getVisibleAgents(session.user.id!, session.user.role ?? "member");
-  // Short private cache absorbs back-and-forth agent-switch navigation
-  // without re-querying on every mount; the list is per-user (private) and
-  // 5 s keeps it fresh for operational changes (#261).
+  // Never cached. The browser keys its cache by URL, not by user, so a short
+  // private cache served one user's list to the next person signing in on
+  // the same browser (#1286). It no longer bought anything either: the list
+  // lives in AgentsProvider's client state, so navigation does not refetch
+  // (#261's reason for the cache), and the poll/focus/refresh fetches that
+  // remain want fresh data.
   return NextResponse.json(visibleAgents, {
-    headers: { "Cache-Control": "private, max-age=5, must-revalidate" },
+    headers: { "Cache-Control": "no-store" },
   });
 });
 
@@ -39,22 +42,20 @@ export const POST = withAdmin(async (request, _ctx, session) => {
   // instead would lose both records precisely when something went wrong.
   const result = await createAgent(parsed.data, session.user.id!, {
     onCreated: (agent, audit) =>
-      after(() =>
-        appendAuditLog({
-          actorType: "user",
-          actorId: session.user.id!,
-          eventType: "agent.created",
-          resource: `agent:${agent.id}`,
-          detail: {
-            name: agent.name,
-            model: agent.model,
-            templateId: parsed.data.templateId,
-            skills: audit.templateSkills,
-            modelSelection: audit.modelSelection,
-          },
-          outcome: "success",
-        })
-      ),
+      deferAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "agent.created",
+        resource: `agent:${agent.id}`,
+        detail: {
+          name: agent.name,
+          model: agent.model,
+          templateId: parsed.data.templateId,
+          skills: audit.templateSkills,
+          modelSelection: audit.modelSelection,
+        },
+        outcome: "success",
+      }),
     onPermissionsConfigured: (agent, entry) =>
       deferAuditLog({
         actorType: "user",
@@ -92,7 +93,7 @@ export const POST = withAdmin(async (request, _ctx, session) => {
     // `capabilityFailure`. Both return before the insert, so the callback
     // above never fired.
     if (result.error.status === 422) {
-      await appendAuditLog({
+      deferAuditLog({
         actorType: "user",
         actorId: session.user.id!,
         eventType: "agent.created",
@@ -123,6 +124,21 @@ export const POST = withAdmin(async (request, _ctx, session) => {
       },
       outcome: "failure",
     });
+  }
+
+  // A Knowledge Base agent finds nothing until its folders are indexed, and an
+  // admin who creates one and asks it something straight away would take the
+  // "nothing found" for a broken agent (#1280). So the first index is queued
+  // here, as this admin's request. When another run holds the instance's one
+  // job slot it is not queued now; the index worker queues it the moment the
+  // slot frees. Never a reason to fail the create: the agent exists, and the
+  // worker's next look catches what this could not do.
+  try {
+    await queueFirstIndex(agent.id, { actorType: "user", actorId: session.user.id! }, (entry) =>
+      deferAuditLog(entry)
+    );
+  } catch (err) {
+    console.error(`[agents] could not queue the first index of agent ${agent.id}:`, err);
   }
 
   revalidatePath("/", "layout");

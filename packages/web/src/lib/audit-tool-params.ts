@@ -7,7 +7,7 @@ import { scrubEmails } from "@/lib/audit";
 // OpenClaw's tool-use hook reports a dispatch-level failure it forwards no plugin
 // result, so that curation never runs and the raw params — the recipient address
 // and the full message body — would land verbatim in the append-only, HMAC-signed
-// audit (AGENTS.md § Secret Handling: "Never write plaintext email addresses or
+// audit (agent-rules/secrets.md § Secret Handling: "Never write plaintext email addresses or
 // other PII into audit detail"). Because the row is HMAC-signed, GDPR Art. 17
 // erasure cannot remove it afterwards, so it must never be written.
 //

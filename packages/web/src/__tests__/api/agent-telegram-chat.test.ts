@@ -238,6 +238,80 @@ describe("GET /api/agents/[agentId]/telegram-chat", () => {
     ]);
   });
 
+  it("the history fallback renders a retried turn once and in chronological order", async () => {
+    // The exact chat.history payload OpenClaw 2026.7.1 returns for one Telegram
+    // message whose run failed and was resubmitted (`[empty-error-retry]`):
+    // every attempt RE-RECORDS the user turn, and a Telegram user turn carries
+    // the message's `date` — whole seconds — while assistant turns carry
+    // Date.now(). So each re-recorded user turn steps back in time behind the
+    // failure before it. Read off a live E2E stack; it is why
+    // e2e/telegram/chats.spec.ts:382 failed "chronological order" whenever its
+    // read landed after the first retry.
+    messageRows = [];
+    const sent = "Message that we will hide from Pinchy's own store";
+    const failed = (timestamp: number) => ({
+      role: "assistant",
+      content: [{ type: "text", text: "The agent run failed before producing a reply." }],
+      stopReason: "error",
+      timestamp,
+    });
+    mockHistory.mockResolvedValueOnce({
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "✅ New session started." }],
+          stopReason: "stop",
+          timestamp: 1793955171293,
+        },
+        { role: "user", content: sent, timestamp: 1793955175000 },
+        failed(1793955175798),
+        { role: "user", content: sent, timestamp: 1793955175000 },
+        failed(1793955175925),
+        { role: "user", content: sent, timestamp: 1793955175000 },
+        failed(1793955176049),
+        { role: "user", content: sent, timestamp: 1793955175000 },
+        failed(1793955176180),
+      ],
+    });
+
+    const res = await GET(makeRequest(), ctx as never);
+    const body = (await res.json()) as {
+      messages: { role: string; text: string; timestamp: number }[];
+    };
+
+    const timestamps = body.messages.map((m) => m.timestamp);
+    expect(timestamps.every((t, i) => i === 0 || t >= timestamps[i - 1])).toBe(true);
+    // The user sent ONE message and the run failed ONCE, as far as they can see.
+    expect(body.messages).toEqual([
+      { role: "assistant", text: "✅ New session started.", timestamp: 1793955171293 },
+      { role: "user", text: sent, timestamp: 1793955175000 },
+      {
+        role: "assistant",
+        text: "The agent run failed before producing a reply.",
+        timestamp: 1793955176180,
+      },
+    ]);
+  });
+
+  it("the history fallback keeps a repeated message the user really sent twice", async () => {
+    // Same text, but a real reply in between: two messages, not a retry.
+    messageRows = [];
+    mockHistory.mockResolvedValueOnce({
+      messages: [
+        { role: "user", content: "ok", timestamp: 1000 },
+        { role: "assistant", content: "Noted.", stopReason: "stop", timestamp: 1500 },
+        { role: "user", content: "ok", timestamp: 2000 },
+      ],
+    });
+    const res = await GET(makeRequest(), ctx as never);
+    const body = (await res.json()) as { messages: { role: string; text: string }[] };
+    expect(body.messages.map((m) => `${m.role}:${m.text}`)).toEqual([
+      "user:ok",
+      "assistant:Noted.",
+      "user:ok",
+    ]);
+  });
+
   it("the history fallback is best-effort: a failed history read degrades to an empty list (still 200), not a 502", async () => {
     messageRows = [];
     mockHistory.mockRejectedValueOnce(new Error("gateway down"));

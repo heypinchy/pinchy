@@ -1,7 +1,7 @@
 /**
  * Drift guard for the Playwright flake-signal pins.
  *
- * AGENTS.md § "No Untracked Sleeps In E2E" states the property in passing:
+ * agent-rules/testing.md § "No Untracked Sleeps In E2E" states the property in passing:
  * every Playwright config here pins `retries: 0, workers: 1` on purpose — a
  * flake is a signal, not something a rerun hides. Nothing pinned that claim
  * itself. A well-meaning `retries: 2` landing in one of the nine
@@ -81,7 +81,7 @@ const IDENT_PART = /[\w$]/;
  * The walk is **recursive**, and that is not incidental tidiness. A
  * top-level-only readdir misses `packages/web/eval/playwright.eval.config.ts`
  * — a ninth config, run by `pnpm eval:selftest` in CI, that a package-root
- * glob leaves entirely unguarded. Same lesson as AGENTS.md § "A
+ * glob leaves entirely unguarded. Same lesson as agent-rules/docs.md § "A
  * Hand-Maintained List That Mirrors Code Will Be Wrong": a guard whose scope
  * is narrower than the thing it claims to cover reports on what it looks at,
  * not on what it should.

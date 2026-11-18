@@ -72,8 +72,8 @@ describe("validateProviderKey", () => {
 
     expect(result).toEqual({ valid: true });
     expect(fetch).toHaveBeenCalledWith(
-      "https://generativelanguage.googleapis.com/v1beta/models?key=AIza-valid",
-      expect.any(Object)
+      "https://generativelanguage.googleapis.com/v1beta/models",
+      expect.objectContaining({ headers: { "x-goog-api-key": "AIza-valid" } })
     );
   });
 

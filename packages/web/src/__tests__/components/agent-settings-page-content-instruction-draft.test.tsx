@@ -17,7 +17,7 @@ vi.mock("@/lib/auth-client", () => ({
 vi.mock("next/navigation", () => ({
   useParams: () => ({ agentId: "agent-1" }),
   useRouter: () => ({ replace: vi.fn(), push: vi.fn() }),
-  useSearchParams: () => new URLSearchParams(),
+  useSearchParams: () => new URLSearchParams("tab=instructions"),
   usePathname: () => "/chat/agent-1/settings",
 }));
 
@@ -43,6 +43,7 @@ vi.mock("@/components/agent-settings-automations", () => ({
   AgentSettingsAutomations: () => <div />,
 }));
 
+import { jsonResponse } from "@/test-helpers/fetch";
 import { AgentSettingsPageContent } from "@/components/agent-settings-page-content";
 import { stashInstructionDraft } from "@/lib/instruction-handoff";
 
@@ -51,33 +52,31 @@ const SAVED = "Answer in English.";
 function mockFetch() {
   global.fetch = vi.fn().mockImplementation((url: unknown) => {
     if (url === "/api/agents/agent-1") {
-      return Promise.resolve({
-        ok: true,
-        json: () =>
-          Promise.resolve({
-            id: "agent-1",
-            name: "Smithers",
-            model: "anthropic/claude-haiku-4-5-20251001",
-            allowedTools: [],
-            pluginConfig: null,
-            tagline: null,
-            avatarSeed: null,
-            personalityPresetId: null,
-            visibility: "restricted",
-            groupIds: [],
-            isPersonal: true,
-          }),
-      });
+      return Promise.resolve(
+        jsonResponse({
+          id: "agent-1",
+          name: "Smithers",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          allowedTools: [],
+          pluginConfig: null,
+          tagline: null,
+          avatarSeed: null,
+          personalityPresetId: null,
+          visibility: "restricted",
+          groupIds: [],
+          isPersonal: true,
+        })
+      );
     }
     if (url === "/api/agents/agent-1/files/AGENTS.md") {
-      return Promise.resolve({ ok: true, json: () => Promise.resolve({ content: SAVED }) });
+      return Promise.resolve(jsonResponse({ content: SAVED }));
     }
-    return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    return Promise.resolve(jsonResponse({}));
   }) as unknown as typeof fetch;
 }
 
 async function renderSettings() {
-  render(<AgentSettingsPageContent initialTab="instructions" />);
+  render(<AgentSettingsPageContent />);
   return waitFor(() => screen.getByRole("textbox"));
 }
 
@@ -100,7 +99,7 @@ describe("AgentSettingsPageContent — a draft carried over from chat (#1144)", 
   it("consumes the draft, so re-opening the tab shows only what is saved", async () => {
     stashInstructionDraft("agent-1", "Score leads by VUE.");
 
-    const { unmount } = render(<AgentSettingsPageContent initialTab="instructions" />);
+    const { unmount } = render(<AgentSettingsPageContent />);
     await waitFor(() => screen.getByRole("textbox"));
     expect(window.sessionStorage.getItem("pinchy:instruction-draft:agent-1")).toBeNull();
     unmount();

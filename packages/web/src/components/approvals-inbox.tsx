@@ -19,7 +19,7 @@ import { usePendingApprovals } from "@/hooks/use-pending-approvals";
 export function ApprovalsInbox() {
   const params = useParams<{ agentId?: string }>();
   const openAgentId = params?.agentId;
-  const { approvals, busy, decide } = usePendingApprovals();
+  const { approvals, openId, open, busy, decide } = usePendingApprovals();
 
   const elsewhere = approvals.filter((a) => a.agentId !== openAgentId);
   if (elsewhere.length === 0) return null;
@@ -39,6 +39,8 @@ export function ApprovalsInbox() {
           key={a.id}
           approval={a}
           busy={busy === a.id}
+          open={a.id === openId}
+          onOpen={() => open(a.id)}
           onDecide={(approval, decision) => void decide(approval, decision)}
         />
       ))}

@@ -7,6 +7,8 @@ All API endpoints require authentication unless noted otherwise. Unauthenticated
 
 Some endpoints are **admin only** — non-admin users receive a `403 Forbidden` response.
 
+Responses from `/api/*` are sent with `Cache-Control: no-store`, so neither the browser nor a shared cache keeps user data. The exceptions are the routes that deliver documents and cache them deliberately: agent uploads, agent-delivered files, the knowledge-base citation viewer, and `GET /api/models/capabilities`. Those routes state their own policy where it is documented below, and every response from them that carries user data, such as spreadsheet rows or the viewer's own error responses, is `no-store`. Requests that the server refuses before they reach the application (a domain-lock or cross-site-request block) are answered by the server itself and do not carry this header.
+
 ## WebSocket (Chat)
 
 Agent chat is handled over WebSocket at `/api/ws`, not via REST. The browser sends JSON messages and receives streaming responses. For details on the WebSocket protocol, message types, and session management, see the [Architecture](/architecture/#request-flow) page.
@@ -29,13 +31,48 @@ Service health check. **Public — no authentication required.** Suitable for lo
     "db_password": "default"
   },
   "openclaw": { "connected": true },
-  "configRegeneration": { "ok": true }
+  "configRegeneration": { "ok": true },
+  "disk": {
+    "status": "ok",
+    "volumes": [
+      {
+        "name": "system",
+        "status": "ok",
+        "freeGb": 61,
+        "totalGb": 100,
+        "freePercent": 61
+      },
+      {
+        "name": "workspaces",
+        "status": "ok",
+        "freeGb": 61,
+        "totalGb": 100,
+        "freePercent": 61
+      },
+      {
+        "name": "knowledgeBaseArtifacts",
+        "status": "ok",
+        "freeGb": 61,
+        "totalGb": 100,
+        "freePercent": 61
+      },
+      {
+        "name": "data",
+        "status": "ok",
+        "freeGb": 61,
+        "totalGb": 100,
+        "freePercent": 61
+      }
+    ]
+  }
 }
 ```
 
 `openclaw.connected` reflects whether the web process currently has a live WebSocket connection to the OpenClaw gateway — the dependency chat relies on. Top-level `status` deliberately stays `"ok"` even when `openclaw.connected` is `false`: brief disconnects during OpenClaw restarts (for example while applying a config change) are expected and self-heal, and flipping `status` would make the Docker healthcheck restart-loop the container during normal operation. Monitor `openclaw.connected` directly (or poll `/api/health/openclaw`) if you need alerting on gateway reachability specifically.
 
 `configRegeneration` reports the outcome of the most recent boot-time OpenClaw config regeneration. It is `{ "ok": true }` in normal operation. When a startup regeneration fails — most commonly because an image-only upgrade dropped the `openclaw-secrets` volume (see [Upgrading Pinchy](/guides/upgrading/)) — it becomes `{ "ok": false, "error": "<actionable message>", "at": "<ISO timestamp>" }`. This is the one signal that catches a **frozen config**: Pinchy still marks itself healthy so the OpenClaw container can start and hot-reload a fixed config later, so `status` stays `"ok"` and `openclaw.connected` can be `true` while new providers, agents, and model changes silently never take effect. `error` carries operator guidance only — never secret material. Alert on `configRegeneration.ok == false`. A later successful regeneration (for example after you fix the compose file and restart) clears it back to `{ "ok": true }`.
+
+`disk` reports the free space where Pinchy writes, by role rather than by path: `system` is the container's own filesystem, which sits on Docker's storage (where pulled images land and temporary files are written); `workspaces` holds agent files and chat uploads; `knowledgeBaseArtifacts` holds the PDFs the knowledge base converts Office documents into; `data` is the `/data` mount agents read from. On a default install they all share one disk, so the numbers repeat. A volume is `"warning"` below 15 GB free, and `disk.status` is `"warning"` if any volume is. Numbers are whole gigabytes (10⁹ bytes), rounded down for `freeGb` and `freePercent`, so a reported value never sits above the line it is compared to. A location that can't be measured — missing on this machine, or not answering within a second — is left out, and if none can be measured `disk` is `{ "status": "unknown", "volumes": [] }`. The database volume isn't mounted in the Pinchy container and isn't measured. Like `openclaw.connected`, a disk warning leaves top-level `status` at `"ok"` and the response at `200`, so the Docker healthcheck never restarts a container over it. Alert on `disk.status == "warning"`; [Disk space](/guides/hardening/#disk-space) explains the threshold and what to free up.
 
 ### `GET /api/version`
 
@@ -153,6 +190,8 @@ poll `configPushesPending` on the same health endpoint until it is `0`.
 ### `GET /api/agents`
 
 List agents visible to the current user. Admins see every shared agent, of any visibility; non-admin users see shared agents their visibility setting admits them to. Everyone additionally sees their own personal Smithers, and nobody sees anyone else's — admins included.
+
+The list is sent with `Cache-Control: no-store`: it differs per user, so the browser never keeps a copy the next person signing in on the same browser could be shown.
 
 **Response:**
 
@@ -290,11 +329,18 @@ repeated.
 }
 ```
 
-The change **is** stored; only the runtime has not caught up. A later save or a
-restart applies it. Retrying is safe — the update is idempotent — but treating
+The change **is** stored; only the runtime has not caught up. That includes a
+`groupIds` change sent in the same request: the group assignment is written
+before Pinchy answers. If writing it fails too, the message says so with a
+second sentence, `The group assignment was not saved: <cause>`, and only the
+group change needs to be sent again. Any other step that fails after the
+group assignment is written adds `A follow-up step also failed: <cause>`
+instead; the group change is then stored. A later save or a restart brings the
+runtime up to date. Retrying is safe — the update is idempotent — but treating
 the change as discarded is not. Pinchy records this case in the audit trail as
 an `agent.updated` entry with outcome `failure`, so a change that reached the
-database but not the runtime still leaves a trace.
+database but not the runtime still leaves a trace — including the
+`allowedGroups` diff when the request changed the agent's groups.
 
 ### `DELETE /api/agents/:id`
 
@@ -314,6 +360,49 @@ Delete an agent. **Admin only.** Personal agents (auto-created Smithers) cannot 
 - `401` — not authenticated
 - `403` — not an admin
 - `404` — agent not found, or it is another user's personal agent (admins cannot reach those either)
+
+### `GET /api/agents/admin-only`
+
+List the shared agents only admins can use under a license: visibility **Restricted** with no group assigned. **Admin only.** Answers in every license state — on a community instance it is the list of agents members would lose the moment a key is activated. Personal and deleted agents never appear.
+
+**Response:** `200 OK`
+
+```json
+{
+  "agents": [{ "id": "a1b2c3", "name": "Sales Assistant" }]
+}
+```
+
+**Errors:**
+
+- `401` — not authenticated
+- `403` — not an admin
+
+### `POST /api/agents/admin-only/open-to-all`
+
+Make the named admin-only agents visible to every user. **Admin only, enterprise.** This widens access, so it only ever happens as an explicit request for the agents you name — activating a license never does it on its own.
+
+**Request body:**
+
+| Field      | Type     | Required | Description                         |
+| ---------- | -------- | -------- | ----------------------------------- |
+| `agentIds` | string[] | Yes      | 1–200 agent IDs to set to All users |
+
+Only agents that are still Restricted with no group are changed. An agent that got a group (or was deleted) after you loaded the list is left alone, so this can never widen a group-scoped agent. Each changed agent writes an `agent.updated` audit entry with `changes.visibility` from `restricted` to `all`, the same entry the Access tab writes.
+
+**Response:** `200 OK` — the agents that were actually changed (an empty list if none still qualified):
+
+```json
+{
+  "agents": [{ "id": "a1b2c3", "name": "Sales Assistant" }]
+}
+```
+
+**Errors:**
+
+- `400` — `agentIds` is missing, empty, or longer than 200
+- `401` — not authenticated
+- `403` — not an admin, or no active license
 
 ### `POST /api/agents/:agentId/uploads`
 
@@ -373,7 +462,7 @@ Summarize the caller's conversation with this agent so a long context stops degr
 
 ### `GET /api/agents/:agentId/active-error`
 
-The agent's current "paused" banner for the caller: the latest error that has not been superseded or dismissed, or `null`. Pass `?chatId=` to address one specific chat; omit it for the default per-user session. The session key embeds the caller's own id, so a user can only ever read their own errors.
+The agent's current "paused" banner for the caller: the latest error from the last 24 hours that has not been superseded (a later message in the conversation went through) or dismissed, or `null`. Pass `?chatId=` to address one specific chat; omit it for the default per-user session. The session key embeds the caller's own id, so a user can only ever read their own errors.
 
 ### `DELETE /api/agents/:agentId/active-error?id=<errorId>`
 
@@ -393,15 +482,15 @@ Whether retrying the caller's last failed run in this conversation could duplica
 | ------------- | --------- | ---------------------------------------------------------------------- |
 | `sideEffects` | `boolean` | `true` when the failed run had already executed at least one tool call |
 
-The chat asks this when you press Retry, not when the run failed — see [Retrying after the agent already acted](/guides/retry-messages/#retrying-after-the-agent-already-acted). The time window comes from the stored run, never from the request, so this cannot be used to query an agent's tool history.
+The chat asks this when you press Retry, not when the run failed — see [Retrying after the agent already acted](/guides/retry-messages/#retrying-after-the-agent-already-acted). The time window comes from the stored run, never from the request, and only tool calls made on the caller's behalf count — on a shared agent, another member's activity in the same window never turns the answer to `true`. So this cannot be used to query an agent's tool history.
 
 ### `GET /api/agents/:agentId/uploads/:filename`
 
-Download a file the caller uploaded to this agent.
+Download a file the caller uploaded to this agent. Cached like `workspace-file` below: kept, but checked again on every reuse (`304` when unchanged), and only for the same session. Unlike `workspace-file`, downloads here are not written to the audit trail, a `304` included.
 
 ### `GET /api/agents/:agentId/artifacts/:filename`
 
-Download a file the agent produced and delivered in chat — see [Generating files](/guides/file-uploads/#generating-files).
+Download a file the agent produced and delivered in chat — see [Generating files](/guides/file-uploads/#generating-files). Cached like `workspace-file` below: kept, but checked again on every reuse (`304` when unchanged), and only for the same session. Unlike `workspace-file`, downloads here are not written to the audit trail, a `304` included.
 
 Serves a file the caller was actually handed, not whatever currently carries that name. Each delivery records where the file was and a checksum of its contents, and the download is refused with `404` unless the file on disk still matches one of the caller's own deliveries of that name. On a shared agent that matters: everyone's chats write into the same workspace, so without it a later file of the same name — from a conversation you cannot see — would be served under your download link.
 
@@ -417,6 +506,10 @@ Write a file into the agent's own workspace.
 
 Serve a file from a directory this agent is granted under `allowed_paths` — the path behind a knowledge-base citation you click. Supports byte ranges, so a PDF viewer can jump straight to the cited page.
 
+The bytes are sent with `Cache-Control: private, no-cache`, `Vary: Cookie` and a weak `ETag`. The browser keeps its copy but asks the server before every reuse, and the server answers only after the access check: if the agent's grant was removed, or you lost access to the agent, every new request for the document is answered `403` or `404` instead of letting the browser reuse its copy. A page the browser restores from its own history (the Back button) can still show what it displayed before; that is not a new request and no cache header prevents it short of not storing the document at all. An unchanged document you may still see is answered `304 Not Modified` without its bytes, so a large PDF is not sent again; that reuse is logged like any other read (`knowledge.source_viewed`, or `knowledge.source_downloaded` with `download=1`), marked `revalidated: true`. `Vary: Cookie` keeps a copy from crossing sessions, such as another person signing in on the same browser.
+
+A `Range` request is honoured on its own. Sent with `If-Range`, it is answered with the whole file instead: `If-Range` needs a strong validator, and splicing a range of a newer edition onto a cached copy of an older one would corrupt the document.
+
 **Query parameters:**
 
 | Field      | Required | Description                                                                                                            |
@@ -428,9 +521,13 @@ Serve a file from a directory this agent is granted under `allowed_paths` — th
 | `from`     | No       | `variant=rows` only: first cited row, 1-based inclusive                                                                |
 | `to`       | No       | `variant=rows` only: last cited row, inclusive; clamped to at most 200 returned rows                                   |
 
-`variant=rows` is what a spreadsheet citation's preview asks for. It answers JSON instead of bytes — `{ sheet, columns, rows }`, each row carrying its sheet row number and its cell texts index-aligned to `columns` — read through the same traversal the index used, so hidden rows and hidden sheets stay excluded. With none of `sheet`/`from`/`to` it opens the top of the first visible sheet; naming a sheet the workbook does not have answers `200` with an empty range (the document was found); a workbook that will not open answers `422`.
+`variant=rows` is what a spreadsheet citation's preview asks for. It answers JSON instead of bytes — `{ sheet, columns, rows }`, each row carrying its sheet row number and its cell texts index-aligned to `columns` — read through the same traversal the index used, so hidden rows and hidden sheets stay excluded. With none of `sheet`/`from`/`to` it opens the top of the first visible sheet; naming a sheet the workbook does not have answers `200` with an empty range (the document was found); a workbook that will not open answers `422`, and one that is too large to read safely answers `413` — refused without being opened when it is over 100 MB, unpacks to far more than it weighs, has a sheet (or another part the reader reads as text) over 16 MB or a picture over 32 MB, and refused after the attempt when reading it needs more memory than the separate process the rows are read in may use (384 MB). That process is why a heavy workbook never costs Pinchy's own memory. `503` is about the reader, never the workbook: there was no room on the artifact volume for the private copy the rows are read from, the process could not be started, ran past its two-minute limit or was stopped by the system — or two reads are already waiting for it, in which case the answer carries `Retry-After`. An `.xls` is previewed from the `.xlsx` the index converted it to, so the sheet and rows are the ones the citation was made from and the size limits apply to that converted file; before a run has converted it, or when the converter refused it, `variant=rows` answers `404` and the original stays downloadable. Workbooks are read one at a time, the index's reads included, so a request that is abandoned while it waits or reads (a reload, a closed preview) has its read dropped; its audit row says `cancelled`.
 
-`download` decides which audit row is written: `knowledge.source_viewed` without it, `knowledge.source_downloaded` with it. Reading a cited document and carrying it out of the building are different acts, so they are different rows — and the caller has to say which, because the response cannot: a `.docx` is served as an attachment either way. A successful read also records which representation left (`original`, `converted` or `rows`).
+`download` decides which audit row is written: `knowledge.source_viewed` without it, `knowledge.source_downloaded` with it. Reading a cited document and carrying it out of the building are different acts, so they are different rows — and the caller has to say which, because the response cannot: a `.docx` is served as an attachment either way. A successful read also records which representation was served — or, on a `304`, which one was checked (`original`, `converted` or `rows`).
+
+### `GET /api/agents/:agentId/workspace-file/:name?path=<path>`
+
+The same file, under a URL whose last segment is its name — the URL the citation viewer opens, so the browser's PDF viewer shows the document's name instead of `workspace-file`. Takes the same query parameters as the route above and behaves exactly like it: `path` alone decides which file is read, against the same grant, with the same audit rows. `:name` must be the name of the file actually served — for a Word or PowerPoint source that's its converted PDF (`Angebot.pdf` for `Angebot.docx`), unless `variant=original` asks for the original. When the requested path is a link, the link's name counts as well as the target's. Any other name answers `404`, and the audit row records `name_mismatch`. `variant=rows` answers JSON rather than a file, so it doesn't check the name.
 
 ### `GET /api/agents/:agentId/telegram-chat`
 
@@ -442,7 +539,7 @@ Machine clients (CI, scripts) provision agents with a scoped API key instead of 
 
 ### `GET /api/settings/api-keys`
 
-List every API key (masked `start`, scopes, expiry, last-used, enabled state). **Admin only.** The plaintext secret is never returned — it is shown once at creation and never again.
+List every API key (masked `start`, scopes, expiry, last-used, enabled state, and `createdBy` with the creator's snapshotted name and an `active` flag that turns `false` once the creator is banned, deleted or no longer an admin). **Admin only.** The plaintext secret is never returned — it is shown once at creation and never again.
 
 ### `POST /api/settings/api-keys`
 
@@ -520,7 +617,12 @@ The agent's most recent index run — in flight or last finished — and whether
     "enabled": true,
     "time": "02:00",
     "timezone": "Europe/Vienna",
-    "nextRun": { "date": "2026-07-18", "time": "02:00", "day": "tomorrow" },
+    "nextRun": {
+      "date": "2026-07-18",
+      "time": "02:00",
+      "day": "tomorrow",
+      "at": "2026-07-18T00:00:00.000Z"
+    },
     "included": true
   },
   "job": {
@@ -537,7 +639,10 @@ The agent's most recent index run — in flight or last finished — and whether
       "skipped": 12,
       "removed": 1,
       "unsearchable": 2,
-      "failed": 0
+      "failed": 0,
+      "archived": 0,
+      "unsupported": 4,
+      "ignored": 37
     },
     "error": null,
     "createdAt": "2026-07-17T10:00:00.000Z",
@@ -550,7 +655,7 @@ The agent's most recent index run — in flight or last finished — and whether
 | Field                           | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `status`                        | `pending`, `running`, `succeeded`, or `failed`.                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `trigger`                       | `manual` when an admin started the run, `scheduled` when the [nightly reindex](#get-apisettingsknowledge-index-schedule) did.                                                                                                                                                                                                                                                                                                                                                                                |
+| `trigger`                       | `manual` when an admin started the run, `scheduled` when the [nightly reindex](#get-apisettingsknowledge-index-schedule) did, `upgrade` when Pinchy started it after an update changed how Word and PowerPoint files are converted, `initial` when Pinchy started an agent's [first index](#get-apiagentsagentidknowledgefirst-index) because it was granted a folder nothing had indexed yet.                                                                                                               |
 | `unavailableFolders`            | Folders the run had to leave as they were: ones it could not read, and ones that came up empty while the index still held their documents (a network share that failed to mount looks like that). Their documents are kept, not removed. Counted, never named; `0` when every folder was read.                                                                                                                                                                                                               |
 | `processed` / `total`           | Documents done, and documents found. `total` is `null` until discovery has walked every folder; it never changes after that. `processed` advances per whole document, so a long one can hold it still for minutes.                                                                                                                                                                                                                                                                                           |
 | `processedBytes` / `totalBytes` | The same progress weighed by the bytes of the files involved. This is the pair to build a progress bar or a time-to-completion estimate on: documents are not equal units of work — one compilation PDF can be a third of a corpus — while bytes track the actual work and are known in full before the first document is read. `totalBytes` is `null` until discovery has finished, and `processedBytes` moves _inside_ a long document as its pages are embedded, so a slow document still shows movement. |
@@ -559,18 +664,21 @@ The agent's most recent index run — in flight or last finished — and whether
 | `counts.skipped`                | Unchanged content hash, and either chunks already present or it already came out empty and nothing has changed that could read it differently (see [Keeping the index current](/guides/create-knowledge-base-agent/#keeping-the-index-current)).                                                                                                                                                                                                                                                             |
 | `counts.removed`                | Source file no longer on disk; the document and its chunks were deleted. Stays `0` until the run's final pass.                                                                                                                                                                                                                                                                                                                                                                                               |
 | `counts.unsearchable`           | Parsed without error but yielded no text, so the document exists in the index yet can never be retrieved — a workbook whose sheets are all hidden, or a scan that no vision model was available to read.                                                                                                                                                                                                                                                                                                     |
-| `counts.failed`                 | The file could not be read or parsed. The run continues — one bad file never aborts the reindex — and a previously indexed version of the file stays searchable.                                                                                                                                                                                                                                                                                                                                             |
-| `error`                         | Why the run failed. `null` unless `status` is `failed`.                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `counts.failed`                 | The file could not be read or parsed, or was refused because it had been [swapped for a symbolic link](/guides/mount-data-directories/#links-inside-a-mounted-folder) during the run. The run continues — one bad file never aborts the reindex — and a previously indexed version of the file stays searchable.                                                                                                                                                                                             |
+| `counts.archived`               | Documents in this run that sit under an archive folder (`OLD`, `Archiv` and the like) and are therefore left out of everyday search. Not a separate outcome: an archived document is also `indexed` or `skipped`.                                                                                                                                                                                                                                                                                            |
+| `counts.unsupported`            | Documents in the granted folders the index can't read yet — an `.rtf` note, a binary `.xlsb` workbook, a `.jpg` scan. Not part of the counts above, because they never become documents. Known from the moment discovery finishes. Absent on a run that stopped before discovery finished, and on one that finished before Pinchy counted them. [`GET …/knowledge/unsupported`](#get-apiagentsagentidknowledgeunsupported) lists them.                                                                       |
+| `counts.ignored`                | Files in the granted folders that aren't documents at all — programs, drivers, data exports, firmware images, media, and any type Pinchy has no name for. Skipped on purpose and listed by the same endpoint as `counts.unsupported`. Absent when `counts.unsupported` is. A run that finished before Pinchy told the two apart is answered with both counts derived from the files the latest run under the same folders recorded, so `unsupported` never includes these.                                   |
+| `error`                         | Why the run failed. `null` unless `status` is `failed`. When none of the agent's folders could be read, it names them and says, per folder, whether it is gone (remove the grant or mount it again), can't be opened (a permissions problem on the server), or came up empty while the index still holds its documents (a share that didn't mount). The matching audit entry gives the same failure without folder paths.                                                                                    |
 
 `schedule` answers "do I still have to press the button?" for this agent. It is `null` if the schedule could not be read; the job is reported either way.
 
-| Field               | Description                                                                                                                                                                                              |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `schedule.enabled`  | Whether the instance reindexes knowledge-base agents on its own every night. Set with [`PUT /api/settings/knowledge-index-schedule`](#put-apisettingsknowledge-index-schedule).                          |
-| `schedule.time`     | The time of day it runs, in the organization timezone.                                                                                                                                                   |
-| `schedule.timezone` | The organization timezone `time` is read in.                                                                                                                                                             |
-| `schedule.nextRun`  | The next run as `date`, `time` and `day` (`today` or `tomorrow`), all in the organization timezone. `null` while the nightly reindex is off.                                                             |
-| `schedule.included` | Whether the nightly run covers **this** agent. Only agents that have the `knowledge_search` permission and at least one granted folder are swept; an agent that only reads files is reindexed on demand. |
+| Field               | Description                                                                                                                                                                                                                                                                                                                                                                            |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `schedule.enabled`  | Whether the instance reindexes knowledge-base agents on its own every night. Set with [`PUT /api/settings/knowledge-index-schedule`](#put-apisettingsknowledge-index-schedule).                                                                                                                                                                                                        |
+| `schedule.time`     | The time of day it runs, in the organization timezone.                                                                                                                                                                                                                                                                                                                                 |
+| `schedule.timezone` | The organization timezone `time` is read in.                                                                                                                                                                                                                                                                                                                                           |
+| `schedule.nextRun`  | The next run as `date`, `time` and `day` (`today` or `tomorrow`), all in the organization timezone, and as `at`, the same moment as a UTC timestamp — the one to convert for a reader elsewhere. On the night the clocks go forward, a `time` that doesn't happen that night is reached at the first minute after the jump, and `at` says so. `null` while the nightly reindex is off. |
+| `schedule.included` | Whether the nightly run covers **this** agent. Only agents that have the `knowledge_search` permission and at least one granted folder are swept; an agent that only reads files is reindexed on demand.                                                                                                                                                                               |
 
 `unsearchable` and `failed` can be non-zero on a `succeeded` run: the reindex itself worked, and these are its findings about the corpus.
 
@@ -578,13 +686,38 @@ The agent's most recent index run — in flight or last finished — and whether
 
 A run interrupted by a restart is picked up again automatically: indexing is idempotent, so the resumed run skips everything already done.
 
-Every run writes two `knowledge.reindex` audit entries, correlated by `jobId`: the request — the admin's, or the nightly scheduler's — and the outcome (recorded by the background worker, with the counts). Both carry `trigger`.
+Every run writes two `knowledge.reindex` audit entries, correlated by `jobId`: the request — the admin's, the nightly scheduler's, Pinchy's own after an update, or a first index's (the admin whose grant started it, or the background worker when it had to wait) — and the outcome (recorded by the background worker, with the counts). Both carry `trigger`.
 
 **Errors:**
 
 - `401` — not authenticated
 - `403` — not an admin
 - `404` — agent not found, or it is another user's personal agent (admins cannot reach those either)
+
+### `GET /api/agents/:agentId/knowledge/first-index`
+
+Whether the agent's first index is still to come, and how far it has got. This is what the agent's chat shows above the message box, so a new Knowledge Base agent doesn't quietly answer "nothing found" while its documents are still being read. Open to **anyone who can see the agent**, not only admins: the answer is a state and two counts, never folders or run details.
+
+Pinchy queues the first index on its own when an agent that has the `knowledge_search` permission is granted a folder no run has gone through yet: on [`POST /api/agents`](#post-apiagents), on [`PATCH /api/agents/:id`](#patch-apiagentsid) when the permissions change, and through its background worker for every other grant — one that found another run in the way (as soon as that run finishes), or an agent created with an API key. Those runs are requested by `kb-index-worker`. Only those folders are indexed, not the agent's others. The run is an ordinary reindex with `trigger: "initial"`, behind the same [one-run-at-a-time rule](#post-apiagentsagentidknowledgereindex).
+
+**Response:**
+
+```json
+{ "state": "indexing", "processed": 120, "total": 505, "partial": false }
+```
+
+| Field       | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `state`     | `none` once every granted folder has had a run that finished (or for an agent that doesn't search the index), `queued` while the first index is about to start, `waiting` while another run holds the one job slot and the first index starts after it, and `indexing` while a run goes through a folder still waiting for its first index — whichever agent's run it is. Later runs (nightly, **Reindex now**) report `none`, and so does an instance whose bundled embedding model is missing, since no run can start there. |
+| `processed` | Documents done so far. `indexing` only.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `total`     | Documents found. `null` until discovery has walked every folder. `indexing` only.                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `partial`   | `true` when some of the agent's folders are indexed already, so it answers from them while only the newly granted ones wait. Every state but `none`.                                                                                                                                                                                                                                                                                                                                                                           |
+
+**Errors:**
+
+- `401` — not authenticated
+- `403` with `code: "personal_agent_disabled"` — an admin has turned members' personal agents off, and this is yours
+- `404` — agent not found, or not visible to you
 
 ### `GET /api/settings/knowledge-index-schedule`
 
@@ -599,7 +732,12 @@ Once a night, at `time` in the [organization timezone](/reference/organization-t
   "enabled": true,
   "time": "02:00",
   "timezone": "Europe/Vienna",
-  "nextRun": { "date": "2026-10-18", "time": "02:00", "day": "tomorrow" },
+  "nextRun": {
+    "date": "2026-10-18",
+    "time": "02:00",
+    "day": "tomorrow",
+    "at": "2026-10-18T00:00:00.000Z"
+  },
   "currentSweep": null,
   "lastSweep": {
     "slot": "2026-10-17",
@@ -614,7 +752,7 @@ Once a night, at `time` in the [organization timezone](/reference/organization-t
 | `enabled`      | Whether the nightly reindex runs. On by default.                                                                                                                                            |
 | `time`         | 24-hour `HH:MM`, in the organization timezone. Defaults to `02:00`.                                                                                                                         |
 | `timezone`     | The organization timezone `time` is read in.                                                                                                                                                |
-| `nextRun`      | `date`, `time` and `day` (`today` or `tomorrow`) of the next run, in the organization timezone. `null` while `enabled` is `false`.                                                          |
+| `nextRun`      | `date`, `time` and `day` (`today` or `tomorrow`) of the next run, in the organization timezone, and `at`, the same moment as a UTC timestamp. `null` while `enabled` is `false`.            |
 | `currentSweep` | The night still queueing its agents: `slot` (the date it's for), `startedAt`, `agentCount`, and `waiting` — how many agents haven't had their turn yet. `null` when nothing is in progress. |
 | `lastSweep`    | The most recent night that queued all its agents: `slot`, `startedAt`, `agentCount`. Each agent's own outcome is on [`GET …/knowledge/reindex`](#get-apiagentsagentidknowledgereindex).     |
 
@@ -643,19 +781,316 @@ A change is recorded as a `settings.updated` audit entry with the old and new sc
 
 Runs a hybrid (vector + full-text) search over the requesting agent's indexed, granted documents and returns numbered, citable passages. The raw query is never persisted — only a one-way hash, since a knowledge-base question can itself carry PII.
 
+### `POST /api/agents/:agentId/knowledge/passage`
+
+Which indexed passage of a cited page, slide or Word section an answer drew on — what the citation viewer asks before it highlights one. Read-only: it isn't audited itself, because it accompanies a document view that `workspace-file` already records as `knowledge.source_viewed`.
+
+It returns text from a document, so it applies the same two gates as `workspace-file`, in the same order, before the index is read: the agent check (`404` for an agent you can't use, `403` for a paused one), then the agent's granted folders (`403` for a path outside them, `404` for a file that isn't there).
+
+**Request body:**
+
+| Field     | Type   | Required     | Description                                                                                                                                                      |
+| --------- | ------ | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `path`    | string | Yes          | The document's full path — the `path` a citation link carries.                                                                                                   |
+| `page`    | number | One of three | A PDF's cited page, from 1.                                                                                                                                      |
+| `slide`   | number | One of three | A slide deck's cited slide, from 1.                                                                                                                              |
+| `heading` | string | One of three | A Word document's cited heading path, levels joined by a space, `>` and a space, as the citation shows it — `Quality > Incoming goods`. At most 2000 characters. |
+| `claim`   | string | No           | The answer's sentences that cite the source, at most 2000 characters. Used only to choose between the passages of the page, slide or section, and never stored.  |
+
+Send exactly one of `page`, `slide` and `heading`; a body with none or more than one is a `400`. A heading matches only the whole path: `Quality` does not match a passage filed under `Quality > Incoming goods`.
+
+**Response:**
+
+```json
+{
+  "passage": {
+    "text": "§ 4 Reaktionszeiten\nDer Auftragnehmer reagiert auf Störungen innerhalb von vier Stunden."
+  }
+}
+```
+
+`passage` is the indexed text of the passage, or `null` when there is none to show: the page, slide or section holds no indexed text, or it holds several passages and nothing says which — no `claim`, or the embedding model isn't available. The response names no page: for a Word section, the viewer finds the passage's page in the converted PDF itself. With several, the one nearest to `claim` in meaning wins, which also works when the answer is in a different language than the document.
+
+**Errors:** `400` invalid body, `401` not authenticated, `403` path outside the agent's granted folders or agent paused, `404` agent not found or not accessible, or file not found, `502` the lookup failed.
+
 ### `GET /api/agents/:agentId/knowledge/unsearchable`
 
-**Which** documents the index holds but cannot search — the list behind the `unsearchable` counter in the reindex status. **Admin only.**
+**Which** documents the index holds but search can't reach. Two kinds: documents that produced no searchable text — the ones the `unsearchable` counter in the reindex status counts — and Word or PowerPoint files search leaves out until they have been converted again after an update, which that counter never counts. **Admin only.**
 
-The counter answers for the last run; this answers for everything currently in the agent's granted folders, so it is usually the larger of the two. That is the two numbers agreeing, not disagreeing: a file unchanged since an earlier run is `skipped` by the next one and never counted again.
+The counter answers for the last run; `totals.no_text` answers for everything currently in the agent's granted folders, so it is usually the larger of the two. That is the two numbers agreeing, not disagreeing: a file unchanged since an earlier run is `skipped` by the next one and never counted again.
 
 Scoped to the folders that agent is granted, exactly like search itself, so the list never names a document the agent isn't allowed to know about.
+
+A corpus can hold thousands of these documents, so the route answers in two steps. Without a query it returns the counts — per reason, per cause and per folder — and no document names. With `root` (and optionally `folder`) it returns one folder's documents. [`GET …/knowledge/unsearchable/csv`](#get-apiagentsagentidknowledgeunsearchablecsv) has all of them in one file.
+
+**Query parameters:**
+
+| Parameter | Description                                                                                                                                                                                                      |
+| --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `root`    | One of the agent's granted folders, as `groups[].root` names it. Lists that group's documents. A folder the agent isn't granted lists nothing.                                                                   |
+| `folder`  | A folder directly inside `root`, as `groups[].folder` names it: one name, no `/`. Lists the documents anywhere under it. Leave it out to list the documents directly in `root`. Only valid together with `root`. |
+
+**Response without a query:**
+
+```json
+{
+  "total": 21,
+  "totals": { "no_text": 20, "awaiting_conversion": 1 },
+  "causes": {
+    "ocr_off": 19,
+    "no_vision_model": 0,
+    "read_next_run": 0,
+    "read_refused": 0,
+    "vision_failed": 0,
+    "read_blank": 1
+  },
+  "groups": [
+    { "root": "/data/certs", "folder": "Food", "count": 19 },
+    { "root": "/data/offers", "folder": null, "count": 2 }
+  ],
+  "searchesIndex": true
+}
+```
+
+| Field           | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `total`         | How many documents there are, never capped.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `totals`        | `total` per reason. `no_text` — indexed, but it produced no searchable text (a scan nothing has read, a file refused for its size or content). `awaiting_conversion` — a Word or PowerPoint file search leaves out until it has been converted again after an update changed how such files are converted.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `causes`        | The `no_text` documents by why they have no text, as this server stands now. `ocr_off` — reading scans is switched off (`PINCHY_KB_OCR=off`); switching it on lets the next run read them. `no_vision_model` — it's on, but no vision model is available. `read_next_run` — the next run reads them again: a vision model is available that hasn't read them, an older version of Pinchy read them, or their last read didn't finish. `vision_failed` — every vision read failed, five runs in a row; a different vision model or a replaced file gets them read again. `read_refused` — the converter, the workbook reader or the mail reader refused the file (too large, damaged, not what its name says), or it's a workbook with nothing visible in it; the server log names each refused file and the reason, and a file that's replaced is read again. `read_blank` — read in full, and nothing found. Sums to `totals.no_text`. |
+| `groups`        | The documents per folder: a granted folder (`root`) and one folder directly inside it (`folder`), or `folder: null` for the files directly in `root`. Largest first; the counts sum to `total`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `searchesIndex` | Whether the agent has `knowledge_search`. Pinchy converts the `awaiting_conversion` files again on its own only for an agent that searches the index; for any other agent, a reindex converts them.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+
+**Response with `root`:**
+
+```json
+{
+  "documents": [
+    {
+      "sourcePath": "/data/certs/Food/2024/AFNOR validation.pdf",
+      "name": "AFNOR validation.pdf",
+      "root": "/data/certs",
+      "folder": "Food/2024",
+      "status": "active",
+      "reason": "no_text",
+      "cause": "ocr_off"
+    }
+  ],
+  "total": 19
+}
+```
+
+| Field                    | Description                                                                                                                          |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `documents[].sourcePath` | The document's full path, as indexed.                                                                                                |
+| `documents[].name`       | The file name.                                                                                                                       |
+| `documents[].root`       | The granted folder it is in.                                                                                                         |
+| `documents[].folder`     | The path from `root` to the file, without the file name. Empty for a file directly in `root`.                                        |
+| `documents[].status`     | `archived` for a document under an archive folder, already out of everyday search; `active` otherwise. Archived documents come last. |
+| `documents[].reason`     | `no_text` or `awaiting_conversion`, as in `totals`.                                                                                  |
+| `documents[].cause`      | For a `no_text` document, one of the `causes` above. `null` for `awaiting_conversion`.                                               |
+| `total`                  | How many documents the group holds. `documents` holds at most 100; `total` is never capped.                                          |
+
+**Errors:**
+
+- `400` — `folder` without `root`, an empty value, or a `folder` containing `/`
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — agent not found, or it is another user's personal agent (admins cannot reach those either)
+
+### `GET /api/agents/:agentId/knowledge/unsearchable/csv`
+
+A CSV of every document `GET …/knowledge/unsearchable` counts, not only the first 100 of a folder. **Admin only.**
+
+The answer is a download (`Content-Disposition: attachment`), streamed, so thousands of documents work as well as three. Scoped to the agent's granted folders, exactly like search itself.
+
+**Response:** `text/csv; charset=utf-8`, UTF-8 with a byte-order mark, one row per document, ordered by path:
+
+```csv
+"name","folder","reason","status","path"
+"AFNOR validation.pdf","certs/Food/2024","No text layer; reading scans is switched off on this server","active","/data/certs/Food/2024/AFNOR validation.pdf"
+"Angebot.docx","offers","Waiting to be converted again","active","/data/offers/Angebot.docx"
+```
+
+| Column   | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`   | The file name.                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `folder` | The granted folder's own name, then the path below it.                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `reason` | Why search can't reach it, in words: `Waiting to be converted again`, or for a document without text one of `No text layer; reading scans is switched off on this server`, `No text layer; no vision model is available to read it`, `Will be read on the next run`, `Couldn't be read; the vision model failed on every attempt`, `Couldn't be read; too large, damaged, not what its name says, or nothing visible in it`, `Read in full; no text found`. |
+| `status` | `active` or `archived`.                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `path`   | The document's full path, as indexed.                                                                                                                                                                                                                                                                                                                                                                                                                       |
+
+A cell that would start a spreadsheet formula (`=`, `+`, `-`, `@`) is prefixed with `'`, because a file name is text anyone who can write to the share chose.
 
 **Errors:**
 
 - `401` — not authenticated
 - `403` — not an admin
 - `404` — agent not found, or it is another user's personal agent (admins cannot reach those either)
+
+### `GET /api/agents/:agentId/knowledge/unsupported`
+
+A CSV of the files in the agent's granted folders whose type the index can't read — the ones `counts.unsupported` and `counts.ignored` count, each marked with which of the two it is. **Admin only.**
+
+The answer is a download (`Content-Disposition: attachment`), streamed, so a share with a hundred thousand such files works as well as one with three. It holds what the last run that finished found; nothing here walks the share. Scoped to the agent's granted folders, exactly like search itself. Hidden files and operating-system or Office clutter (`Thumbs.db`, `~$Report.docx`, `*.tmp`) are never listed.
+
+**Response:** `text/csv; charset=utf-8`, UTF-8 with a byte-order mark, one row per file, ordered by path:
+
+```csv
+"path","type","status"
+"/data/hr/Budget 2019.xlsb",".xlsb","not supported yet"
+"/data/hr/README","","ignored"
+"/data/hr/driver/usb.dll",".dll","ignored"
+"/data/hr/notes/Minutes.rtf",".rtf","not supported yet"
+```
+
+| Column   | Description                                                                                              |
+| -------- | -------------------------------------------------------------------------------------------------------- |
+| `path`   | The file's full path.                                                                                    |
+| `type`   | Its extension, lowercased, with the dot. Empty for a file without one.                                   |
+| `status` | `not supported yet` for a document the index can't read yet, `ignored` for a file that isn't a document. |
+
+A cell that would start a spreadsheet formula (`=`, `+`, `-`, `@`) is prefixed with `'`, because a file name is text anyone who can write to the share chose.
+
+**Errors:**
+
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — agent not found, or it is another user's personal agent (admins cannot reach those either)
+
+### `GET /api/agents/:agentId/knowledge/folders`
+
+Which of the agent's granted folders are searchable, being indexed, queued, or incomplete. It covers each granted folder and the folders directly inside it. Open to **everyone who can chat with the agent**, not only admins.
+
+Scoped to the agent's saved granted folders, exactly like search itself. Nothing here walks the share: the counts come from the index and from the folder list the agent's latest run recorded.
+
+**Response:**
+
+```json
+{
+  "job": {
+    "status": "running",
+    "processed": 12,
+    "total": 60,
+    "currentFolder": "/data/kb/certificates",
+    "finishedAt": null
+  },
+  "folders": [
+    {
+      "path": "/data/kb",
+      "name": "/data/kb",
+      "state": "indexing",
+      "indexed": 0,
+      "searchable": 0,
+      "notSearchable": 0,
+      "archivedSearchable": 0,
+      "archivedNotSearchable": 0,
+      "expected": 60,
+      "pending": 48,
+      "pendingArchived": 6,
+      "expectedArchived": 6,
+      "indexingArchive": false,
+      "lastIndexedAt": null,
+      "children": [
+        {
+          "path": "/data/kb/hr",
+          "name": "hr",
+          "state": "has_errors",
+          "indexed": 10,
+          "searchable": 8,
+          "notSearchable": 2,
+          "archivedSearchable": 0,
+          "archivedNotSearchable": 0,
+          "expected": 10,
+          "pending": 0,
+          "pendingArchived": 0,
+          "expectedArchived": 0,
+          "indexingArchive": false,
+          "lastIndexedAt": "2026-11-01T10:00:00.000Z"
+        }
+      ]
+    }
+  ]
+}
+```
+
+| Field                             | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `job`                             | The agent's latest run, or `null` if it never had one. `status` is `pending`, `running`, `succeeded` or `failed`. `currentFolder` is the folder an active run is in, or `null` when the run hasn't recorded its folder list.                                                                                                                                                                                                                                                                     |
+| `folders[]`                       | One entry per granted folder. `children` holds the folders directly inside it, with the same fields.                                                                                                                                                                                                                                                                                                                                                                                             |
+| `folders[].state`                 | `indexing` (the active run is in this folder), `queued` (the active run hasn't reached it yet), `searchable`, `has_errors` (some files can't be searched, or fewer files are in the index than the run found), `not_indexed` (no run has read it) or `empty` (the last run found nothing to index).                                                                                                                                                                                              |
+| `folders[].indexed`               | Documents from this folder in the index.                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `folders[].searchable`            | Of those, how many search can use.                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `folders[].notSearchable`         | Of those, how many it can't: no readable text, or waiting to be converted again.                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `folders[].archivedSearchable`    | Of `searchable`, the documents from archived folders.                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `folders[].archivedNotSearchable` | Of `notSearchable`, the documents from archived folders.                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `folders[].expected`              | Files the latest run found in this folder. `null` when no run has recorded a folder list that covers it: the folder was granted after that run, the run counted it only as part of a larger folder, or the run kept the folder's documents without reading it (a share below the grant that came up empty).                                                                                                                                                                                      |
+| `folders[].pending`               | Files the active run still has to read here. `0` when no run is active.                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `folders[].pendingArchived`       | Of `pending`, the files in [archived folders](/guides/create-knowledge-base-agent/#current-documents-first). A run reads those last, so while only archived files are left here, `state` speaks for the current files alone: `searchable` once they're all in. Until the run is through the archive, the archive's documents (`archivedSearchable`, `archivedNotSearchable`) neither count as errors nor make up for a missing current file, even when the index holds them from an earlier run. |
+| `folders[].expectedArchived`      | Of `expected`, the files in archived folders. A folder that holds nothing else stays `indexing` or `queued` until the run is through all of them. `0` when the run's folder list doesn't mark archived files (a run started before this field existed).                                                                                                                                                                                                                                          |
+| `folders[].indexingArchive`       | `true` while the active run is reading an archived file in this folder.                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `folders[].lastIndexedAt`         | When the last successful run that covered this folder finished. Before any such run, when a document from this folder last entered the index, or `null`. A failed run doesn't count.                                                                                                                                                                                                                                                                                                             |
+
+**Errors:**
+
+- `401` — not authenticated
+- `404` — agent not found, or the user can't chat with it
+
+### `GET /api/agents/:agentId/knowledge/files`
+
+One folder's files and whether search can use each one. Open to **everyone who can chat with the agent**, not only admins.
+
+**Query parameters:**
+
+| Parameter | Description                                                                                                                                                 |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `folder`  | Required. A granted folder, or a folder inside one.                                                                                                         |
+| `scope`   | `direct` (only the files in `folder` itself) or `tree` (everything below it). Defaults to `direct` for a granted folder and `tree` for a folder inside one. |
+| `filter`  | `all` (default) or `not_searchable`, which keeps only the files an answer can't come from.                                                                  |
+| `q`       | Optional. Keeps only files whose `name` contains this text, ignoring case.                                                                                  |
+| `offset`  | Default `0`.                                                                                                                                                |
+| `limit`   | Default `50`, at most `100`.                                                                                                                                |
+
+**Response** (for `?folder=/data/kb/hr&filter=not_searchable`):
+
+```json
+{
+  "folder": "/data/kb/hr",
+  "files": [
+    {
+      "path": "/data/kb/hr/scan.pdf",
+      "name": "scan.pdf",
+      "state": "no_text",
+      "archived": false,
+      "indexedAt": "2026-11-01T10:00:00.000Z",
+      "modifiedAt": "2026-10-28T08:12:00.000Z"
+    }
+  ],
+  "total": 1,
+  "totals": {
+    "all": 2,
+    "searchable": 1,
+    "notSearchable": 1,
+    "unsupported": 0,
+    "ignored": 0
+  },
+  "truncated": false
+}
+```
+
+| Field              | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `files[].state`    | `searchable`, `changed` (searchable, but modified since it was indexed), `no_text` (indexed, nothing readable in it), `awaiting_conversion` (an Office file waiting to be converted again), `pending` (the active run will read it), `failed` (the file was there before the last successful run started and it isn't in the index), `new` (added after the last successful run) `unsupported` (a document type the index can't read yet) or `ignored` (a file that isn't a document — a program, a data export). Only `searchable` and `changed` count as searchable. |
+| `files[].name`     | The path below `folder`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `files[].archived` | `true` for a file in an [archive folder](/guides/create-knowledge-base-agent/#current-documents-first), which everyday search leaves out.                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `total`            | Files matching `filter` and `q`, before `offset` and `limit`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `totals`           | Counts for everything `scope` lists, regardless of `filter` and `q`. `all` counts the files the index reads; `unsupported` and `ignored` count the rest, which `not_searchable` leaves out.                                                                                                                                                                                                                                                                                                                                                                            |
+| `truncated`        | `true` when the listing stopped at 20,000 files; the folder may hold more, and `totals` cover only those listed.                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+
+**Errors:**
+
+- `400` — `folder` is missing
+- `401` — not authenticated
+- `404` — agent not found, the user can't chat with it, or `folder` doesn't exist or isn't inside a granted folder (the same answer for both, so the share can't be probed for names)
 
 ## Automations
 
@@ -778,6 +1213,8 @@ List available agent templates.
 
 The full registry includes one Knowledge Base template, one Custom template, five document-analysis templates, three email templates, and 20+ Odoo templates. The response above is truncated — call the endpoint for the live list. Template IDs are stable across releases for templates that ship in stock builds.
 
+Each template also carries availability fields the create form reads. `available` and `unavailableReason` say whether a required connection is missing (Odoo, email) or an Odoo connection lacks the modules a template needs. `requiresWeb` marks web templates, and `webSearchConfigured` says whether a web-search provider exists. A web template stays `available` without one, because page fetching needs no key; only search does.
+
 ## Data Directories
 
 ### `GET /api/data-directories`
@@ -797,6 +1234,75 @@ List directories available under `/data/` for agent configuration.
 
 Returns an empty array if `/data/` does not exist or contains no subdirectories. Hidden directories (starting with `.`) are excluded.
 
+These are the top-level mounts, read from `/data/` on every request, so a mount that was renamed or removed is gone from the list straight away. Symbolic links are left out. To grant a folder inside one, list its subfolders with [`GET /api/data-directories/children`](#get-apidata-directorieschildren).
+
+### `GET /api/data-directories/children`
+
+List the subfolders of one folder below a `/data/` mount, one level at a time. The directory picker calls this when you open a folder. **Admin only.**
+
+**Query parameters:**
+
+| Parameter | Description                                                                                |
+| --------- | ------------------------------------------------------------------------------------------ |
+| `path`    | The folder to list, URL-encoded — for example `/data/suppliers`. A trailing slash is fine. |
+
+**Response:**
+
+```json
+{
+  "directories": [
+    { "path": "/data/suppliers/food", "name": "food" },
+    { "path": "/data/suppliers/vet", "name": "vet" }
+  ],
+  "truncated": false
+}
+```
+
+| Field         | Description                                                                                                                                                                          |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `directories` | The folder's direct subfolders, sorted by name. Files, hidden folders (starting with `.`) and operating-system folders such as `$RECYCLE.BIN` are left out, as is any symbolic link. |
+| `truncated`   | `true` when the folder holds more than 500 subfolders. Only the first 500 are returned.                                                                                              |
+
+The folder is read in the `pinchy` container, so a share mounted only on `openclaw` lists no subfolders. See [Why both services](/guides/mount-data-directories/#why-both-services).
+
+**Errors:**
+
+- `400` — `path` is missing, isn't under `/data/`, or is `/data/` itself (the mounts come from [`GET /api/data-directories`](#get-apidata-directories))
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — the folder doesn't exist, isn't a folder, can't be read, or is reached through a symbolic link
+
+### `GET /api/agents/:agentId/granted-folders`
+
+Whether each folder the agent is granted still exists. The directory picker uses it to mark a grant whose folder was renamed, moved or deleted, instead of showing it as an ordinary ticked box. **Admin only.**
+
+It checks the agent's **saved** grants under `/data/` and nothing else: it takes no path from the request, so it can't be used to ask about an arbitrary folder. Nothing outside `/data/` is touched, and a symbolic link is reported as one rather than followed.
+
+**Response:**
+
+```json
+{
+  "folders": [
+    { "path": "/data/suppliers", "status": "available" },
+    { "path": "/data/old-suppliers", "status": "missing" }
+  ]
+}
+```
+
+| `status`       | Meaning                                                                                                                                  |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `available`    | The folder is there and Pinchy can open it.                                                                                              |
+| `missing`      | Nothing is there any more, or a file is. Remove the grant with [`PATCH /api/agents/:id`](#patch-apiagentsid), or mount the folder again. |
+| `unreadable`   | Something is there, but Pinchy isn't allowed to open it. A permissions problem on the server — removing the grant is not the fix.        |
+| `link`         | The path runs through a symbolic link. Agents can't read through one.                                                                    |
+| `outside_data` | Not a path under `/data/`. Never checked.                                                                                                |
+
+**Errors:**
+
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — agent not found, or it is another user's personal agent
+
 ## Settings
 
 ### `GET /api/settings`
@@ -814,16 +1320,16 @@ Get all application settings. Encrypted values (such as API keys) are masked in 
 
 ### `POST /api/settings`
 
-Update a setting.
+Set the organisation timezone (admin only). `org.timezone` is the only key this endpoint accepts; any other key is refused with a `400` validation error. Providers, the enterprise key, the domain lock, Telegram and the member-access switches each have their own endpoint, with their own validation and audit entry.
 
 **Request body:**
 
-| Field   | Type   | Required | Description   |
-| ------- | ------ | -------- | ------------- |
-| `key`   | string | Yes      | Setting key   |
-| `value` | string | Yes      | Setting value |
+| Field   | Type   | Required | Description                                                  |
+| ------- | ------ | -------- | ------------------------------------------------------------ |
+| `key`   | string | Yes      | Must be `org.timezone`                                       |
+| `value` | string | Yes      | An IANA timezone name, e.g. `Europe/Vienna`; otherwise `400` |
 
-Settings with `api_key` in the key name are automatically encrypted at rest. Keys starting with `policy.` are refused with `400`: the member-access switches go through `PUT /api/settings/governance` below, which audits what changed and updates Telegram routing.
+A save that changes the timezone writes a `settings.updated` audit entry with the from/to values.
 
 **Response:** `{ "success": true }`
 
@@ -964,9 +1470,9 @@ and a custom provider's to
 
 ### `DELETE /api/settings/providers`
 
-Remove a provider. Takes a JSON body: `{ "provider": "<id>" }`. Refused with `400` for the last configured provider.
+Remove a provider. Takes a JSON body: `{ "provider": "<id>" }`. Refused with `400` for the last configured provider, and for the last usable one — when every other configured provider is a custom provider whose saved base URL the address check now refuses. That second refusal is audited as `config.changed` with `outcome: "failure"` and `detail.action: "provider_delete_refused_no_usable_target"`, naming the provider as `{ id, name }` and never an address. `detail.reason` is `"last_usable_provider"`, or `"provider_itself_refused"` when the provider being removed is a custom one whose base URL is refused too — then the error says that no usable provider would remain rather than calling it the last usable one.
 
-Every agent pinned to one of the provider's models is moved to the first remaining provider's default model, and that provider becomes the new default if the removed one was it.
+Every agent pinned to one of the provider's models is moved to the first remaining usable provider's default model, and that provider becomes the new default if the removed one was it. A custom provider whose base URL is refused is skipped (see [Which base URLs are allowed](/guides/llm-providers/#which-base-urls-are-allowed)).
 
 **Response:** `{ "success": true, "migratedAgents": 3 }`
 
@@ -981,11 +1487,12 @@ What a removal would do, without doing it — the confirmation dialog uses this 
   "targetProvider": "anthropic",
   "targetProviderLabel": "Anthropic",
   "targetModel": "anthropic/claude-sonnet-5",
-  "affectedAgents": [{ "id": "…", "name": "Hermes" }]
+  "affectedAgents": [{ "id": "…", "name": "Hermes" }],
+  "refusal": null
 }
 ```
 
-The target fields are `null` when no other provider is configured (that removal is refused anyway).
+The target fields are `null` when no other usable provider is configured (that removal is refused anyway). A custom provider whose saved base URL is refused is never the target. `refusal` is the error the `DELETE` would answer with — the last configured provider, the last usable one, or no usable provider remaining — word for word, or `null` when the removal would go ahead. The confirmation dialog shows it and keeps **Remove** disabled.
 
 ### `PATCH /api/settings/providers/default`
 
@@ -993,9 +1500,11 @@ Make a configured provider the default for new agents.
 
 **Request body:** `{ "provider": "anthropic" }` — a built-in provider name or a custom provider's slug.
 
+**Errors:** `400` when a built-in provider isn't configured, or when a custom provider's saved base URL is now refused by the address check — then the body also carries `refusedReason` (never the address), and the refusal is audited as `config.changed` with `outcome: "failure"` and `detail.action: "default_provider_refused"`. `404` for a slug that matches no provider.
+
 ### `GET /api/settings/providers/openai-compatible`
 
-List the OpenAI-compatible providers that have been added. Keys are never returned.
+List the OpenAI-compatible providers that have been added. Keys are never returned: each row carries `keyHint`, the key's last four characters. `refusedReason` is `null` for a provider in use, or says why the address check now refuses its saved base URL — the agent runtime then gets a reserved, unresolvable address in its place, and no key, until the URL changes (see [Which base URLs are allowed](/guides/llm-providers/#which-base-urls-are-allowed)). The reason never names the address.
 
 ### `POST /api/settings/providers/openai-compatible`
 
@@ -1003,21 +1512,34 @@ Add or update an OpenAI-compatible provider. See [OpenAI-compatible providers](/
 
 **Request body:**
 
-| Field            | Type     | Required | Description                                                                               |
-| ---------------- | -------- | -------- | ----------------------------------------------------------------------------------------- |
-| `id`             | uuid     | No       | Omit to create, pass to update                                                            |
-| `displayName`    | string   | Yes      | Name on the provider tile, up to 120 characters                                           |
-| `baseUrl`        | string   | Yes      | Endpoint that speaks the OpenAI API. Rejected if it resolves to a private-network address |
-| `apiKey`         | string   | No       | Omit on update to keep the stored key                                                     |
-| `manualModelIds` | string[] | No       | Model ids to fall back on when the endpoint's live discovery returns none                 |
+| Field            | Type     | Required | Description                                                                                                                                                                                                                                                                                                        |
+| ---------------- | -------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `id`             | uuid     | No       | Omit to create, pass to update                                                                                                                                                                                                                                                                                     |
+| `displayName`    | string   | Yes      | Name on the provider tile, up to 120 characters                                                                                                                                                                                                                                                                    |
+| `baseUrl`        | string   | Yes      | Endpoint that speaks the OpenAI API, up to 2048 characters. Rejected if it resolves to a loopback, link-local/metadata or reserved address; a private-network address only when `PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS=1` (see [Which base URLs are allowed](/guides/llm-providers/#which-base-urls-are-allowed)) |
+| `apiKey`         | string   | No       | Omit on update to keep the stored key. Required when the update changes `baseUrl`                                                                                                                                                                                                                                  |
+| `manualModelIds` | string[] | No       | Model ids to fall back on when the endpoint's live discovery returns none                                                                                                                                                                                                                                          |
+
+The stored key is bound to the base URL it was entered for — scheme, host, port **and path**, because a shared gateway host routes by path. Only a trailing slash and the letter case of the host are ignored. An update that changes `baseUrl` without a fresh `apiKey` is rejected with `422` and an `apiKey` field error before any request is made, and the refusal is written to the audit trail as a failed `config.changed` row — the stored key is never sent to a new address.
+
+An update is saved only if the provider still has the base URL and key it was checked against when the request arrived. Live model discovery runs in between, against the address you submitted, and can take a few seconds; if another save changed the base URL or the key in that time, nothing is written and the request answers `409`.
+
+**Errors:**
+
+- `400` — invalid body, e.g. a `baseUrl` that is not an http(s) URL or longer than 2048 characters
+- `404` — no provider with that `id`, or it was deleted while this update was being saved
+- `409` — the provider changed while this update was being saved; reload and try again
+- `422` — the base URL is not allowed, the update changes `baseUrl` without a fresh `apiKey`, or a new provider's endpoint lists no models and no `manualModelIds` were given
 
 The key is encrypted at rest and never written into the OpenClaw configuration in plaintext — see [Secret handling](/security/secrets/).
 
 ### `DELETE /api/settings/providers/openai-compatible`
 
-Remove a custom provider. Agents pinned to one of its models are migrated to a still-configured provider, exactly as for a built-in one.
+Remove a custom provider. Agents pinned to one of its models are migrated to a still-configured, usable provider, exactly as for a built-in one — including the `400` when no usable provider would remain, and its `provider_delete_refused_no_usable_target` audit entry.
 
 **Request body:** `{ "id": "<uuid>" }`
+
+**Errors:** `404` for an id that matches no custom provider, checked before either `400` refusal and not audited.
 
 ### `POST /api/settings/providers/openai-compatible/discover`
 
@@ -1043,7 +1565,7 @@ List available models across all configured providers. Populates the model dropd
 }
 ```
 
-Each model carries an optional `compatible` boolean and an `incompatibleReason` string when the model cannot be used (for example, a missing capability). The response is cached for one hour for cloud providers. Local Ollama is always fetched live.
+Each model carries an optional `compatible` boolean and an `incompatibleReason` string when the model cannot be used (for example, a missing capability). The response is cached server-side for one hour for cloud providers. Local Ollama is always fetched live.
 
 ### `GET /api/models/capabilities`
 
@@ -1064,7 +1586,7 @@ Capability flags for every model in the catalog. Used to gate model selection ag
 }
 ```
 
-Backed by the models table, so it reflects the catalog seed and any provider the admin has added or removed. The response is sent with `Cache-Control: private, max-age=60`.
+Backed by the models table, so it reflects the catalog seed and any provider the admin has added or removed. The response is sent with `Cache-Control: private, max-age=60` and `Vary: Cookie`, so the browser reuses it only for the same session and never serves it to the next person who signs in on the same browser.
 
 ## Domain Lock (admin only)
 
@@ -1113,6 +1635,103 @@ Unlock the domain. Same restart behaviour as `POST`.
 - `400` — no domain is currently locked
 - `401` — not authenticated
 - `403` — not an admin
+
+## Email delivery (admin only)
+
+The optional system mailer that sends invitations and password reset links (see [Send Invitations by Email](/guides/email-delivery/)). Off by default: with nothing configured, Pinchy sends no email.
+
+### `GET /api/settings/mail`
+
+**Response:** `{ "configured": false }`, or:
+
+```json
+{
+  "configured": true,
+  "config": {
+    "host": "smtp.example.com",
+    "port": 587,
+    "security": "starttls",
+    "username": "pinchy@example.com",
+    "fromAddress": "pinchy@example.com",
+    "fromName": "Acme IT",
+    "hasPassword": true
+  }
+}
+```
+
+The password is never returned; `hasPassword` says whether one is stored.
+
+### `PUT /api/settings/mail`
+
+Save the mailer configuration. Pinchy first connects, negotiates encryption and logs in; only a configuration that passes is saved.
+
+**Request body:**
+
+| Field         | Type   | Required | Description                                                                                                  |
+| ------------- | ------ | -------- | ------------------------------------------------------------------------------------------------------------ |
+| `host`        | string | Yes      | SMTP server host name or IP address                                                                          |
+| `port`        | number | Yes      | Usually `587` (STARTTLS) or `465` (TLS)                                                                      |
+| `security`    | string | Yes      | `starttls`, `tls` or `none`. `starttls` refuses to continue if the server doesn't offer it.                  |
+| `username`    | string | No       | Leave out for a relay that accepts mail without logging in                                                   |
+| `password`    | string | No       | Leave out to keep the stored password. It is not kept when `host` or `port` changes, or `username` is empty. |
+| `fromAddress` | string | Yes      | The sender address                                                                                           |
+| `fromName`    | string | No       | The sender name; defaults to `Pinchy`                                                                        |
+
+**Response:** the same shape as `GET`.
+
+The host goes through the same check as a mailbox connection: a host on a private network needs `ALLOW_PRIVATE_MAIL_HOSTS=1` (see [Mail servers on your own network](/guides/connect-email-imap/#mail-servers-on-your-own-network)).
+
+**Errors:**
+
+- `400` — invalid body, or the connection check failed. `error` says what to fix, e.g. `"Authentication failed — check the username and password"`. Nothing is saved.
+- `400` — the body carries a `username` but no `password` while a password is stored, and the update changes the `host` or `port`, or switches the same server to `security: "none"`. Pinchy won't send a saved password to a different address, or unencrypted, without it being typed again, so the request is refused before any connection is made:
+
+  ```json
+  {
+    "error": "Validation failed",
+    "details": {
+      "formErrors": [],
+      "fieldErrors": {
+        "password": [
+          "Enter the password again to use a different server or port — Pinchy won't send the saved one there."
+        ]
+      }
+    }
+  }
+  ```
+
+  Send the `password` again and the request goes through. A change of `host` or `port` never keeps the stored password, so it has to be sent again whatever the `security` value. A same-server downgrade to `none` returns the same error shape with the wording "Enter the password again to switch to a less secure connection — Pinchy won't reuse the saved one."
+
+- `401` — not authenticated
+- `403` — not an admin
+
+Writes `settings.updated` with resource `settings:mail` — on failure too, including the refused saves above. The row records the changed fields and whether the password changed, never the password; a username that isn't an email address appears only as `(set)`.
+
+### `DELETE /api/settings/mail`
+
+Turn the mailer off. Invite and reset links are shown for copying again.
+
+**Response:** `{ "configured": false }`
+
+**Errors:**
+
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — no mailer is configured
+
+### `POST /api/settings/mail/test`
+
+Send a test email with the saved configuration to the signed-in admin's own address. Takes an empty body (`{}`); the recipient can't be chosen.
+
+**Response:** `{ "sent": true, "to": "admin@example.com" }`
+
+**Errors:**
+
+- `400` — the body is not `{}`
+- `401` — not authenticated
+- `403` — not an admin
+- `409` — no mailer is configured
+- `502` — the mail server refused or couldn't be reached; `error` says why
 
 ## Organization Context (admin only)
 
@@ -1165,15 +1784,41 @@ List all users.
       "email": "alice@example.com",
       "role": "admin",
       "banned": false,
-      "groups": [{ "id": "group-uuid", "name": "Engineering" }]
+      "groups": [{ "id": "group-uuid", "name": "Engineering" }],
+      "unknownOrigin": false
     }
   ]
 }
 ```
 
+`unknownOrigin` is `true` for an account that neither the setup wizard nor a claimed invite created — in practice one that signed itself up while releases up to v0.9.1 left the sign-up endpoint open. **Settings → Users** lists these in a banner. The rule: every account counts as unknown except the earliest-created admin (the setup admin), the claimer of an invite (not a password-reset invite), any account that created an invite (only admins can), and an account an admin marked as known with [`POST /api/users/:id/acknowledge-origin`](#post-apiusersidacknowledge-origin).
+
+### `POST /api/users/:id/acknowledge-origin`
+
+Mark an account as known, so `unknownOrigin` is `false` for it from then on. **Admin only.** Works on your own account too — a setup admin who was demoted and promoted again, for example, may be the only admin left to clear the flag.
+
+**Request body:** `{}` — the endpoint takes no fields.
+
+The acknowledgement is stored as a `user.origin_acknowledged` row in the [audit trail](/concepts/audit-trail/), with the acting admin as the actor, the account in `resource` (`user:<id>`), and only `user.name` in the detail — an admin can mark their own account, and the acting user's raw id never goes into `detail`. That row is what the provenance check reads, so it cannot be undone silently: there is no endpoint that withdraws it.
+
+**Response:**
+
+```json
+{
+  "success": true
+}
+```
+
+**Errors:**
+
+- `400` — the body is not `{}`
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — user not found
+
 ### `DELETE /api/users/:id`
 
-Deactivate a user (soft delete — sets banned status). Their personal agents are removed from the shared view but the account record is retained and can be reactivated via `POST /api/users/:id/reactivate`.
+Deactivate a user (soft delete — sets banned status). Their sessions are deleted, and any chat WebSocket they have open is closed with code `4403` after an error frame (`code: "policy_account_deactivated"`) saying the account was deactivated; a frame that tab still sends is refused — so is a message the server accepted just before and had not yet dispatched — and the chat UI sends the tab to the login page instead of reconnecting. A tab that had no connection open at that moment (hidden, or reconnecting) gets no `4403`; its reconnects fail the handshake, and after the second failed one in a row it asks Better Auth's session lookup (`/api/auth/get-session`) and goes to the login page when there is no session. Every chat run Pinchy has in flight for the user is aborted on OpenClaw before the response, each recorded as `chat.run_aborted` with `reason: "account_deactivated"` and the admin as the actor. A run that was still waiting to be dispatched is not dispatched again. When an abort stops nothing or fails (`outcome: "failure"`) — OpenClaw may still be preparing the run, and can start it afterwards — Pinchy keeps aborting it by its runId after the response, with a growing pause up to two seconds and for at most a minute, until OpenClaw confirms an abort, reports the run over (`agent.wait`), or turns the dispatch away (`ok: false` on the `agent` request; nothing ran, and no further row is written). A run Pinchy dispatched again after OpenClaw failed the first attempt resolving its model is aborted under the new attempt's runId. A stop that took effect this way gets a second `chat.run_aborted` row with `outcome: "success"` and `followUp: "aborted_by_run_id"` (or `"stopped_before_dispatch"` for a run not dispatched again); a run OpenClaw reports finished is recorded as `chat.run_completed_after_disconnect`. A run whose abort OpenClaw confirmed never is. A run that is no longer in flight — its reply already ended, or a stop OpenClaw confirmed already stopped it — is left alone: no abort, no row. When OpenClaw's confirmation of a stop is still on its way as deactivation lands, the run is aborted again and that abort stops nothing; Pinchy waits briefly for the confirmation, and once it arrives, writes no row for deactivation's abort. Telegram replies already running and automations are not aborted — see [what deactivation doesn't stop](/guides/user-management/#what-deactivation-doesnt-stop). Their personal agents are removed from the shared view but the account record is retained and can be reactivated via `POST /api/users/:id/reactivate`.
 
 **Response:** `200 OK`
 
@@ -1237,16 +1882,26 @@ Reactivate a deactivated user. **Admin only.**
 
 Generate a password reset token for a user. The admin constructs the reset URL from the returned token: `{origin}/invite/{token}`.
 
+**Request body (optional):** the route also accepts no body at all.
+
+| Field       | Type    | Required | Description                                                                                                                 |
+| ----------- | ------- | -------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `sendEmail` | boolean | No       | Email the reset link to the user through the [system mailer](#email-delivery-admin-only). The token is returned either way. |
+
 **Response:** `201 Created`
 
 ```json
 {
-  "token": "abc123..."
+  "token": "abc123...",
+  "emailDelivery": { "sent": true }
 }
 ```
 
+`emailDelivery` is present only when `sendEmail` was `true` and the user has an email address. It is `{ "sent": true }` or `{ "sent": false, "error": "<what went wrong>" }` — including `"Email delivery isn't set up."` when no mailer is configured. A failed send never fails the request: the token is created first and always returned, so the link can still be copied. Creating the token writes a `user.password_reset_requested` audit row (actor: the admin; `resource`: `user:<id>`; detail: the target `user.{id,name}`, `via` as `email` or `link`, and the `invite.{id}`), and every email attempt writes a `mail.sent` row.
+
 **Errors:**
 
+- `400` — the body is not JSON or carries an unknown field
 - `401` — not authenticated
 - `403` — not an admin
 - `404` — user not found
@@ -1259,11 +1914,12 @@ Create an invite for a new user. Returns the full invite object including a plai
 
 **Request body:**
 
-| Field      | Type     | Required | Description                                                 |
-| ---------- | -------- | -------- | ----------------------------------------------------------- |
-| `role`     | string   | Yes      | Role for the invited user (`admin` or `member`)             |
-| `email`    | string   | No       | Email address of the invited user (optional, for reference) |
-| `groupIds` | string[] | No       | Group IDs to assign the user to on account creation         |
+| Field       | Type     | Required | Description                                                                                                     |
+| ----------- | -------- | -------- | --------------------------------------------------------------------------------------------------------------- |
+| `email`     | string   | Yes      | Email address of the invited user. Their account is created with it.                                            |
+| `role`      | string   | Yes      | Role for the invited user (`admin` or `member`)                                                                 |
+| `groupIds`  | string[] | No       | Group IDs to assign the user to on account creation                                                             |
+| `sendEmail` | boolean  | No       | Email the invitation through the [system mailer](#email-delivery-admin-only). The invite is created either way. |
 
 **Response:** `201 Created`
 
@@ -1282,9 +1938,11 @@ Create an invite for a new user. Returns the full invite object including a plai
 
 The admin constructs the invite URL from the returned token: `{origin}/invite/{token}`.
 
+With `sendEmail: true` the response also carries `emailDelivery`: `{ "sent": true }`, or `{ "sent": false, "error": "<what went wrong>" }` when the mail server refused or couldn't be reached, or no mailer is configured (`"Email delivery isn't set up."`). The status stays `201` and the token is returned in both cases, because the invite already exists — a failed send never loses it. The link in the email uses the locked domain when one is set (`https://<domain>`), otherwise the host the request arrived on.
+
 **Errors:**
 
-- `400` — missing or invalid role
+- `400` — missing or invalid email or role
 - `401` — not authenticated
 - `403` — not an admin, or seat cap reached (enterprise license `maxUsers` limit exceeded — see `GET /api/enterprise/status`)
 
@@ -1330,11 +1988,27 @@ Revoke a pending invite.
 
 ### `GET /api/invite/:token`
 
-What kind of flow this token opens, so the page can render the right form. **No authentication required.**
+What kind of flow this token opens, and what the page shows before the form. **No authentication required.**
 
-**Response:** `{ "type": "invite" }` for a new-user claim, `{ "type": "reset" }` for a password reset on an existing account. The distinction matters: the reset form deliberately has no name field, so resetting a password can't overwrite the user's display name.
+**Response:** `200 OK`
 
-**Errors:** `404` / `410` with an `error` message when the token is unknown, already claimed, or expired.
+```json
+{
+  "type": "invite",
+  "email": "bob@example.com",
+  "invitedBy": "Ada Lovelace"
+}
+```
+
+| Field       | Type           | Description                                                                                                                                                               |
+| ----------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `type`      | string         | `invite` for a new-user claim, `reset` for a password reset on an existing account. The reset form has no name field, so a reset can't overwrite the user's display name. |
+| `email`     | string         | The address the account signs in with                                                                                                                                     |
+| `invitedBy` | string \| null | Display name of the admin who created the invite. `null` on a reset, or if that admin has no name or has been deactivated                                                 |
+
+The token is the only credential here, so the response holds nothing its holder shouldn't see: their own sign-in address and the inviter's display name, never the inviter's email. An unknown, claimed or expired token gets only an error.
+
+**Errors:** an `error` message with `410` when the token is unknown, already claimed or expired, or the invite has no email address; `404` when a reset token's user no longer exists.
 
 ### `POST /api/invite/claim`
 
@@ -1342,13 +2016,13 @@ Claim an invite token to create a new account or reset a password. **This endpoi
 
 **Request body:**
 
-| Field      | Type   | Required | Description                         |
-| ---------- | ------ | -------- | ----------------------------------- |
-| `token`    | string | Yes      | The invite/reset token from the URL |
-| `name`     | string | Yes      | Display name for the new user       |
-| `password` | string | Yes      | Password (min 8 characters)         |
+| Field      | Type   | Required          | Description                                                                    |
+| ---------- | ------ | ----------------- | ------------------------------------------------------------------------------ |
+| `token`    | string | Yes               | The invite/reset token from the URL                                            |
+| `name`     | string | For a new account | Display name for the new user (ignored for a password reset)                   |
+| `password` | string | Yes               | Password: at least 12 characters, a letter and a number, not a common password |
 
-**Response:** `201 Created`
+**Response:** `201 Created` for a new account, `200 OK` for a password reset
 
 ```json
 {
@@ -1358,7 +2032,10 @@ Claim an invite token to create a new account or reset a password. **This endpoi
 
 **Errors:**
 
-- `400` — missing fields, invalid token, or token expired
+- `400` — missing fields, or a password that fails the password policy
+- `404` — a reset token whose user no longer exists
+- `410` — the token is unknown, expired or already claimed, or the invite has no email address (invites created before the email became required). The `error` message says when the invite lacks an email address.
+- `500` — the account could not be created, or the password reset failed. When sign-up or the reset itself is refused, the token stays usable and an `outcome: failure` audit entry is written (`user.created` or `auth.password_reset_completed`).
 
 ## Telegram Channels
 
@@ -1441,6 +2118,7 @@ Link the current user's Telegram account using a pairing code received from the 
 - `400` — invalid or expired pairing code. A code stays redeemable for 10 minutes after the last message that Telegram account sent the bot, so messaging the bot again refreshes the window (it replies with the same code while the request is still pending)
 - `409` — the pairing code's Telegram account is already linked to a different Pinchy user
 - `429` — too many pairing attempts for this user (rate limited to 5 per 10 minutes, to close the brute-force window against another user's pending code)
+- `503` — the agent runtime, which holds the pending pairing codes, can't be reached right now. The code wasn't checked, so no failed attempt is logged against you; try again in a moment
 
 ### `DELETE /api/settings/telegram`
 
@@ -1458,7 +2136,7 @@ Remove Telegram from every agent at once. **Admin only.** This is the backend fo
 
 External system integrations — **Odoo**, **email** (Gmail and Microsoft 365 via OAuth), and **Web Search**. See [Integrations](/concepts/integrations/) for the conceptual overview, [Connect Odoo](/guides/connect-odoo/) for the Odoo setup guide, and [Connect Email](/guides/connect-email/) for the email setup guide.
 
-Every route below that accepts an Odoo URL — create, update, sync, `test-credentials`, `list-databases` and `sync-preview` — runs the same SSRF guard. An address literal is classified as it stands; a hostname is resolved first and **every** address it answers with is classified, so a name pointing at an internal address is refused exactly like the address itself. A name that does not resolve is allowed through — it is far more likely a typo, and the request fails on its own. `ALLOW_PRIVATE_URLS=1` turns the check off for an on-premise Odoo; see [Odoo on your own network](/guides/connect-odoo/#odoo-on-your-own-network).
+Every route below that accepts an Odoo URL — create, update, sync, `test-credentials`, `list-databases` and `sync-preview` — runs the same SSRF guard. An address literal is classified as it stands; a hostname is resolved first and **every** address it answers with is classified, so a name pointing at an internal address is refused exactly like the address itself. A name that does not resolve is refused with `400` and `Could not resolve the host name "<host>". Check the URL for a typo.` (from `sync` and the connection test, the same text in the `error` field of a `200`), and nothing is contacted. A DNS lookup that fails for the moment (resolver unreachable, `EAI_AGAIN`) is not a refusal of the name: every route that accepts an Odoo URL — create, update, `list-databases`, `test-credentials` and `sync-preview` — answers `503` with `The DNS lookup for "<host>" failed temporarily. Try again in a moment.`, and the internal credentials route answers `503` without an audit row. (`sync` and the connection test report it in the `error` field of a `200`, as for an unresolvable name.) Every request Pinchy makes to the Odoo server itself (`list-databases`, `test-credentials`, `sync-preview`, the schema sync and the connection test) goes to the address the guard just checked rather than looking the name up again, and so do the agent's Odoo tools, through the `checkedAddresses` of the [internal credentials route](#get-apiinternalintegrationsconnectionidcredentials). `ALLOW_PRIVATE_URLS=1` additionally allows the [private ranges](/reference/network-address-checks/#private-ranges) — RFC 1918, Tailscale's `100.64.0.0/10`, IPv6 unique-local and the rest — for an on-premise Odoo; loopback, link-local, cloud-metadata and reserved addresses stay refused either way. See [Odoo on your own network](/guides/connect-odoo/#odoo-on-your-own-network). An Odoo URL longer than 2048 characters is rejected with `400`.
 
 ### `GET /api/integrations`
 
@@ -1498,7 +2176,23 @@ Get a single connection (credentials masked).
 
 ### `PATCH /api/integrations/:connectionId`
 
-Update a connection's name, description, or credentials.
+Update a connection's name, description, or credentials. Credential fields you leave out keep their stored values, and the merged credentials are tested against the service before they are saved.
+
+A stored secret never follows the connection to a new destination. If the update changes where the secret would be sent, the secret has to come in the same request:
+
+| Type | Destination fields                                              | Secret to re-send |
+| ---- | --------------------------------------------------------------- | ----------------- |
+| Odoo | `url` (trailing slash ignored), `db` (exact, whitespace counts) | `apiKey`          |
+| IMAP | `imapHost`, `imapPort`, `smtpHost`, `smtpPort`, `security`      | `password`        |
+
+Without it the request is rejected with `422` and a field error on the secret, before anything is sent to the new destination, and the refusal is written to the audit trail as a failed `integration.credentials_updated` row. Changing only the login, username, or sender name keeps the stored secret. A credential update that the service rejects (`400`) or that loses a race against another save (`409`) changes nothing, and is written to the audit trail as a failed `integration.credentials_updated` row too.
+
+**Errors:**
+
+- `400` — invalid credentials, an invalid Odoo URL, or the test against the service failed
+- `404` — connection not found
+- `409` — the credentials were changed concurrently; retry
+- `422` — the destination changed but the secret was not re-entered
 
 ### `DELETE /api/integrations/:connectionId`
 
@@ -1612,12 +2306,12 @@ Try the settings without saving them. Both halves are exercised: an IMAP login a
 
 **Request body:**
 
-| Field                  | Type   | Required | Description                  |
-| ---------------------- | ------ | -------- | ---------------------------- |
-| `imapHost`, `imapPort` |        | Yes      | IMAP server and port         |
-| `smtpHost`, `smtpPort` |        | Yes      | SMTP server and port         |
-| `username`, `password` | string | Yes      | Mailbox credentials          |
-| `security`             | string | Yes      | `tls`, `starttls`, or `none` |
+| Field                  | Type   | Required | Description                                 |
+| ---------------------- | ------ | -------- | ------------------------------------------- |
+| `imapHost`, `imapPort` |        | Yes      | IMAP server (up to 253 characters) and port |
+| `smtpHost`, `smtpPort` |        | Yes      | SMTP server (up to 253 characters) and port |
+| `username`, `password` | string | Yes      | Mailbox credentials                         |
+| `security`             | string | Yes      | `tls`, `starttls`, or `none`                |
 
 **Response:** `200 OK` whether the probe passed or failed — a rejected login is a result, not a request error. Read `ok`, not the status code.
 
@@ -1670,27 +2364,47 @@ Summary counts of integration connection health (active, `auth_failed`, and conn
 
 ### `GET /api/internal/integrations/:connectionId/credentials`
 
-**Internal** — authenticated with the shared OpenClaw gateway token (Pattern C in `AGENTS.md`), not a user session. Called by Pinchy plugins at runtime, never by the browser.
+**Internal** — authenticated with the shared OpenClaw gateway token (Pattern C in `agent-rules/secrets.md`), not a user session. Called by Pinchy plugins at runtime, never by the browser.
 
-Returns the decrypted credentials for a connection, auto-refreshing an expired OAuth access token first (Google and Microsoft rotate refresh tokens differently — see the plugin cache/refetch behavior in the Secret Handling section of `AGENTS.md`). Called by `pinchy-email`, `pinchy-odoo` and `pinchy-web` with the gateway token as Bearer auth; the plugin caches the response, typically with a 5-minute TTL, and invalidates on `401`.
+Returns the decrypted credentials for a connection, auto-refreshing an expired OAuth access token first (Google and Microsoft rotate refresh tokens differently — see the plugin cache/refetch behavior in the Secret Handling section of `AGENTS.md`). Called by `pinchy-email`, `pinchy-odoo` and `pinchy-web` with the gateway token as Bearer auth; the plugin caches the response, typically with a 5-minute TTL, and invalidates that cache when the third-party service answers `401`. A `401` from this route itself is retried for a few seconds instead: it means Pinchy briefly could not read the gateway token during a configuration change.
 
-**The calling plugin must name its agent**: `?agentId=<id>` is required, and the request is refused unless that agent was actually granted the connection. The gateway token is one shared secret written into every plugin's config block, so on its own it identifies the container, not the caller — without this check any plugin could name any `connectionId` and receive a decrypted password. Odoo and mailbox connections are checked against the agent's integration grants; the instance-wide web-search connection is checked against the agent's `pinchy_web_search` / `pinchy_web_fetch` tool grant, because it is deliberately shared by every agent and has no per-agent grant rows.
+**The calling plugin must name its agent**: `?agentId=<id>` is required, and the request is refused unless that agent was actually granted the connection. The gateway token is one shared secret written into every plugin's config block, so on its own it identifies the container, not the caller — without this check any plugin could name any `connectionId` and receive a decrypted password. Odoo and mailbox connections are checked against the agent's integration grants; the instance-wide web-search connection is checked against the agent's `pinchy_web_search` tool grant, because it is deliberately shared by every agent and has no per-agent grant rows. `pinchy_web_fetch` alone does not grant it: fetching a page needs no key, so a fetch-only agent is refused the Brave Search key like any other agent without a grant.
 
 | Query parameter | Required | Description                                |
 | --------------- | -------- | ------------------------------------------ |
 | `agentId`       | yes      | The agent the calling plugin is acting for |
 
-| Status | Meaning                                                                                                                                        |
-| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `200`  | Credentials returned                                                                                                                           |
-| `400`  | `agentId` missing                                                                                                                              |
-| `401`  | Gateway token missing or wrong                                                                                                                 |
-| `403`  | The agent is not granted this connection, or the connection is still `pending`                                                                 |
-| `404`  | The connection no longer exists — the body says so in words an admin can act on, because plugins surface it into the tool error                |
-| `500`  | The stored credentials could not be decrypted under the current encryption key                                                                 |
-| `503`  | An OAuth access token expired and the app's OAuth settings are gone, so it cannot be refreshed. Deliberately not a `200` carrying stale tokens |
+| Status | Meaning                                                                                                                                                                                                                                                                                      |
+| ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `200`  | Credentials returned                                                                                                                                                                                                                                                                         |
+| `400`  | `agentId` missing, longer than 128 characters, or containing anything but letters, digits, `-` and `_` (no audit row: malformed, not denied)                                                                                                                                                 |
+| `401`  | Gateway token missing or wrong; the plugins retry it for about 3.75 s before giving up                                                                                                                                                                                                       |
+| `403`  | The agent is not granted this connection, the connection is still `pending`, or its stored Odoo URL / IMAP / SMTP host fails the address check                                                                                                                                               |
+| `404`  | The connection no longer exists — the body says so in words an admin can act on, because plugins surface it into the tool error                                                                                                                                                              |
+| `500`  | The stored credentials could not be decrypted under the current encryption key                                                                                                                                                                                                               |
+| `503`  | An OAuth access token expired and the app's OAuth settings are gone, so it cannot be refreshed (deliberately not a `200` carrying stale tokens); or the DNS lookup for an Odoo connection's URL failed for the moment, with no audit row — never for a mail host, see `lookupFailures` below |
 
-A refusal for a missing grant writes an `integration.credentials_denied` audit row naming the agent and the connection — see [Audit Trail](/concepts/audit-trail/). A successful fetch is not audited: plugins re-fetch on every cache miss, so a row per success would be volume without signal.
+**The stored destination is checked before credentials leave.** An Odoo connection's URL and an IMAP connection's IMAP and SMTP hosts are run through the same address check as when the connection was saved ([Odoo on your own network](/guides/connect-odoo/#odoo-on-your-own-network), [Mail servers on your own network](/guides/connect-email-imap/#mail-servers-on-your-own-network)), under the rules and switches as they are now. A refusal is a `403` whose `error` names the field and the fix — deliberately not a `401`, which the plugins would retry for several seconds before surfacing this final refusal.
+
+**A `200` also carries the addresses the check looked up**, in `checkedAddresses`, so the plugin connects to exactly those instead of looking the name up again — a DNS answer that changes in between (DNS rebinding) can't redirect it. It is keyed by the checked field (`url` for Odoo, `imapHost` and `smtpHost` for IMAP), each an array of IP addresses, and is `{}` for a connection with nothing to check (OAuth mailboxes, web search). A mail host whose lookup failed has no entry there; `lookupFailures` says why, keyed the same way: `"no-answer"` when the name has no address (a typo, a deleted record) and `"temporary"` when the resolver failed for the moment. It is `{}` when every lookup answered. Either way the answer stays a `200` — never a `503`, which `pinchy-email` reads as missing OAuth settings — and `pinchy-email` refuses to connect to that host rather than look it up itself. It tells the agent to try again shortly or to fix the host name, and it does not cache the refusal: the next call asks again.
+
+```json
+{
+  "type": "imap",
+  "credentials": {
+    "imapHost": "imap.example.com",
+    "smtpHost": "smtp.example.com",
+    "...": "..."
+  },
+  "checkedAddresses": {
+    "imapHost": ["93.184.216.34"],
+    "smtpHost": ["93.184.216.35", "2606:2800:220:1::25"]
+  },
+  "lookupFailures": {}
+}
+```
+
+A refusal for a missing grant or a refused destination writes an `integration.credentials_denied` audit row naming the agent and the connection — see [Audit Trail](/concepts/audit-trail/). A successful fetch is not audited: plugins re-fetch on every cache miss, so a row per success would be volume without signal.
 
 ### `POST /api/internal/integrations/:connectionId/report-auth-failure`
 
@@ -1796,16 +2510,16 @@ Get the current enterprise license status and seat usage. Any authenticated user
 }
 ```
 
-| Field           | Type           | Description                                                                                                    |
-| --------------- | -------------- | -------------------------------------------------------------------------------------------------------------- |
-| `enterprise`    | boolean        | Whether an active enterprise license is present                                                                |
-| `type`          | string \| null | `"trial"` or `"paid"`. `null` when no license is active.                                                       |
-| `org`           | string \| null | Organisation name encoded in the license token. `null` when no license is active.                              |
-| `expiresAt`     | string \| null | ISO 8601 expiry timestamp. `null` for non-expiring tokens or when no license is active.                        |
-| `daysRemaining` | number \| null | Days until the key expires. `null` when the key has no expiry or no license is active.                         |
-| `managedByEnv`  | boolean        | `true` when the key comes from the `PINCHY_ENTERPRISE_KEY` environment variable (read-only in the Settings UI) |
-| `seatsUsed`     | number         | Number of seats currently in use: active users + valid pending invitations                                     |
-| `maxUsers`      | number         | Maximum seats allowed by the license. `0` means unlimited.                                                     |
+| Field           | Type           | Description                                                                                                                                                |
+| --------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enterprise`    | boolean        | Whether an active enterprise license is present                                                                                                            |
+| `type`          | string \| null | `"trial"` or `"paid"`. `null` when no license is active.                                                                                                   |
+| `org`           | string \| null | Organisation name encoded in the license token. `null` when no license is active.                                                                          |
+| `expiresAt`     | string \| null | ISO 8601 expiry timestamp. `null` for non-expiring tokens or when no license is active.                                                                    |
+| `daysRemaining` | number \| null | Days until the key expires, rounded up: a key with hours left counts as `1`, `0` means expired. `null` when the key has no expiry or no license is active. |
+| `managedByEnv`  | boolean        | `true` when the key comes from the `PINCHY_ENTERPRISE_KEY` environment variable (read-only in the Settings UI)                                             |
+| `seatsUsed`     | number         | Number of seats currently in use: active users + valid pending invitations                                                                                 |
+| `maxUsers`      | number         | Maximum seats allowed by the license. `0` means unlimited.                                                                                                 |
 
 **Seat cap behaviour:** the seat cap is a **soft cap with a 20% grace window**. When `maxUsers > 0`, invites keep working up to `floor(1.2 * maxUsers)` seats (for example 12 on a 10-seat license); in the 100–120% grace band admins see a notice but invites still succeed and nothing is blocked. Only when `seatsUsed >= floor(1.2 * maxUsers)` is the **Invite User** button disabled and the API rejects new invitations with `403` (the response includes `graceCap`). Existing users are never affected. See [Enterprise Setup — Seat cap enforcement](/guides/enterprise-setup/#seat-cap-enforcement) for the full explanation.
 
@@ -1837,7 +2551,7 @@ The key is verified **before** it is stored. A key Pinchy refuses is never writt
 }
 ```
 
-`daysRemaining` counts from the moment of the request, so it moves while `expiresAt` stays put.
+`daysRemaining` counts from the moment of the request and rounds up, so a 7-day key issued today reads `7`. It moves while `expiresAt` stays put.
 
 **Errors:**
 
@@ -1998,7 +2712,13 @@ The human-in-the-loop checkpoint an admin can put in front of a tool — see [Re
 
 ### `GET /api/approvals`
 
-Your own pending confirmations, newest first — the source for the in-app confirmation cards. Returns only requests where you are the requester and that have not expired; a confirmation is personal and never appears in a teammate's list, even on a shared agent.
+Your own pending confirmations, newest first — the source for the in-app confirmation cards. Returns only requests where you are the requester and that have not expired; a confirmation is personal and never appears in a teammate's list, even on a shared agent. A confirmation that is settled while the list is being read is left out rather than listed without its arguments, so every listed confirmation that is not in `known` carries its `argsSummary`.
+
+**Query parameters:**
+
+| Parameter | Description                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `known`   | Optional. Comma-separated ids of confirmations you already hold. They are listed as usual but **without** `argsSummary`, which never changes once stored and can be large (0.5–1.5 MB of JSON in the worst case, the upper end for non-Latin text), so a client that polls this list receives each summary only once. Anything that is not an id is ignored, and at most 200 ids are read; a confirmation past that is listed with its summary again. |
 
 **Response:**
 
@@ -2019,7 +2739,22 @@ Your own pending confirmations, newest first — the source for the in-app confi
 }
 ```
 
-`argsSummary` is a compact, redacted rendering of the tool's arguments so you can decide in context: secret-looking keys are replaced with `[redacted]` and long values truncated, while the recipient or record stays visible — hiding it would defeat the point of an informed confirmation.
+`argsSummary` is a faithful, redacted rendering of the tool's arguments so you can decide in context — always of the whole call. Arrays and objects keep their real contents and every value keeps its JSON type. A call that does not fit — more than 100 keys in an object, 200 items in a list or addresses in a recipient field, nesting deeper than ten levels, a string longer than 200,000 characters (code points, as sent), a key longer than 100 characters, more than 512,000 characters in all (counted as rendered: every string with its markers, every key label, every number, boolean or `null` by its JSON length, and 2 per array or object), or a collapsed card that would cost more than 16,384 to draw (one for every key, value and note the card draws, plus one for each of their characters and 128 for a character outside the Basic Multilingual Plane, such as an emoji — except the Mathematical Alphanumeric Symbols, U+1D400–U+1D7FF, which browsers lay out like letters and which count one; a previewed string counts by its preview — what a character costs the browser to lay out varies by orders of magnitude, and an emoji's font lookup is the costliest) — gets no pending confirmation at all: the gate refuses it, tells the agent which limit was crossed and at which path (such as `values.comment`), suggests splitting the call only where that can help (too many keys, items or recipients, too much in all, or too costly to draw), and writes an `approval.refused` audit entry. So no listed confirmation has anything left out. Strings are kept as sent — never trimmed or whitespace-collapsed — except that a CR LF pair becomes a line feed, and that a run of four or more spaces, line breaks or tabs becomes `⟨N spaces⟩` / `⟨N line breaks⟩` / `⟨N tabs⟩`, and every invisible or blank-rendering character (controls other than tab and line feed, a lone UTF-16 surrogate, format characters such as bidi overrides and Unicode tag characters, every space separator other than U+0020, variation selectors and the other default-ignorables such as the Hangul fillers, and the braille blank U+2800) is shown as a `⟨U+XXXX⟩` marker, with a run of more than three of one character shown as one `⟨N × U+XXXX⟩` marker; a run of different characters names each one, so no two strings share a rendering. A literal `⟨` or `⟩` is always shown as `⟨U+27E8⟩` / `⟨U+27E9⟩`, so every `⟨` in a summary string opens a marker and no marker contains a bracket. U+200C, U+200D, U+FE0E and U+FE0F are marked like the rest, everywhere — in Arabic-script and Indic text (`گزارش⟨U+200C⟩ها`, `க்⟨U+200C⟩ம`) and inside emoji (`👨⟨U+200D⟩👩⟨U+200D⟩👧`, `❤⟨U+FE0F⟩`), since whether one draws anything depends on the script and on the approver's fonts, not on the server's Unicode data. The file tools accept all four anywhere in a path; the email tools accept all four in a display name, never in an address. A combining mark (`\p{M}`) is kept only on a letter it is written with — a letter of one of its scripts (the Unicode property `Script_Extensions`), or any letter for a mark of every script (`Zinh`, such as U+0336) — directly or through marks that are; every other one, at the start, after a space, digit, `/`, punctuation or marker, or on another script's letter, is shown as a `⟨U+XXXX⟩` marker (`⟨U+05BC⟩בא`), because a mark with no base of its own is drawn onto its neighbour and `ּבא` renders like `באּ`. The file tools accept such a mark in a path, and the email tools in a display name: the card marks it. The stored strings carry no direction controls: Pinchy's card draws each one in stored order (each line in `<bdo dir="ltr">`, each run of right-to-left words in a `<bdi dir="ltr">`, where a word is letters, their marks and the non-letters whose bidi class is R or AL, plus a `"` or `'` between two such characters), because left to itself the bidi algorithm draws `/data/חוזים/2024.md` and `/data/2024/חוזים.md` alike — a client that renders `argsSummary` itself should do the same. A string under a recipient or target key, and an email- or URL-shaped string at any key, is drawn whole up to 8,192 characters as drawn; every other string longer than 200 characters (and a longer one of those) is stored as a `previewed` node (below) and shown as a preview, with the rest on demand a part at a time, only one part drawn at once: Chromium lays out a long mixed-direction text in time that grows faster than its length, and drawn whole, one 200,000-character value froze the tab for 13 seconds, and again on every relayout. Under a target key, and anywhere inside one, a space, tab or line feed at the start or end of a string is marked too (`/data/out/report.md⟨U+0020⟩`; a run of four or more still reads `⟨N spaces⟩`). Keys are never merged: a key that is not a plain identifier (`[A-Za-z0-9_.-]`) appears quoted and escaped, such as `"to "`, and keys are unique. `to`, `cc` and `bcc` are split into one entry per address (a single address stays a single entry, not a list). Recipient keys and target keys (`model`, `ids`, `id`, `path`, `filename`, `url`, `target`, …) are summarized before any other key.
+
+What Pinchy says **about** a value is never written into its text: a string in `argsSummary` is always the value's own text, and every annotation is a separate **node** — an object with the key `@`, which no summarized object can have, because a key is shown bare only when it is a plain identifier and quoted (`"@"`) otherwise. Written into the text, `(record reference: res.partner #7 "Acme GmbH")` would read exactly like a string an agent could send instead, which pinchy-odoo resolves as a record **name**. There are four nodes:
+
+| Node                                                       | Replaces                                                                                                           | Fields                                                                                                                                                                                                                                                                                                                                                                              |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `{"@": "ref", "model", "id", "label", "labelCut"}`         | An opaque Odoo reference that decodes — only when the string is exactly the reference, nothing before or after it. | The record it names. `label` is the record's display name, rendered like any string and cut at 200 characters; `labelCut` says how many more there were (`0` if none), and a cut label does not make the call too large, because the reference acts on `<model> #<id>`, which is always whole.                                                                                      |
+| `{"@": "secret", "length"}`                                | A string under a secret-looking key, or anywhere inside an array or object under one.                              | The value's length in characters; the value itself is never stored.                                                                                                                                                                                                                                                                                                                 |
+| `{"@": "noted", "text", "notes"}`                          | A string Pinchy has something to say about.                                                                        | `text` is the value, rendered like any string — a string, or a `previewed` node where the value is previewed; `notes` is a non-empty list of `{"kind": "host", "host"}`, `{"kind": "not-a-domain", "host"}` or `{"kind": "name", "name"}`, where `name` is a string or a `previewed` node too, and a `not-a-domain` note's `host` is the host as written, rendered like any string. |
+| `{"@": "previewed", "text", "preview", "parts", "inside"}` | A string the card shows as a preview.                                                                              | `text` is the value, rendered like any string. `preview` is where the preview ends and `parts` where each part **Show full text** reveals ends — UTF-16 offsets into `text`, the last part ending at its length; `inside` lists the offsets among them that fall inside one grapheme cluster.                                                                                       |
+
+A recipient entry with a display name is a `noted` node with a `name` note (`{"@": "noted", "text": "ada@example.com", "notes": [{"kind": "name", "name": "Ada Lovelace"}]}`); a non-ASCII domain adds a `host` note with its punycode form, in a recipient field and in any other string that is one mailbox, at any key and depth — read the way the mail tools read one: trimmed, and taken out of `Name <address>`, so `Boss <boss@fіrma.at>` and ` boss@fіrma.at` are noted too. Any string the WHATWG URL parser (`new URL`, what the web tools use) accepts with a scheme that has a host (`http`, `https`, `ws`, `wss`, `ftp`, `file`) is a URL, whatever its shape — `https:fіrma.at`, `https:\\fіrma.at\x` and a leading control character included — and gets a `host` note with the host the parser resolves whenever its text does not show exactly that host right after `scheme://` (ASCII case aside), or carries userinfo: `https://fіrma.at` → `xn--frma-l9d.at`, `https://fіrma.at\@evil.com/x` → `xn--frma-l9d.at`, `https://fir%6Da.at/` → `firma.at`, `https://firma.at@evil.com` → `evil.com`. A string the parser refuses is not a URL and gets no note — unless it has such a scheme and a host that Node's parser refuses but Chromium and WebKit open: an all-ASCII host with a label such as `xn--a` that does not decode. That host is read the way the WHATWG parser reads it, tabs and line breaks deleted and percent-encoding decoded, and whatever follows it — a space or a tab in the path, words after it — does not matter: `https://xn--a.evil.com/x y`, `ht\ttps://xn--a.evil.com/` and `https://u@xn--a.evil.com/ see above` all reach `xn--a.evil.com`. Such a string gets a `not-a-domain` note, like a mailbox whose domain Node's `domainToASCII` rejects. The note names that host as written (ASCII case aside, every hidden character marked) — there is no resolved form to name — and Pinchy's card draws it beside the value, quoted and escaped, and counts it in the draw cost, so two previewed values that differ only in that host draw two different cards; the approval request text names it too. A host a browser refuses too — `https://xn--a.evil.com see above`, where the space sits in the host — gets none. A URL or mailbox string (a recipient entry included) that is previewed always gets a `host` note, even when its host is plain ASCII and reads as it resolves, because the host at its end would be hidden behind the preview. A string is previewed, counted in characters as drawn (a string that would read as a JSON literal is drawn quoted and escaped), when it is longer than 200 characters, unless it sits under a recipient or target key or is email- or URL-shaped as a whole (the parser accepts it with nothing after it, or it is one mailbox) and is at most 8,192 characters long. So a URL with words after it, or one whose stored text holds a count marker such as `⟨4 × U+200B⟩` (which has spaces in it), is previewed past 200 characters and noted.
+
+Every decision about how a string is shown is made by Pinchy's server when it builds the summary, and stored: whether it is previewed, where the preview ends — at most 200 characters as drawn, cut back to a grapheme-cluster boundary and never inside a `⟨…⟩` marker or an escape — and where each part ends: after a space where one fits, else between two grapheme clusters, where its characters would cost more than 8,192 by the draw count above. The draw count charges exactly that preview. Whether a string is a URL is answered by Node's URL parser, the one the web tools fetch with, and where a character ends by Node's `Intl.Segmenter`; browsers answer both differently — Chromium and WebKit accept hosts such as `xn--a` that Node refuses, and Firefox before version 125 has no `Intl.Segmenter` — so Pinchy's card answers neither and draws exactly the stored cuts, the same in every browser. A plain string is drawn whole, and the summary stores none longer than 8,192 characters as drawn. A string that does not decode as a reference, or that carries anything past one (padding, a line break, more text), is kept as the text it is, and counted against the limits like any other; pinchy-odoo refuses such a string as a reference too. Numbers, booleans and `null` under a secret-looking key are shown, and a key ending in `_id` or `_ids` is never treated as secret-looking, since it holds record ids.
+
+A client that renders `argsSummary` itself must draw a node apart from any text — Pinchy's card draws each annotation as a label of its own beside the value, outside any preview of a long text — and keep them apart for assistive technology too: Pinchy's card exposes each string value as its `"`-quoted, escaped text (the drawn copy is `aria-hidden`) and each annotation as a `role="note"` element whose text starts with "Pinchy note:", and quotes and escapes a ref's `label`. It should treat an object with an `@` key it does not recognize, or a node missing a field, as a value it cannot show, never as fields; Pinchy's card does the same for a plain string longer than 8,192 characters as drawn, rather than guess where to cut it, and for a `previewed` node whose cuts draw more than the server's own would — a preview longer than 200 characters as drawn, a part costing more than 8,192 by the draw count, or a cut inside a `⟨…⟩` marker. Confirmations stored before nodes existed carry no nodes; they expire within ten minutes.
 
 ### `POST /api/approvals/:id/decision`
 
@@ -2027,10 +2762,10 @@ Approve or deny one of your own pending confirmations. The agent's tool call is 
 
 **Request body:**
 
-| Field      | Type   | Required | Description                                           |
-| ---------- | ------ | -------- | ----------------------------------------------------- |
-| `decision` | string | Yes      | `approve` or `deny`                                   |
-| `reason`   | string | No       | Why, up to 500 characters — recorded in the audit row |
+| Field      | Type   | Required | Description                                                                                                  |
+| ---------- | ------ | -------- | ------------------------------------------------------------------------------------------------------------ |
+| `decision` | string | Yes      | `approve` or `deny`                                                                                          |
+| `reason`   | string | No       | Why, up to 500 characters — recorded in the audit row, with any email address replaced by `<email-redacted>` |
 
 **Response:**
 
@@ -2059,7 +2794,7 @@ A failed delivery is still a `200`: the decision itself is persisted, and retryi
 
 ### `POST /api/internal/approvals/gate-check`
 
-**Internal** — authenticated with the shared OpenClaw gateway token (Pattern C in `AGENTS.md`), not a user session. Called by the `pinchy-approvals` plugin's `before_tool_call` hook, never by the browser.
+**Internal** — authenticated with the shared OpenClaw gateway token (Pattern C in `agent-rules/secrets.md`), not a user session. Called by the `pinchy-approvals` plugin's `before_tool_call` hook, never by the browser.
 
 This is the server-side security boundary for the whole feature. The plugin asks it about every tool call; the route loads the agent's policy, allows anything ungated without recording a thing, and otherwise either spends an approved single-use grant (`allow`) or records a pending confirmation and blocks (`block`). Keeping the policy here rather than in plugin config is what makes a permission change take effect on the next call instead of after a cache expires.
 
@@ -2086,6 +2821,8 @@ This is the server-side security boundary for the whole feature. The plugin asks
 The `reason` is written for the model, which relays it to the person in the chat — so it names the action, says where to act, and tells the model to stop rather than retry. It deliberately carries no request id: `/approve <id>` is a real OpenClaw command for OpenClaw's own approvals, and given an id a model will invent it, handing the user an instruction that fails. The id travels in `requestId`, where the plugin reads it.
 
 A grant is bound to the agent, the person, the session, the tool **and** a sha256 of the exact arguments, and is spent on first use — so a changed recipient or a different tool asks again. The route fails closed: if the acting person cannot be resolved to a Pinchy user — or the call arrives from a run with no session at all, which a grant could not be bound to — it is blocked rather than allowed, because only a real user can confirm it. The plugin applies the same rule to this endpoint being unreachable.
+
+A blocking answer that opens a confirmation also carries `approval: {title, description}` — the request text every approval surface shows, at most 80 and 256 characters. When the description has to be cut, it names every server and mail domain the call reaches before the arguments, each by its last 100 characters. A call whose servers don't all fit gets no confirmation: it is refused like a call too large for the card, with `exceeded: "too-many-hosts"` in its `approval.refused` entry and a reason telling the agent to split it. A call too large for the card is refused before that, and carries no `approval` either.
 
 One person can have at most **20 confirmations open on one agent** at a time. Past that the route blocks with a reason saying so and opens nothing: a changed argument otherwise mints a new confirmation per attempt, and an agent that retries in a loop would bury the requester's inbox. Consuming a grant the user already approved is never subject to the cap.
 
@@ -2169,6 +2906,8 @@ Retrieve a paginated, filterable audit log. **Admin only.**
 }
 ```
 
+`actorName` is resolved when the log is read: a user's current name, an agent's current name for `actorType: "agent"` rows, the key's name for `api_key` rows (snapshotted into `detail` when the row was written), and a readable label for `system` rows (for example `"Scheduled reindex"` for `kb-index-scheduler`). It is `null` when nothing resolves — an erased user, or an agent that no longer exists. `actorDeleted` is `true` for a deactivated user or a deleted agent. `actorId` is always the raw value the row was written with.
+
 `outcome` is one of `"success"` or `"failure"`. `error` is `null` for successes and a short error message for failures (e.g. `"seat_cap"` on a blocked invite). Both fields are part of the HMAC-signed v2 row shape.
 
 `total` is only present in the response for `page=1`. A request for `page > 1` omits the field entirely rather than recomputing it — the audit log is append-only and can grow unbounded, so counting it on every page view is wasteful once a client already has the number from its page-1 fetch. Callers that page through results should keep the `total` from their first response and not expect it on later pages.
@@ -2197,11 +2936,23 @@ Verify the integrity of audit log entries by recomputing HMAC signatures. **Admi
 {
   "valid": true,
   "totalChecked": 142,
-  "invalidIds": []
+  "invalidIds": [],
+  "chainBreakIds": [],
+  "previousKeyIds": []
 }
 ```
 
-If tampered entries are found, `valid` is `false` and `invalidIds` contains the IDs of entries with mismatched signatures.
+| Field            | Description                                                                                                                                                                                                                                     |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `valid`          | `true` when `invalidIds` and `chainBreakIds` are both empty                                                                                                                                                                                     |
+| `totalChecked`   | Number of entries verified                                                                                                                                                                                                                      |
+| `invalidIds`     | IDs of entries whose signature doesn't match their content, or that only verify under an earlier key although they come after the key change                                                                                                    |
+| `chainBreakIds`  | IDs of entries whose own signature matches but whose link to the previous entry doesn't: an entry before them was deleted, or entries were reordered                                                                                            |
+| `previousKeyIds` | IDs of entries signed with an earlier `AUDIT_HMAC_SECRET`, before the key changed. They're authentic and don't affect `valid`; see [Rows signed with an earlier secret](/concepts/audit-trail-verification/#rows-signed-with-an-earlier-secret) |
+
+If tampered entries are found, `valid` is `false`, and `invalidIds` and `chainBreakIds` say which entries and how.
+
+A range that starts at `fromId` takes its key context from the entry immediately before it. If that entry verifies under the current signing key, the key changed before the range starts, and an entry in the range that only verifies under an earlier key is reported in `invalidIds` rather than as signed with an earlier secret. The same goes for an entry that verifies under no key at all or carries a signature version Pinchy doesn't know: the range treats the key change as already behind it. That's why a spot check can list entries in `invalidIds` that a full verification lists in `previousKeyIds`. Only a verification without `fromId` establishes where the key actually changed. See [Rows signed with an earlier secret](/concepts/audit-trail-verification/#rows-signed-with-an-earlier-secret).
 
 **Errors:**
 

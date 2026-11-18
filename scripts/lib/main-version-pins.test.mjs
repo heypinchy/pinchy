@@ -283,7 +283,7 @@ test("collectMainVersionPins covers every file scripts/release.mjs bumps", () =>
 // A guard that isn't run finds nothing, exactly like the marketplace-version
 // guard's own "release-script wiring" section this mirrors. These textual
 // checks fail if the workflow stops calling the script, or is edited to
-// rescue a real failure into a green run — see AGENTS.md § "An Outside
+// rescue a real failure into a green run — see agent-rules/issue-triage.md § "An Outside
 // Reporter Never Waits Silently" for why a rescued cron is the worse bug.
 
 function uncommented(yaml) {

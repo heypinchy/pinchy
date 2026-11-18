@@ -42,6 +42,22 @@ const nextConfig: NextConfig = {
         ],
       },
       {
+        // Every authenticated API response is user data: never let the browser
+        // or a shared cache keep it (#1287 did this for /api/agents only, so
+        // /api/users, /api/settings and /api/agents/:id went out with no header).
+        //
+        // A config header OVERRIDES a handler's own, so the routes that set a
+        // caching policy of their own are excluded by negative matching rather
+        // than clobbered: the conditional-GET file serving (uploads, artifacts,
+        // workspace-file, via streamWorkspaceFile / sessionScopedRevalidateHeaders)
+        // and the models capability cache (sessionScopedCacheHeaders).
+        // api-cache-control-route-coverage.test.ts keeps this list and the
+        // routes in step, in both directions.
+        source:
+          "/api/:path((?!agents/[^/]+/(?:uploads/[^/]+|artifacts/[^/]+|workspace-file(?:/[^/]+)?)$|models/capabilities$).*)",
+        headers: [{ key: "Cache-Control", value: "no-store" }],
+      },
+      {
         // The uploads API serves files that are embedded inline via <embed> and
         // <img> in AttachmentPreview. The global DENY rule above would block the
         // browser's PDF/image viewer from rendering them, so we relax to
@@ -68,6 +84,14 @@ const nextConfig: NextConfig = {
         // ERR_BLOCKED_BY_RESPONSE. The relaxation has to be declared here, and
         // stays same-origin only.
         source: "/api/agents/:agentId/workspace-file",
+        headers: [{ key: "X-Frame-Options", value: "SAMEORIGIN" }],
+      },
+      {
+        // The same handler under the url the citation viewer actually opens,
+        // which ends in the document's name so the browser's PDF viewer titles
+        // it by that instead of "workspace-file" (#1268). A url of its own, so
+        // a relaxation of its own. Same-origin only.
+        source: "/api/agents/:agentId/workspace-file/:name",
         headers: [{ key: "X-Frame-Options", value: "SAMEORIGIN" }],
       },
       {

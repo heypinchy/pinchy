@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { mailHostSchema } from "@/lib/schemas/imap";
 import { senderNameSchema } from "@/lib/schemas/sender-name";
 
 // `PATCH /api/integrations/[connectionId]` — the connection envelope itself
@@ -32,16 +33,16 @@ export const webSearchEditSchema = z.object({
 
 // IMAP reconnect/edit contract. Single source of truth — imported by BOTH the
 // client edit dialog (edit-credentials-dialog.tsx) and the PATCH route
-// ([connectionId]/route.ts) so the two sides can't drift (AGENTS.md "Shared
+// ([connectionId]/route.ts) so the two sides can't drift (agent-rules/web-routes.md "Shared
 // Schemas And Typed Client"). All fields optional ("leave empty to keep
 // current"); the submit handler strips empty strings before validating, so
 // any field that IS present must be non-empty. Ports are coerced so the form
 // can carry prefilled string values, and `.strict()` rejects stray keys.
 export const imapEditSchema = z
   .object({
-    imapHost: z.string().min(1).optional(),
+    imapHost: mailHostSchema.optional(),
     imapPort: z.coerce.number().int().min(1).max(65535).optional(),
-    smtpHost: z.string().min(1).optional(),
+    smtpHost: mailHostSchema.optional(),
     smtpPort: z.coerce.number().int().min(1).max(65535).optional(),
     username: z.string().min(1).optional(),
     password: z.string().min(1).optional(),

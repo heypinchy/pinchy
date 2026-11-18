@@ -46,7 +46,7 @@ function pinnedGrant(zone: "workbench" | "uploads", bytes: Buffer) {
 /**
  * A grant written before #903 — no zone, no hash, and unpinnable after the
  * fact. It keeps the semantics it was created under; the block at the bottom of
- * this file is what holds that promise (AGENTS.md § "Test Migrations Against
+ * this file is what holds that promise (agent-rules/testing.md § "Test Migrations Against
  * Pre-Existing Data").
  */
 const LEGACY_GRANT = [{ zone: null, contentHash: null }];
@@ -88,10 +88,11 @@ function writeArtifact(agentId: string, zone: string, filename: string, bytes: B
   writeFileSync(join(dir, filename), bytes);
 }
 
-async function callGET(agentId: string, filename: string) {
+async function callGET(agentId: string, filename: string, headers?: HeadersInit) {
   const { GET } = await import("@/app/api/agents/[agentId]/artifacts/[filename]/route");
   const req = makeNextRequest(
-    `http://localhost/api/agents/${agentId}/artifacts/${encodeURIComponent(filename)}`
+    `http://localhost/api/agents/${agentId}/artifacts/${encodeURIComponent(filename)}`,
+    headers ? { headers } : undefined
   );
   return GET(req, routeContext({ agentId, filename }));
 }
@@ -306,7 +307,7 @@ describe("GET /api/agents/[agentId]/artifacts/[filename]", () => {
     }
   });
 
-  // AGENTS.md § "Test Migrations Against Pre-Existing Data". The pinning above
+  // agent-rules/testing.md § "Test Migrations Against Pre-Existing Data". The pinning above
   // is a change to WHERE this route reads its authorization from, and every
   // other test in this file starts from a database written by the new code.
   // A real upgrade does not: `agent_delivered_files` already holds rows with
@@ -338,5 +339,44 @@ describe("GET /api/agents/[agentId]/artifacts/[filename]", () => {
       writeArtifact("agent-1", "workbench", "salary.pdf", PDF_BYTES);
       expect((await callGET("agent-1", "salary.pdf")).status).toBe(404);
     });
+  });
+});
+
+describe("GET /api/agents/[agentId]/artifacts/[filename] — a cached copy is re-checked on every reuse", () => {
+  async function cachedEtag(): Promise<string> {
+    writeArtifact("agent-1", "workbench", "report.pdf", PDF_BYTES);
+    const first = await callGET("agent-1", "report.pdf");
+    expect(first.status).toBe(200);
+    return first.headers.get("etag")!;
+  }
+
+  it("answers an unchanged delivery with 304 and no body", async () => {
+    const etag = await cachedEtag();
+
+    const res = await callGET("agent-1", "report.pdf", { "if-none-match": etag });
+
+    expect(res.status).toBe(304);
+    expect(res.body).toBeNull();
+  });
+
+  it("answers a caller whose grant is gone with 404, never with 304", async () => {
+    const etag = await cachedEtag();
+    mockGrantLookup.mockResolvedValue([]);
+
+    const res = await callGET("agent-1", "report.pdf", { "if-none-match": etag });
+
+    expect(res.status).toBe(404);
+  });
+
+  it("answers revoked access to the agent with that denial, never with 304", async () => {
+    const { NextResponse } = await import("next/server");
+    const etag = await cachedEtag();
+    mockGetAgentWithAccess.mockResolvedValue(
+      NextResponse.json({ error: "Forbidden" }, { status: 403 })
+    );
+
+    const res = await callGET("agent-1", "report.pdf", { "if-none-match": etag });
+
+    expect(res.status).toBe(403);
   });
 });

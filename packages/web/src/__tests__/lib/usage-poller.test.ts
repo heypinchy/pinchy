@@ -185,9 +185,9 @@ describe("pollAllSessions", () => {
   });
 
   it("routes system sessions to the per-turn trajectory recorder too, not the gauge (#767)", async () => {
-    // Verified in production: cron/channel sessions DO have a
-    // <sessionId>.trajectory.jsonl with promptCache.lastCallUsage, and
-    // sessions.json maps every sessionKey (system included) to its
+    // Verified in production: cron/channel sessions DO have a trajectory
+    // with promptCache.lastCallUsage, and OpenClaw's session index maps every
+    // sessionKey (system included) to its
     // sessionId, so resolveSessionId already works for system keys. Routing
     // them through the trajectory recorder gives them context_tokens too —
     // the exact observability gap behind the 2026-07-15 Piper incident.

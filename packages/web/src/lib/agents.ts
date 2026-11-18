@@ -18,18 +18,16 @@ import {
   writeWorkspaceFileInternal,
   writeIdentityFile,
 } from "@/lib/workspace";
-import {
-  recalculateTelegramAllowStores,
-  clearAllowStoreForAccount,
-} from "@/lib/telegram-allow-store";
-import { deleteSetting, getSetting } from "@/lib/settings";
+import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
+import { deleteSetting } from "@/lib/settings";
+import { getUsableDefaultProvider } from "@/lib/model-resolver/usable-default-provider";
 import { getTemplate, generateAgentsMd } from "@/lib/agent-templates";
 import { getPersonalityPreset, resolveGreetingMessage } from "@/lib/personality-presets";
 import { generateAvatarSeed } from "@/lib/avatar";
 import { validateAllowedPaths } from "@/lib/path-validation";
 import { validatePinchyWebConfig } from "@/lib/domain-validation";
 import { getContextForAgent } from "@/lib/context-sync";
-import { waitForAgentInRuntime } from "@/lib/wait-for-agent-in-runtime";
+import { waitForAgentInRuntimeOnClient } from "@/server/agent-readiness";
 import { getOpenClawClient } from "@/server/openclaw-client";
 import { type ProviderName } from "@/lib/providers";
 import { BALANCED_ANCHORS } from "@/lib/provider-model-constants";
@@ -151,9 +149,26 @@ export async function deleteAgent(id: string, onDeleted?: OnAgentDeleted) {
     // Clean up Telegram bot settings if this agent had a bot
     await deleteSetting(`telegram_bot_token:${id}`);
     await deleteSetting(`telegram_bot_username:${id}`);
-    clearAllowStoreForAccount(id);
-    await regenerateOpenClawConfig();
-    await recalculateTelegramAllowStores();
+    // Both run whichever fails. The recalculation rewrites every list from
+    // scratch, so the deleted bot's list goes first and the bot answers no one
+    // while it still runs; the regenerate then takes it out of the config.
+    // Should both fail, the regenerate's error reaches the caller and the
+    // recalculation's is logged rather than lost.
+    let recalcError: unknown = null;
+    try {
+      await recalculateTelegramAllowStores();
+    } catch (err) {
+      recalcError = err;
+    }
+    try {
+      await regenerateOpenClawConfig();
+    } catch (err) {
+      if (recalcError) {
+        console.error("[agents] could not rewrite the Telegram allow lists:", recalcError);
+      }
+      throw err;
+    }
+    if (recalcError) throw recalcError;
   }
 
   return updated;
@@ -486,7 +501,7 @@ export async function createAgent(
 
   // Determine model: use template-aware resolver when modelHint is present,
   // fall back to provider default for templates without a hint (e.g. "custom").
-  const defaultProvider = (await getSetting("default_provider")) as ProviderName | null;
+  const defaultProvider = (await getUsableDefaultProvider()) as ProviderName | null;
 
   let model: string;
   let modelSelectionSource: "template-hint" | "provider-default" = "provider-default";
@@ -707,7 +722,7 @@ export async function createAgent(
     } catch {
       // OC client not initialised (rare in tests / pre-setup). Skip the wait.
     }
-    await waitForAgentInRuntime(client, agent.id);
+    await waitForAgentInRuntimeOnClient(client, agent.id);
   } catch (err) {
     console.error("Failed to apply new agent config to the OpenClaw runtime:", err);
     runtimeWarning =

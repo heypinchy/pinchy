@@ -34,7 +34,6 @@ vi.mock("fs", async (importOriginal) => {
 vi.mock("@/lib/openai-compatible-providers", () => ({
   listOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
   listProvidersWithApiKeys: vi.fn().mockResolvedValue([]),
-  getDecryptedApiKey: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock("@/db", () => ({
@@ -104,7 +103,7 @@ const mockedExistsSync = vi.mocked(existsSync);
 const mockedDb = vi.mocked(db);
 const mockedGetSetting = vi.mocked(getSetting);
 
-// The regenerate writes more than one file (TOOLS.md mailbox context precedes
+// The regenerate writes more than one file (the IDENTITY.md mailbox context precedes
 // the config write for email agents), so locate the openclaw.json write by
 // path instead of assuming it is the first writeFileSync call.
 function getWrittenConfigString(): string {
@@ -561,7 +560,7 @@ describe("pinchy-email config generation", () => {
     expect(written).not.toContain("secret-password");
   });
 
-  // MIGRATION TEST (AGENTS.md § "Test Migrations Against Pre-Existing Data"):
+  // MIGRATION TEST (agent-rules/testing.md § "Test Migrations Against Pre-Existing Data"):
   // pre-#328 agent template creation stored raw per-tool operations (list,
   // read, search, draft) directly as agent_connection_permissions rows (see
   // ebe6b47a2's "Operation vocabulary mismatch" fix, which corrected the
@@ -631,7 +630,7 @@ describe("pinchy-email config generation", () => {
     expect(agentConfig.permissions).toEqual({ email: ["search"] });
   });
 
-  // MIGRATION TEST (AGENTS.md § "Test Migrations Against Pre-Existing Data"):
+  // MIGRATION TEST (agent-rules/testing.md § "Test Migrations Against Pre-Existing Data"):
   // "list" is the OTHER legacy per-tool operation pre-#328 template creation
   // stored directly as agent_connection_permissions rows (see
   // ebe6b47a2's "Operation vocabulary mismatch" fix, which corrected the

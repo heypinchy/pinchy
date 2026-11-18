@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * `main`'s version pins vs. the latest GitHub release (weekly cron, not a PR
- * gate — see AGENTS.md § "Forward-looking claims need an issue" for why).
+ * gate — see agent-rules/docs.md § "Forward-looking claims need an issue" for why).
  *
  * `pnpm release` bumps README, `.env.example`, both package.json versions and
  * the marketplace templates only on the branch it runs on. A release cut from

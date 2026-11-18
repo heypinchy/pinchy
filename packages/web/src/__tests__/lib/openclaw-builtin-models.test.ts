@@ -135,15 +135,27 @@ describe("current model generations", () => {
   // declaring them would hand the runtime models it sends rejected requests
   // for. They are tools-blocked instead (model-resolver/blocklist.ts) and come
   // into this catalog with the OpenClaw update.
-  it("does not carry the Claude 5.5 family or Fable 5.1 yet", () => {
-    for (const id of [
-      "claude-opus-5-5",
-      "claude-sonnet-5-5",
-      "claude-haiku-5-5",
-      "claude-fable-5-1",
-    ]) {
+  it("does not carry Opus 5.5, Sonnet 5.5 or Fable 5.1 yet", () => {
+    for (const id of ["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1"]) {
       expect(idsOf("anthropic")).not.toContain(id);
     }
+  });
+
+  // Haiku 5.5 is the exception, and `reasoning: false` is what makes it one.
+  // OpenClaw 2026.7.1 does not know the model, so for a reasoning model it
+  // defaults the thinking level to "medium" and sends a `budget_tokens`
+  // budget, which Haiku 5.5 rejects with HTTP 400. Declared without reasoning,
+  // the runtime's Anthropic transport sends no `thinking` field at all, and the
+  // model runs on Anthropic's own default (adaptive thinking). The blocklist
+  // reads this flag: flip it and Haiku 5.5 is tools-blocked again.
+  it("carries Claude Haiku 5.5 declared without reasoning, so no thinking budget is ever sent", () => {
+    const haiku = getModelCatalogForProvider("anthropic").find((m) => m.id === "claude-haiku-5-5");
+    expect(haiku).toMatchObject({
+      reasoning: false,
+      contextWindow: 1000000,
+      vision: true,
+      input: ["text", "image"],
+    });
   });
 
   // Models existing agents are pinned to stay declared: dropping one would take
@@ -171,15 +183,43 @@ describe("current model generations", () => {
 
   // Anthropic publishes separate cache tiers, so this catalog carries them
   // (openai/google stay at 0 — see the comment in openclaw-builtin-models.ts).
-  // Source: platform.claude.com/docs/en/about-claude/pricing, read 2026-10-16.
+  // Source: platform.claude.com/docs/en/about-claude/pricing, read 2026-10-16
+  // (the Claude Haiku 5.5 rows on 2026-11-04).
   it.each([
     ["claude-sonnet-5", { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 }],
     ["claude-opus-4-7", { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }],
     ["claude-sonnet-4-6", { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }],
     ["claude-haiku-4-5-20251001", { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 }],
+    // The flat rates are the card for prompts up to 100,000 tokens; both cards
+    // are pinned in "Claude Haiku 5.5 prompt-length pricing" below.
+    [
+      "claude-haiku-5-5",
+      {
+        input: 0.1,
+        output: 0.5,
+        cacheRead: 0.01,
+        cacheWrite: 0.125,
+        tieredPricing: expect.any(Array),
+      },
+    ],
   ])("anthropic/%s carries the published list price", (id, cost) => {
     const model = getModelCatalogForProvider("anthropic").find((m) => m.id === id);
     expect(model?.cost).toEqual(cost);
+  });
+});
+
+// Claude Haiku 5.5 is billed by prompt length (cache reads and writes count
+// toward it): up to 100,000 tokens at the short card, above that at five times
+// it. Carried as OpenClaw's `tieredPricing` (half-open ranges), so Usage &
+// Costs and budgets price a long prompt at what Anthropic bills for it.
+// Source: platform.claude.com/docs/en/about-claude/pricing, read 2026-11-04.
+describe("Claude Haiku 5.5 prompt-length pricing", () => {
+  it("carries both rate cards, split after 100,000 prompt tokens", () => {
+    const haiku = getModelCatalogForProvider("anthropic").find((m) => m.id === "claude-haiku-5-5");
+    expect(haiku?.cost.tieredPricing).toEqual([
+      { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125, range: [0, 100001] },
+      { input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 0.625, range: [100001] },
+    ]);
   });
 });
 

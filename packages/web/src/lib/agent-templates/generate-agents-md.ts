@@ -1,5 +1,6 @@
 import type { AgentPluginConfig } from "@/db/schema";
 import type { AgentTemplate } from "./types";
+import { grantedDataPaths } from "@/lib/agent-granted-paths";
 
 /**
  * Generate the AGENTS.md content for an agent.
@@ -27,11 +28,8 @@ export function generateAgentsMd(
 ): string | null {
   if (!template.defaultAgentsMd) return template.defaultAgentsMd;
 
-  if (
-    template.pluginId === "pinchy-files" &&
-    pluginConfig?.["pinchy-files"]?.allowed_paths?.length
-  ) {
-    const paths = pluginConfig["pinchy-files"].allowed_paths;
+  const paths = grantedDataPaths(pluginConfig);
+  if (template.pluginId === "pinchy-files" && paths.length > 0) {
     const pathList = paths.map((p) => `- \`${p}\``).join("\n");
     return template.defaultAgentsMd + `\n\n## Document Access\nYour documents are in:\n${pathList}`;
   }

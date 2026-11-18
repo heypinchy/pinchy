@@ -1,0 +1,1 @@
+ALTER TABLE "kb_index_jobs" ADD COLUMN "folder_plan" jsonb;

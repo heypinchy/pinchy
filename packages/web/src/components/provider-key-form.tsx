@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Form, FormControl, FormField, FormItem, FormLabel } from "@/components/ui/form";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   Lock,
   ChevronDown,
@@ -22,6 +23,7 @@ import {
   Server,
   Check,
   Star,
+  AlertTriangle,
 } from "lucide-react";
 import { ProviderLogo } from "@/components/provider-logo";
 import { useRestart } from "@/components/restart-provider";
@@ -216,6 +218,17 @@ function readErrorDocs(body: unknown): { href: string; label: string } | null {
   return null;
 }
 
+/**
+ * The `refusedReason` a `PATCH /api/settings/providers/default` 400 carries
+ * when the target's saved base URL is now refused, or `null` for any other
+ * failure.
+ */
+function refusedReasonFrom(err: unknown): string | null {
+  if (!(err instanceof ApiError) || err.status !== 400) return null;
+  const reason = (err.body as { refusedReason?: unknown } | null)?.refusedReason;
+  return typeof reason === "string" && reason.length > 0 ? reason : null;
+}
+
 const VISION_CAPABLE_PROVIDERS: ReadonlySet<ProviderName> = new Set([
   "anthropic",
   "openai",
@@ -290,10 +303,19 @@ function bareModelId(model: string): string {
  * - affected agents: name the count, the target provider and its model. The
  *   move is reversible per agent, which is why the dialog states the outcome
  *   instead of offering a picker.
+ *
+ * And one state that overrides them: the DELETE would refuse (the last
+ * configured provider, or the last usable one because every other provider's
+ * base URL is refused). Then the dialog says why, in the DELETE's own words,
+ * and the caller keeps Remove disabled — see {@link removalRefusal}.
  */
 function RemovalConsequence({ preview }: { preview: DeletionPreviewResponse | null }) {
   if (!preview) {
     return <> Any agents using its models will be switched to another configured provider.</>;
+  }
+  const refusal = removalRefusal(preview);
+  if (refusal) {
+    return <span className="mt-2 block text-destructive">{refusal}</span>;
   }
   const count = preview.affectedAgents.length;
   if (count === 0 || !preview.targetModel) return null;
@@ -305,6 +327,11 @@ function RemovalConsequence({ preview }: { preview: DeletionPreviewResponse | nu
       agent&apos;s model afterwards.
     </>
   );
+}
+
+/** Why the DELETE would refuse this removal, or `null` (also for no preview yet). */
+function removalRefusal(preview: DeletionPreviewResponse | null): string | null {
+  return typeof preview?.refusal === "string" && preview.refusal ? preview.refusal : null;
 }
 
 /**
@@ -489,6 +516,18 @@ export function ProviderKeyForm({
       toast.success("Default provider updated.");
       onSuccess();
     } catch (e) {
+      // The server refuses a custom provider whose saved base URL is now
+      // refused (the list was loaded before it was). That is the same
+      // permanent state the "Not in use" notice describes, so show it there
+      // — inline and persistent — rather than as a toast.
+      const refusedReason = refusedReasonFrom(e);
+      if (refusedReason !== null) {
+        const markRefused = (row: ProviderListItem) =>
+          row.slug === target ? { ...row, refusedReason } : row;
+        setSelectedCustomProvider((current) => (current ? markRefused(current) : current));
+        setCustomProviders((rows) => rows.map(markRefused));
+        return;
+      }
       toast.error(errorMessage(e, "Could not set the default provider."));
     } finally {
       setSettingDefault(false);
@@ -679,6 +718,12 @@ export function ProviderKeyForm({
                     <Server className="size-3.5" />
                   </span>
                   <span className="truncate max-w-full">{tile.row.displayName}</span>
+                  {tile.row.refusedReason && (
+                    <span className="flex items-center gap-1 text-xs font-medium text-amber-700 dark:text-amber-400">
+                      <AlertTriangle aria-hidden="true" className="size-3" />
+                      Not in use
+                    </span>
+                  )}
                 </button>
               )
             )}
@@ -768,6 +813,20 @@ export function ProviderKeyForm({
 
         {manageCustomProviders && selectedCustomProvider && (
           <div className="space-y-4">
+            {/* Persistent, not a toast: the provider stays unusable in the runtime
+                config until the URL changes, so the notice stays as long. */}
+            {selectedCustomProvider.refusedReason && (
+              <Alert>
+                <AlertTriangle className="text-amber-600 dark:text-amber-400" />
+                <AlertTitle>Not in use</AlertTitle>
+                <AlertDescription>
+                  <p>
+                    Its base URL is now refused. {selectedCustomProvider.refusedReason} Change the
+                    URL to use it again.
+                  </p>
+                </AlertDescription>
+              </Alert>
+            )}
             <OpenAiCompatibleProviderForm
               key={selectedCustomProvider.id}
               provider={selectedCustomProvider}
@@ -778,18 +837,21 @@ export function ProviderKeyForm({
               }}
               onCancel={() => setSelectedCustomProvider(null)}
             />
-            {defaultProvider !== selectedCustomProvider.slug && (
-              <Button
-                type="button"
-                variant="outline"
-                className="w-full"
-                disabled={settingDefault}
-                onClick={() => handleSetDefault(selectedCustomProvider.slug)}
-              >
-                <Star className="size-4 fill-muted-foreground text-muted-foreground" />
-                {settingDefault ? "Setting as default..." : "Set as default"}
-              </Button>
-            )}
+            {/* A refused provider can't be the default (the server says no
+                too), so there is nothing to offer while the notice is up. */}
+            {defaultProvider !== selectedCustomProvider.slug &&
+              !selectedCustomProvider.refusedReason && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full"
+                  disabled={settingDefault}
+                  onClick={() => handleSetDefault(selectedCustomProvider.slug)}
+                >
+                  <Star className="size-4 fill-muted-foreground text-muted-foreground" />
+                  {settingDefault ? "Setting as default..." : "Set as default"}
+                </Button>
+              )}
             <AlertDialog
               onOpenChange={(open) =>
                 handleRemovalDialogOpenChange(open, selectedCustomProvider.slug)
@@ -817,7 +879,7 @@ export function ProviderKeyForm({
                   <AlertDialogCancel disabled={deletingCustom}>Cancel</AlertDialogCancel>
                   <AlertDialogAction
                     variant="destructive"
-                    disabled={deletingCustom}
+                    disabled={deletingCustom || removalRefusal(deletionPreview) !== null}
                     onClick={() => handleDeleteCustomProvider(selectedCustomProvider)}
                   >
                     {deletingCustom ? "Removing..." : "Remove"}
@@ -911,7 +973,7 @@ export function ProviderKeyForm({
                       <li key={step.label}>
                         {step.link ? renderStepWithLink(step.label, step.link) : step.label}
                         {step.optional && (
-                          <span className="text-xs text-muted-foreground/60"> (optional)</span>
+                          <span className="text-xs text-muted-foreground"> (optional)</span>
                         )}
                       </li>
                     ))}
@@ -977,6 +1039,7 @@ export function ProviderKeyForm({
                     <AlertDialogCancel>Cancel</AlertDialogCancel>
                     <AlertDialogAction
                       variant="destructive"
+                      disabled={removalRefusal(deletionPreview) !== null}
                       onClick={async () => {
                         setRemoving(true);
                         try {

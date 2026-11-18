@@ -109,7 +109,7 @@ test("findCoverageProblems flags a published page missing from llms-full.txt", (
 });
 
 test("findCoverageProblems flags a listed page the site does not serve", () => {
-  // The worse direction, per AGENTS.md § docs coverage: an undocumented page
+  // The worse direction, per agent-rules/docs.md § docs coverage: an undocumented page
   // costs a reader a grep, a documented page that isn't there costs an
   // afternoon — and a crawler a 404.
   const problems = findCoverageProblems({

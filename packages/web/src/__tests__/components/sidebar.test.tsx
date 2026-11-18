@@ -10,6 +10,7 @@ import { ChatSessionProvider } from "@/components/chat-session-provider";
 import type { Agent } from "@/components/agent-list";
 import { sortAgents } from "@/components/agent-list";
 import { makeAgent } from "@/test-helpers/fixtures";
+import { navigation } from "@/lib/account-switch";
 
 const { mockSignOut, mockRouterPush, mockUsePathname, mockAgentsContextValue } = vi.hoisted(() => ({
   mockSignOut: vi.fn().mockResolvedValue(undefined),
@@ -260,14 +261,22 @@ describe("AppSidebar", () => {
       expect(screen.getByRole("button", { name: /log out/i })).toBeInTheDocument();
     });
 
-    it("should call signOut and redirect when clicked", async () => {
-      const user = userEvent.setup();
-      renderSidebar(false);
-      await user.click(screen.getByRole("button", { name: /log out/i }));
-      expect(mockSignOut).toHaveBeenCalled();
-      await waitFor(() => {
-        expect(mockRouterPush).toHaveBeenCalledWith("/login");
-      });
+    it("should call signOut and reload into the login page when clicked", async () => {
+      // A full load, not router.push: the previous person's in-memory state
+      // must not survive into the next account on this browser (#1286).
+      const assign = vi.spyOn(navigation, "assign").mockImplementation(() => {});
+      try {
+        const user = userEvent.setup();
+        renderSidebar(false);
+        await user.click(screen.getByRole("button", { name: /log out/i }));
+        expect(mockSignOut).toHaveBeenCalled();
+        await waitFor(() => {
+          expect(assign).toHaveBeenCalledWith("/login");
+        });
+        expect(mockRouterPush).not.toHaveBeenCalled();
+      } finally {
+        assign.mockRestore();
+      }
     });
   });
 

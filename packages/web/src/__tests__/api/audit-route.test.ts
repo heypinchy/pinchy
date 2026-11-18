@@ -8,12 +8,13 @@ vi.mock("@/lib/api-auth", () => ({
 }));
 
 // Build chainable mock for entries query:
-// select().from().leftJoin().leftJoin().leftJoin().where().orderBy().limit().offset()
+// select().from().leftJoin() ×4 .where().orderBy().limit().offset()
 const mockEntriesOffset = vi.fn();
 const mockEntriesLimit = vi.fn().mockReturnValue({ offset: mockEntriesOffset });
 const mockEntriesOrderBy = vi.fn().mockReturnValue({ limit: mockEntriesLimit });
 const mockEntriesWhere = vi.fn().mockReturnValue({ orderBy: mockEntriesOrderBy });
-const mockEntriesLeftJoin3 = vi.fn().mockReturnValue({ where: mockEntriesWhere });
+const mockEntriesLeftJoin4 = vi.fn().mockReturnValue({ where: mockEntriesWhere });
+const mockEntriesLeftJoin3 = vi.fn().mockReturnValue({ leftJoin: mockEntriesLeftJoin4 });
 const mockEntriesLeftJoin2 = vi.fn().mockReturnValue({ leftJoin: mockEntriesLeftJoin3 });
 const mockEntriesLeftJoin1 = vi.fn().mockReturnValue({ leftJoin: mockEntriesLeftJoin2 });
 const mockEntriesFrom = vi.fn().mockReturnValue({ leftJoin: mockEntriesLeftJoin1 });
