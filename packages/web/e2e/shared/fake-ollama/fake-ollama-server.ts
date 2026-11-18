@@ -54,6 +54,20 @@ function firstSkillLocation(messages: unknown[]): string | undefined {
     .match(/<location>([^<]+)<\/location>/)?.[1];
 }
 
+export type SkillReadProbeReply =
+  { toolCall: { name: "pinchy_read"; arguments: { path: string } } } | { text: string };
+
+/** What the fake model answers a skill-read probe; shared by both chat surfaces. */
+export function skillReadProbeReply(
+  messages: unknown[],
+  hasToolResult: boolean
+): SkillReadProbeReply {
+  const location = firstSkillLocation(messages);
+  if (!location) return { text: SKILL_READ_PROBE_NO_SKILLS };
+  if (hasToolResult) return { text: SKILL_READ_PROBE_DONE };
+  return { toolCall: { name: "pinchy_read", arguments: { path: location } } };
+}
+
 // Default response asserted by the integration test suite. The setup-wizard
 // E2E container overrides this via FAKE_OLLAMA_RESPONSE so its spec can
 // assert the same canonical "Sure, happy to help..." reply as the other
@@ -1843,15 +1857,11 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
     const activeTrigger = TOOL_TRIGGERS.find(({ trigger }) => lastContent.includes(trigger));
 
     if (lastContent.includes(SKILL_READ_PROBE_TRIGGER)) {
-      const location = firstSkillLocation(messages);
-      if (location && !hasToolResult) {
-        writeNdjsonToolCall(res, "pinchy_read", { path: location }, messages);
+      const reply = skillReadProbeReply(messages, hasToolResult);
+      if ("toolCall" in reply) {
+        writeNdjsonToolCall(res, reply.toolCall.name, reply.toolCall.arguments, messages);
       } else {
-        streamTextResponse(
-          res,
-          location ? SKILL_READ_PROBE_DONE : SKILL_READ_PROBE_NO_SKILLS,
-          countUserMessages(messages)
-        );
+        streamTextResponse(res, reply.text, countUserMessages(messages));
       }
       return;
     }
@@ -2089,15 +2099,11 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
     const activeTrigger = TOOL_TRIGGERS.find(({ trigger }) => lastContent.includes(trigger));
 
     if (lastContent.includes(SKILL_READ_PROBE_TRIGGER)) {
-      const location = firstSkillLocation(messages);
-      if (location && !hasToolResult) {
-        streamOpenAiToolCalls(res, "pinchy_read", { path: location });
+      const reply = skillReadProbeReply(messages, hasToolResult);
+      if ("toolCall" in reply) {
+        streamOpenAiToolCalls(res, reply.toolCall.name, reply.toolCall.arguments);
       } else {
-        streamOpenAiText(
-          res,
-          location ? SKILL_READ_PROBE_DONE : SKILL_READ_PROBE_NO_SKILLS,
-          countUserMessages(messages)
-        );
+        streamOpenAiText(res, reply.text, countUserMessages(messages));
       }
       return;
     }
@@ -2480,6 +2486,7 @@ export function startFakeOllama(port: number = FAKE_OLLAMA_PORT): Promise<number
       reject(new Error("[fake-ollama] already started; call stopFakeOllama() first"));
       return;
     }
+    lastRequestText = "";
     const s = http.createServer(handleRequest);
     const onStartupError = (err: Error) => {
       // listen() failed (e.g. EADDRINUSE) — surface it as a rejection and leave
