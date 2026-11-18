@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("next/headers", () => ({
   headers: vi.fn().mockResolvedValue(new Headers()),
@@ -612,8 +612,29 @@ describe("POST /api/integrations/[connectionId]/test — auth state flipping", (
     const storedMcpCreds = { token: "pat-current-token" };
 
     beforeEach(() => {
+      vi.stubEnv("PINCHY_MCP_ENABLED", "1");
       mockSelectWhere.mockResolvedValue([mockMcpConnection]);
       mockDecrypt.mockReturnValue(JSON.stringify(storedMcpCreds));
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("returns 404 with the MCP flag off, without contacting the server or flipping status", async () => {
+      vi.stubEnv("PINCHY_MCP_ENABLED", undefined);
+      const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+      const response = await POST(
+        makeRequest("/api/integrations/conn-mcp/test", { method: "POST" }),
+        { params: Promise.resolve({ connectionId: "conn-mcp" }) }
+      );
+
+      expect(response.status).toBe(404);
+      expect(mockDecrypt).not.toHaveBeenCalled();
+      expect(mockProbeIntegrationCredentials).not.toHaveBeenCalled();
+      expect(mockClearIntegrationAuthError).not.toHaveBeenCalled();
+      expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
     });
 
     it("passes connection.data (url/transport/tools) through to probeIntegrationCredentials and clears the auth error on success", async () => {

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("next/headers", () => ({
   headers: vi.fn().mockResolvedValue(new Headers()),
@@ -942,6 +942,7 @@ describe("PATCH /api/integrations/[connectionId] — credential probe", () => {
     const existingMcpCredentials = { token: "old-token" };
 
     beforeEach(() => {
+      vi.stubEnv("PINCHY_MCP_ENABLED", "1");
       mockSelectWhere.mockResolvedValue([mockMcpConnection]);
       mockDecrypt.mockReturnValue(JSON.stringify(existingMcpCredentials));
       mockUpdateSet.mockReturnValue({
@@ -949,6 +950,28 @@ describe("PATCH /api/integrations/[connectionId] — credential probe", () => {
           returning: vi.fn().mockResolvedValue([mockMcpConnection]),
         }),
       });
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("returns 404 with the MCP flag off, before probing, writing or auditing", async () => {
+      vi.stubEnv("PINCHY_MCP_ENABLED", undefined);
+      const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+      const response = await PATCH(
+        makeRequest("/api/integrations/conn-mcp-1", {
+          method: "PATCH",
+          body: JSON.stringify({ name: "Renamed", credentials: { token: "new-token" } }),
+        }),
+        { params: Promise.resolve({ connectionId: "conn-mcp-1" }) }
+      );
+
+      expect(response.status).toBe(404);
+      expect(mockProbeIntegrationCredentials).not.toHaveBeenCalled();
+      expect(mockUpdateSet).not.toHaveBeenCalled();
+      expect(mockAppendAuditLog).not.toHaveBeenCalled();
     });
 
     it("PATCH with a rotated token validates via mcpEditSchema, probes with connection.data as the third arg, and persists", async () => {

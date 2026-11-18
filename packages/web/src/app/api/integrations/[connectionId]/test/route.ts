@@ -26,6 +26,7 @@ import {
 } from "@/lib/integrations/microsoft-refresh";
 import { authenticateOdoo } from "@/lib/integrations/odoo-calls";
 import { withPinnedOdoo } from "@/lib/integrations/odoo-pin";
+import { isMcpEnabled } from "@/lib/feature-flags";
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
 
@@ -40,6 +41,12 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
 
   if (!connection) {
     return NextResponse.json({ error: "Connection not found" }, { status: 404 });
+  }
+  // With the flag off an MCP connection does not exist as far as the API is
+  // concerned (lib/feature-flags.ts): no probe with the stored token, no
+  // status flip, no audit row. Same gate as the sync route.
+  if (connection.type === "mcp" && !isMcpEnabled()) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
   try {

@@ -27,6 +27,7 @@ import {
   type DestinationChanges,
 } from "@/lib/secret-destination";
 import { refreshPluginConfig } from "@/lib/integrations/refresh-plugin-config";
+import { isMcpEnabled } from "@/lib/feature-flags";
 
 /**
  * Audit form of a destination diff: email-shaped tokens scrubbed from every
@@ -93,6 +94,13 @@ export const PATCH = withAdmin<RouteContext>(async (request, { params }, session
 
   if (!existing) {
     return NextResponse.json({ error: "Connection not found" }, { status: 404 });
+  }
+  // With the flag off an MCP connection does not exist as far as the API is
+  // concerned (lib/feature-flags.ts), so neither a rename nor a credential
+  // edit may reach it — the edit would probe the external server with the
+  // stored token. Checked before the body is parsed, so a rename is gated too.
+  if (existing.type === "mcp" && !isMcpEnabled()) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
   const parsed = await parseRequestBody(updateConnectionSchema, request);
