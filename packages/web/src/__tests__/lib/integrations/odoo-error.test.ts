@@ -111,6 +111,91 @@ describe("describeOdooError", () => {
     expect(message.length).toBeLessThanOrEqual(301);
   });
 
+  describe("a network failure, which undici reports only as 'fetch failed'", () => {
+    /** undici's TypeError, its system error as `cause`, wrapped by odoo-node as code 0. */
+    function fetchFailed(code: string, message = `connect ${code} 203.0.113.7:8069`): OdooError {
+      const system = Object.assign(new Error(message), { code });
+      const undici = new TypeError("fetch failed", { cause: system });
+      return new OdooError("fetch failed", 0, undefined, { cause: undici });
+    }
+
+    it.each([
+      [
+        "ECONNREFUSED",
+        "Odoo refused the connection (ECONNREFUSED): check that Odoo is running and listens on the port in the URL.",
+      ],
+      [
+        "ENOTFOUND",
+        "The Odoo server's name could not be found (ENOTFOUND): check the host name in the URL.",
+      ],
+      [
+        "EAI_AGAIN",
+        "Looking up the Odoo server's name failed for the moment (EAI_AGAIN): try again shortly.",
+      ],
+      [
+        "ECONNRESET",
+        "The connection to Odoo was closed before it answered (ECONNRESET): check that nothing in front of Odoo, such as a proxy or firewall, cuts it off.",
+      ],
+      [
+        "UND_ERR_SOCKET",
+        "The connection to Odoo was closed before it answered (UND_ERR_SOCKET): check that nothing in front of Odoo, such as a proxy or firewall, cuts it off.",
+      ],
+      [
+        "ETIMEDOUT",
+        "Pinchy could not open a connection to Odoo (ETIMEDOUT): check that the server is reachable from Pinchy and that no firewall drops the connection.",
+      ],
+      [
+        "UND_ERR_CONNECT_TIMEOUT",
+        "Pinchy could not open a connection to Odoo (UND_ERR_CONNECT_TIMEOUT): check that the server is reachable from Pinchy and that no firewall drops the connection.",
+      ],
+      [
+        "EHOSTUNREACH",
+        "Pinchy has no route to the Odoo server (EHOSTUNREACH): check the network between Pinchy and Odoo.",
+      ],
+      [
+        "ENETUNREACH",
+        "Pinchy has no route to the Odoo server (ENETUNREACH): check the network between Pinchy and Odoo.",
+      ],
+      [
+        "CERT_HAS_EXPIRED",
+        "Pinchy did not accept Odoo's TLS certificate (CERT_HAS_EXPIRED): check that it is valid for this host name, not expired, and issued by a trusted authority.",
+      ],
+      [
+        "ERR_TLS_CERT_ALTNAME_INVALID",
+        "Pinchy did not accept Odoo's TLS certificate (ERR_TLS_CERT_ALTNAME_INVALID): check that it is valid for this host name, not expired, and issued by a trusted authority.",
+      ],
+      [
+        "DEPTH_ZERO_SELF_SIGNED_CERT",
+        "Pinchy did not accept Odoo's TLS certificate (DEPTH_ZERO_SELF_SIGNED_CERT): check that it is valid for this host name, not expired, and issued by a trusted authority.",
+      ],
+      ["EPROTO", "Pinchy could not connect to Odoo (EPROTO)."],
+    ])("says what %s means", (code, expected) => {
+      expect(describeOdooError(fetchFailed(code))).toBe(expected);
+    });
+
+    it("reads undici's TypeError the same way when odoo-node did not wrap it", () => {
+      const system = Object.assign(new Error("connect ECONNREFUSED 203.0.113.7:8069"), {
+        code: "ECONNREFUSED",
+      });
+
+      expect(describeOdooError(new TypeError("fetch failed", { cause: system }))).toMatch(
+        /^Odoo refused the connection \(ECONNREFUSED\)/
+      );
+    });
+
+    it("never repeats the system error's free text, which names the address", () => {
+      expect(describeOdooError(fetchFailed("ECONNREFUSED"))).not.toContain("203.0.113.7");
+    });
+
+    it("does not echo a code that is not a plain error code", () => {
+      expect(describeOdooError(fetchFailed("<b>token=abc</b>"))).toBe("fetch failed");
+    });
+
+    it("leaves a 'fetch failed' without a cause as it is", () => {
+      expect(describeOdooError(new OdooError("fetch failed", 0))).toBe("fetch failed");
+    });
+  });
+
   it("falls back for an empty message", () => {
     expect(describeOdooError(new Error("   "))).toBe("Connection failed");
   });

@@ -47,7 +47,7 @@ import {
   listWorkspaceSkillIds,
   removeWorkspaceSkill,
 } from "@/lib/workspace";
-import { getSkillBody, isKnownSkill } from "@/lib/skills";
+import { getSkillBody, isKnownSkill, parseSkillFrontmatter, type SkillId } from "@/lib/skills";
 import { mcpSkillId, buildMcpSkillBody } from "@/lib/skills/mcp-skill";
 import { resolveBootstrapCaps } from "./bootstrap-caps";
 import {
@@ -132,7 +132,7 @@ import type { McpIntegrationData, McpTool } from "@/lib/integrations/types";
  *
  * - pinchy-audit: before_agent_run, the cost-budget gate. Reads only the agent
  *   and channel and sends Pinchy nothing of the conversation.
- * - pinchy-files: before_prompt_build, the `## Memory` block.
+ * - pinchy-files: before_prompt_build, the `## Memory` and `## Skills` blocks.
  * - pinchy-knowledge: before_prompt_build, the question-language note (#1299).
  */
 export const CONVERSATION_HOOK_PLUGINS: readonly string[] = [
@@ -805,7 +805,7 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     // in-flight insert that races a regenerate could otherwise surface as
     // an opaque TypeError instead of a clean empty allowlist.
     const rawSkills = (agent.skills as string[] | null) ?? [];
-    const skills: string[] = [];
+    const skills: SkillId[] = [];
     for (const id of rawSkills) {
       if (!isKnownSkill(id)) {
         throw new Error(
@@ -816,6 +816,25 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     }
     agentEntry.skills = skills;
 
+    // OpenClaw 2026.9 renders its own skills section only when the built-in
+    // `read` tool is visible, and tools.allow denies it to every Pinchy agent
+    // so file access stays governed. pinchy-files lists the skills instead
+    // (pinchy-files/skills-prompt.ts) and the agent loads a body with
+    // pinchy_read — so it gets the index, and the skills directory READ-ONLY.
+    // Never write_paths: a skill body is platform-managed, like AGENTS.md.
+    if (skills.length > 0) {
+      const workspaceSkills = `${getOpenClawWorkspacePath(agent.id)}/skills`;
+      agentFilesConfig.allowed_paths = [
+        ...(agentFilesConfig.allowed_paths as string[]),
+        workspaceSkills,
+      ];
+      agentFilesConfig.skills = skills.map((id) => ({
+        name: id,
+        description: parseSkillFrontmatter(getSkillBody(id)).description,
+        location: `${workspaceSkills}/${id}/SKILL.md`,
+      }));
+    }
+
     agentEntries[agent.id] = agentEntry;
   }
 
@@ -824,14 +843,10 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
   //
   //   1. `.map()` is supposed to be pure; emitting side effects from inside
   //      it surprises both linters and reviewers.
-  //   2. We skip soft-deleted agents here. Pre-existing behavior writes
-  //      pinchy-files config for all agents (incl. tombstoned ones), but
-  //      that's an upstream issue. Materializing skill files into stale
-  //      workspaces would only add to the litter — there is no reader for
-  //      those files anyway since OC won't be told the agent exists once
-  //      the user-delete flow rms the workspace.
+  //   2. It walks liveAgents only, like the entry loop: a soft-deleted
+  //      agent's workspace gets no skill files, since OC is never told the
+  //      agent exists and the user-delete flow removes the workspace.
   for (const agent of liveAgents) {
-    if (agent.deletedAt) continue;
     const rawSkills = (agent.skills as string[] | null) ?? [];
     for (const id of rawSkills) {
       if (!isKnownSkill(id)) continue; // already thrown in the map() above
@@ -1432,6 +1447,27 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
       // tools.allow above — a tool that isn't allowed never appears in the
       // skill body either. Never written to agents.skills (DB) — dynamic,
       // not persisted.
+      // List each dynamic skill in pinchy-files' `## Skills` block, the same
+      // way the DB skills are listed above: OpenClaw 2026.9 renders its own
+      // skills section only when the built-in `read` tool is visible, which
+      // tools.allow denies, so agents.entries.<id>.skills alone never reaches
+      // the prompt. The skills directory is granted READ-ONLY, never
+      // write_paths.
+      const listSkillInFilesConfig = (agentId: string, skillId: string, description: string) => {
+        const filesConfig = pluginConfigs["pinchy-files"]?.[agentId] as
+          Record<string, unknown> | undefined;
+        if (!filesConfig) return;
+        const workspaceSkills = `${getOpenClawWorkspacePath(agentId)}/skills`;
+        const allowed = (filesConfig.allowed_paths as string[] | undefined) ?? [];
+        if (!allowed.includes(workspaceSkills)) {
+          filesConfig.allowed_paths = [...allowed, workspaceSkills];
+        }
+        filesConfig.skills = [
+          ...((filesConfig.skills as unknown[] | undefined) ?? []),
+          { name: skillId, description, location: `${workspaceSkills}/${skillId}/SKILL.md` },
+        ];
+      };
+
       for (const [connId, agentTools] of mcpAgentToolsByConn) {
         const conn = mcpConnectionsById.get(connId)!;
         const data = (conn.data ?? {}) as McpIntegrationData;
@@ -1449,6 +1485,7 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
             .filter((t): t is McpTool => t !== undefined);
           const body = buildMcpSkillBody({ id: conn.id, name: conn.name }, grantedTools);
           writeWorkspaceSkill(agentId, skillId, body);
+          listSkillInFilesConfig(agentId, skillId, parseSkillFrontmatter(body).description);
 
           if (!liveMcpSkillIdsByAgent.has(agentId)) liveMcpSkillIdsByAgent.set(agentId, new Set());
           liveMcpSkillIdsByAgent.get(agentId)!.add(skillId);

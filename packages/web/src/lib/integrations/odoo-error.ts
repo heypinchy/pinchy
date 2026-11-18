@@ -40,6 +40,70 @@ export function odooTimeoutMessage(): string {
 }
 
 /**
+ * The system error code behind undici's bare "fetch failed", such as
+ * `ECONNREFUSED`. undici throws a `TypeError("fetch failed")` and keeps the
+ * socket's error, with its `code`, as `cause`; odoo-node wraps that TypeError
+ * in turn (code 0). Only the code is read — the system error's message names
+ * the address — and only one that looks like an error code.
+ */
+function fetchFailureCode(err: unknown): string | undefined {
+  let failed = false;
+  for (let e = err, depth = 0; e && depth < 5; depth++) {
+    if ((e as { message?: unknown }).message === "fetch failed") failed = true;
+    const code = (e as { code?: unknown }).code;
+    if (failed && typeof code === "string") {
+      return /^[A-Z][A-Z0-9_]{1,40}$/.test(code) ? code : undefined;
+    }
+    e = (e as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
+
+/**
+ * What an admin is told about a connection that failed before Odoo could
+ * answer — undici's "fetch failed" with a system error code behind it — or
+ * `undefined` when `err` is not one. For callers that fetch Odoo without
+ * odoo-node, such as listing databases; `describeOdooError` covers the rest.
+ */
+export function describeOdooNetworkFailure(err: unknown): string | undefined {
+  const code = fetchFailureCode(err);
+  return code ? fetchFailureMessage(code) : undefined;
+}
+
+function fetchFailureMessage(code: string): string {
+  switch (code) {
+    case "ECONNREFUSED":
+      return `Odoo refused the connection (${code}): check that Odoo is running and listens on the port in the URL.`;
+    case "ENOTFOUND":
+      return `The Odoo server's name could not be found (${code}): check the host name in the URL.`;
+    case "EAI_AGAIN":
+      return `Looking up the Odoo server's name failed for the moment (${code}): try again shortly.`;
+    case "ECONNRESET":
+    case "UND_ERR_SOCKET":
+      return (
+        `The connection to Odoo was closed before it answered (${code}): ` +
+        "check that nothing in front of Odoo, such as a proxy or firewall, cuts it off."
+      );
+    case "ETIMEDOUT":
+    case "UND_ERR_CONNECT_TIMEOUT":
+      return (
+        `Pinchy could not open a connection to Odoo (${code}): ` +
+        "check that the server is reachable from Pinchy and that no firewall drops the connection."
+      );
+    case "EHOSTUNREACH":
+    case "ENETUNREACH":
+      return `Pinchy has no route to the Odoo server (${code}): check the network between Pinchy and Odoo.`;
+  }
+  if (code.includes("CERT") || code.startsWith("ERR_TLS") || code.startsWith("ERR_SSL")) {
+    return (
+      `Pinchy did not accept Odoo's TLS certificate (${code}): ` +
+      "check that it is valid for this host name, not expired, and issued by a trusted authority."
+    );
+  }
+  return `Pinchy could not connect to Odoo (${code}).`;
+}
+
+/**
  * The message an admin is shown when an `odoo-node` call fails.
  *
  * `odoo-node` wraps network failures, HTTP errors (`HTTP 502: Bad Gateway`),
@@ -51,7 +115,10 @@ export function odooTimeoutMessage(): string {
  * odoo-node reports a JSON-RPC error envelope that carries no message
  * (`{"error": {}}`) the same way. A `TypeError` is a bug on our side and says
  * so. A request the pinned fetch's bound cut off says Odoo did not answer
- * in time, not undici's "aborted due to timeout". odoo-node's refused-redirect message names the library; the
+ * in time, not undici's "aborted due to timeout". A network failure, which
+ * undici reports only as "fetch failed", says what happened from the system
+ * error code it carries (`ECONNREFUSED`, `ENOTFOUND`, a TLS certificate
+ * code…). odoo-node's refused-redirect message names the library; the
  * admin gets `odooRedirectRefusedMessage` instead, the same sentence listing
  * databases shows.
  *
@@ -62,6 +129,10 @@ export function odooTimeoutMessage(): string {
 export function describeOdooError(err: unknown): string {
   const notOdoo = "Check that the URL points at the Odoo server itself.";
   if (isOdooTimeout(err)) return odooTimeoutMessage();
+  // Before the TypeError check: undici's "fetch failed" is one, and is the
+  // network failing, not a bug of ours.
+  const networkFailure = describeOdooNetworkFailure(err);
+  if (networkFailure) return networkFailure;
   if (err instanceof TypeError) {
     // The name and, from V8's "(reading 'x')", the property — never the
     // free message, which may carry a value.

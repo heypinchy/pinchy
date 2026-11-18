@@ -264,6 +264,32 @@ describe("regenerateOpenClawConfig — dynamic MCP skills (D2, T7)", () => {
     expect(agentEntry.skills).toContain(skillId);
   });
 
+  // OpenClaw 2026.9 renders its own skills section only when the built-in
+  // `read` tool is visible, and Pinchy denies it, so agents.entries.<id>.skills
+  // alone never reaches the prompt. pinchy-files' `## Skills` block is what the
+  // model sees, so the dynamic skill must be listed there too, readable through
+  // pinchy_read.
+  it("lists the dynamic skill in the agent's pinchy-files config, readable at its location", async () => {
+    const agent = makeAgent({ id: "agent-xyz" });
+    const conn = makeMcpConnection({ id: "conn-abc" });
+    mockDb([agent], [makeMcpPermRow("agent-xyz", "create_issue", conn)]);
+    mockedReadFileSync.mockReturnValue(JSON.stringify(gatewayConfig));
+
+    await regenerateOpenClawConfig();
+
+    const skillId = mcpSkillId("conn-abc");
+    const config = JSON.parse(getWrittenConfigString());
+    const files = config.plugins.entries["pinchy-files"].config.agents["agent-xyz"];
+    const skill = files.skills.find((s: { name: string }) => s.name === skillId);
+    expect(skill).toBeDefined();
+    expect(skill.description).toEqual(expect.any(String));
+    expect(skill.description.length).toBeGreaterThan(0);
+    expect(skill.location).toMatch(new RegExp(`/skills/${skillId}/SKILL\\.md$`));
+    const skillsDir = skill.location.slice(0, -`/${skillId}/SKILL.md`.length);
+    expect(files.allowed_paths).toContain(skillsDir);
+    expect(files.write_paths ?? []).not.toContain(skillsDir);
+  });
+
   it("appends the dynamic skill id AFTER the KNOWN_SKILLS-validated DB skills, without disturbing them", async () => {
     const agent = makeAgent({ id: "agent-both", skills: ["web-search"] });
     const conn = makeMcpConnection({ id: "conn-both" });

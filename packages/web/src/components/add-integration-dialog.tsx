@@ -14,6 +14,7 @@ import {
 import {
   Form,
   FormControl,
+  FormDescription,
   FormField,
   FormItem,
   FormLabel,
@@ -957,6 +958,8 @@ export function AddIntegrationDialog({
 
   // DB detection
   const [dbFetchState, setDbFetchState] = useState<"idle" | "loading" | "done" | "failed">("idle");
+  /** Why the databases could not be listed, in the list-databases route's words. */
+  const [dbFetchError, setDbFetchError] = useState<string | null>(null);
   const [fetchedDatabases, setFetchedDatabases] = useState<string[]>([]);
 
   const isSecure = typeof window !== "undefined" && window.location.protocol === "https:";
@@ -1009,6 +1012,7 @@ export function AddIntegrationDialog({
     setSaving(false);
     setConnectionName("");
     setDbFetchState("idle");
+    setDbFetchError(null);
     setFetchedDatabases([]);
     setMcpTesting(false);
     setMcpTestTools(null);
@@ -1044,6 +1048,7 @@ export function AddIntegrationDialog({
       setConnectionResult(null);
       setConnecting(false);
       setDbFetchState("idle");
+      setDbFetchError(null);
       setFetchedDatabases([]);
       form.reset();
       webSearchForm.reset();
@@ -1062,13 +1067,14 @@ export function AddIntegrationDialog({
     }
 
     setDbFetchState("loading");
+    setDbFetchError(null);
     setFetchedDatabases([]);
 
     try {
-      const data = await apiPost<{ success?: boolean; databases?: string[] }, ListDatabasesInput>(
-        "/api/integrations/list-databases",
-        { url }
-      );
+      const data = await apiPost<
+        { success?: boolean; databases?: string[]; error?: string },
+        ListDatabasesInput
+      >("/api/integrations/list-databases", { url });
 
       if (data.success && Array.isArray(data.databases) && data.databases.length > 0) {
         setFetchedDatabases(data.databases);
@@ -1081,9 +1087,11 @@ export function AddIntegrationDialog({
           form.setValue("db", data.databases[0]);
         }
       } else {
+        setDbFetchError(data.error || null);
         setDbFetchState("failed");
       }
-    } catch {
+    } catch (e) {
+      setDbFetchError(errorMessage(e, "") || null);
       setDbFetchState("failed");
     }
   }
@@ -1589,6 +1597,7 @@ export function AddIntegrationDialog({
                             value={field.value ?? ""}
                           />
                         </FormControl>
+                        {dbFetchError && <FormDescription>{dbFetchError}</FormDescription>}
                         <FormMessage />
                       </FormItem>
                     )}

@@ -88,6 +88,7 @@ The hard "never" rules, in one place. Each topic file holds the reasoning and th
 Development should use Docker Compose because the app depends on PostgreSQL, OpenClaw, and migrations:
 
 ```bash
+pnpm worktree:env   # once per checkout: free ports + PINCHY_VERSION=dev in .env
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 ```
 

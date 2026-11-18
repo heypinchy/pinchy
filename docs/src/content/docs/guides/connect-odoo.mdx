@@ -36,7 +36,7 @@ The API key inherits the Odoo permissions of the user who created it. If you wan
 2. Click **Add Integration** and select **Odoo**
 3. Enter:
    - **URL** — your Odoo instance URL (e.g. `https://erp.yourcompany.com`)
-   - **Database** — auto-detected after you enter the URL, or enter it manually
+   - **Database** — auto-detected after you enter the URL, or enter it manually. If Pinchy can't list the databases, it says why below the field, for example that Odoo didn't answer in time
    - **Email** — the email of the Odoo user whose API key you created
    - **API Key** — the key you copied in step 1
 4. Click **Connect**
@@ -283,6 +283,8 @@ An answer that isn't JSON-RPC is never quoted back — not to you, and not to th
 When **Test connection**, or saving changes to a connection, gets no Odoo answer at all — a redirect, an error from a proxy, a network failure, or something that isn't JSON-RPC — it says your login and API key weren't checked, rather than calling them wrong, and it doesn't mark the connection as needing new credentials. The same goes when the login works but no model can be read because the Odoo user has read access to none of them, or because every model call fails for a reason other than access: **Test connection** says why and doesn't mark the connection — re-entering the API key wouldn't fix it; granting the Odoo user read rights, or fixing what the model calls run into, does. The connection is marked when Odoo refuses the login, when no model can be read and Odoo answered at least one model call with an access error, or when the login itself fails in a way Pinchy can't classify.
 
 An Odoo that takes the connection and then never answers — a hung server, or a proxy or firewall in front of it that holds the request — doesn't keep you waiting for minutes. Every request Pinchy sends your Odoo from the web app (testing credentials, listing databases, previewing or re-syncing the schema, saving changes to a connection, **Test connection**) gives up after 60 seconds and says Odoo did not answer in time. A healthy Odoo answers these in well under a second, so the limit is there for a request that isn't going to be answered. If a proxy in front of Odoo gives up sooner, you see its error instead, such as `HTTP 504: Gateway Timeout`.
+
+A connection that fails before Odoo can answer at all says what happened, with the system's error code in brackets: Odoo refused the connection (`ECONNREFUSED`), the connection was closed or could not be opened, Pinchy has no route to the server, or Pinchy did not accept Odoo's TLS certificate (`CERT_HAS_EXPIRED`, for example).
 
 A schema sync treats either one as the connection failing, not as a model to leave out. Once a model check fails without an answer from Odoo itself, no further check starts, the ones already running finish, and the sync fails. It saves nothing, so the connection keeps the model list it had: a partial list would quietly take models away from your agents. A model Odoo itself reports it doesn't have, because its app isn't installed, is still just left out.
 

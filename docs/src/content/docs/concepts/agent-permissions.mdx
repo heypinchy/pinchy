@@ -25,9 +25,9 @@ Safe tools provide **sandboxed access** to approved directories and the agent's 
 
 Every agent can always list and read files from its own workspace — any text-based file you upload in a chat is immediately accessible. This includes Markdown, CSV, JSON, source code, and more, in addition to PDF text extraction and image analysis.
 
-| Tool               | Tool ID                    | Always on? | What it does                                                                                                  |
-| ------------------ | -------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------- |
-| **Read workspace** | `pinchy_ls`, `pinchy_read` | ✓ always   | List and read any file in the agent's workspace (both `uploads/` and `workbench/`), including PDFs and images |
+| Tool               | Tool ID                    | Always on? | What it does                                                                                                                                                                                 |
+| ------------------ | -------------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Read workspace** | `pinchy_ls`, `pinchy_read` | ✓ always   | List and read any file in the agent's workspace (both `uploads/` and `workbench/`, plus `skills/` for an agent with [skills](/explanation/skills-and-templates/)), including PDFs and images |
 
 The workspace has two subdirectories: `uploads/` holds files the user attached in chat, and `workbench/` is the agent's own writable area for notes, exports, and drafts. See [Agent Workspaces](/concepts/workspaces/) for the full three-zone model.
 

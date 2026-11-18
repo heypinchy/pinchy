@@ -20,6 +20,9 @@
  * which `docker-compose.yml` reads: Compose loads `.env` for every stack
  * started from the repo root, so that name moved the E2E stacks off :7777 too.
  * A `.env` from the earlier version is migrated automatically on the next run.
+ *
+ * It also gets `PINCHY_VERSION=dev` if it has none: docker-compose.yml requires
+ * the variable and Compose cannot default it from the dev overlay.
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -33,6 +36,7 @@ import {
 } from "./lib/worktree-ports.mjs";
 import {
   MANAGED_KEYS,
+  ensureDevVersion,
   managedValues,
   parseEnvFile,
   writeManagedBlock,
@@ -68,8 +72,14 @@ try {
 const parsed = parseEnvFile(existing);
 
 if (!force && MANAGED_KEYS.every((k) => k in parsed)) {
+  // An allocation from before PINCHY_VERSION was written still needs it.
+  const withVersion = ensureDevVersion(existing);
+  if (withVersion !== existing) {
+    writeFileSync(envPath, withVersion);
+    console.log(`Added PINCHY_VERSION=dev to ${envPath}.`);
+  }
   console.log(
-    `.env already allocates this worktree — leaving it alone (--force to re-allocate).`,
+    `.env already allocates this worktree — leaving the ports alone (--force to re-allocate).`,
   );
   for (const k of MANAGED_KEYS) console.log(`  ${k}=${parsed[k]}`);
   process.exit(0);
@@ -86,7 +96,7 @@ const ports = allocatePorts(slug, (port) => free.has(port));
 // everything the developer put in .env themselves is preserved in place.
 writeFileSync(
   envPath,
-  writeManagedBlock(existing, managedValues({ slug, ports })),
+  ensureDevVersion(writeManagedBlock(existing, managedValues({ slug, ports }))),
 );
 
 console.log(`Allocated block +${ports.offset} for "${slug}":`);
