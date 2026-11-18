@@ -25,10 +25,10 @@
  * passed as `seedPrevHmac`, forcing that boundary link to be checked on every
  * run.
  */
-import { eq, desc, and, gte, lte, sql } from "drizzle-orm";
+import { eq, desc, and, gt, gte, lt, lte, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { auditVerifyState, auditLog } from "@/db/schema";
-import { verifyIntegrity, appendAuditLog } from "@/lib/audit";
+import { verifyIntegrity, appendAuditLog, keyChangeSeenAfter, readAuditRowKey } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 
 const CHECKPOINT_ID = 1;
@@ -38,24 +38,6 @@ const CHECKPOINT_ID = 1;
 // budget, but capping here keeps the emitted detail readable even for a
 // pathological run with thousands of violations.
 const MAX_REPORTED_IDS = 50;
-
-// Process-wide counter mirroring getAuditWriteFailedCount() (audit-deferred.ts).
-// Groundwork only: exported via getAuditIntegrityViolationCount() for a future
-// ADMIN-authenticated status surface (#699), but nothing reads it yet — a
-// violation is currently observable via the audit.integrity_check row + the
-// stderr line below. Deliberately NOT wired into the unauthenticated
-// /api/health (that would leak "tampering detected" to anonymous callers), and
-// being process-local it wouldn't survive a restart anyway: audit_verify_state
-// .lastStatus is the durable signal a real surface should read (see #699).
-let integrityViolationCount = 0;
-
-export function getAuditIntegrityViolationCount(): number {
-  return integrityViolationCount;
-}
-
-export function resetAuditIntegrityViolationCount(): void {
-  integrityViolationCount = 0;
-}
 
 interface Checkpoint {
   lastVerifiedId: number;
@@ -98,6 +80,97 @@ async function writeCheckpoint(
     });
 }
 
+/**
+ * What the checkpoint row tells the next window: is it still the row this sweep
+ * verified, and has the signing key already changed by then?
+ *
+ * The row is read ONCE (`readAuditRowKey`): its stored rowHmac and the key it
+ * verifies under come from the same read, so nothing can rewrite it between the
+ * "is it intact?" and the "which key?" questions.
+ *
+ * Intact means the row is there, its rowHmac is the one the checkpoint
+ * remembered, and its version is one a verifier knows. audit_log rows are
+ * immutable (DB triggers), so on an untampered install this is always true; a
+ * deleted row, a re-signed row (new rowHmac) or a changed version means someone
+ * with direct DB access rewrote a row this sweep had already verified. Not
+ * intact fails closed: the key change counts as seen, so an old-key row in the
+ * window can't pass as pre-change history.
+ *
+ * That has a cost, and it is the honest one. If the checkpoint row was itself
+ * signed under the earlier key (the last sweep before the change), the rows
+ * written between it and the change are earlier-key rows too: untouched
+ * pre-change rows in the window, and they land in `invalidIds` too. Nothing left in the window says
+ * where the key changed: the deleted row may just as well have been an
+ * active-key row with forged old-key rows after it, and those must not be
+ * reported as authentic history. The deletion itself is reported as a chain
+ * break on the window's first row whatever that row's own signature says
+ * (`seedPredecessorBroken`), so the report names it. A full verification walks
+ * from the first row, finds the real change point, and lists the untouched
+ * pre-change rows in `previousKeyIds` again. It sees the deletion only if rows
+ * had been written after the checkpoint row before it was deleted: a report row
+ * deleted while still the newest leaves a consistent chain, and this sweep's
+ * chain break is then the only record of it.
+ *
+ * Intact does NOT require the row to verify under a key we hold. A row that
+ * verifies under neither key may have had its content altered in place (rowHmac
+ * left alone), but it may just as well be a legitimate row signed under a key
+ * this instance no longer holds: after a second rotation (K2 signed it, K3 is
+ * active, the previous key is still the K1 file), or after the retired key file
+ * was removed before the first sweep under the new key. Without that key the two
+ * can't be told apart, and calling the legitimate case a broken link would record
+ * a permanent violation. What matters for the window is the seed, and
+ * `keyChangeSeenAfter` closes the old key for such a row: only a row that
+ * positively verifies under the previous key keeps it open. Content changed in
+ * place on an already verified row is what a full verification reports.
+ */
+async function inspectCheckpointRow(
+  checkpoint: Checkpoint
+): Promise<{ intact: boolean; activeKeySeen: boolean }> {
+  const row = await readAuditRowKey(checkpoint.lastVerifiedId);
+  const intact =
+    row.key !== "missing" &&
+    row.key !== "unknown-version" &&
+    row.rowHmac === checkpoint.lastVerifiedHmac;
+  return { intact, activeKeySeen: !intact || keyChangeSeenAfter(row.key) };
+}
+
+/**
+ * Did another writer land a row in the open interval (afterId, beforeId)?
+ *
+ * Used to detect a concurrent append that happened between this sweep's
+ * MAX(id) snapshot and its own report row (#698). The answer is trustworthy
+ * despite the read happening outside any of those transactions: appendAuditLog
+ * allocates the id and commits while holding the chain's advisory xact lock,
+ * so id order IS commit order — once the report row at `beforeId` is visible,
+ * every row below it that will ever exist is committed and visible too.
+ *
+ * Adjacent ids leave no room for a row in between, so the common uncontended
+ * case (report row directly after the snapshot) answers without a query.
+ *
+ * An unanswerable probe answers "yes". This runs AFTER the report row is
+ * already written, so letting the error escape would leave the checkpoint
+ * behind entirely and make the next sweep re-scan and re-report the identical
+ * window. "Assume someone raced us" costs at most a redundant re-scan and can
+ * never skip a row — the same conservative direction as the audit-write
+ * failure fallback below.
+ */
+async function hasRowsBetween(afterId: number, beforeId: number): Promise<boolean> {
+  if (beforeId <= afterId + 1) return false;
+
+  try {
+    const [row] = await db
+      .select({ id: auditLog.id })
+      .from(auditLog)
+      .where(and(gt(auditLog.id, afterId), lt(auditLog.id, beforeId)))
+      .limit(1);
+
+    return row !== undefined;
+  } catch (err) {
+    console.error("[audit-verify-job] concurrency probe failed, folding conservatively:", err);
+    return true;
+  }
+}
+
 export interface AuditVerifySweepResult {
   scanned: boolean;
   scannedFrom?: number;
@@ -105,6 +178,9 @@ export interface AuditVerifySweepResult {
   valid?: boolean;
   invalidCount?: number;
   chainBreakCount?: number;
+  // Rows in this window that verified under the superseded signing secret. Not
+  // a violation — see the report entry below.
+  previousKeyCount?: number;
 }
 
 /**
@@ -130,8 +206,33 @@ export async function sweepAuditVerify(): Promise<AuditVerifySweepResult> {
     return { scanned: false };
   }
 
+  // Is the checkpoint row still the row this sweep verified last time, and had
+  // the key already changed by then? See inspectCheckpointRow.
+  //
+  // The stored lastVerifiedHmac protects the window's first link, but that link
+  // still matches it after the checkpoint row itself was deleted or rewritten,
+  // so the row is compared with what was remembered.
+  //
+  // The previous signing key is only valid for the rows before a key change,
+  // and this window cannot see them. If the checkpoint row is already past the
+  // change, an old-key row in this window is forged, even when no active-key
+  // row precedes it inside the window. The sweep's own report row is always
+  // written under the active key, so after the first sweep under a new key this
+  // holds on every run.
+  const checkpointRow =
+    checkpoint.lastVerifiedId > 0
+      ? await inspectCheckpointRow(checkpoint)
+      : // First sweep: the window starts the chain, nothing before it to read.
+        { intact: true, activeKeySeen: false };
+  const checkpointBroken = !checkpointRow.intact;
+  const seedActiveKeySeen = checkpointRow.activeKeySeen;
+
   const result = await verifyIntegrity(fromId, toId, {
     seedPrevHmac: checkpoint.lastVerifiedHmac,
+    seedActiveKeySeen,
+    // Reported as a chain break on the window's first row, the same place a
+    // deleted or reordered boundary row shows up.
+    seedPredecessorBroken: checkpointBroken,
   });
 
   if (result.totalChecked === 0) {
@@ -164,6 +265,18 @@ export async function sweepAuditVerify(): Promise<AuditVerifySweepResult> {
 
   const cappedInvalidIds = result.invalidIds.slice(0, MAX_REPORTED_IDS);
   const cappedChainBreakIds = result.chainBreakIds.slice(0, MAX_REPORTED_IDS);
+  // When a sweep does straddle a signing-secret rotation it sees those rows
+  // once — the checkpoint then moves past them — so recording the ids here is
+  // what turns the rotation into durable evidence rather than a stderr line
+  // nobody reads (#599).
+  //
+  // It is not a reliable notice, and must not be read as one. This sweep scans
+  // forward from the checkpoint, so it reports only pre-rotation rows that were
+  // still above it when the key changed — up to one interval's worth. On an
+  // instance that was quiet before the restart the checkpoint sits at the tip
+  // and this stays 0 forever. The unconditional notice is the startup warning
+  // (evaluateAuditSecretRotation, server.ts).
+  const cappedPreviousKeyIds = result.previousKeyIds.slice(0, MAX_REPORTED_IDS);
 
   const entry = {
     eventType: "audit.integrity_check" as const,
@@ -177,6 +290,8 @@ export async function sweepAuditVerify(): Promise<AuditVerifySweepResult> {
       chainBreakCount: result.chainBreakIds.length,
       invalidIds: cappedInvalidIds,
       chainBreakIds: cappedChainBreakIds,
+      previousKeyCount: result.previousKeyIds.length,
+      previousKeyIds: cappedPreviousKeyIds,
     },
   };
   // appendAuditLog inserts this audit.integrity_check row AND returns its
@@ -190,25 +305,58 @@ export async function sweepAuditVerify(): Promise<AuditVerifySweepResult> {
   // is what makes this race-free: a separate "current highest row" query could
   // observe a row another request appended concurrently right after our report
   // and mis-fold THAT into the checkpoint, silently skipping the rows between
-  // on the next sweep. (A smaller residual remains: rows appended DURING the
-  // verify pass, in (toId, reportId), are caught by the full GET
-  // /api/audit/verify scan but skipped by this incremental job — see #698.)
+  // on the next sweep.
+  //
+  // Folding past the report is only safe when nothing else wrote while this
+  // sweep was running. Rows another request appends between the toId snapshot
+  // and the report land in (toId, reportId): outside this sweep's window
+  // (> toId) AND below the next sweep's start (reportId + 1) — never verified
+  // incrementally at all (#698). So probe that interval, and when it isn't
+  // empty fold only to the window actually scanned: the next sweep re-scans
+  // the raced rows together with this report row and converges again. One
+  // extra non-converged sweep, paid only when concurrency really happened.
   //
   // Advancing even on violation is intentional: re-scanning the same tampered
   // window forever would just re-alarm on every cycle without surfacing new
-  // information — the violation is recorded (audit row + stderr + counter)
-  // exactly once. On an audit-write failure there is no report row to fold, so
-  // fall back to the window actually scanned.
+  // information — the violation is recorded (audit row + stderr) exactly once.
+  // On an audit-write failure there is no report row to fold, so fall back to
+  // the window actually scanned.
+  let ownRow: { id: number; rowHmac: string } | null = null;
   try {
-    const ownRow = await appendAuditLog(entry);
-    await writeCheckpoint(ownRow.id, ownRow.rowHmac, status);
+    ownRow = await appendAuditLog(entry);
   } catch (err) {
     recordAuditFailure(err, entry);
+  }
+
+  // The fallback never anchors on a row this window rejected. The next window
+  // takes its key context from the checkpoint row (inspectCheckpointRow), and a
+  // rejected row may verify under the previous key: an old-key row written
+  // after an active-key row, which is exactly what this window flagged. As a
+  // checkpoint it would read as "the key change hasn't happened yet", and the
+  // next window would accept rows re-signed with the old key as pre-change
+  // history. A persisted "key change seen" flag can't replace this: it would be
+  // relative to whichever key was active when it was written, and go wrong at
+  // the next key change. So keep the old checkpoint, whose context was right
+  // for this window, and let the next sweep verify the window again. That
+  // reports the same rejected rows a second time, and only on this fallback.
+  // The report row needs no such check: it is always signed with the active key.
+  if (ownRow && !(await hasRowsBetween(toId, ownRow.id))) {
+    await writeCheckpoint(ownRow.id, ownRow.rowHmac, status);
+  } else if (result.invalidIds.includes(scannedTo)) {
+    await writeCheckpoint(checkpoint.lastVerifiedId, checkpoint.lastVerifiedHmac, status);
+  } else {
     await writeCheckpoint(scannedTo, lastVerifiedHmac, status);
   }
 
+  // A detected violation is observable in three places, all of them durable or
+  // externally shipped: the audit.integrity_check failure row above, the
+  // structured stderr line below, and the checkpoint's lastStatus. The
+  // admin-authenticated GET /api/audit/verify/status (#699) reads the first and
+  // third — deliberately with no process-local counter feeding it, since that
+  // resets to 0 on restart and would silently clear the alarm. Equally
+  // deliberate: none of this reaches the unauthenticated /api/health, which
+  // would confirm to an attacker that their manipulation was noticed.
   if (!result.valid) {
-    integrityViolationCount++;
     console.error(
       JSON.stringify({
         level: "error",
@@ -226,6 +374,7 @@ export async function sweepAuditVerify(): Promise<AuditVerifySweepResult> {
     valid: result.valid,
     invalidCount: result.invalidIds.length,
     chainBreakCount: result.chainBreakIds.length,
+    previousKeyCount: result.previousKeyIds.length,
   };
 }
 

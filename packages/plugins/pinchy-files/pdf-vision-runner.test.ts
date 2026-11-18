@@ -77,10 +77,7 @@ describe("runVisionTasks", () => {
       {
         text: "Page with figures.",
         isScanned: false,
-        embeddedImages: [
-          { data: Buffer.from("img-a") },
-          { data: Buffer.from("img-b") },
-        ],
+        embeddedImages: [{ data: Buffer.from("img-a") }, { data: Buffer.from("img-b") }],
       },
     ];
 
@@ -120,9 +117,7 @@ describe("runVisionTasks", () => {
     const fetchSpy = vi.fn();
     globalThis.fetch = fetchSpy;
 
-    const pages: VisionRunnerPage[] = [
-      { text: "", isScanned: true, embeddedImages: [] },
-    ];
+    const pages: VisionRunnerPage[] = [{ text: "", isScanned: true, embeddedImages: [] }];
 
     const result = await runVisionTasks(pages, makeConfig());
 

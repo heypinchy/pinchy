@@ -69,6 +69,13 @@ export async function resolveDefaultVisionModelChain(): Promise<string[]> {
  * (kimi-k2.6, a chat model that is not reliably vision-capable), so ollama-cloud
  * never qualified as a PDF fallback even when the stack had a real vision model.
  * Native providers use their default model, gated by `isModelVisionCapable`.
+ *
+ * SCOPE BOUNDARY (#894): this iterates ONLY the built-in `ProviderName` tuples.
+ * Custom OpenAI-compatible instances — which carry a per-model `vision` flag —
+ * are deliberately NOT considered for default pdf/image model selection here.
+ * That is an accepted #894 scope limit, not an oversight: scanned-PDF reading
+ * still works on a custom-only stack via the agent-model fallback in build.ts.
+ * A future change could extend this to fold in vision-flagged custom models.
  */
 async function resolveVisionModelChain(preference: readonly ProviderName[]): Promise<string[]> {
   // Guard against a regenerate landing before bootInits loaded the capability
@@ -89,9 +96,11 @@ async function resolveVisionModelChain(preference: readonly ProviderName[]): Pro
     }
     const model = await getDefaultModel(provider);
     if (!model) continue;
-    // Native PDF/vision providers (anthropic, google) are always vision-capable,
-    // so the check is a no-op there; for the openai fallback tier it guards a
-    // future text-only default from winning the slot.
+    // Not a no-op, even for providers whose every model can see: the answer
+    // comes from the capability table (and the models.dev snapshot behind it),
+    // so a default neither knows reads as text-only and drops its provider out
+    // of the chain. That is how an Anthropic-only install once lost its pdf
+    // tool. For the openai tier it also keeps a text-only default out.
     if (isModelVisionCapable(model) && !chain.includes(model)) chain.push(model);
   }
   return chain;
@@ -109,13 +118,14 @@ async function resolveVisionModelChain(preference: readonly ProviderName[]): Pro
  * that fragility.
  *
  * For `ollama-cloud`, empirical API probing showed the vision-flagged line
- * is uneven: some models (`mistral-large-3:675b`, `kimi-k2.5`/`k2.6`) accept
- * image input but occasionally misread digits, and `qwen3.5:397b` only
- * claims vision — it hallucinates image contents and is now flagged
- * vision:false (see ollama-cloud-models.ts). We pin the choice to the
+ * is uneven: some models (`kimi-k2.6`, formerly also `mistral-large-3:675b` and
+ * `kimi-k2.5`, retired 2026-11-16) accept image input but occasionally misread
+ * digits (see ollama-cloud-models.ts for each model's probe record). We pin the choice to the
  * best empirically vision-verified models (`gemini-3-flash-preview` >
- * `minimax-m3` > `gemma4:31b`; qwen3-vl led this list until Ollama dropped it
- * from the cloud catalog) via the typed `OLLAMA_CLOUD_IMAGE_PREFERENCE` list.
+ * `minimax-m3` > `kimi-k2.6` > `gemma4:31b`; qwen3-vl led this list until
+ * Ollama dropped it from the cloud catalog) via the typed
+ * `OLLAMA_CLOUD_IMAGE_PREFERENCE` list. That order ranks pure image quality;
+ * it is NOT the order a tool-using turn gets — see the list's own comment.
  * The TypeScript
  * constraint on that list (must be `OllamaCloudModelId`) means an unknown
  * ID fails to compile, so a runtime fallback to
@@ -147,8 +157,66 @@ export const OLLAMA_CLOUD_IMAGE_PREFERENCE: readonly OllamaCloudModelId[] = [
   // only for *tool* slots, fine for pure image description) and minimax-m3
   // (reads numbers + circle colors correctly across distinct images) lead,
   // with gemma4:31b behind them.
-  "gemini-3-flash-preview",
+  //
+  // minimax-m3 is now tools-blocked too, for the same shape of reason as the
+  // preview model: it mangles nested tool-call arguments (Penny, 2026-07-15 —
+  // see model-resolver/blocklist.ts). Both stay in THIS list on purpose: it
+  // ranks pure image-description quality, which is not what they are bad at.
+  //
+  // TWO CONSUMERS, DIFFERENT SEMANTICS — do not reason about this list without
+  // knowing which one you mean:
+  //
+  //   1. `intraProviderVisionRank` (below) — a RANKING. It ranks uncurated
+  //      ollama-cloud vision models BEHIND every curated one. The image-turn
+  //      fallback sorts with it and then applies `isBlocked` with the
+  //      capabilities the slot actually needs, so a chat-only agent still gets
+  //      the best eyes while a tool-using turn skips the blocked entries.
+  //   2. `pickOllamaCloudImageModel` (below) — effectively a FILTER. It returns
+  //      the FIRST curated + live entry and consults NO blocklist, so it hands
+  //      out `gemini-3-flash-preview` as the default `imageModel`. That is fine
+  //      only because that slot describes images and does not drive tools. If it
+  //      ever feeds a tool loop, it needs an `isBlocked` gate of its own — the
+  //      capability-aware safety net described in (1) does not cover it.
+  //
+  // kimi-k2.6 was added 2026-07-15 as the tool-safe floor of this list, and it
+  // is the entry that makes blocking minimax-m3 actually help. Because of (1),
+  // an uncurated model can never be the fallback: before kimi-k2.6 was listed,
+  // a tool-using agent that skipped the two blocked entries landed on
+  // gemma4:31b as the last curated candidate.
+  //
+  // Why kimi-k2.6 over gemma4:31b, on the evidence we have:
+  //   - eval sweep 2026-07-11 (eval/data/hetzner-invoice-*-models.json, 12 runs
+  //     per model per scenario): kimi beats gemma4 on duplicate (5/12 vs 0/12),
+  //     distractor (12/12 vs 10/12) and silent-failure (4/12 vs 1/12); they are
+  //     level on conflict (12/12) and gemma4 is marginally ahead on lineitems
+  //     (11/12 vs 10/12). Aggregate favours kimi; it is not a rout.
+  //   - gemma4:31b corrupted a ~150-char Graph message ID across turns (see
+  //     providers/ollama-cloud.ts) and Pinchy's opaque refs are ~230 chars. That
+  //     is a long-identifier failure the invoice scenarios above do not probe,
+  //     so it is a separate risk, not one the eval scores clear it of.
+  //   - kimi emitted 0 malformed tool calls across 112 calls in the session
+  //     minimax failed.
+  //
+  // Ordering matters, not just membership: kimi-k2.6 must stay ahead of
+  // gemma4:31b, or a tool-using image turn degrades to gemma4 again. Pinned by
+  // the ordering guard in ollama-cloud-image-preference-drift.test.ts.
+  // gemini-3-flash-preview led this list until Ollama retired it from the cloud
+  // catalog (2026-07-15), so minimax-m3 inherits the head — and with it the
+  // default `imageModel` that consumer (2) hands out. That stays sound for the
+  // same reason it was sound for the preview model: minimax-m3's block is about
+  // mangling nested TOOL arguments, and this slot describes images rather than
+  // driving tools. Consumer (1) still applies `isBlocked`, so a tool-using turn
+  // keeps skipping it down to kimi-k2.6.
+  // kimi-k2.7-code (and, until Ollama retired it on 2026-11-16, qwen3.5:397b)
+  // became vision:true on 2026-07-30 (6/6 fixture reads each) and is
+  // deliberately NOT listed here. This list ranks
+  // image-description QUALITY on comparative evidence — the eval sweeps cited
+  // above — and "reads a 4-digit number off a test image" is a capability
+  // check, not a quality ranking. Adding them would imply a ranking nobody
+  // measured. They are available for vision through their catalog flags; give
+  // them a place here once an eval sweep puts a number on them.
   "minimax-m3",
+  "kimi-k2.6",
   "gemma4:31b",
 ];
 
@@ -180,6 +248,11 @@ async function fetchLiveOllamaCloudModelIds(): Promise<Set<string>> {
  * pinned in `openclaw.json` until the next Pinchy upgrade. Intersecting with
  * the live `/v1/models` catalog means a retired model is skipped immediately —
  * the resolver falls through to the next live preference (`minimax-m3` …).
+ *
+ * NOTE this consults no blocklist: it returns the first curated + live entry,
+ * today `gemini-3-flash-preview`, which IS tools-blocked. Acceptable only
+ * because the `imageModel` slot describes images rather than driving a tool
+ * loop. Gate it on `isBlocked` before pointing anything tool-using at it.
  */
 async function pickOllamaCloudImageModel(): Promise<string | null> {
   const liveIds = await fetchLiveOllamaCloudModelIds();
@@ -219,7 +292,7 @@ function intraProviderVisionRank(provider: string, modelId: string): number {
  *
  *   1. Native-vision providers first, in `IMAGE_MODEL_PREFERENCE` order.
  *   2. Within ollama-cloud, the curated `OLLAMA_CLOUD_IMAGE_PREFERENCE` order
- *      (e.g. `minimax-m3` ahead of `gemma4:31b`), with uncurated vision models
+ *      (e.g. `kimi-k2.6` ahead of `gemma4:31b`), with uncurated vision models
  *      ranked after the curated ones.
  *   3. Ties broken alphabetically by `provider/modelId` for determinism.
  *

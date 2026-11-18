@@ -1,5 +1,6 @@
 const PINCHY_URL = process.env.PINCHY_URL || "http://localhost:7777";
 import { stackDbUrl } from "../shared/stack-db";
+import { settleOpenClawBestEffort } from "../shared/dispatch-probe";
 const MOCK_ODOO_URL = process.env.MOCK_ODOO_URL || "http://localhost:9002";
 
 // Admin credentials — set by seedSetup, used by login and loginViaUI
@@ -49,7 +50,10 @@ export async function seedSetup(): Promise<void> {
     throw new Error(`Setup failed: ${setupRes.status} ${text}`);
   }
 
-  await new Promise((r) => setTimeout(r, 2000));
+  // No wait needed here: POST /api/setup awaits createAdmin() (including
+  // regenerateOpenClawConfig()) before responding, so setupRes.ok already
+  // guarantees those writes landed. The settings insert below is an
+  // independent, unrelated write with nothing async left to wait for.
 
   // Seed provider config (needed for agent creation)
   const testApiKey = process.env.TEST_ANTHROPIC_API_KEY || "sk-ant-fake-key-for-e2e-testing";
@@ -65,7 +69,20 @@ export async function seedSetup(): Promise<void> {
   `;
 
   await sql.end();
-  await new Promise((r) => setTimeout(r, 3000));
+
+  // /api/setup's regenerateOpenClawConfig() hands the new config to a
+  // fire-and-forget pushConfigInBackground() (write.ts), so the config change
+  // can still be in flight once /api/setup has already answered 201. Gate on
+  // the settled predicate (`connected` AND `configPushesPending === 0`, held
+  // for a window) rather than on `connected` alone: OpenClaw stays connected
+  // for the whole 33–53 s a rate-limited config.apply can be parked, so a
+  // connection-only poll would return on its first iteration and prove
+  // nothing. This is the only OpenClaw wait the odoo-permissions,
+  // odoo-auth-failed, odoo-templates, odoo-wizard and odoo-integration specs
+  // get — odoo-agent-chat and odoo-nested-lines re-gate on their own.
+  // Best-effort, like the sleep it replaces: a timeout logs rather than
+  // failing setup.
+  await settleOpenClawBestEffort(() => fetch(`${PINCHY_URL}/api/health/openclaw`), "[odoo-setup]");
   console.log(`[odoo-setup] Admin created: ${_adminEmail}`);
 }
 
@@ -88,6 +105,35 @@ export async function setOdooAuthMode(mode: "ok" | "fail"): Promise<void> {
     body: JSON.stringify({ mode }),
   });
   if (!res.ok) throw new Error(`Failed to set Odoo auth mode: ${res.status}`);
+}
+
+/**
+ * Override the Odoo mock's response for `<model>.<method>` (pinchy#720). Used
+ * to inject a silent no-op create: the mock returns `response` (a plausible id)
+ * without persisting anything, so the plugin's read-after-write verification
+ * turns it into a hard failure instead of a false success.
+ */
+export async function setOdooMethodResponse(
+  model: string,
+  method: string,
+  response: unknown
+): Promise<void> {
+  const res = await fetch(`${MOCK_ODOO_URL}/control/method-response`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model, method, response }),
+  });
+  if (!res.ok) throw new Error(`Failed to set Odoo method response: ${res.status}`);
+}
+
+/** Remove a `<model>.<method>` override without wiping the mock's store. */
+export async function clearOdooMethodResponse(model: string, method: string): Promise<void> {
+  const res = await fetch(`${MOCK_ODOO_URL}/control/method-response`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model, method, clear: true }),
+  });
+  if (!res.ok) throw new Error(`Failed to clear Odoo method response: ${res.status}`);
 }
 
 export async function seedOdooRecords(

@@ -46,16 +46,26 @@ test("photo control message queues an update with a multi-size photo array, capt
   injectPhoto({ caption: "receipt" });
   const message = await lastQueuedMessage(TOKEN);
 
-  assert.ok(Array.isArray(message.photo), "expected message.photo to be an array");
+  assert.ok(
+    Array.isArray(message.photo),
+    "expected message.photo to be an array",
+  );
   assert.ok(message.photo.length >= 2, "expected at least 2 PhotoSize entries");
 
   const sizes = message.photo.map((p) => p.width * p.height);
   const distinctSizes = new Set(sizes);
-  assert.equal(distinctSizes.size, message.photo.length, "expected distinct sizes");
+  assert.equal(
+    distinctSizes.size,
+    message.photo.length,
+    "expected distinct sizes",
+  );
 
   // Ascending small -> large, per real Bot API ordering.
   for (let i = 1; i < sizes.length; i++) {
-    assert.ok(sizes[i] > sizes[i - 1], "expected photo sizes sorted small to large");
+    assert.ok(
+      sizes[i] > sizes[i - 1],
+      "expected photo sizes sorted small to large",
+    );
   }
 
   for (const size of message.photo) {
@@ -75,7 +85,10 @@ test("photo control message without a caption has no caption key", async () => {
   injectPhoto();
   const message = await lastQueuedMessage(TOKEN);
 
-  assert.ok(!("caption" in message), "expected no caption key when none was provided");
+  assert.ok(
+    !("caption" in message),
+    "expected no caption key when none was provided",
+  );
   assert.ok(!("text" in message), "expected no text key on a photo message");
 });
 
@@ -95,7 +108,10 @@ test("existing text messages are unaffected by photo support", async () => {
 
   assert.equal(message.text, "hi");
   assert.ok(!("photo" in message), "expected no photo key on a text message");
-  assert.ok(!("caption" in message), "expected no caption key on a text message");
+  assert.ok(
+    !("caption" in message),
+    "expected no caption key on a text message",
+  );
 });
 
 test("getFile returns the file_path for the largest PhotoSize's file_id", async () => {
@@ -105,7 +121,9 @@ test("getFile returns the file_path for the largest PhotoSize's file_id", async 
   const message = await lastQueuedMessage(TOKEN);
   const largest = message.photo[message.photo.length - 1];
 
-  const result = handleBotRequest(TOKEN, "getFile", { file_id: largest.file_id });
+  const result = handleBotRequest(TOKEN, "getFile", {
+    file_id: largest.file_id,
+  });
 
   assert.equal(result.ok, true);
   assert.equal(result.result.file_id, largest.file_id);
@@ -115,7 +133,9 @@ test("getFile returns the file_path for the largest PhotoSize's file_id", async 
 test("getFile with an unknown file_id returns a 400 error", async () => {
   resetState();
 
-  const result = handleBotRequest(TOKEN, "getFile", { file_id: "nonexistent-file-id" });
+  const result = handleBotRequest(TOKEN, "getFile", {
+    file_id: "nonexistent-file-id",
+  });
 
   assert.equal(result.ok, false);
   assert.equal(result.error_code, 400);
@@ -128,10 +148,15 @@ test("downloading a photo's file_path returns bytes starting with the JPEG magic
   const message = await lastQueuedMessage(TOKEN);
   const largest = message.photo[message.photo.length - 1];
 
-  const fileResult = handleBotRequest(TOKEN, "getFile", { file_id: largest.file_id });
+  const fileResult = handleBotRequest(TOKEN, "getFile", {
+    file_id: largest.file_id,
+  });
   const bytes = getFileBytes(fileResult.result.file_path);
 
-  assert.ok(bytes, "expected file bytes to be found for the returned file_path");
+  assert.ok(
+    bytes,
+    "expected file bytes to be found for the returned file_path",
+  );
   assert.equal(bytes[0], 0xff);
   assert.equal(bytes[1], 0xd8);
   assert.equal(bytes[2], 0xff);

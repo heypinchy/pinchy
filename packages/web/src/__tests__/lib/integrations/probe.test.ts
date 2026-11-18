@@ -23,11 +23,12 @@ vi.mock("@/lib/integrations/brave-probe", () => ({
 const mockTestImapLogin = vi.fn();
 const mockTestSmtpVerify = vi.fn();
 // Only the network I/O (testImapLogin/testSmtpVerify) is mocked; friendlyError
-// comes from the REAL module via importActual. The imap branch of probe.ts
-// classifies transient-vs-auth by matching the real friendlyError wording
-// (/authentication failed/i), so re-implementing it here would let a reword of
-// the real string silently break auth-failure detection while this test stayed
-// green. Importing the real one makes that coupling a real compile/run check.
+// and classifyProbeError come from the REAL module via importActual. The imap
+// branch of probe.ts classifies transient-vs-auth via the real
+// classifyProbeError()'s code === "auth", so re-implementing that mapping
+// here would let a change to the real classifier silently break auth-failure
+// detection while this test stayed green. Importing the real one makes that
+// coupling a real compile/run check.
 vi.mock("@/lib/integrations/imap-probe", async (importActual) => {
   const actual = await importActual<typeof import("@/lib/integrations/imap-probe")>();
   return {
@@ -56,16 +57,39 @@ vi.mock("@/lib/integrations/mcp-client", async (importActual) => {
     listMcpTools: (...args: unknown[]) => mockListMcpTools(...args),
   };
 });
+// The guard's decisions are tested in url-validation.test.ts; here it is a
+// seam (and keeps these cases off the real resolver). The connection itself is
+// pinned to the target it answers; odoo-admin-routes-pinning.test.ts covers that.
+const mockResolveExternalUrlTarget = vi.fn();
+// validateExternalUrl is the same seam for the mcp branch (listMcpTools runs
+// it before connecting); it passes by default so the full-chain test below can
+// reach its loopback mock server, which the real guard always refuses.
+const mockValidateExternalUrl = vi.fn();
+vi.mock("@/lib/integrations/url-validation", () => ({
+  resolveExternalUrlTarget: (...args: unknown[]) => mockResolveExternalUrlTarget(...args),
+  validateExternalUrl: (...args: unknown[]) => mockValidateExternalUrl(...args),
+}));
 
 import { fetchOdooSchema } from "@/lib/integrations/odoo-sync";
 import { probeBraveApiKey } from "@/lib/integrations/brave-probe";
 import { probeIntegrationCredentials } from "@/lib/integrations/probe";
 import { McpAuthError, McpServerError, McpSchemaError } from "@/lib/integrations/mcp-client";
 import { createMcpMockServer } from "@/test-utils/mcp-mock-server";
+import { resetInsecureMockWarningsForTest } from "@/lib/integrations/insecure-mock-base-url";
+import { odooRedirectRefusedMessage } from "@/lib/integrations/odoo-error";
 
 beforeEach(() => {
   vi.clearAllMocks();
   mockAuthenticate.mockResolvedValue(2);
+  mockResolveExternalUrlTarget.mockImplementation(async (url: string) => ({
+    valid: true,
+    url: new URL(url).origin,
+    target: [{ address: "93.184.216.34", family: 4 }],
+  }));
+  mockValidateExternalUrl.mockImplementation(async (url: string) => ({
+    valid: true,
+    url: new URL(url).origin,
+  }));
 });
 
 describe("probeIntegrationCredentials", () => {
@@ -92,9 +116,23 @@ describe("probeIntegrationCredentials", () => {
     vi.mocked(fetchOdooSchema).mockResolvedValue({
       success: false,
       error: "Access denied",
-    } as never);
+      isAuthError: true,
+    });
     const res = await probeIntegrationCredentials("odoo", validOdooCreds);
-    expect(res).toEqual({ success: false, reason: "Access denied" });
+    expect(res).toEqual({ success: false, reason: "Access denied", transient: false });
+  });
+
+  // The login worked; every model probe then failed alike for a reason that is
+  // not about the credentials (a proxy blocking calls, Odoo unreachable).
+  // Flagging auth_failed would send the admin to re-enter a good API key.
+  it("odoo: a schema failure that is not about access is transient", async () => {
+    vi.mocked(fetchOdooSchema).mockResolvedValue({
+      success: false,
+      error: "HTTP 403: Forbidden",
+      isAuthError: false,
+    });
+    const res = await probeIntegrationCredentials("odoo", validOdooCreds);
+    expect(res).toEqual({ success: false, reason: "HTTP 403: Forbidden", transient: true });
   });
 
   it("odoo: returns failure for invalid credentials shape", async () => {
@@ -145,6 +183,34 @@ describe("probeIntegrationCredentials", () => {
           headers: { Authorization: "Bearer valid-access-token" },
         })
       );
+    });
+
+    it("ignores GRAPH_API_BASE_URL and probes the real Graph host when the insecure flag is absent", async () => {
+      vi.stubEnv("GRAPH_API_BASE_URL", "http://graph-mock:9005");
+      // No PINCHY_INSECURE_MAIL_MOCK: this probe sends the stored access token.
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      resetInsecureMockWarningsForTest();
+      mockFetch.mockResolvedValue({ ok: true, status: 200 });
+
+      await probeIntegrationCredentials("microsoft", validCreds);
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        "https://graph.microsoft.com/v1.0/me",
+        expect.any(Object)
+      );
+      vi.unstubAllEnvs();
+      resetInsecureMockWarningsForTest();
+    });
+
+    it("uses GRAPH_API_BASE_URL when the insecure flag is set", async () => {
+      vi.stubEnv("GRAPH_API_BASE_URL", "http://graph-mock:9005");
+      vi.stubEnv("PINCHY_INSECURE_MAIL_MOCK", "1");
+      mockFetch.mockResolvedValue({ ok: true, status: 200 });
+
+      await probeIntegrationCredentials("microsoft", validCreds);
+
+      expect(mockFetch).toHaveBeenCalledWith("http://graph-mock:9005/v1.0/me", expect.any(Object));
+      vi.unstubAllEnvs();
     });
 
     it("returns failure when Graph /me returns 401", async () => {
@@ -201,6 +267,31 @@ describe("probeIntegrationCredentials", () => {
     });
   });
 
+  describe("odoo: the URL is checked before anything is sent to it", () => {
+    // Callers hand this function a merged credential set whose URL may have
+    // come from the database rather than the request (PATCH with only a new
+    // API key), so it was never re-validated against the current rules.
+    it("refuses a URL the guard refuses, without authenticating against it", async () => {
+      mockResolveExternalUrlTarget.mockResolvedValue({
+        valid: false,
+        error: "Blocked: this URL targets a private network address.",
+      });
+
+      const res = await probeIntegrationCredentials("odoo", validOdooCreds);
+
+      expect(mockResolveExternalUrlTarget).toHaveBeenCalledWith(validOdooCreds.url);
+      // `transient`: a refused address says nothing about the API key, so no
+      // caller may read it as an auth failure and flag the connection.
+      expect(res).toEqual({
+        success: false,
+        transient: true,
+        reason: "Blocked: this URL targets a private network address.",
+      });
+      expect(mockAuthenticate).not.toHaveBeenCalled();
+      expect(fetchOdooSchema).not.toHaveBeenCalled();
+    });
+  });
+
   describe("odoo authentication", () => {
     it("returns clear auth-failed message when OdooClient.authenticate throws", async () => {
       mockAuthenticate.mockRejectedValue(new Error("Invalid credentials"));
@@ -231,8 +322,37 @@ describe("probeIntegrationCredentials", () => {
         db: validOdooCreds.db,
         login: validOdooCreds.login,
         apiKey: validOdooCreds.apiKey,
+        fetch: expect.any(Function),
       });
       expect(fetchOdooSchema).toHaveBeenCalledWith(expect.objectContaining({ uid: 42 }));
+    });
+
+    it("logs in and syncs through one fetch pinned to the checked address", async () => {
+      vi.mocked(fetchOdooSchema).mockResolvedValue({ success: true } as never);
+
+      await probeIntegrationCredentials("odoo", validOdooCreds);
+
+      const pinned = mockAuthenticate.mock.calls[0][0].fetch;
+      expect(pinned).toEqual(expect.any(Function));
+      expect(pinned).not.toBe(globalThis.fetch);
+      expect(fetchOdooSchema).toHaveBeenCalledWith(expect.objectContaining({ fetch: pinned }));
+    });
+
+    it("uses the fetch a caller already pinned, without looking the host up again", async () => {
+      // [connectionId]/test checked the stored URL and pinned its own scope;
+      // a second lookup could answer differently (DNS rebinding).
+      vi.mocked(fetchOdooSchema).mockResolvedValue({ success: true } as never);
+      const callersFetch = vi.fn() as unknown as typeof fetch;
+
+      await probeIntegrationCredentials("odoo", validOdooCreds, { odooFetch: callersFetch });
+
+      expect(mockResolveExternalUrlTarget).not.toHaveBeenCalled();
+      expect(mockAuthenticate).toHaveBeenCalledWith(
+        expect.objectContaining({ fetch: callersFetch })
+      );
+      expect(fetchOdooSchema).toHaveBeenCalledWith(
+        expect.objectContaining({ fetch: callersFetch })
+      );
     });
 
     it("returns the fresh uid on success so caller can persist it (login change)", async () => {
@@ -248,6 +368,81 @@ describe("probeIntegrationCredentials", () => {
       mockAuthenticate.mockRejectedValue(new Error("AccessDenied"));
       await probeIntegrationCredentials("odoo", validOdooCreds);
       expect(fetchOdooSchema).not.toHaveBeenCalled();
+    });
+
+    // The errors below come from the real OdooError class, in the shapes
+    // odoo-node builds them: a JSON-RPC error carries Odoo's `data`, a
+    // transport failure carries only a `code` (0 for the network, the HTTP
+    // status otherwise).
+    async function realOdooError(message: string, code?: number, data?: Record<string, unknown>) {
+      const { OdooError } = await vi.importActual<typeof import("odoo-node")>("odoo-node");
+      return new OdooError(message, code, data);
+    }
+
+    it("still reports a wrong login or API key as an authentication failure", async () => {
+      // odoo-node's own error when Odoo answers `uid: false`.
+      mockAuthenticate.mockRejectedValue(await realOdooError("Authentication failed"));
+      const res = await probeIntegrationCredentials("odoo", validOdooCreds);
+      expect(res).toMatchObject({ success: false });
+      if (res.success) return;
+      expect(res.reason).toMatch(/authentication failed/i);
+      expect(res.transient).toBeFalsy();
+    });
+
+    it("reports an error Odoo itself raised during login as an authentication failure", async () => {
+      mockAuthenticate.mockRejectedValue(
+        await realOdooError("Access Denied", 200, { name: "odoo.exceptions.AccessDenied" })
+      );
+      const res = await probeIntegrationCredentials("odoo", validOdooCreds);
+      if (res.success) throw new Error("expected failure");
+      expect(res.reason).toMatch(/authentication failed/i);
+      expect(res.transient).toBeFalsy();
+    });
+
+    // An http:// Odoo URL behind a proxy's HTTP→HTTPS redirect (Caddy's
+    // default, common in Traefik setups): odoo-node refuses to follow it
+    // and says so. That is a URL problem; calling it a bad API key sends the
+    // admin to fix the wrong thing, and a non-transient result flags the
+    // connection auth_failed.
+    it.each([
+      [
+        "a refused redirect",
+        "Odoo answered with a redirect (HTTP 307); odoo-node does not follow redirects. " +
+          "Use the address Odoo is actually served from.",
+        307,
+        odooRedirectRefusedMessage(307),
+      ],
+      ["an HTTP error from a proxy", "HTTP 502: Bad Gateway", 502, "HTTP 502: Bad Gateway"],
+      ["a network failure", "fetch failed", 0, "fetch failed"],
+    ])("does not call %s an authentication failure", async (_label, message, code, shown) => {
+      mockAuthenticate.mockRejectedValue(await realOdooError(message, code));
+      const res = await probeIntegrationCredentials("odoo", validOdooCreds);
+      if (res.success) throw new Error("expected failure");
+      expect(res.reason).not.toMatch(/authentication failed/i);
+      expect(res.reason).toContain(shown);
+      expect(res.transient).toBe(true);
+    });
+
+    it("reports an internal error during the login as Pinchy's, without blaming Odoo", async () => {
+      mockAuthenticate.mockRejectedValue(
+        new TypeError("Cannot read properties of undefined (reading 'map')")
+      );
+      const res = await probeIntegrationCredentials("odoo", validOdooCreds);
+      if (res.success) throw new Error("expected failure");
+      expect(res.reason).toMatch(/^Pinchy hit an internal error while talking to Odoo/);
+      expect(res.reason).not.toMatch(/Odoo didn't answer/);
+      expect(res.transient).toBe(true);
+    });
+
+    it("does not call a non-JSON-RPC answer an authentication failure", async () => {
+      mockAuthenticate.mockRejectedValue(
+        await realOdooError("Response is not JSON-RPC (HTTP 200, text/plain)", 200)
+      );
+      const res = await probeIntegrationCredentials("odoo", validOdooCreds);
+      if (res.success) throw new Error("expected failure");
+      expect(res.reason).not.toMatch(/authentication failed/i);
+      expect(res.reason).toContain("not a JSON-RPC response (HTTP 200, text/plain)");
+      expect(res.transient).toBe(true);
     });
   });
 
@@ -273,6 +468,27 @@ describe("probeIntegrationCredentials", () => {
       expect(res).toEqual({ success: true });
       expect(mockTestImapLogin).toHaveBeenCalledWith(validImapCreds);
       expect(mockTestSmtpVerify).toHaveBeenCalledWith(validImapCreds);
+    });
+
+    it("returns transient:true when the mail-host guard refuses the stored host, keeping its message", async () => {
+      // testImapLogin runs the guard itself, so a refused host arrives here as
+      // a MailHostBlockedError. It is a configuration problem: the stored
+      // password may be perfectly good, so it must not flip auth_failed.
+      const { MailHostBlockedError } = await import("@/lib/integrations/mail-host-guard");
+      mockTestImapLogin.mockRejectedValue(
+        new MailHostBlockedError(
+          "Blocked: this host resolves to a private network address. Set ALLOW_PRIVATE_MAIL_HOSTS=1 to allow an on-premise mail server."
+        )
+      );
+
+      const res = await probeIntegrationCredentials("imap", validImapCreds);
+
+      expect(res).toEqual({
+        success: false,
+        transient: true,
+        reason: expect.stringContaining("ALLOW_PRIVATE_MAIL_HOSTS=1"),
+      });
+      expect(mockTestSmtpVerify).not.toHaveBeenCalled();
     });
 
     it("returns non-transient failure with a friendly reason on IMAP auth failure", async () => {
@@ -406,7 +622,7 @@ describe("probeIntegrationCredentials", () => {
       mockListMcpTools.mockResolvedValue([{ name: "create_issue", inputSchema: {} }]);
       const dataWithHeaders = { ...validData, extraHeaders: { locationId: "loc_1" } };
 
-      const res = await probeIntegrationCredentials("mcp", validCreds, dataWithHeaders);
+      const res = await probeIntegrationCredentials("mcp", validCreds, { data: dataWithHeaders });
 
       expect(res).toEqual({ success: true });
       expect(mockListMcpTools).toHaveBeenCalledWith({
@@ -418,7 +634,7 @@ describe("probeIntegrationCredentials", () => {
     });
 
     it("returns non-transient failure without probing when data is missing (connection.data was never persisted)", async () => {
-      const res = await probeIntegrationCredentials("mcp", validCreds, null);
+      const res = await probeIntegrationCredentials("mcp", validCreds, { data: null });
 
       expect(res.success).toBe(false);
       if (res.success) return;
@@ -427,7 +643,9 @@ describe("probeIntegrationCredentials", () => {
     });
 
     it("returns non-transient failure without probing when data is missing url/transport", async () => {
-      const res = await probeIntegrationCredentials("mcp", validCreds, { preset: "github" });
+      const res = await probeIntegrationCredentials("mcp", validCreds, {
+        data: { preset: "github" },
+      });
 
       expect(res.success).toBe(false);
       if (res.success) return;
@@ -436,7 +654,7 @@ describe("probeIntegrationCredentials", () => {
     });
 
     it("returns non-transient failure without probing when the token is missing", async () => {
-      const res = await probeIntegrationCredentials("mcp", {}, validData);
+      const res = await probeIntegrationCredentials("mcp", {}, { data: validData });
 
       expect(res.success).toBe(false);
       if (res.success) return;
@@ -447,7 +665,7 @@ describe("probeIntegrationCredentials", () => {
     it("returns non-transient failure on McpAuthError — the only mcp failure allowed to flip a connection to auth_failed", async () => {
       mockListMcpTools.mockRejectedValue(new McpAuthError());
 
-      const res = await probeIntegrationCredentials("mcp", validCreds, validData);
+      const res = await probeIntegrationCredentials("mcp", validCreds, { data: validData });
 
       expect(res.success).toBe(false);
       if (res.success) return;
@@ -458,7 +676,7 @@ describe("probeIntegrationCredentials", () => {
     it("returns transient:true on McpServerError (5xx/429) — a provider hiccup, not proof the token is bad", async () => {
       mockListMcpTools.mockRejectedValue(new McpServerError(503, "boom"));
 
-      const res = await probeIntegrationCredentials("mcp", validCreds, validData);
+      const res = await probeIntegrationCredentials("mcp", validCreds, { data: validData });
 
       expect(res.success).toBe(false);
       if (res.success) return;
@@ -468,7 +686,7 @@ describe("probeIntegrationCredentials", () => {
     it("returns transient:true on McpSchemaError (fail-safe: a broken response is not evidence the token is bad)", async () => {
       mockListMcpTools.mockRejectedValue(new McpSchemaError("tool missing name"));
 
-      const res = await probeIntegrationCredentials("mcp", validCreds, validData);
+      const res = await probeIntegrationCredentials("mcp", validCreds, { data: validData });
 
       expect(res.success).toBe(false);
       if (res.success) return;
@@ -478,7 +696,7 @@ describe("probeIntegrationCredentials", () => {
     it("returns transient:true for a network/DNS/timeout/abort failure (fail-safe default)", async () => {
       mockListMcpTools.mockRejectedValue(new Error("This operation was aborted"));
 
-      const res = await probeIntegrationCredentials("mcp", validCreds, validData);
+      const res = await probeIntegrationCredentials("mcp", validCreds, { data: validData });
 
       expect(res.success).toBe(false);
       if (res.success) return;
@@ -490,7 +708,7 @@ describe("probeIntegrationCredentials", () => {
         new Error(`connect ECONNREFUSED, sent token ${validCreds.token}`)
       );
 
-      const res = await probeIntegrationCredentials("mcp", validCreds, validData);
+      const res = await probeIntegrationCredentials("mcp", validCreds, { data: validData });
 
       expect(res.success).toBe(false);
       if (res.success) return;
@@ -504,7 +722,6 @@ describe("probeIntegrationCredentials", () => {
     // whole chain a user actually hits: HTTP 403 → McpAuthError → auth_failed
     // (not the "server unreachable, try again" lie that shipped before).
     it("classifies a real 403 from an MCP server as a non-transient auth failure (full chain)", async () => {
-      vi.stubEnv("ALLOW_PRIVATE_URLS", "1"); // loopback must pass the SSRF guard
       mockFetch.mockImplementation((...args: Parameters<typeof fetch>) => realFetch(...args));
       mockListMcpTools.mockImplementation((...args: unknown[]) =>
         (mcpClientActual.listMcpTools as unknown as (...a: unknown[]) => Promise<unknown>)(...args)
@@ -515,7 +732,7 @@ describe("probeIntegrationCredentials", () => {
         const res = await probeIntegrationCredentials(
           "mcp",
           { token: "under-scoped-token" },
-          { ...validData, url: `http://127.0.0.1:${mock.port}/mcp` }
+          { data: { ...validData, url: `http://127.0.0.1:${mock.port}/mcp` } }
         );
 
         expect(res.success).toBe(false);

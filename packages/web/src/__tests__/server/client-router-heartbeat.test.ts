@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Heartbeat lazy-start contract for `ClientRouter.pipeStream` (#310 Tier 2c).
  *
@@ -69,9 +70,14 @@ vi.mock("drizzle-orm", () => ({
   eq: vi.fn((col, val) => ({ col, val })),
 }));
 
+vi.mock("@/lib/budgets", () => ({
+  getExhaustedBlockingBudget: vi.fn().mockResolvedValue(null),
+}));
+
 vi.mock("@/lib/agent-access", () => ({
   assertAgentAccess: vi.fn(() => {}),
   effectiveVisibility: (v: string) => v,
+  isPersonalAgentPausedFor: vi.fn().mockResolvedValue(false),
 }));
 
 vi.mock("@/lib/enterprise", () => ({

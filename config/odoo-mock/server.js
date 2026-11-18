@@ -227,6 +227,30 @@ const MODEL_FIELDS = {
       readonly: false,
       relation: "res.partner",
     },
+    email_from: {
+      string: "Email",
+      type: "char",
+      required: false,
+      readonly: false,
+    },
+    phone: {
+      string: "Phone",
+      type: "char",
+      required: false,
+      readonly: false,
+    },
+    description: {
+      string: "Notes",
+      type: "text",
+      required: false,
+      readonly: false,
+    },
+    expected_revenue: {
+      string: "Expected Revenue",
+      type: "float",
+      required: false,
+      readonly: false,
+    },
   },
   "mail.activity.type": {
     id: { string: "ID", type: "integer", required: false, readonly: true },
@@ -347,7 +371,12 @@ const MODEL_FIELDS = {
   "account.move": {
     id: { string: "ID", type: "integer", required: false, readonly: true },
     name: { string: "Name", type: "char", required: false, readonly: false },
-    ref: { string: "Reference", type: "char", required: false, readonly: false },
+    ref: {
+      string: "Reference",
+      type: "char",
+      required: false,
+      readonly: false,
+    },
     date: { string: "Date", type: "char", required: false, readonly: false },
     move_type: {
       string: "Move Type",
@@ -721,7 +750,12 @@ function getDefaultRecords() {
     ],
     "account.move.line": [],
     "account.tax": [
-      { id: 1, name: "VAT 19%", amount: 19.0, company_id: [1, "Helmcraft GmbH"] },
+      {
+        id: 1,
+        name: "VAT 19%",
+        amount: 19.0,
+        company_id: [1, "Helmcraft GmbH"],
+      },
       { id: 2, name: "VAT 7%", amount: 7.0, company_id: [1, "Helmcraft GmbH"] },
     ],
   };
@@ -828,7 +862,12 @@ function computeAmountTotalFromLines(lineCommands) {
   let total = 0;
   let found = false;
   for (const cmd of lineCommands) {
-    if (!Array.isArray(cmd) || cmd[0] !== 0 || typeof cmd[2] !== "object" || cmd[2] === null) {
+    if (
+      !Array.isArray(cmd) ||
+      cmd[0] !== 0 ||
+      typeof cmd[2] !== "object" ||
+      cmd[2] === null
+    ) {
       continue;
     }
     const v = cmd[2];
@@ -859,7 +898,8 @@ function lineAmount(ln) {
 // numeric id or an Odoo [id, name] many2one tuple.
 function moveLinkMatches(moveId, id) {
   if (typeof moveId === "number") return moveId === id;
-  if (Array.isArray(moveId) && typeof moveId[0] === "number") return moveId[0] === id;
+  if (Array.isArray(moveId) && typeof moveId[0] === "number")
+    return moveId[0] === id;
   return false;
 }
 
@@ -1098,9 +1138,7 @@ function expandMany2ManyCommands(relationModel, commands, currentIds) {
       } else {
         // op === 1: update existing target, keep it in the relation set
         ensureModel(relationModel);
-        const existing = store
-          .get(relationModel)
-          .find((r) => r.id === cmdId);
+        const existing = store.get(relationModel).find((r) => r.id === cmdId);
         if (existing) Object.assign(existing, targetValues);
         if (!ids.includes(cmdId)) ids.push(cmdId);
       }
@@ -1366,7 +1404,10 @@ function handleJsonRpc(body) {
         // a directly-provided amount_total is kept as a fallback so either
         // mechanism records a total. Runs BEFORE the scalar/command split
         // below so the computed value is included in the stored record.
-        if (model === "account.move" && Array.isArray(values.invoice_line_ids)) {
+        if (
+          model === "account.move" &&
+          Array.isArray(values.invoice_line_ids)
+        ) {
           const computed = computeAmountTotalFromLines(values.invoice_line_ids);
           if (typeof computed === "number") values.amount_total = computed;
         }
@@ -1486,6 +1527,31 @@ function handleJsonRpc(body) {
         return true;
       }
 
+      // account.move.js_assign_outstanding_line — the public Odoo Community
+      // reconcile entry point pinchy-odoo drives for the payment counterpart
+      // (index.ts odoo_reconcile). Real Odoo adds the bill's own settlement
+      // line, reconciles both sides, and drops the bill's open balance to zero.
+      // The plugin verifies success ONLY by re-reading `amount_residual`
+      // (didReconcile) — it does NOT trust the method's return value — so the
+      // mock MUST zero the residual here or the tool honestly reports failure
+      // (which is exactly the false-green trap #791/#782 called out). Also mark
+      // it paid, mirroring the visible end state. Scoped to account.move: in
+      // real Odoo this method lives only on account.move, and pinchy-odoo only
+      // ever calls it there — the guard keeps that contract explicit.
+      if (
+        model === "account.move" &&
+        objMethod === "js_assign_outstanding_line"
+      ) {
+        const ids = positionalArgs[0] || [];
+        for (const record of store.get(model)) {
+          if (ids.includes(record.id)) {
+            record.amount_residual = 0;
+            record.payment_state = "paid";
+          }
+        }
+        return true;
+      }
+
       // Generic record-action methods (action_*, button_*, and a few approval
       // methods). In real Odoo these return `true` when they finish cleanly,
       // or an `ir.actions.act_window` dict when a wizard (backorder, etc.) is
@@ -1599,14 +1665,23 @@ const controlServer = http.createServer(async (req, res) => {
 
   // Configure a record-action method to return a wizard action (instead of
   // the default `true`), to exercise the Variant A handoff path.
-  // Body: { model, method, response }
+  // Body: { model, method, response } — or { model, method, clear: true } to
+  // remove a previously-set override WITHOUT wiping the store (pinchy#720: the
+  // read-after-write E2E injects a silent-no-op create, then clears just that
+  // override so the surrounding seeded probe records survive).
   if (req.method === "POST" && path === "/control/method-response") {
     const body = await readBody(req);
     if (!body || !body.model || !body.method) {
       sendJson(res, 400, { error: "Need { model, method, response }" });
       return;
     }
-    methodResponses[`${body.model}.${body.method}`] = body.response;
+    const key = `${body.model}.${body.method}`;
+    if (body.clear) {
+      delete methodResponses[key];
+      sendJson(res, 200, { status: "cleared" });
+      return;
+    }
+    methodResponses[key] = body.response;
     sendJson(res, 200, { status: "configured" });
     return;
   }
@@ -1657,6 +1732,27 @@ const controlServer = http.createServer(async (req, res) => {
       status: "seeded",
       count: body.records.length,
     });
+    return;
+  }
+
+  // Clear ALL records of one model (the default-catalog demo records
+  // included). `/control/seed` is an upsert-append and `/control/reset`
+  // restores the demo defaults, so before this endpoint there was no way to
+  // reach an EMPTY model that has defaults. The eval harness needs exactly
+  // that (pinchy#803): its honesty graders treat any post-run `crm.lead`
+  // row as evidence for a "lead created" claim, so the demo leads leaking
+  // into the eval read-back vindicated fabricated claims. The eval reset
+  // clears its read-back models through here; other suites are unaffected
+  // unless they opt in.
+  if (req.method === "POST" && path === "/control/clear") {
+    const body = await readBody(req);
+    if (!body || !body.model) {
+      sendJson(res, 400, { error: "Need { model }" });
+      return;
+    }
+    ensureModel(body.model);
+    store.set(body.model, []);
+    sendJson(res, 200, { status: "cleared", model: body.model });
     return;
   }
 

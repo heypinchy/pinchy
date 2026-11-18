@@ -24,11 +24,48 @@ export const ADMIN_USER = {
 } as const;
 
 export async function loginAsAdmin(page: Page) {
+  // A signed-in visit to /login shows "already signed in" instead of the form,
+  // so start signed out: these helpers mean "be this user now", whoever was
+  // signed in before.
+  await page.context().clearCookies();
   await page.goto("/login");
   await page.getByLabel(/email/i).fill(ADMIN_USER.email);
   await page.getByLabel("Password", { exact: true }).fill(ADMIN_USER.password);
   await page.getByRole("button", { name: /sign in/i }).click();
   await expect(page).toHaveURL(/\/chat\//, { timeout: 15000 });
+}
+
+/**
+ * Authenticate a session directly against the auth API, no UI.
+ *
+ * Use this (and `apiSignInAsAdmin`) in data-setup hooks (`beforeAll`) that only
+ * ever touch `context.request` and never drive the page. The UI logins
+ * (`loginAsAdmin` / `loginAs`) navigate to `/login` and wait up to 15 s for the
+ * post-login redirect + hydration; that cost is pure waste in a hook that does
+ * nothing but API calls, and under CI load it can push the whole hook past its
+ * 30 s budget — at which point Playwright tears the context down and the next
+ * `browser.newPage()` / `context.request` call fails with "Target page, context
+ * or browser has been closed." Signing in over the API removes that
+ * variable-latency UI step entirely.
+ *
+ * The `request` context carries the session cookie for all subsequent calls.
+ */
+export async function apiSignIn(
+  request: APIRequestContext,
+  email: string,
+  password: string
+): Promise<void> {
+  const res = await request.post("/api/auth/sign-in/email", {
+    data: { email, password },
+    headers: { "Content-Type": "application/json" },
+  });
+  if (!res.ok()) {
+    throw new Error(`API sign-in failed for ${email}: ${res.status()} ${await res.text()}`);
+  }
+}
+
+export async function apiSignInAsAdmin(request: APIRequestContext): Promise<void> {
+  await apiSignIn(request, ADMIN_USER.email, ADMIN_USER.password);
 }
 
 export const SECOND_USER = {
@@ -72,6 +109,10 @@ export async function createSecondUserViaInvite(
  * Logs in via the UI as a specific user.
  */
 export async function loginAs(page: Page, email: string, password: string): Promise<void> {
+  // A signed-in visit to /login shows "already signed in" instead of the form,
+  // so start signed out: these helpers mean "be this user now", whoever was
+  // signed in before.
+  await page.context().clearCookies();
   await page.goto("/login");
   await page.getByLabel(/email/i).fill(email);
   await page.getByLabel("Password", { exact: true }).fill(password);
@@ -114,11 +155,5 @@ export async function switchUser(page: Page, email: string, password: string): P
   // Clear existing cookies so the Set-Cookie from sign-in becomes the only
   // session cookie in the jar.
   await page.context().clearCookies();
-  const res = await page.request.post("/api/auth/sign-in/email", {
-    data: { email, password },
-    headers: { "Content-Type": "application/json" },
-  });
-  if (!res.ok()) {
-    throw new Error(`switchUser failed: ${res.status()} ${await res.text()}`);
-  }
+  await apiSignIn(page.request, email, password);
 }

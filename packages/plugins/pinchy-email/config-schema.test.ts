@@ -34,7 +34,7 @@ describe("pinchy-email manifest contract", () => {
       validatePluginEntry(manifest, {
         apiBaseUrl: "http://x",
         gatewayToken: "t",
-      }).ok,
+      }).ok
     ).toBe(false);
   });
 
@@ -44,11 +44,11 @@ describe("pinchy-email manifest contract", () => {
         apiBaseUrl: "http://x",
         gatewayToken: "t",
         agents: { "a-1": { connectionId: "c-1" } },
-      }).ok,
+      }).ok
     ).toBe(false);
   });
 
-  // Migration test -- see AGENTS.md "Test Migrations Against Pre-Existing
+  // Migration test -- see agent-rules/testing.md "Test Migrations Against Pre-Existing
   // Data". Pre-upgrade regenerateOpenClawConfig() wrote agent entries with
   // only connectionId+permissions (no "tools"). If an upgraded OpenClaw
   // container (new plugin manifest) loads a stale openclaw.json written by
@@ -73,9 +73,7 @@ describe("pinchy-email manifest contract", () => {
   });
 
   it("uses additionalProperties: false", () => {
-    expect(
-      (manifest.configSchema as Record<string, unknown>).additionalProperties,
-    ).toBe(false);
+    expect((manifest.configSchema as Record<string, unknown>).additionalProperties).toBe(false);
   });
 
   it("declares contracts.tools with all email tool names", () => {

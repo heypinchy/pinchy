@@ -1,5 +1,5 @@
-import { NextRequest, NextResponse, after } from "next/server";
-import { z } from "zod";
+import { NextRequest, NextResponse } from "next/server";
+import { deferAuditLog } from "@/lib/audit-deferred";
 import { requireAdmin } from "@/lib/api-auth";
 import {
   validateProviderKey,
@@ -9,30 +9,20 @@ import {
 } from "@/lib/providers";
 import { getSetting, setSetting } from "@/lib/settings";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
-import { waitForAgentInRuntime } from "@/lib/wait-for-agent-in-runtime";
-import { getOpenClawClient } from "@/server/openclaw-client";
 import {
   resetCache,
   fetchOllamaLocalModelsFromUrl,
   setOllamaLocalModels,
 } from "@/lib/provider-models";
-import { resolveModelForTemplate } from "@/lib/model-resolver";
+import { resolveAvailableModelForTemplate } from "@/lib/model-resolver/resolve-available";
 import { TemplateCapabilityUnavailableError } from "@/lib/model-resolver/types";
 import { SMITHERS_MODEL_HINT } from "@/lib/personal-agent";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
 import { eq } from "drizzle-orm";
-import { appendAuditLog } from "@/lib/audit";
 import { parseRequestBody } from "@/lib/api-validation";
+import { setupProviderSchema } from "@/lib/schemas/providers";
 import { docsUrl } from "@/components/docs-link";
-
-const VALID_PROVIDERS = Object.keys(PROVIDERS) as ProviderName[];
-
-const setupProviderSchema = z.object({
-  provider: z.enum(VALID_PROVIDERS as [ProviderName, ...ProviderName[]]),
-  url: z.string().min(1).optional(),
-  apiKey: z.string().min(1).optional(),
-});
 
 export async function POST(request: NextRequest) {
   const sessionOrError = await requireAdmin();
@@ -44,6 +34,23 @@ export async function POST(request: NextRequest) {
   const { provider } = body;
 
   const config = PROVIDERS[provider];
+
+  // #894 "first provider" gate. Read BEFORE saving so it reflects the state
+  // prior to this provider. `default_provider` is null only on a pristine
+  // instance — both this route and the custom OpenAI-compatible route set it on
+  // the first provider — so `=== null` reliably means "nothing configured yet".
+  //
+  // This used to be decided two different, buggy ways: the default was set on
+  // EVERY save (stealing an admin's chosen default), and the Smithers seed
+  // repoint was gated on a built-in-ONLY key scan. When the instance's first
+  // provider was a CUSTOM one, adding any built-in afterwards saw no configured
+  // built-in, wrongly counted as "first", stole the default, and repointed the
+  // existing Smithers agent — contradicting the documented contract that only
+  // NEW agents follow a default change. Mirroring the custom route's
+  // `currentDefault === null` gate fixes both and keeps the two routes
+  // consistent: only the very first provider auto-defaults + seeds Smithers;
+  // afterwards the default is an explicit "Set as default" action.
+  const isFirstProvider = (await getSetting("default_provider")) === null;
 
   if (config.authType === "url") {
     // URL-based provider (ollama-local)
@@ -114,7 +121,9 @@ export async function POST(request: NextRequest) {
 
     // Store URL unencrypted (not a secret)
     await setSetting(config.settingsKey, url, false);
-    await setSetting("default_provider", provider, false);
+    if (isFirstProvider) {
+      await setSetting("default_provider", provider, false);
+    }
   } else {
     // API-key-based provider (existing logic)
     const { apiKey } = body;
@@ -152,73 +161,83 @@ export async function POST(request: NextRequest) {
 
     // Store encrypted key and default provider
     await setSetting(config.settingsKey, apiKey, true);
-    await setSetting("default_provider", provider, false);
-  }
-
-  // Check if any other providers are already configured (before saving the new one)
-  let isFirstProvider = true;
-  for (const [name, providerConfig] of Object.entries(PROVIDERS)) {
-    if (name !== provider) {
-      const existingKey = await getSetting(providerConfig.settingsKey);
-      if (existingKey !== null) {
-        isFirstProvider = false;
-        break;
-      }
+    if (isFirstProvider) {
+      await setSetting("default_provider", provider, false);
     }
   }
 
-  // Only update agent model when adding the first provider
-  if (isFirstProvider) {
-    const smithers = await db.query.agents.findFirst();
-    if (smithers) {
-      try {
-        const resolved = await resolveModelForTemplate({
-          hint: SMITHERS_MODEL_HINT,
-          provider: provider as ProviderName,
-        });
-        await db.update(agents).set({ model: resolved.model }).where(eq(agents.id, smithers.id));
-      } catch (err) {
-        if (!(err instanceof TemplateCapabilityUnavailableError)) {
-          throw err;
-        }
-        // Provider has no model matching Smithers' hint — keep existing model.
+  // Only update agent model when adding the first provider. Looked up once:
+  // the readiness id further down means this same agent, and an unfiltered
+  // `findFirst()` only names Smithers on the first-provider path — see there.
+  const smithers = isFirstProvider ? await db.query.agents.findFirst() : undefined;
+  if (smithers) {
+    try {
+      const resolved = await resolveAvailableModelForTemplate({
+        hint: SMITHERS_MODEL_HINT,
+        provider: provider as ProviderName,
+      });
+      await db.update(agents).set({ model: resolved.model }).where(eq(agents.id, smithers.id));
+    } catch (err) {
+      if (!(err instanceof TemplateCapabilityUnavailableError)) {
+        throw err;
       }
+      // Provider has no model matching Smithers' hint — keep existing model.
     }
   }
 
-  // Regenerate full OpenClaw config (includes agent list, provider env, model defaults)
-  await regenerateOpenClawConfig();
+  // Regenerate full OpenClaw config (includes agent list, provider env, model
+  // defaults). This is best-effort: the provider key/URL is already committed
+  // above, so a failed runtime apply must NOT surface as a 500 that implies
+  // nothing saved (#880). apsa v0.8.0 saw this fire on every call (EACCES on
+  // openclaw.json) — the setting persisted, the wizard showed an error, and a
+  // refresh revealed it had actually saved. On failure we still return
+  // success with a non-blocking warning; OpenClaw reconciles on its next
+  // startup / config push.
+  let runtimeWarning: string | undefined;
+  try {
+    await regenerateOpenClawConfig();
+  } catch (err) {
+    console.error("Failed to apply provider config to the OpenClaw runtime:", err);
+    runtimeWarning =
+      "Saved. Applying it to the agent runtime failed — check the server logs; it will retry on the next restart or config change.";
+  }
   resetCache();
 
-  // Wait until OC's runtime has Smithers visible in `agents.list`. Same race
-  // as POST /api/agents (see wait-for-agent-in-runtime.ts): Pinchy's
-  // regenerate is fire-and-forget via pushConfigInBackground, and OC applies
-  // the hot reload asynchronously. Without this gate the wizard's
-  // "Continue to Pinchy" navigates to /chat/:smithersId and the first
-  // chat dispatch races OC's reload, hitting "invalid agent params:
-  // unknown agent id" — the message never reaches the LLM and the user
-  // sees the chat hang on a fresh install.
+  // Runtime readiness is the WIZARD's wait, not this request's (#1150).
   //
-  // 30 s cap (vs the 5 s default used by POST /api/agents): on a fresh
-  // wizard the Layer 1 bootstrap pkill in start-openclaw.sh can fire
-  // mid-regenerate, taking the gateway down for ~10–40 s before respawn.
-  // Within that window the config.get poll waitForAgentInRuntime uses
-  // gets WS errors and the 5 s budget elapses while OC is still
-  // restarting — wizard returns 200, browser navigates to /chat, dispatch
-  // races, "unknown agent id". 30 s comfortably covers one restart cycle
-  // while still failing fast if OC is genuinely broken. PR #445 CI showed
-  // 23 s pass / 1.7 m fail on the same commit on the 5 s default —
-  // textbook timing flake.
-  const smithersForWait = await db.query.agents.findFirst();
-  if (smithersForWait) {
-    let client = null;
-    try {
-      client = getOpenClawClient();
-    } catch {
-      // OC client not initialised (rare in tests / pre-setup). Skip the wait.
-    }
-    await waitForAgentInRuntime(client, smithersForWait.id, 30000);
-  }
+  // The race is real and unchanged: `regenerateOpenClawConfig()` pushes to
+  // OpenClaw in the background, so Smithers reaches OC's `agents.list` some
+  // time AFTER this handler answers. Reach /chat/:smithersId before that and
+  // the first dispatch fails with "invalid agent params: unknown agent id" —
+  // the message never gets to the LLM and the chat looks hung (#445).
+  //
+  // What changed is who absorbs the gap. This route used to poll `agents.list`
+  // for up to 30 s before answering, which is the wrong shape for a route a
+  // human is watching: on a fresh install the gap is not small. Writing the
+  // first secrets.json restarts the gateway, the restarts spend OC's
+  // ~3-per-45 s `config.apply` budget, and Pinchy's push is then parked for the
+  // advertised retry-after — 49 s in the run this was measured on. Nothing
+  // crashed and no timeout fired; the request simply stayed open while the
+  // wizard sat on a disabled "Validating..." button, a spinner indistinguishable
+  // from a hang.
+  //
+  // So the wait moved to where it can be rendered. The id below lets the wizard
+  // poll `GET /api/health/openclaw?agentId=…` — which already answers exactly
+  // this question via `agentDispatchable` — show it as a named step, and time
+  // out of it into an honest note instead of holding a connection open.
+  //
+  // Omitted in two cases. When the regenerate threw: nothing was pushed, so
+  // OC's runtime is not about to change and polling it would only delay the
+  // user past a gap that `warning` already describes. And when this is not the
+  // instance's first provider: despite the path, this route also serves
+  // Settings → AI Provider, where the instance has many agents and the
+  // unfiltered `findFirst()` above answers whichever row comes back first. An
+  // id chosen that way names nobody in particular, and this one is documented
+  // as the agent a caller should poll — so it is only sent where it is true.
+  // A Settings save that wants to know when its change landed has
+  // `configPushesPending` on the same health endpoint, which is the question
+  // it is actually asking.
+  const agentId = runtimeWarning ? undefined : smithers?.id;
 
   // Build a CLAUDE.md-compliant audit detail: snapshot the human-readable
   // provider name alongside its id, and never log secrets. For URL-based
@@ -227,6 +246,14 @@ export async function POST(request: NextRequest) {
   const detail: Record<string, unknown> = {
     provider: { id: provider, name: PROVIDERS[provider].name },
     authType: config.authType,
+    // What this asserts, precisely: `regenerateOpenClawConfig()` returned
+    // without throwing. It is NOT a confirmation that OpenClaw's runtime now
+    // holds the value — the push is fire-and-forget by design (see
+    // pushConfigInBackground). It was called `runtimeApplied` until #943, where
+    // a rotated key was audited as applied while every agent kept 401-ing; an
+    // audit row claiming success for a change that did not take effect is worse
+    // than no row at all.
+    configRegenerated: !runtimeWarning,
   };
   if (config.authType === "url" && body.url) {
     try {
@@ -238,15 +265,13 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  after(() =>
-    appendAuditLog({
-      actorType: "user",
-      actorId: sessionOrError.user.id!,
-      eventType: "config.changed",
-      outcome: "success",
-      detail,
-    })
-  );
+  deferAuditLog({
+    actorType: "user",
+    actorId: sessionOrError.user.id!,
+    eventType: "config.changed",
+    outcome: "success",
+    detail,
+  });
 
-  return NextResponse.json({ success: true });
+  return NextResponse.json({ success: true, warning: runtimeWarning, agentId });
 }

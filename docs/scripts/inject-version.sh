@@ -7,7 +7,8 @@
 # Version sources (in priority order):
 # 1. PINCHY_VERSION env var (set by CI)
 # 2. Git tag on current commit (e.g., v0.2.1)
-# 3. packages/web/package.json
+# 3. The newest frozen release in upgrading.mdx (never package.json, which
+#    carries a -dev version between releases — see below)
 #
 # Each file we touch gets a sibling `.preinject` backup so that
 # restore-placeholders.sh can revert byte-for-byte, including legitimate
@@ -27,9 +28,20 @@ if [ -z "$TAG" ]; then
   TAG=$(git -C "$REPO_ROOT" describe --tags --exact-match 2>/dev/null || true)
 fi
 
-# Fall back to package.json
+# Fall back to the newest release upgrading.mdx records as shipped.
+#
+# NOT packages/web/package.json. That was the same number until #1044 split
+# "what should I pull?" from "what is this tree?" — since then it declares
+# `<next>-dev` at every moment that is not a release commit, and
+# %%PINCHY_VERSION%% renders into `docker pull` lines and raw.githubusercontent
+# URLs, which need a tag that exists rather than the tree's own identity.
+#
+# This branch is not the hand-built-docs corner it looks like: `pnpm -C docs
+# build` takes it locally AND in CI's `quality` job, neither of which passes
+# PINCHY_VERSION and neither of which publishes anything. So it must resolve.
+# See docs/scripts/version-fallback.test.mjs.
 if [ -z "$TAG" ]; then
-  VERSION=$(node -p "require('$REPO_ROOT/packages/web/package.json').version" 2>/dev/null || true)
+  VERSION=$(node "$DOCS_DIR/scripts/newest-released-version.mjs" "$REPO_ROOT" || true)
   if [ -n "$VERSION" ]; then
     TAG="v$VERSION"
   fi
@@ -39,6 +51,17 @@ if [ -z "$TAG" ]; then
   echo "WARNING: Could not determine Pinchy version — placeholders will remain" >&2
   exit 0
 fi
+
+# Normalize to the v-prefixed spelling every consumer expects. The other two
+# sources are v-prefixed by construction (`git describe` reports the tag,
+# package.json gets the prefix added above), so only the env var can arrive as
+# a bare "0.9.0" — and docs.yml now takes it as free-text operator input. A bare
+# version renders `ghcr.io/heypinchy/pinchy:0.9.0`, which is not a tag that
+# exists, in exactly the install instructions that input is meant to keep honest.
+case "$TAG" in
+  v*) ;;
+  *) TAG="v$TAG" ;;
+esac
 
 # Find files that actually contain the placeholder — we only touch (and
 # back up) those, so unrelated docs files are left alone.

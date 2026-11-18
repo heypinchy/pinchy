@@ -4,19 +4,65 @@
  * render pages to PNG → send to vision-capable LLM → get text back.
  */
 
-const PROMPT = "Extract all text from this scanned document page. Return only the extracted text content, preserving the structure (headings, paragraphs, lists, tables). If you see tables, format them as markdown tables. Do not add commentary — only return the document text.";
+const PROMPT =
+  "Extract all text from this scanned document page. Return only the extracted text content, preserving the structure (headings, paragraphs, lists, tables). If you see tables, format them as markdown tables. Do not add commentary — only return the document text.";
 
 const MAX_RETRIES = 3;
 
-/** Fetch with automatic retry on 429 (rate limit). Respects Retry-After header. */
-async function fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
+// Bounds a hung provider endpoint / network blackhole. The point of these is
+// to make a blackhole terminate, NOT to enforce a latency budget — so they sit
+// well above the legitimate worst case, because the cost of being wrong is
+// asymmetric: too long merely delays an error, too short turns working page
+// reads into failures nobody can distinguish from a broken PDF.
+//
+// A hosted vision call on a dense scanned page routinely runs tens of seconds
+// (several thousand output tokens at typical decode rates), so a 30s bound
+// would abort real work.
+const CLOUD_VISION_TIMEOUT_MS = 120_000;
+
+// Ollama is the offline/self-hosted path and it is the slow one by design: the
+// first request after a cold start pays the model load before any decoding
+// begins, and CPU-only inference on a full page is minutes, not seconds.
+// Sharing the hosted bound here would break exactly the deployments Pinchy
+// promises to support.
+const LOCAL_VISION_TIMEOUT_MS = 300_000;
+
+// A malicious or misbehaving provider can send an arbitrarily large
+// Retry-After (e.g. 86400 = 24h), which would otherwise put this PDF read to
+// sleep for a day. Clamp to a sane range instead of trusting the header
+// verbatim — at BOTH ends: a negative value is finite too, and `Math.min`
+// alone passes it straight through.
+const MAX_RETRY_AFTER_SECONDS = 30;
+
+/**
+ * Fetch with automatic retry on 429 (rate limit). Respects Retry-After header.
+ *
+ * `signal` is deliberately not accepted in `init`: the earlier shape did
+ * `init.signal ?? AbortSignal.timeout(...)`, so the first caller to pass a
+ * cancellation signal would have silently lost the timeout. A caller that
+ * needs a different bound passes `timeoutMs`.
+ */
+async function fetchWithRetry(
+  url: string,
+  init: Omit<RequestInit, "signal">,
+  timeoutMs: number = CLOUD_VISION_TIMEOUT_MS
+): Promise<Response> {
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    const response = await fetch(url, init);
+    // Inside the loop on purpose: every attempt gets its own fresh bound,
+    // rather than all attempts sharing one deadline that the first one spent.
+    const response = await fetch(url, {
+      ...init,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
     if (response.status !== 429 || attempt === MAX_RETRIES) {
       return response;
     }
     const retryAfter = Number(response.headers.get("retry-after") || "1");
-    const waitMs = (Number.isFinite(retryAfter) ? retryAfter : 1) * 1000;
+    const clampedSeconds = Math.min(
+      Math.max(Number.isFinite(retryAfter) ? retryAfter : 1, 0),
+      MAX_RETRY_AFTER_SECONDS
+    );
+    const waitMs = clampedSeconds * 1000;
     await new Promise((resolve) => setTimeout(resolve, waitMs));
   }
   // unreachable, but TypeScript needs it
@@ -26,16 +72,50 @@ async function fetchWithRetry(url: string, init: RequestInit): Promise<Response>
 export interface VisionApiConfig {
   resolveApiKey: (provider: string) => Promise<string | null>;
   model: string; // e.g. "anthropic/claude-haiku-4-5-20251001"
+  /** Local Ollama server. No default: without a configured host there is nothing to call. */
   ollamaBaseUrl?: string;
+  /** Ollama Cloud. Defaults to the canonical host — an override, not a requirement. */
+  ollamaCloudBaseUrl?: string;
 }
+
+/** Ollama Cloud's single canonical host, mirroring `resolveProviderBaseUrl`'s fallback in web. */
+const OLLAMA_CLOUD_DEFAULT_BASE_URL = "https://ollama.com";
 
 /** Internal config that carries the OpenClaw cfg object */
 export interface VisionApiInternalConfig {
   modelAuth: {
-    resolveApiKeyForProvider: (params: { provider: string; cfg: unknown }) => Promise<{ apiKey: string } | null>;
+    resolveApiKeyForProvider: (params: {
+      provider: string;
+      cfg: unknown;
+    }) => Promise<{ apiKey: string } | null>;
   };
   cfg: unknown;
   model: string;
+  /**
+   * The agent reading the PDF, whose credentials pay for the vision call.
+   * OpenClaw 2026.9 has no default agent: a provider key resolved without an
+   * owner throws on any multi-agent install. The plugin runtime forwards only
+   * `{ provider, cfg, workspaceDir }` to the lookup, so the owner travels in
+   * `cfg` as `agents.defaults.systemAgent` (see `scopeConfigToAgent`).
+   */
+  ownerAgentId?: string;
+}
+
+/**
+ * A shallow copy of `cfg` naming `agentId` as the owner of ambient work.
+ * OpenClaw's key lookup resolves its agent dir from
+ * `cfg.agents.defaults.systemAgent.agentId` when the caller cannot pass one,
+ * which is the only route a plugin has. The live config is not touched.
+ */
+export function scopeConfigToAgent(cfg: unknown, agentId: string): unknown {
+  const base = (cfg ?? {}) as { agents?: { defaults?: Record<string, unknown> } };
+  return {
+    ...base,
+    agents: {
+      ...base.agents,
+      defaults: { ...base.agents?.defaults, systemAgent: { agentId } },
+    },
+  };
 }
 
 /** Token usage returned from a vision API call. */
@@ -63,7 +143,7 @@ function validateModelId(modelId: string): void {
  */
 export async function describePageImage(
   imageBase64: string,
-  config: VisionApiConfig,
+  config: VisionApiConfig
 ): Promise<VisionResult | null> {
   const [provider, ...modelParts] = config.model.split("/");
   const modelId = modelParts.join("/");
@@ -78,6 +158,8 @@ export async function describePageImage(
       return describeViaGoogle(imageBase64, modelId, config);
     case "ollama":
       return describeViaOllama(imageBase64, modelId, config);
+    case "ollama-cloud":
+      return describeViaOllamaCloud(imageBase64, modelId, config);
     default:
       return null;
   }
@@ -87,18 +169,22 @@ export async function describePageImage(
  * Create a VisionApiConfig from OpenClaw's internal runtime APIs.
  */
 export function createVisionConfig(internal: VisionApiInternalConfig): VisionApiConfig {
-  const ollamaBaseUrl = (internal.cfg as Record<string, unknown>)?.models
-    ? ((internal.cfg as any).models.providers?.ollama?.baseUrl as string | undefined)
+  const providers = (internal.cfg as Record<string, unknown>)?.models
+    ? ((internal.cfg as any).models.providers as Record<string, { baseUrl?: string }> | undefined)
     : undefined;
 
   return {
     model: internal.model,
-    ollamaBaseUrl,
+    ollamaBaseUrl: providers?.ollama?.baseUrl,
+    // Emitted by build.ts as `<host>/v1`; the endpoint helper normalises that.
+    ollamaCloudBaseUrl: providers?.["ollama-cloud"]?.baseUrl,
     resolveApiKey: async (provider: string) => {
       try {
         const result = await internal.modelAuth.resolveApiKeyForProvider({
           provider,
-          cfg: internal.cfg,
+          cfg: internal.ownerAgentId
+            ? scopeConfigToAgent(internal.cfg, internal.ownerAgentId)
+            : internal.cfg,
         });
         return result?.apiKey ?? null;
       } catch (err) {
@@ -109,10 +195,16 @@ export function createVisionConfig(internal: VisionApiInternalConfig): VisionApi
   };
 }
 
+// Claude Sonnet 5 — the reading model Pinchy picks on Anthropic — thinks by
+// default, and its thinking spends out of the same budget as the transcription.
+// 8192 leaves room for both on a dense page; an answer that still hits the cap
+// is reported as a failed read rather than indexed as the whole page.
+const ANTHROPIC_MAX_TOKENS = 8192;
+
 async function describeViaAnthropic(
   imageBase64: string,
   modelId: string,
-  config: VisionApiConfig,
+  config: VisionApiConfig
 ): Promise<VisionResult | null> {
   const apiKey = await config.resolveApiKey("anthropic");
   if (!apiKey) return null;
@@ -126,7 +218,7 @@ async function describeViaAnthropic(
     },
     body: JSON.stringify({
       model: modelId,
-      max_tokens: 4096,
+      max_tokens: ANTHROPIC_MAX_TOKENS,
       messages: [
         {
           role: "user",
@@ -154,8 +246,15 @@ async function describeViaAnthropic(
 
   const data = (await response.json()) as {
     content: Array<{ type: string; text?: string }>;
+    stop_reason?: string;
     usage?: { input_tokens?: number; output_tokens?: number };
   };
+  if (data.stop_reason === "max_tokens") {
+    console.error(
+      `[pinchy-files] Anthropic vision answer for ${modelId} stopped at max_tokens (${ANTHROPIC_MAX_TOKENS}) — page not read`
+    );
+    return null;
+  }
   const text =
     data.content
       ?.filter((b) => b.type === "text" && b.text)
@@ -174,7 +273,7 @@ async function describeViaAnthropic(
 async function describeViaOpenAI(
   imageBase64: string,
   modelId: string,
-  config: VisionApiConfig,
+  config: VisionApiConfig
 ): Promise<VisionResult | null> {
   const apiKey = await config.resolveApiKey("openai");
   if (!apiKey) return null;
@@ -227,16 +326,17 @@ async function describeViaOpenAI(
 async function describeViaGoogle(
   imageBase64: string,
   modelId: string,
-  config: VisionApiConfig,
+  config: VisionApiConfig
 ): Promise<VisionResult | null> {
   const apiKey = await config.resolveApiKey("google");
   if (!apiKey) return null;
 
   const response = await fetchWithRetry(
-    `https://generativelanguage.googleapis.com/v1/models/${modelId}:generateContent?key=${apiKey}`,
+    `https://generativelanguage.googleapis.com/v1/models/${modelId}:generateContent`,
     {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      // Header, not ?key=: query strings leak into proxy logs and error messages.
+      headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
       body: JSON.stringify({
         contents: [
           {
@@ -252,7 +352,7 @@ async function describeViaGoogle(
           },
         ],
       }),
-    },
+    }
   );
 
   if (!response.ok) {
@@ -283,35 +383,101 @@ async function describeViaGoogle(
 async function describeViaOllama(
   imageBase64: string,
   modelId: string,
-  config: VisionApiConfig,
+  config: VisionApiConfig
 ): Promise<VisionResult | null> {
+  // No default host: a local server lives wherever the operator put it, so an
+  // unconfigured base URL means there is nothing to call.
   if (!config.ollamaBaseUrl) return null;
 
-  const url = `${config.ollamaBaseUrl.replace(/\/$/, "")}/v1/chat/completions`;
-
-  const response = await fetchWithRetry(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      model: modelId,
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "image_url",
-              image_url: { url: `data:image/png;base64,${imageBase64}` },
-            },
-            { type: "text", text: PROMPT },
-          ],
-        },
-      ],
-    }),
+  return describeViaOllamaEndpoint({
+    imageBase64,
+    modelId,
+    baseUrl: config.ollamaBaseUrl,
+    apiKey: null,
+    label: "Ollama",
+    timeoutMs: LOCAL_VISION_TIMEOUT_MS,
   });
+}
+
+/**
+ * Ollama Cloud speaks the same OpenAI-compatible dialect as the local server,
+ * differing only in having one canonical host and requiring a bearer key.
+ *
+ * It reached this file late: the provider previously fell through to the
+ * `default: return null` arm below, which was pinned by a test that recorded
+ * the gap without explaining it. The gap was not harmless — Pinchy's own
+ * `resolveDefaultVisionModelChain` emits `ollama-cloud/<id>` whenever that is
+ * the configured stack, so the platform picked a vision model this consumer
+ * could not call, and a scanned PDF produced no text with no error anywhere.
+ */
+async function describeViaOllamaCloud(
+  imageBase64: string,
+  modelId: string,
+  config: VisionApiConfig
+): Promise<VisionResult | null> {
+  const apiKey = await config.resolveApiKey("ollama-cloud");
+  if (!apiKey) return null;
+
+  return describeViaOllamaEndpoint({
+    imageBase64,
+    modelId,
+    // Unlike the local server, Ollama Cloud has ONE canonical host, so an
+    // absent value is an override nobody set — not an unreachable provider.
+    baseUrl: config.ollamaCloudBaseUrl ?? OLLAMA_CLOUD_DEFAULT_BASE_URL,
+    apiKey,
+    label: "Ollama Cloud",
+    timeoutMs: CLOUD_VISION_TIMEOUT_MS,
+  });
+}
+
+async function describeViaOllamaEndpoint(opts: {
+  imageBase64: string;
+  modelId: string;
+  baseUrl: string;
+  apiKey: string | null;
+  label: string;
+  timeoutMs: number;
+}): Promise<VisionResult | null> {
+  const { imageBase64, modelId, baseUrl, apiKey, label, timeoutMs } = opts;
+  // Idempotent about `/v1`, mirroring `rewriteOllamaHostForOpenClaw`, which is
+  // what produces the value the plugin receives: the emitted
+  // `models.providers.ollama.baseUrl` already ends in `/v1` (pi-ai appends only
+  // `/chat/completions`), so appending it again yielded `/v1/v1/…` and a 404 on
+  // every scanned page. Callers that hold a bare host — the knowledge-base
+  // ingest reads Pinchy's raw setting — are unaffected.
+  const root = baseUrl.replace(/\/$/, "").replace(/\/v1$/, "");
+  const url = `${root}/v1/chat/completions`;
+
+  const response = await fetchWithRetry(
+    url,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      },
+      body: JSON.stringify({
+        model: modelId,
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "image_url",
+                image_url: { url: `data:image/png;base64,${imageBase64}` },
+              },
+              { type: "text", text: PROMPT },
+            ],
+          },
+        ],
+      }),
+    },
+    timeoutMs
+  );
 
   if (!response.ok) {
     const error = await response.text().catch(() => "unknown error");
-    console.error(`[pinchy-files] Ollama vision API error (${response.status}):`, error);
+    console.error(`[pinchy-files] ${label} vision API error (${response.status}):`, error);
     return null;
   }
 

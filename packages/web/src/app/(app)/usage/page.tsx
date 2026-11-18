@@ -3,6 +3,7 @@ import { getSession } from "@/lib/auth";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { UsageDashboard } from "@/components/usage-dashboard";
+import { BudgetsCard } from "@/components/budgets-card";
 import { getLicenseStatus } from "@/lib/enterprise";
 import { deriveLicenseState } from "@/lib/license-state";
 
@@ -19,14 +20,20 @@ export default async function UsagePage() {
   const licenseStatus = await getLicenseStatus();
   const licenseState = deriveLicenseState(licenseStatus, new Date());
 
+  const licensePeriodEnd =
+    licenseStatus.paidUntilAt?.toISOString() ?? licenseStatus.expiresAt?.toISOString() ?? null;
+
   return (
-    <div className="flex-1 overflow-auto p-6">
+    <div className="flex-1 overflow-auto p-6 space-y-6">
       <UsageDashboard
         isEnterprise={licenseStatus.active}
         licenseState={licenseState}
-        licensePeriodEnd={
-          licenseStatus.paidUntilAt?.toISOString() ?? licenseStatus.expiresAt?.toISOString() ?? null
-        }
+        licensePeriodEnd={licensePeriodEnd}
+      />
+      <BudgetsCard
+        isEnterprise={licenseStatus.active}
+        licenseState={licenseState}
+        licensePeriodEnd={licensePeriodEnd}
       />
     </div>
   );

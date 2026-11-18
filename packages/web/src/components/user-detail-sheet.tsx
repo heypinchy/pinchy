@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import {
   Sheet,
   SheetContent,
@@ -32,13 +32,34 @@ import { Separator } from "@/components/ui/separator";
 import { StatusBadge } from "@/components/status-badge";
 import { toast } from "sonner";
 import type { UserListItem, UserGroup } from "@/lib/user-list";
-import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
+import type { UserRole } from "@/db/enums";
+import {
+  apiGet,
+  apiPost,
+  apiPut,
+  apiPatch,
+  apiDelete,
+  ApiError,
+  errorMessage,
+} from "@/lib/api-client";
+import type {
+  UpdateUserInput,
+  UpdateUserGroupsInput,
+  ResetPasswordInput,
+} from "@/lib/schemas/users";
+import type { EmailDelivery, SystemMailStatus } from "@/lib/schemas/system-mail";
+import { CopyField } from "@/components/copy-field";
 import { buildInviteUrl } from "@/lib/invite-url";
 
 interface UserDetailSheetProps {
   user: UserListItem & { kind: "user" };
   allGroups: UserGroup[];
-  isEnterprise: boolean;
+  /**
+   * null = the license status could not be read yet. Adding stays locked (the
+   * server enforces it anyway), but the sheet does not claim there is no
+   * license.
+   */
+  isEnterprise: boolean | null;
   currentUserId: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -69,7 +90,27 @@ export function UserDetailSheet({
   const [saving, setSaving] = useState(false);
   const [showDeactivateConfirm, setShowDeactivateConfirm] = useState(false);
   const [resetLink, setResetLink] = useState<string | null>(null);
-  const { isCopied: isResetLinkCopied, copy: copyResetLink } = useCopyToClipboard();
+  // With a system mailer (#1309) the reset link is emailed to the user; the
+  // link is still shown either way.
+  const [mailConfigured, setMailConfigured] = useState(false);
+  const [resetDelivery, setResetDelivery] = useState<EmailDelivery | null>(null);
+  const [resetting, setResetting] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    apiGet<SystemMailStatus>("/api/settings/mail")
+      .then((s) => {
+        if (!cancelled) setMailConfigured(s.configured === true);
+      })
+      // Unknown means "don't promise an email": the link path always works.
+      .catch(() => {
+        if (!cancelled) setMailConfigured(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
 
   const isOwnAccount = user.id === currentUserId;
   const isDeactivated = user.status === "deactivated";
@@ -79,8 +120,8 @@ export function UserDetailSheet({
   // originally in a group can be unchecked (and re-checked before saving);
   // new memberships need a license.
   const originalGroupIds = new Set(user.groups.map((g) => g.id));
-  const showGroups = allGroups.length > 0 && (isEnterprise || originalGroupIds.size > 0);
-  const canAddToGroup = (groupId: string) => isEnterprise || originalGroupIds.has(groupId);
+  const showGroups = allGroups.length > 0 && (isEnterprise === true || originalGroupIds.size > 0);
+  const canAddToGroup = (groupId: string) => isEnterprise === true || originalGroupIds.has(groupId);
 
   const isDirty = useMemo(() => {
     if (selectedRole !== user.role) return true;
@@ -119,25 +160,33 @@ export function UserDetailSheet({
       // results.every(ok), which reports a total failure on a partial success
       // and leaves the table out of sync with what actually persisted.
       const rolePromise = roleChanged
-        ? fetch(`/api/users/${user.id}`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ role: selectedRole }),
-          })
+        ? apiPatch<unknown, UpdateUserInput>(`/api/users/${user.id}`, { role: selectedRole })
         : null;
 
       const groupsPromise = groupsChanged
-        ? fetch(`/api/users/${user.id}/groups`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ groupIds: [...selectedGroupIds] }),
+        ? apiPut<unknown, UpdateUserGroupsInput>(`/api/users/${user.id}/groups`, {
+            groupIds: [...selectedGroupIds],
           })
         : null;
 
-      const [roleRes, groupsRes] = await Promise.all([rolePromise, groupsPromise]);
+      // allSettled, not all: the two writes are independent, and `all` would
+      // discard the other outcome the moment one rejects — which is exactly
+      // the partial-success case this branch exists to report.
+      const [roleResult, groupsResult] = await Promise.allSettled([
+        rolePromise ?? Promise.resolve(),
+        groupsPromise ?? Promise.resolve(),
+      ]);
 
-      const roleOk = !rolePromise || (roleRes?.ok ?? false);
-      const groupsOk = !groupsPromise || (groupsRes?.ok ?? false);
+      const roleOk = !rolePromise || roleResult.status === "fulfilled";
+      const groupsOk = !groupsPromise || groupsResult.status === "fulfilled";
+      // The route's own wording ("Cannot change your own role", "License
+      // required — Adding users to groups requires an active license.") beats
+      // "Please try again", which tells the admin nothing they can act on.
+      const reason = [roleResult, groupsResult]
+        .map((r) =>
+          r.status === "rejected" && r.reason instanceof ApiError ? r.reason.message : null
+        )
+        .find((m): m is string => m !== null);
 
       if (roleOk && groupsOk) {
         toast("User updated");
@@ -152,49 +201,57 @@ export function UserDetailSheet({
         // re-applies the failed half. Use onRefresh (refetch-only), NOT onSaved
         // — the latter closes the sheet in the parent and would kill the retry.
         onRefresh?.();
-        toast.error(
-          !roleOk
-            ? "Group membership saved, but the role change failed. Please retry."
-            : "Role saved, but group membership could not be updated. Please retry."
-        );
+        const half = !roleOk
+          ? "Group membership saved, but the role change failed."
+          : "Role saved, but group membership could not be updated.";
+        toast.error(reason ? `${half} ${reason}` : `${half} Please retry.`);
         return;
       }
 
       // Total failure: nothing persisted, keep the sheet open.
-      toast.error("Failed to update user. Please try again.");
+      toast.error(reason ?? "Failed to update user. Please try again.");
     } finally {
       setSaving(false);
     }
   }
 
   async function handleResetPassword() {
-    const res = await fetch(`/api/users/${user.id}/reset`, { method: "POST" });
-    if (res.ok) {
-      const data = await res.json();
+    // With a mailer the request waits on SMTP; a second click would create
+    // a second token and send a second email.
+    setResetting(true);
+    try {
+      const data = await apiPost<
+        { token: string; emailDelivery?: EmailDelivery },
+        ResetPasswordInput
+      >(`/api/users/${user.id}/reset`, mailConfigured ? { sendEmail: true } : {});
       setResetLink(buildInviteUrl(window.location.origin, data.token));
-    } else {
-      toast.error("Failed to reset password");
+      setResetDelivery(data.emailDelivery ?? null);
+    } catch (e) {
+      toast.error(errorMessage(e, "Failed to reset password"));
+    } finally {
+      setResetting(false);
     }
   }
 
   async function handleDeactivate() {
-    const res = await fetch(`/api/users/${user.id}`, { method: "DELETE" });
-    setShowDeactivateConfirm(false);
-    if (res.ok) {
+    try {
+      await apiDelete(`/api/users/${user.id}`);
+      setShowDeactivateConfirm(false);
       onSaved();
       onOpenChange(false);
-    } else {
-      toast.error("Failed to deactivate user");
+    } catch (e) {
+      setShowDeactivateConfirm(false);
+      toast.error(errorMessage(e, "Failed to deactivate user"));
     }
   }
 
   async function handleReactivate() {
-    const res = await fetch(`/api/users/${user.id}/reactivate`, { method: "POST" });
-    if (res.ok) {
+    try {
+      await apiPost(`/api/users/${user.id}/reactivate`, undefined);
       onSaved();
       onOpenChange(false);
-    } else {
-      toast.error("Failed to reactivate user");
+    } catch (e) {
+      toast.error(errorMessage(e, "Failed to reactivate user"));
     }
   }
 
@@ -217,7 +274,9 @@ export function UserDetailSheet({
             <Label htmlFor="role-select">Role</Label>
             <Select
               value={selectedRole}
-              onValueChange={setSelectedRole}
+              // Radix hands back a bare string; the only two values it can
+              // produce are the two SelectItems below, which are the role enum.
+              onValueChange={(v) => setSelectedRole(v as UserRole)}
               disabled={isOwnAccount || isDeactivated}
             >
               <SelectTrigger id="role-select">
@@ -246,7 +305,7 @@ export function UserDetailSheet({
                   </label>
                 ))}
               </div>
-              {!isEnterprise && (
+              {isEnterprise === false && (
                 <p className="text-xs text-muted-foreground">
                   Adding to groups requires an active license. Removing always works.
                 </p>
@@ -265,22 +324,45 @@ export function UserDetailSheet({
 
           {/* Actions */}
           <div className="space-y-2">
-            <Button variant="outline" size="sm" className="w-full" onClick={handleResetPassword}>
-              Reset Password
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full"
+              onClick={handleResetPassword}
+              disabled={resetting}
+            >
+              {resetting && mailConfigured
+                ? "Sending..."
+                : mailConfigured
+                  ? "Email reset link"
+                  : "Reset Password"}
             </Button>
 
+            {resetDelivery?.sent === true && (
+              <p role="status" className="text-sm">
+                Reset link sent to {user.email}.
+              </p>
+            )}
+            {resetDelivery?.sent === false && (
+              <p role="alert" className="text-sm text-destructive">
+                We couldn&apos;t send the email ({resetDelivery.error}). Copy the link below and
+                send it yourself.
+              </p>
+            )}
+
             {resetLink && (
-              <div className="rounded border bg-muted p-3">
-                <p className="text-sm font-medium mb-1">Reset link:</p>
-                <p className="text-sm break-all">{resetLink}</p>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="mt-2"
-                  onClick={() => copyResetLink(resetLink)}
-                >
-                  {isResetLinkCopied ? "Copied!" : "Copy"}
-                </Button>
+              <div className="space-y-1 rounded border p-3">
+                <p id="reset-link-label" className="text-sm font-medium">
+                  Reset link:
+                </p>
+                <CopyField
+                  value={resetLink}
+                  label="Reset link"
+                  labelledBy="reset-link-label"
+                  copyLabel="Copy link"
+                  share={{ title: "Pinchy password reset" }}
+                  autoFocus
+                />
               </div>
             )}
 

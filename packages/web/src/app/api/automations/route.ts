@@ -1,0 +1,191 @@
+import { NextResponse } from "next/server";
+import { and, desc, eq, inArray } from "drizzle-orm";
+
+import { db } from "@/db";
+import { emailWorkflows, emailWorkflowConnections, agentConnectionPermissions } from "@/db/schema";
+import { withAuth } from "@/lib/api-auth";
+import { parseRequestBody } from "@/lib/api-validation";
+import { createAutomationSchema } from "@/lib/schemas/automations";
+import { scrubEmails } from "@/lib/audit";
+import { deferAuditLog } from "@/lib/audit-deferred";
+import { EMAIL_READ_OPERATIONS } from "@/lib/tool-registry";
+import {
+  arePersonalAutomationsPausedFor,
+  MEMBER_AUTOMATIONS_DISABLED,
+} from "@/lib/instance-policy";
+import { getExhaustedBlockingBudget } from "@/lib/budgets";
+import {
+  resolveWorkflowAgent,
+  resolveWorkflowAgentFromQuery,
+} from "@/lib/email-workflows/resolve-agent";
+
+/**
+ * GET /api/automations?agentId=<id> — list an agent's email workflows for the
+ * Automations tab. Same scope gate as create: a member sees their own personal
+ * agent's workflows; a shared agent is admin-only. Each row carries its attached
+ * connection ids so the tab can render (and the reviewer can vet) the full
+ * structured translation before enabling it.
+ */
+export const GET = withAuth(async (request, _ctx, session) => {
+  const resolved = await resolveWorkflowAgentFromQuery(request, {
+    id: session.user.id!,
+    role: session.user.role,
+  });
+  if ("error" in resolved) return resolved.error;
+  const agentId = resolved.agent.id;
+
+  const workflows = await db
+    .select({
+      id: emailWorkflows.id,
+      name: emailWorkflows.name,
+      filter: emailWorkflows.filter,
+      action: emailWorkflows.action,
+      enabled: emailWorkflows.enabled,
+      status: emailWorkflows.status,
+      sweepWindowDays: emailWorkflows.sweepWindowDays,
+      createdBy: emailWorkflows.createdBy,
+      createdAt: emailWorkflows.createdAt,
+    })
+    .from(emailWorkflows)
+    .where(eq(emailWorkflows.agentId, agentId))
+    .orderBy(desc(emailWorkflows.createdAt));
+
+  // Fan the connection ids back onto each workflow in one query, not N.
+  const ids = workflows.map((w) => w.id);
+  const connRows = ids.length
+    ? await db
+        .select({
+          workflowId: emailWorkflowConnections.workflowId,
+          connectionId: emailWorkflowConnections.connectionId,
+        })
+        .from(emailWorkflowConnections)
+        .where(inArray(emailWorkflowConnections.workflowId, ids))
+    : [];
+  const byWorkflow = new Map<string, string[]>();
+  for (const row of connRows) {
+    const list = byWorkflow.get(row.workflowId) ?? [];
+    list.push(row.connectionId);
+    byWorkflow.set(row.workflowId, list);
+  }
+
+  // A used-up blocking budget pauses every automation on the agent. The sweep
+  // skips them without writing `status`, so without this the list would keep
+  // saying "active" for automations that are not running.
+  const pausedByBudget =
+    workflows.length > 0 && (await getExhaustedBlockingBudget(agentId)) !== null;
+
+  return NextResponse.json(
+    workflows.map((w) => ({ ...w, connectionIds: byWorkflow.get(w.id) ?? [], pausedByBudget }))
+  );
+});
+
+/**
+ * POST /api/automations — create an Inbox Agent email workflow (design §5).
+ *
+ * The single write path both the Automations form (#139) and the conversational
+ * create tool (#705) go through, so one schema, one RBAC gate, one audit event
+ * cover every way a workflow is born ("same object, one system").
+ *
+ * Scope-based access (design §7, #705): a member may create a workflow on a
+ * personal agent they OWN; anything touching a shared agent requires an admin.
+ * "Own connections" maps to the connections the agent is actually permitted to
+ * read (agent_connection_permissions) — integration_connections has no per-user
+ * owner, so agent-scoped permission is the real, code-backed boundary.
+ *
+ * Propose, don't self-activate: the workflow is always written `pending` +
+ * `disabled`. Enabling it is a separate, human-gated step in the Automations tab
+ * — an agent (or a form) must never grant itself standing autonomous authority.
+ */
+export const POST = withAuth(async (request, _ctx, session) => {
+  const parsed = await parseRequestBody(createAutomationSchema, request);
+  if ("error" in parsed) return parsed.error;
+  const { agentId, name, filter, action, connectionIds, sweepWindowDays } = parsed.data;
+
+  const userId = session.user.id!;
+
+  const resolved = await resolveWorkflowAgent(
+    agentId,
+    { id: userId, role: session.user.role },
+    "You do not have permission to create a workflow on this agent"
+  );
+  if ("error" in resolved) return resolved.error;
+  const { agent } = resolved;
+
+  // Settings → Organization → Member access. For a personal agent the caller
+  // past the visibility gate IS its owner, so their role is the owner's role.
+  if (await arePersonalAutomationsPausedFor(agent, session.user.role)) {
+    return NextResponse.json(MEMBER_AUTOMATIONS_DISABLED, { status: 403 });
+  }
+
+  // Every requested mailbox must be one the agent is allowed to READ — a
+  // workflow's trigger lists and reads mail, so a draft/send-only grant is not
+  // enough. EMAIL_READ_OPERATIONS includes the legacy "search"/"list" aliases
+  // the runtime already treats as read (tool-registry). An unknown connection
+  // id has no permission row either, so this single check rejects "no read
+  // access" and "no such connection" alike — a workflow must never point at a
+  // mailbox its agent can't open.
+  const requestedConnectionIds = [...new Set(connectionIds)];
+  const permittedRows = await db
+    .selectDistinct({ connectionId: agentConnectionPermissions.connectionId })
+    .from(agentConnectionPermissions)
+    .where(
+      and(
+        eq(agentConnectionPermissions.agentId, agentId),
+        eq(agentConnectionPermissions.model, "email"),
+        inArray(agentConnectionPermissions.operation, [...EMAIL_READ_OPERATIONS]),
+        inArray(agentConnectionPermissions.connectionId, requestedConnectionIds)
+      )
+    );
+  const permitted = new Set(permittedRows.map((r) => r.connectionId));
+  const missing = requestedConnectionIds.filter((id) => !permitted.has(id));
+  if (missing.length > 0) {
+    return NextResponse.json(
+      { error: `The agent has no email access to connection(s): ${missing.join(", ")}` },
+      { status: 400 }
+    );
+  }
+
+  // Transactional two-table write: the workflow and its connection watermarks
+  // land together or not at all. `sinceTs = now` is the per-connection floor, so
+  // a fresh workflow never retroactively processes historical mail (design §8).
+  const now = new Date();
+  const workflow = await db.transaction(async (tx) => {
+    const [wf] = await tx
+      .insert(emailWorkflows)
+      .values({ agentId, name, filter, action, sweepWindowDays, createdBy: userId })
+      .returning();
+    await tx.insert(emailWorkflowConnections).values(
+      requestedConnectionIds.map((connectionId) => ({
+        workflowId: wf.id,
+        connectionId,
+        sinceTs: now,
+      }))
+    );
+    return wf;
+  });
+
+  // Deferred: the rows are committed and non-rollbackable, so an audit outage
+  // must not fail the create. Connections as ids only (their names can carry
+  // addresses), and the free-text workflow name scrubbed — the audit log is
+  // append-only + HMAC-signed, so an address written here is un-erasable.
+  deferAuditLog({
+    actorType: "user",
+    actorId: userId,
+    eventType: "email_workflow.created",
+    resource: `email_workflow:${workflow.id}`,
+    outcome: "success",
+    detail: {
+      workflow: { id: workflow.id, name: scrubEmails(workflow.name) },
+      agent: { id: agent.id, name: agent.name },
+      connectionCount: requestedConnectionIds.length,
+      connectionIds: requestedConnectionIds,
+      enabled: workflow.enabled,
+      status: workflow.status,
+    },
+  });
+
+  return NextResponse.json(
+    { id: workflow.id, name: workflow.name, enabled: workflow.enabled, status: workflow.status },
+    { status: 201 }
+  );
+});

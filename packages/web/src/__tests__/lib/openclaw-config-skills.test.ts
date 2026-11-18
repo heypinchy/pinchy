@@ -31,6 +31,14 @@ vi.mock("fs", async (importOriginal) => {
   };
 });
 
+// OpenAI-compatible custom providers (#894) are DB-backed and now queried
+// during config regeneration. The shared @/db mock here returns agent rows
+// for every table, so stub this module to an empty list to keep the test hermetic.
+vi.mock("@/lib/openai-compatible-providers", () => ({
+  listOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
+  listProvidersWithApiKeys: vi.fn().mockResolvedValue([]),
+}));
+
 vi.mock("@/db", () => ({
   db: {
     select: vi.fn().mockImplementation(() => ({
@@ -128,7 +136,7 @@ describe("regenerateOpenClawConfig — skills emission", () => {
     });
   });
 
-  it("emits agents.list[].skills as an explicit (possibly empty) allowlist for every agent", async () => {
+  it("emits agents.entries.<id>.skills as an explicit (possibly empty) allowlist for every agent", async () => {
     // The empty allowlist is intentional and verified by smoke-test:
     // skills: [] excludes all 58 bundled OC desktop skills (1password,
     // apple-notes, etc.). Pinchy must always emit the field so bundled
@@ -154,7 +162,7 @@ describe("regenerateOpenClawConfig — skills emission", () => {
     );
     const written = configCall?.[1] as string;
     const config = JSON.parse(written);
-    const agent = config.agents.list.find((a: { id: string }) => a.id === "no-skills-agent");
+    const agent = config.agents.entries["no-skills-agent"];
 
     expect(agent).toBeDefined();
     expect(agent.skills).toEqual([]);
@@ -182,7 +190,7 @@ describe("regenerateOpenClawConfig — skills emission", () => {
     );
     const written = configCall?.[1] as string;
     const config = JSON.parse(written);
-    const agent = config.agents.list.find((a: { id: string }) => a.id === "web-agent");
+    const agent = config.agents.entries["web-agent"];
 
     expect(agent.skills).toEqual(["web-search"]);
   });
@@ -210,7 +218,7 @@ describe("regenerateOpenClawConfig — skills emission", () => {
     );
     const written = configCall?.[1] as string;
     const config = JSON.parse(written);
-    const agent = config.agents.list.find((a: { id: string }) => a.id === "legacy-agent");
+    const agent = config.agents.entries["legacy-agent"];
 
     // Empty allowlist — bundled desktop skills are NOT a sensible default
     // for legacy enterprise agents either.

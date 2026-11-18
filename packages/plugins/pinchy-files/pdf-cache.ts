@@ -40,9 +40,7 @@ export class PdfCache {
 
   /** Fast path: returns content if size+mtime match and not expired. No hash needed. */
   getFast(path: string, size: number, mtime: number): string | null {
-    const row = this.db
-      .prepare("SELECT * FROM pdf_cache WHERE path = ?")
-      .get(path) as
+    const row = this.db.prepare("SELECT * FROM pdf_cache WHERE path = ?").get(path) as
       | {
           size: number;
           mtime: number;
@@ -66,9 +64,7 @@ export class PdfCache {
 
   /** Slow path: returns content if content hash matches. */
   getByHash(path: string, contentHash: string): string | null {
-    const row = this.db
-      .prepare("SELECT * FROM pdf_cache WHERE path = ?")
-      .get(path) as
+    const row = this.db.prepare("SELECT * FROM pdf_cache WHERE path = ?").get(path) as
       | {
           content_hash: string;
           format_version: number;
@@ -91,33 +87,17 @@ export class PdfCache {
 
   /** Update the stored mtime for a path (used after hash-based cache hit with changed mtime). */
   updateMtime(path: string, mtime: number): void {
-    this.db
-      .prepare("UPDATE pdf_cache SET mtime = ? WHERE path = ?")
-      .run(mtime, path);
+    this.db.prepare("UPDATE pdf_cache SET mtime = ? WHERE path = ?").run(mtime, path);
   }
 
-  set(
-    path: string,
-    size: number,
-    mtime: number,
-    contentHash: string,
-    content: string,
-  ): void {
+  set(path: string, size: number, mtime: number, contentHash: string, content: string): void {
     this.db
       .prepare(
         `INSERT OR REPLACE INTO pdf_cache
          (path, size, mtime, content_hash, format_version, content, cached_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(
-        path,
-        size,
-        mtime,
-        contentHash,
-        this.formatVersion,
-        content,
-        this.now(),
-      );
+      .run(path, size, mtime, contentHash, this.formatVersion, content, this.now());
   }
 
   close(): void {

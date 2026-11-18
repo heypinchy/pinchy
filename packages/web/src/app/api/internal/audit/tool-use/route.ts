@@ -2,8 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { validateGatewayToken } from "@/lib/gateway-auth";
 import { appendAuditLog, safeProviderError } from "@/lib/audit";
-import { sanitizeDetail } from "@/lib/audit-sanitize";
+import { boundIdForAudit, sanitizeDetail } from "@/lib/audit-sanitize";
+import { redactEmailToolParamsForAudit } from "@/lib/audit-tool-params";
 import { parseRequestBody } from "@/lib/api-validation";
+import { directSessionUserId } from "@/lib/session-key";
+import { findUserIdIgnoringCase } from "@/lib/user-id-case";
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -45,13 +48,22 @@ function extractAgentIdFromSessionKey(sessionKey: string | undefined): string | 
   return /^agent:([^:]+):/.exec(sessionKey)?.[1];
 }
 
-function extractUserIdFromSessionKey(sessionKey: string | undefined): string | undefined {
-  if (!sessionKey) return undefined;
-  // Capture only the userId segment. Direct session keys gained a trailing
-  // chatId segment with the chats feature (agent:<agentId>:direct:<userId>:<chatId>);
-  // a greedy `(.+)$` would swallow `<userId>:<chatId>` and mis-attribute the
-  // audit row. The userId itself never contains a colon.
-  return /^agent:[^:]+:direct:([^:]+)/.exec(sessionKey)?.[1];
+// OpenClaw lowercases session keys, so the userId extracted above is always
+// lowercased and won't match users.id's real case. appendAuditLog's GDPR
+// pseudonym substitution (audit.ts resolveActorId) does a case-sensitive
+// `eq(users.id, actorId)` lookup, so a raw lowercased id silently misses it
+// and the raw id is written instead of the pseudonym. Canonicalize back to
+// the real users.id case here — the same compensation usage-poller.ts:159-164
+// applies via its `userIdMap` — before handing the id to appendAuditLog.
+// No throw: audit availability must not depend on this lookup succeeding.
+async function canonicalizeUserId(lowercasedUserId: string): Promise<string> {
+  try {
+    // A database id is ours and must reach appendAuditLog exactly as stored;
+    // only the caller-supplied fallback is clamped.
+    return (await findUserIdIgnoringCase(lowercasedUserId)) ?? boundIdForAudit(lowercasedUserId);
+  } catch {
+    return boundIdForAudit(lowercasedUserId);
+  }
 }
 
 // Trim and reject blank strings; turns "" or "   " into undefined so optional
@@ -176,7 +188,15 @@ export async function POST(request: NextRequest) {
   };
 
   if (payload.toolCallId !== undefined) detail.toolCallId = payload.toolCallId;
-  if (payload.params !== undefined) detail.params = payload.params;
+  // Backstop for the transport-error path: the pinchy-email plugin curates its
+  // own details (masked recipient, body → bodyBytes) on every path it controls,
+  // but a dispatch-level failure forwards no plugin result, so those raw params
+  // (recipient + full body) would otherwise be logged verbatim. Redact them here
+  // before they land in the append-only, HMAC-signed audit. No-op for non-email
+  // tools; when the plugin DID curate, curatesNonErrorFields drops params below.
+  if (payload.params !== undefined) {
+    detail.params = redactEmailToolParamsForAudit(payload.toolName, payload.params);
+  }
   if (detailError !== undefined) detail.error = detailError;
   if (payload.durationMs !== undefined) detail.durationMs = payload.durationMs;
 
@@ -187,8 +207,12 @@ export async function POST(request: NextRequest) {
     // failed tool now emits so OpenClaw's isError-stripping (#404) can't mask
     // the failure, must NOT suppress params: forensics need to know what the
     // failed call attempted (the 2026-06-25 false-success incident hinged on
-    // those params being lost).
-    const curatesNonErrorFields = Object.keys(resultDetails).some((k) => k !== "error");
+    // those params being lost). `verified` (#720: pinchy-odoo's read-after-write
+    // outcome) is likewise a verification flag, not curated PII — it records
+    // into the audit detail but must not suppress params on either path.
+    const curatesNonErrorFields = Object.keys(resultDetails).some(
+      (k) => k !== "error" && k !== "verified"
+    );
     if (curatesNonErrorFields) delete detail.params;
     Object.assign(detail, resultDetails);
     // Plugins must not override these system fields. Re-apply after merge.
@@ -200,9 +224,11 @@ export async function POST(request: NextRequest) {
   }
 
   // Change 3: Actor becomes the user extracted from sessionKey when possible
-  const userId = extractUserIdFromSessionKey(payload.sessionKey);
+  const rawUserId = directSessionUserId(payload.sessionKey);
+  const userId = rawUserId ? await canonicalizeUserId(rawUserId) : undefined;
   const actorType = userId ? "user" : "agent";
-  const actorId = userId ?? payload.agentId;
+  const auditAgentId = boundIdForAudit(payload.agentId);
+  const actorId = userId ?? auditAgentId;
 
   const sanitizedDetail = sanitizeDetail(detail);
 
@@ -218,7 +244,7 @@ export async function POST(request: NextRequest) {
       actorId,
       // Change 2: eventType becomes tool.<toolName>
       eventType: `tool.${payload.toolName}`,
-      resource: `agent:${payload.agentId}`,
+      resource: `agent:${auditAgentId}`,
       detail: sanitizedDetail,
       outcome,
       error,

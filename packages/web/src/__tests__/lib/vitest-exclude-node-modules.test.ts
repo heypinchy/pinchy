@@ -21,6 +21,23 @@ import { resolve } from "node:path";
 const WEB_ROOT = resolve(__dirname, "../../..");
 
 describe("vitest.config.ts exclude", () => {
+  // 90s, and deliberately ABOVE the child's own 60s `timeout` below. This test
+  // boots a SECOND, complete vitest process (config load, vite transform,
+  // collection glob over the whole workspace). Measured here: ~0.65s with a
+  // warm vite cache, but 2.7-5.4s cold or under parallel-worktree load (5162ms
+  // on 2026-07-28) — and CI is always cold, so the cold number is the real
+  // one. Against vitest's 5s default that is no margin at all, for a budget
+  // that is pure subprocess infrastructure: the assertion is about WHICH files
+  // vitest collects, never how fast it collects them.
+  //
+  // The default never aborted anything either. `execFileSync` blocks the
+  // worker synchronously, so vitest's timer cannot preempt it — measured: a 7s
+  // child ran its full 7011ms and was only THEN reported as "Test timed out in
+  // 5000ms". Work already done, marked red by accounting. The only real kill
+  // switch is the child `timeout`, and it stays the one that fires only while
+  // it is the smaller of the two. It throws `spawnSync npx ETIMEDOUT`
+  // (SIGTERM), which at least names the hang; note that the child's own output
+  // lands on err.stdout/err.stderr and is not printed.
   it("does not collect vendored test files from nested plugin node_modules", () => {
     const output = execFileSync("npx", ["vitest", "list", "--filesOnly"], {
       cwd: WEB_ROOT,
@@ -39,5 +56,5 @@ describe("vitest.config.ts exclude", () => {
         "found'). Fix the `exclude` glob in vitest.config.ts.",
       ].join("\n")
     ).toEqual([]);
-  });
+  }, 90_000);
 });

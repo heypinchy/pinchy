@@ -8,35 +8,49 @@
  * surface).
  *
  * Resolution is two-state and deliberately separate:
- *   - `supersededAt` — the triggering message's run later SUCCEEDED, so the
- *     error is stale. Scoped to the triggering `clientMessageId` so an
- *     unrelated later message succeeding does NOT clear an unanswered error.
+ *   - `supersededAt` — a later turn of the session SUCCEEDED, so the error is
+ *     stale (`supersedeChatSessionErrors`).
  *   - `dismissedAt` — the user explicitly acknowledged it. Scoped to the owner.
  *
  * `getActiveChatSessionError` filters on the EXACT `sessionKey`
  * (`agent:{agentId}:direct:{userId}`) — never a prefix — so errors can't leak
  * across sessions or users.
  */
-import { and, desc, eq, gte, isNull, like } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, like, lte } from "drizzle-orm";
 
 import { db } from "@/db";
 import { chatSessionErrors, auditLog } from "@/db/schema";
+import { resolveActorIdMatchSet } from "@/lib/audit";
 
 /**
- * Did the agent execute any tool since `since`? Used to set `sideEffects` on a
- * persisted error so the banner can warn that a retry may DUPLICATE writes.
+ * Did the agent execute any tool for `userId` since `since`? Used to set
+ * `sideEffects` on a persisted error so the banner can warn that a retry may
+ * DUPLICATE writes.
  *
  * OpenClaw does not surface tool execution as a chat-stream chunk (verified by
  * E2E: a `tool.*` audit row lands but no `tool_use` chunk reaches the router),
- * so the audit trail is the only reliable signal. This runs only on the rare
- * error-persist path (once per failed run), not the hot history-load path, so
- * the audit-table read is acceptable. Scoped by `resource = agent:{agentId}`
- * (its case is stable, unlike the lowercased tool-audit `actorId`) plus a time
- * lower bound — it never misses a tool this run performed (the dangerous
- * false-negative); a different user's tool on a shared agent in the same narrow
- * window can over-warn, which is the safe direction.
+ * so the audit trail is the only reliable signal. Scoped by
+ * `resource = agent:{agentId}` (its case is stable), a time lower bound, and
+ * the caller as actor.
+ *
+ * The actor scope is a confidentiality boundary, not a precision tweak. A
+ * shared agent is one agent for every member, and the retry gate answers this
+ * question to whoever can poll it — counting the whole agent told a member
+ * whether a colleague had just run a tool (#1274). The tool-use route writes
+ * the user from the run's session key as actor, so the caller's own writes
+ * stay in scope. The match set covers every value that row can hold: the
+ * pseudonym `appendAuditLog` substitutes, the raw id, and the lowercased id the
+ * route keeps when it cannot map OpenClaw's lowercased session key back to
+ * `users.id` — missing any of them is the dangerous direction, an unguarded
+ * Retry after a write.
  */
-export async function agentRanToolSince(agentId: string, since: Date): Promise<boolean> {
+export async function agentRanToolSince(
+  agentId: string,
+  userId: string,
+  since: Date
+): Promise<boolean> {
+  const actorIds = new Set(await resolveActorIdMatchSet(userId));
+  actorIds.add(userId.toLowerCase());
   const [row] = await db
     .select({ id: auditLog.id })
     .from(auditLog)
@@ -44,7 +58,9 @@ export async function agentRanToolSince(agentId: string, since: Date): Promise<b
       and(
         eq(auditLog.resource, `agent:${agentId}`),
         like(auditLog.eventType, "tool.%"),
-        gte(auditLog.timestamp, since)
+        gte(auditLog.timestamp, since),
+        eq(auditLog.actorType, "user"),
+        inArray(auditLog.actorId, [...actorIds])
       )
     )
     .limit(1);
@@ -63,6 +79,19 @@ export interface RecordChatSessionErrorInput {
   transientReason?: string | null;
   providerError: string;
   sideEffects: boolean;
+  /**
+   * Lower bound `sideEffects` was derived over, so the question can be asked
+   * again later (#1013). Omitted only by callers that genuinely have no run
+   * window; the gate then falls back to the stored flag.
+   */
+  runStartedAt?: Date | null;
+  /**
+   * Whether this failure may re-surface as the durable "paused" banner.
+   * Defaults to true — every caller that records a banner-worthy error keeps
+   * its existing behaviour, and only the two that must NOT show a banner say so
+   * explicitly.
+   */
+  showBanner?: boolean;
 }
 
 export type ChatSessionError = typeof chatSessionErrors.$inferSelect;
@@ -84,13 +113,31 @@ export async function recordChatSessionError(
       transientReason: input.transientReason ?? null,
       providerError: input.providerError,
       sideEffects: input.sideEffects,
+      runStartedAt: input.runStartedAt ?? null,
+      showBanner: input.showBanner ?? true,
+      // App time, not the column's `now()` default: every bound this row is
+      // compared against (`supersedeChatSessionErrors`' `before`, the banner's
+      // max age) is app time. See supersedeChatSessionErrors.
+      createdAt: new Date(),
     })
     .returning();
   return row;
 }
 
 /**
- * The newest un-superseded, un-dismissed error for the exact session, or null.
+ * How long an unresolved error may stay the session's banner. The banner
+ * answers "did something go wrong while I was away?" — by the next day that
+ * question is stale, and a banner from yesterday covering today's first answer
+ * is noise (#1301). A lasting cause fails the next message again, and that
+ * failure brings its own banner.
+ */
+export const ACTIVE_ERROR_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The newest un-superseded, un-dismissed, banner-eligible error for the exact
+ * session, younger than `ACTIVE_ERROR_MAX_AGE_MS`, or null. `showBanner` is
+ * what keeps the classes recorded only for the retry gate (#1013) out of a
+ * surface they were never shown on.
  */
 export async function getActiveChatSessionError(
   sessionKey: string
@@ -101,8 +148,10 @@ export async function getActiveChatSessionError(
     .where(
       and(
         eq(chatSessionErrors.sessionKey, sessionKey),
+        eq(chatSessionErrors.showBanner, true),
         isNull(chatSessionErrors.supersededAt),
-        isNull(chatSessionErrors.dismissedAt)
+        isNull(chatSessionErrors.dismissedAt),
+        gte(chatSessionErrors.createdAt, new Date(Date.now() - ACTIVE_ERROR_MAX_AGE_MS))
       )
     )
     .orderBy(desc(chatSessionErrors.createdAt))
@@ -111,26 +160,90 @@ export async function getActiveChatSessionError(
 }
 
 /**
- * Mark the session's un-resolved error(s) superseded because the triggering
- * message's run succeeded. Requires `clientMessageId` — superseding on bare
- * session completion would wrongly clear an unanswered error when the user
- * simply moved on to a different question.
+ * Does retrying this session's latest failed run risk DUPLICATING writes?
+ *
+ * The same question `persistDurableChatError` answers when the error arrives —
+ * asked again, later. That is the whole fix for #1013: OpenClaw fires
+ * `after_tool_call` without awaiting it, so `pinchy-audit`'s `tool.*` row is
+ * ordered against nothing and can still be in flight when the run fails. The
+ * derivation at error time therefore reads `false` for a run that already
+ * acted, and the user is offered an unguarded Retry. By the time somebody has
+ * read an error and reached for Retry, the row is long committed.
+ *
+ * Two properties are load-bearing:
+ *
+ *  - **Monotonic.** A stored `true` is never re-opened. It was derived from a
+ *    row that existed; a later window that finds nothing (GC, a clock jump)
+ *    must not turn a warned retry into an unwarned one.
+ *  - **Newest failure only, whatever its resolution state.** Falling back to an
+ *    older row's window would warn about writes the run being retried never
+ *    made, and a confirm that cries wolf is one users learn to click through.
+ *    Superseded/dismissed rows are NOT filtered out: dismissing a banner does
+ *    not un-run a tool, and the newest row is by construction the failure the
+ *    user is looking at.
+ *
+ * Rows written before migration 0064 carry no `runStartedAt`. There is no
+ * honest window for them, so they report their stored flag rather than
+ * re-deriving over an invented range.
+ */
+export async function resolveRetryGate({
+  sessionKey,
+  agentId,
+}: {
+  sessionKey: string;
+  agentId: string;
+}): Promise<boolean> {
+  const [row] = await db
+    .select({
+      userId: chatSessionErrors.userId,
+      sideEffects: chatSessionErrors.sideEffects,
+      runStartedAt: chatSessionErrors.runStartedAt,
+    })
+    .from(chatSessionErrors)
+    .where(eq(chatSessionErrors.sessionKey, sessionKey))
+    .orderBy(desc(chatSessionErrors.createdAt))
+    .limit(1);
+
+  if (!row) return false;
+  if (row.sideEffects) return true;
+  if (!row.runStartedAt) return false;
+  return agentRanToolSince(agentId, row.userId, row.runStartedAt);
+}
+
+/**
+ * Mark the session's un-resolved errors recorded up to `before` superseded,
+ * because a later turn of the session succeeded.
+ *
+ * Every earlier error, not only the one the succeeding message raised. This
+ * used to require the triggering `clientMessageId`, on the theory that a user
+ * who moved on to another question still wants the unanswered one flagged. In
+ * practice the banner then sat above every later answer, reload after reload,
+ * hours after the fact (#1301) — and the docs had promised all along that it
+ * "clears itself automatically as soon as a message goes through again".
+ *
+ * `before` is app time, and so is `created_at`: `recordChatSessionError` stamps
+ * it rather than leaving it to the column's `now()`. Two clocks made the
+ * comparison wrong in both directions it can go. A database clock ahead of the
+ * app's made an error recorded before the successful turn look newer than it,
+ * and the banner stayed on top of the answer. And `now()` keeps microseconds a
+ * JS Date cannot hold, so even on one clock a row sat a fraction of a
+ * millisecond after its own timestamp as the app reads it — the flake that
+ * exposed this.
  */
 export async function supersedeChatSessionErrors({
   sessionKey,
-  clientMessageId,
+  before,
 }: {
   sessionKey: string;
-  clientMessageId?: string | null;
+  before: Date;
 }): Promise<void> {
-  if (!clientMessageId) return;
   await db
     .update(chatSessionErrors)
     .set({ supersededAt: new Date() })
     .where(
       and(
         eq(chatSessionErrors.sessionKey, sessionKey),
-        eq(chatSessionErrors.clientMessageId, clientMessageId),
+        lte(chatSessionErrors.createdAt, before),
         isNull(chatSessionErrors.supersededAt)
       )
     );

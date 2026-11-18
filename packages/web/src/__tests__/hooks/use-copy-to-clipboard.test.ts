@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 
@@ -130,6 +131,79 @@ describe("useCopyToClipboard", () => {
     } finally {
       document.execCommand = originalExec;
     }
+  });
+
+  it("clears the pending reset on unmount", async () => {
+    // The reset timer otherwise outlives the component and calls setIsCopied on
+    // a torn-down tree — in jsdom that lands after environment teardown as
+    // "ReferenceError: window is not defined", failing an otherwise green run.
+    const { result, unmount } = renderHook(() => useCopyToClipboard());
+
+    await act(async () => {
+      await result.current.copy("hello");
+    });
+    expect(vi.getTimerCount()).toBe(1);
+
+    unmount();
+
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("schedules no reset when the unmount beats the pending clipboard write", async () => {
+    // The unmount cleanup runs before the write resolves, so it has no timer to
+    // clear yet. Without a mounted guard the resolved write then schedules one
+    // anyway — orphaned past the cleanup, and nobody left to clear it.
+    let resolveWrite!: () => void;
+    writeText.mockReturnValue(
+      new Promise<void>((resolve) => {
+        resolveWrite = resolve;
+      })
+    );
+
+    const { result, unmount } = renderHook(() => useCopyToClipboard());
+
+    let copying!: Promise<boolean>;
+    act(() => {
+      copying = result.current.copy("hello");
+    });
+
+    unmount();
+
+    let returned: boolean | undefined;
+    await act(async () => {
+      resolveWrite();
+      returned = await copying;
+    });
+
+    expect(vi.getTimerCount()).toBe(0);
+    // The copy itself did succeed — only the state update is skipped.
+    expect(returned).toBe(true);
+  });
+
+  it("restarts the reset window on a second copy instead of racing the first", async () => {
+    const { result } = renderHook(() => useCopyToClipboard());
+
+    await act(async () => {
+      await result.current.copy("first");
+    });
+
+    act(() => {
+      vi.advanceTimersByTime(1500);
+    });
+    await act(async () => {
+      await result.current.copy("second");
+    });
+
+    // The first copy's timer would fire here and blank the fresh confirmation.
+    act(() => {
+      vi.advanceTimersByTime(500);
+    });
+    expect(result.current.isCopied).toBe(true);
+
+    act(() => {
+      vi.advanceTimersByTime(1500);
+    });
+    expect(result.current.isCopied).toBe(false);
   });
 
   it("returns false and stays not-copied when clipboard and execCommand both fail", async () => {

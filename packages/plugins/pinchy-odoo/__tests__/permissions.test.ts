@@ -38,17 +38,11 @@ describe("getPermittedModels", () => {
   };
 
   it("returns models that have the given operation", () => {
-    expect(getPermittedModels(permissions, "read")).toEqual([
-      "sale.order",
-      "res.partner",
-    ]);
+    expect(getPermittedModels(permissions, "read")).toEqual(["sale.order", "res.partner"]);
   });
 
   it("filters correctly for write operation", () => {
-    expect(getPermittedModels(permissions, "write")).toEqual([
-      "res.partner",
-      "account.move",
-    ]);
+    expect(getPermittedModels(permissions, "write")).toEqual(["res.partner", "account.move"]);
   });
 
   it("returns empty array for an operation no model has", () => {

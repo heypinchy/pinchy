@@ -61,8 +61,8 @@ interface PluginApi {
     hookName: "message_received" | "message_sent",
     handler: (
       event: MessageReceivedEvent | MessageSentEvent,
-      ctx: MessageHookContext,
-    ) => Promise<void> | void,
+      ctx: MessageHookContext
+    ) => Promise<void> | void
   ) => void;
 }
 
@@ -102,20 +102,14 @@ function extractMedia(event: {
 }): CapturedMedia[] | undefined {
   const mediaPaths = event.metadata?.mediaPaths;
   if (!Array.isArray(mediaPaths)) return undefined;
-  const mediaTypes = Array.isArray(event.metadata?.mediaTypes)
-    ? event.metadata.mediaTypes
-    : [];
+  const mediaTypes = Array.isArray(event.metadata?.mediaTypes) ? event.metadata.mediaTypes : [];
 
   const media: CapturedMedia[] = [];
   for (let i = 0; i < mediaPaths.length && media.length < MAX_MEDIA; i++) {
     const path = mediaPaths[i];
     if (typeof path !== "string" || path.length === 0) continue;
     const mimeType = mediaTypes[i];
-    media.push(
-      typeof mimeType === "string" && mimeType.length > 0
-        ? { path, mimeType }
-        : { path },
-    );
+    media.push(typeof mimeType === "string" && mimeType.length > 0 ? { path, mimeType } : { path });
   }
   return media.length > 0 ? media : undefined;
 }
@@ -182,7 +176,7 @@ function buildResult(
   path: string,
   mimeType: string | undefined,
   outcome: "success" | "failure",
-  extra: { bytes?: number; error?: string } = {},
+  extra: { bytes?: number; error?: string } = {}
 ): MirrorMediaResult {
   return {
     path,
@@ -237,7 +231,7 @@ export async function mirrorMedia(
     workspaceRoot?: string;
     /** Test injection point; defaults to fs.chown. */
     chownImpl?: ChownImpl;
-  },
+  }
 ): Promise<MirrorMediaResult[]> {
   const { agentId } = params;
   const inboundDir = params.inboundDir ?? MEDIA_INBOUND_DIR;
@@ -246,7 +240,7 @@ export async function mirrorMedia(
 
   if (!agentId || agentId.includes("/") || agentId.includes("\\") || agentId.includes("..")) {
     return entries.map((item) =>
-      buildResult(item.path, item.mimeType, "failure", { error: "invalid agentId" }),
+      buildResult(item.path, item.mimeType, "failure", { error: "invalid agentId" })
     );
   }
 
@@ -263,7 +257,7 @@ async function mirrorOne(
   item: CapturedMedia,
   inboundDir: string,
   uploadsDir: string,
-  chownImpl: ChownImpl,
+  chownImpl: ChownImpl
 ): Promise<MirrorMediaResult> {
   const { path: originalPath, mimeType } = item;
   const filename = basename(originalPath);
@@ -360,7 +354,7 @@ function normalizeBaseUrl(url: string): string {
  * segment.
  */
 function parseDirectSessionKey(
-  sessionKey: string | undefined,
+  sessionKey: string | undefined
 ): { agentId: string; peer: string } | null {
   if (!sessionKey) return null;
   const m = /^agent:([^:]+):direct:([^:]+)$/.exec(sessionKey);
@@ -381,7 +375,7 @@ function parseDirectSessionKey(
  */
 function shouldMirror(
   channel: string | undefined,
-  sessionKey: string | undefined,
+  sessionKey: string | undefined
 ): { agentId: string } | null {
   if (!channel || !CAPTURED_CHANNELS.has(channel)) return null;
   const parsed = parseDirectSessionKey(sessionKey);
@@ -396,20 +390,52 @@ function djb2(str: string): string {
   return (h >>> 0).toString(36);
 }
 
-function surrogateId(
-  direction: string,
-  content: string,
-  sentAt: number,
-): string {
+function surrogateId(direction: string, content: string, sentAt: number): string {
   return `surrogate:${direction}:${sentAt}:${djb2(content)}`;
 }
 
 const MAX_RETRIES = 2;
 
+// Bounds every capture POST against a hung Pinchy container / network
+// blackhole so a stuck deploy can't stall channel-message capture forever.
+const FETCH_TIMEOUT_MS = 10_000;
+
+// Keep the log line readable: the useful part of a Pinchy error body is the
+// `error` string, and anything longer than this is a stack trace or an HTML
+// error page, neither of which belongs in a one-line warning.
+const MAX_REASON_CHARS = 200;
+
+/**
+ * Best-effort read of a rejection body, for the log line only. Returns an empty
+ * string if the body is unreadable — diagnosing a drop must never cause one.
+ */
+async function readErrorBody(res: { text?: () => Promise<string> }): Promise<string> {
+  try {
+    // Collapse first: a proxy answers with a multi-line HTML document, and a
+    // warning that spans lines stops being one log entry — whatever ships
+    // these logs onward indexes the fragments separately.
+    const trimmed = ((await res.text?.()) ?? "").replace(/\s+/g, " ").trim();
+    if (!trimmed) return "";
+    // Pinchy's API errors are `{"error":"…"}`; unwrap so the reason reads as a
+    // sentence rather than as JSON.
+    try {
+      const parsed = JSON.parse(trimmed) as { error?: unknown };
+      if (typeof parsed?.error === "string" && parsed.error) {
+        return parsed.error.slice(0, MAX_REASON_CHARS);
+      }
+    } catch {
+      // Not JSON (a proxy's HTML error page, say) — fall through to the raw text.
+    }
+    return trimmed.slice(0, MAX_REASON_CHARS);
+  } catch {
+    return "";
+  }
+}
+
 async function postChannelMessage(
   cfg: PluginConfig,
   logger: PluginLogger | undefined,
-  payload: CaptureChannelMessage,
+  payload: CaptureChannelMessage
 ): Promise<void> {
   const endpoint = `${normalizeBaseUrl(cfg.apiBaseUrl)}/api/internal/channel-messages`;
   let lastError: Error | undefined;
@@ -423,13 +449,19 @@ async function postChannelMessage(
           Authorization: `Bearer ${cfg.gatewayToken}`,
         },
         body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       });
       // 2xx = stored (or idempotently skipped). 4xx = our bug; don't retry a
       // request the server will keep rejecting. 5xx = transient; retry.
       if (res.ok) return;
       if (res.status < 500) {
+        // Quote the body: a 403 alone reads as "auth is broken somewhere" and
+        // sent a debugging session hunting the gateway token, while the body
+        // said outright that the domain lock had rejected the Host header
+        // (#599). Never let reading it turn a drop into a throw.
+        const reason = await readErrorBody(res);
         logger?.warn?.(
-          `[pinchy-transcript] capture rejected (${res.status}) for ${payload.direction} ${payload.channel} message; dropping`,
+          `[pinchy-transcript] capture rejected (${res.status}${reason ? `: ${reason}` : ""}) for ${payload.direction} ${payload.channel} message; dropping`
         );
         return;
       }
@@ -440,7 +472,7 @@ async function postChannelMessage(
 
     if (attempt < MAX_RETRIES) {
       logger?.warn?.(
-        `[pinchy-transcript] capture failed (attempt ${attempt + 1}/${MAX_RETRIES + 1}), retrying: ${lastError?.message}`,
+        `[pinchy-transcript] capture failed (attempt ${attempt + 1}/${MAX_RETRIES + 1}), retrying: ${lastError?.message}`
       );
     }
   }
@@ -460,8 +492,7 @@ function buildPayload(args: {
   sentAt: number;
   media?: MirrorMediaResult[];
 }): CaptureChannelMessage | null {
-  const { channel, sessionKey, direction, content, messageId, sentAt, media } =
-    args;
+  const { channel, sessionKey, direction, content, messageId, sentAt, media } = args;
   if (!channel || !CAPTURED_CHANNELS.has(channel)) return null;
   // Only mirror DIRECT (1:1) conversations; the endpoint re-derives agent+peer
   // from this same key, so we just gate on it being a valid direct session.
@@ -489,16 +520,10 @@ function buildPayload(args: {
 const plugin = {
   id: "pinchy-transcript",
   name: "Pinchy Transcript",
-  description:
-    "Captures channel conversation messages into Pinchy's durable transcript store.",
+  description: "Captures channel conversation messages into Pinchy's durable transcript store.",
   configSchema: {
     validate: (value: unknown) => {
-      if (
-        value &&
-        typeof value === "object" &&
-        "apiBaseUrl" in value &&
-        "gatewayToken" in value
-      ) {
+      if (value && typeof value === "object" && "apiBaseUrl" in value && "gatewayToken" in value) {
         return { ok: true as const, value };
       }
       return {
@@ -511,9 +536,7 @@ const plugin = {
   register(api: PluginApi) {
     const cfg = api.pluginConfig;
     if (!cfg?.apiBaseUrl || !cfg?.gatewayToken) {
-      api.logger?.warn?.(
-        "[pinchy-transcript] plugin config is missing apiBaseUrl or gatewayToken",
-      );
+      api.logger?.warn?.("[pinchy-transcript] plugin config is missing apiBaseUrl or gatewayToken");
       return;
     }
 

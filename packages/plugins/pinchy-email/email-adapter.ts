@@ -1,5 +1,42 @@
 export type Folder = "INBOX" | "SENT" | "DRAFTS" | "TRASH" | "SPAM";
 
+// Tracks which mock-override env vars we've already warned about in this
+// process, so a leftover override doesn't spam the log on every tool call.
+const warnedMockOverrides = new Set<string>();
+
+// Returns `overrideVar`'s value, but ONLY when `flagVar` is explicitly "1".
+// Shared by the Gmail and Graph adapters, which both accept a *_API_BASE_URL
+// override so E2E tests can redirect API calls to a local mock server.
+// Without the paired flag, the override is ignored (the caller falls back to
+// the real API host) and a one-time warning is logged — mirroring the
+// IMAP/SMTP mock seam in imap-adapter.ts, which requires the same
+// PINCHY_INSECURE_MAIL_MOCK flag for the same reason: a *_API_BASE_URL
+// carried into production by accident must not silently redirect
+// OAuth-authenticated API calls (and the bearer token sent with them) to
+// whatever host it names.
+export function resolveInsecureMockBaseUrl(
+  overrideVar: string,
+  flagVar: string
+): string | undefined {
+  const override = process.env[overrideVar];
+  if (!override) return undefined;
+  if (process.env[flagVar] === "1") return override;
+  if (!warnedMockOverrides.has(overrideVar)) {
+    warnedMockOverrides.add(overrideVar);
+    console.warn(
+      `[pinchy-email] ${overrideVar} is set but ${flagVar} is not "1" — ignoring it and using the ` +
+        `real API host. If this is a test/mock stack, also set ${flagVar}=1.`
+    );
+  }
+  return undefined;
+}
+
+// Test-only: clears the warn-once dedupe so a test can assert the warning
+// fires again after resetting env stubs.
+export function resetInsecureMockWarningsForTest(): void {
+  warnedMockOverrides.clear();
+}
+
 // Escape a value for embedding inside a double-quoted query string: backslashes
 // BEFORE quotes so a trailing "\" can't escape the closing quote. Used by both
 // the Gmail query builder and the Graph $search KQL builder; each adapter keeps
@@ -8,20 +45,183 @@ export function escapeDoubleQuoted(v: string): string {
   return v.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
+// Block-level tags mark a line break in the rendered message. Collapsing them
+// to a space along with everything else turns a whole email into one endless
+// line, which is exactly what the model then has to reason over.
+// Tested against one whole tag at a time (see `removeTags`), so it is anchored
+// at both ends and cannot scan beyond the tag.
+const HTML_BLOCK_TAG_RE =
+  /^<\/?(?:p|div|br|tr|li|ul|ol|h[1-6]|table|thead|tbody|blockquote|section|article|pre|hr)\b[^>]*>$/i;
+
+const HTML_ENTITIES: Record<string, string> = {
+  nbsp: " ",
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  "#39": "'",
+};
+
+/**
+ * Drops script/style elements, comments and tags in ONE linear pass: a block
+ * tag becomes a newline, anything else a space. A mail body is untrusted, and
+ * the lazy-regex form of this (`<(script)[^>]*>[\s\S]*?<\/\1>`, `<!--[\s\S]*?-->`,
+ * `<[^>]+>`) rescans the rest of the input from every unclosed opener, so
+ * N openers cost N^2. Here a search that finds nothing is remembered (nothing
+ * later can find it either), and one that finds something moves past it, so
+ * every character is scanned a bounded number of times.
+ *
+ * A `<` that cannot start a tag (not followed by a letter, `/`, `!` or `?`,
+ * as in the HTML tokenizer) is text. This function is duplicated in
+ * `packages/web/src/lib/knowledge/msg-extract.ts` (bundle isolation);
+ * `remove-tags-drift.test.ts` pins the two bodies together.
+ */
+function removeTags(html: string): string {
+  // ASCII-only lowering keeps indices aligned with `html`: `toLowerCase()`
+  // turns U+0130 into two code units, which would shift every later index.
+  const lower = html.replace(/[A-Z]+/g, (s) => s.toLowerCase());
+  const out: string[] = [];
+  let i = 0;
+  let noMoreGt = false;
+  const noCloser = new Set<string>();
+  let noCommentEnd = false;
+
+  while (i < html.length) {
+    const lt = html.indexOf("<", i);
+    if (lt === -1) {
+      out.push(html.slice(i));
+      break;
+    }
+    out.push(html.slice(i, lt));
+    i = lt;
+
+    if (!/[A-Za-z/!?]/.test(html[lt + 1] ?? "")) {
+      out.push("<");
+      i = lt + 1;
+      continue;
+    }
+
+    if (!noCommentEnd && html.startsWith("<!--", lt)) {
+      const end = html.indexOf("-->", lt + 4);
+      if (end !== -1) {
+        out.push(" ");
+        i = end + 3;
+        continue;
+      }
+      noCommentEnd = true;
+    }
+
+    const gt = noMoreGt ? -1 : html.indexOf(">", lt + 1);
+    if (gt === -1) {
+      noMoreGt = true;
+      out.push("<");
+      i = lt + 1;
+      continue;
+    }
+
+    const element = /^<(script|style)/.exec(lower.slice(lt, lt + 7))?.[1];
+    if (element && !noCloser.has(element)) {
+      const closer = `</${element}>`;
+      const close = lower.indexOf(closer, gt + 1);
+      if (close !== -1) {
+        out.push(" ");
+        i = close + closer.length;
+        continue;
+      }
+      noCloser.add(element);
+    }
+
+    out.push(HTML_BLOCK_TAG_RE.test(html.slice(lt, gt + 1)) ? "\n" : " ");
+    i = gt + 1;
+  }
+  return out.join("");
+}
+
+// Reduce an HTML body to readable plain text.
+//
+// This is a *fallback* for IMAP — mailparser's bundled html-to-text already
+// derives `ParsedMail.text` from the html in the common case, so IMAP only
+// reaches this when a message genuinely has no text/plain part. For Graph it
+// is the *primary* path (Graph hands back `body.content` verbatim in whatever
+// `body.contentType` the message was stored in, and most Outlook mail is
+// stored as html), and it is the html-only path for Gmail. So "good enough
+// for a rare fallback" is not the bar any more: block-level tags become line
+// breaks so paragraph and list structure survives, and the handful of
+// entities that actually appear in mail bodies are decoded.
+//
+// Still deliberately dependency-free. A real HTML parser buys correctness on
+// markup this never sees — the output is read by a model, not rendered.
+export function stripHtml(html: string): string {
+  return (
+    // Outlook's conditional comments (`<!--[if mso]> … <![endif]-->`) are
+    // markup, not content; `removeTags` drops them with the other comments.
+    removeTags(html)
+      // Decoded AFTER tag removal, so a `&lt;script&gt;` in the source can
+      // never become a tag this function then fails to strip.
+      .replace(/&(nbsp|amp|lt|gt|quot|apos|#39);/gi, (m, name: string) => {
+        return HTML_ENTITIES[name.toLowerCase()] ?? m;
+      })
+      // Horizontal whitespace only — `\s+` would eat the line breaks above.
+      .replace(/[^\S\n]+/g, " ")
+      .replace(/ ?\n ?/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim()
+  );
+}
+
+/**
+ * Ceiling for an email body handed to the model, in characters.
+ *
+ * OpenClaw's runtime caps every tool result at 64000 chars and replaces the
+ * overflow with a literal truncation marker spliced MID-JSON, so the model
+ * receives corrupt JSON and loops on it — the production failure documented on
+ * `ODOO_READ_RESULT_BUDGET_CHARS` in pinchy-odoo/index.ts. An email body is
+ * the one unbounded field in `email_read`'s payload: a real HTML marketing
+ * mail runs to hundreds of KB, and even stripped to text a newsletter clears
+ * 64000 easily. Bounding well under the cap keeps our JSON intact and leaves
+ * room for several reads inside OpenClaw's 256000-char aggregate budget.
+ */
+export const EMAIL_BODY_MAX_CHARS = 30000;
+
+/**
+ * Bound a body to {@link EMAIL_BODY_MAX_CHARS}. A body that already fits is
+ * returned unchanged (same string, no marker). An oversized one keeps its
+ * leading `EMAIL_BODY_MAX_CHARS` characters and says so in words the model can
+ * act on — a bare `[truncated]` reads as part of the message and leaves the
+ * model free to report the cut text as the whole email.
+ */
+export function truncateEmailBody(body: string, max: number = EMAIL_BODY_MAX_CHARS): string {
+  if (body.length <= max) return body;
+  return (
+    `${body.slice(0, max)}\n\n[Body truncated: this is the first ${max} of ${body.length} ` +
+    `characters. The rest was not read — say the message is longer rather than ` +
+    `treating this as its full text.]`
+  );
+}
+
+/**
+ * The largest attachment `email_get_attachment` will write to a workspace, in
+ * DECODED bytes — 25 MB matches `odoo_attach_file`'s own cap (see
+ * packages/plugins/pinchy-odoo/index.ts), so anything saved here is always
+ * small enough to hand off downstream.
+ *
+ * It lives here rather than in index.ts because an adapter needs it too:
+ * imap-adapter.ts derives its wire-level `MAX_MESSAGE_BYTES` from it, and
+ * index.ts importing from an adapter — or either file keeping its own 25 MB
+ * literal — is how the two numbers drift apart.
+ */
+export const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+
 // Shared by every adapter: the canonical-name validation and error message are
 // identical across providers, only the provider-specific value for each
 // folder differs (Gmail label IDs vs Graph well-known folder names). Sharing
 // this keeps that validation from drifting between adapters.
-export function createFolderMapper(
-  mapping: Record<Folder, string>,
-): (f: Folder) => string {
+export function createFolderMapper(mapping: Record<Folder, string>): (f: Folder) => string {
   return function mapFolder(f: Folder): string {
     const key = String(f).trim().toUpperCase();
     const value = mapping[key as Folder];
-    if (!value)
-      throw new Error(
-        `unknown folder: ${f}. Valid: INBOX, SENT, DRAFTS, TRASH, SPAM.`,
-      );
+    if (!value) throw new Error(`unknown folder: ${f}. Valid: INBOX, SENT, DRAFTS, TRASH, SPAM.`);
     return value;
   };
 }
@@ -92,6 +292,6 @@ export interface EmailAdapter {
   send(opts: ComposeOptions): Promise<{ messageId: string | null }>;
   getAttachment(
     messageId: string,
-    attachmentId: string,
+    attachmentId: string
   ): Promise<{ filename: string; mimeType: string; data: Buffer }>;
 }

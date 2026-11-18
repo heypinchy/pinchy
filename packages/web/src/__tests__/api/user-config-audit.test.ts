@@ -28,6 +28,17 @@ vi.mock("@/lib/settings", () => ({
   getSettingsByPrefix: vi.fn().mockResolvedValue(new Map()),
 }));
 
+// setup/provider resolves Smithers' model through the live-availability wrapper
+// (#883); mock it directly (like the other setup/provider route tests) so this
+// audit test stays decoupled from the wrapper's internal live-catalog fetch.
+vi.mock("@/lib/model-resolver/resolve-available", () => ({
+  resolveAvailableModelForTemplate: vi.fn().mockResolvedValue({
+    model: "anthropic/claude-sonnet-4-6",
+    reason: "balanced",
+    fallbackUsed: false,
+  }),
+}));
+
 vi.mock("@/lib/provider-models", () => ({
   resetCache: vi.fn(),
   getDefaultModel: vi.fn().mockResolvedValue("anthropic/claude-haiku-4-5-20251001"),
@@ -88,8 +99,8 @@ vi.mock("@/lib/workspace", () => ({
   deleteWorkspace: vi.fn(),
 }));
 
-vi.mock("@/db", () => ({
-  db: {
+vi.mock("@/db", () => {
+  const db: Record<string, unknown> = {
     select: vi.fn().mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockResolvedValue([]),
@@ -114,8 +125,13 @@ vi.mock("@/db", () => ({
         }),
       },
     },
-  },
-}));
+  };
+  // Default: run the callback against the SAME db object, so tx.update /
+  // tx.delete are the exact mocks above and existing per-test overrides via
+  // db.update/db.delete.mockReturnValueOnce keep working unchanged.
+  db.transaction = vi.fn((cb: (tx: unknown) => unknown) => cb(db));
+  return { db };
+});
 
 import { appendAuditLog } from "@/lib/audit";
 import { requireAdmin } from "@/lib/api-auth";
@@ -300,6 +316,8 @@ describe("audit: POST /api/setup/provider", () => {
       detail: {
         provider: { id: "anthropic", name: "Anthropic" },
         authType: "api-key",
+        // Records whether the setting also reached the OpenClaw runtime (#880).
+        configRegenerated: true,
       },
     });
   });
@@ -318,7 +336,7 @@ describe("audit: POST /api/setup/provider", () => {
   });
 });
 
-// ── config.changed: POST /api/settings ───────────────────────────────────
+// ── POST /api/settings refuses keys with their own route ───────────────────────────────────
 
 describe("audit: POST /api/settings", () => {
   let POST: typeof import("@/app/api/settings/route").POST;
@@ -331,7 +349,7 @@ describe("audit: POST /api/settings", () => {
     POST = mod.POST;
   });
 
-  it("logs config.changed audit event on successful settings update", async () => {
+  it("writes no audit row and no setting for a key outside the allow-list", async () => {
     const request = new NextRequest("http://localhost/api/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -339,14 +357,7 @@ describe("audit: POST /api/settings", () => {
     });
 
     const response = await POST(request);
-    expect(response.status).toBe(200);
-
-    expect(appendAuditLog).toHaveBeenCalledWith({
-      actorType: "user",
-      actorId: "admin-1",
-      eventType: "config.changed",
-      outcome: "success",
-      detail: { key: "default_provider" },
-    });
+    expect(response.status).toBe(400);
+    expect(appendAuditLog).not.toHaveBeenCalled();
   });
 });

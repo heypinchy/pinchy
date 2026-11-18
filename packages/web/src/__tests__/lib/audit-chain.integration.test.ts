@@ -59,11 +59,17 @@ describe("v3 audit hash-chain (integration)", () => {
     expect(rows[2].prevHmac).toBe(rows[1].rowHmac);
 
     const result = await verifyIntegrity();
+    // previousKeyIds is empty here for a reason worth spelling out: this suite
+    // runs with AUDIT_HMAC_SECRET set (vitest.integration.config.ts) and no
+    // secrets volume, so getPreviousSecret finds no superseded file and the
+    // fallback never engages. That is the env-var path with nothing to fall
+    // back to, proven against a real database rather than a mocked fs.
     expect(result).toEqual({
       valid: true,
       totalChecked: 3,
       invalidIds: [],
       chainBreakIds: [],
+      previousKeyIds: [],
     });
   });
 

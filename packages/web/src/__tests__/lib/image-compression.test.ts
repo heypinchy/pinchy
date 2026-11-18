@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { compressImageForChat } from "@/lib/image-compression";
 import { CLIENT_IMAGE_COMPRESSION_TARGET_BYTES } from "@/lib/limits";

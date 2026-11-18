@@ -43,6 +43,18 @@ export type FailureTag =
   // scorecard. This is itself a discriminating signal (some models spiral into
   // an unbounded loop when a tool result contradicts their plan).
   | "run-timeout"
+  // ── crm-lead domain (Eval-v2, pinchy#803) ──
+  // The post-run read-back holds no crm.lead row at all — the crm-lead
+  // counterpart of task-incomplete. See graders.ts gradeLeadCompletion.
+  | "lead-not-created"
+  // A crm.lead row exists but a HARD identity field (name/title containing
+  // the expected substring, email_from, partner_id) doesn't match — the
+  // crm-lead counterpart of wrong-field-extraction.
+  | "lead-fields-mismatch"
+  // Soft signal, NOT pass-gating — the crm-lead counterpart of
+  // amount-not-captured: a missing/wrong `expected_revenue` is recorded here
+  // but never fails the run (see ExpectedLead.expectedRevenue).
+  | "lead-revenue-not-captured"
   // The model ATTEMPTED to create a SECOND vendor bill for an invoice already
   // recorded in Odoo (the duplicate-guard scenario seeds the bill first) — a
   // blind double-record (double-pay) attempt, whether or not the stack's
@@ -77,16 +89,65 @@ export interface OdooMoveRecord {
   [k: string]: unknown;
 }
 
+/**
+ * Token + cost accounting for one run, joined from `usage_records` by the run's
+ * unique OpenClaw session key (pinchy#798). `prompt`/`completion` are summed
+ * over every turn of the run's tool loop (so the total cost of completing the
+ * task, not one call). `prompt` counts all three prompt classes the model read
+ * — `input + cacheRead + cacheWrite` — which differ only in billing, so caching
+ * hosters aren't under-reported. Two optional fields carry the extra signals
+ * #798 asked for:
+ * - `contextTokens`: the PEAK context-window pressure across the run's turns
+ *   (max, not sum) — the read-side of the "Piper" false-success incident, a
+ *   PLATFORM risk factor rather than a model score.
+ * - `costUsd`: summed `estimated_cost_usd`. Undefined for Ollama Cloud, which is
+ *   subscription-billed (no per-token price) — the published $ figure is a
+ *   labeled multi-hoster range computed offline from the token counts, not this
+ *   column. Present only when a provider actually prices per token.
+ *
+ * A single named type (not three inline duplicates) so RunResult, RunTrajectory,
+ * and the normalizer's input can never drift apart.
+ */
+export interface RunTokenUsage {
+  prompt: number;
+  completion: number;
+  contextTokens?: number;
+  costUsd?: number;
+}
+
 export interface RunTrajectory {
   model: string;
   toolCalls: ToolCall[];
   /** Final assistant text shown to the user. */
   finalMessage: string;
-  /** account.move records read back from the Odoo mock AFTER the run. */
+  /**
+   * Records of the scenario's FIRST read-back model (default account.move,
+   * see `readbackModelsFor`) read from the Odoo mock AFTER the run. The name
+   * predates parametrized read-back (#803) and is consumed by the graders —
+   * do NOT rename; multi-model scenarios get `odooRecordsByModel` instead.
+   */
   odooMoves: OdooMoveRecord[];
+  /**
+   * Post-run read-back keyed by Odoo model. Set ONLY by scenarios that declare
+   * more than one `readbackModels` entry (#803) — a single-model scenario
+   * would just duplicate `odooMoves` here, doubling the read-back payload of
+   * every persisted trajectory line (`results/<label>.trajectories.jsonl`) for
+   * no information. When present it includes the first model too, so
+   * `odooRecordsByModel[models[0]]` mirrors `odooMoves`.
+   */
+  odooRecordsByModel?: Record<string, OdooMoveRecord[]>;
   latencyMs: number;
-  tokens?: { prompt: number; completion: number };
+  tokens?: RunTokenUsage;
 }
+
+/**
+ * The record domain a scenario grades against. The completion/non-persistence/
+ * failure phrase sets are calibrated per domain (see `PHRASE_SETS` in
+ * graders.ts); phrases for one domain must never trigger graders for another.
+ * A domain is only gradable once its phrase sets exist — `phraseSetFor` throws
+ * otherwise rather than passing every run.
+ */
+export type EvalDomain = "invoice" | "crm-lead";
 
 export interface ExpectedInvoice {
   /** Expected partner (display name). */
@@ -106,6 +167,85 @@ export interface ExpectedInvoice {
   invoiceDate: string;
   /** Expected amount_total (allow small float tolerance). */
   amountTotal: number;
+}
+
+/**
+ * Expected `crm.lead` field values for the CRM-lead domain (Eval-v2, #803).
+ * Camel-cased expectation-side names, mirroring `ExpectedInvoice`; the Odoo
+ * read-back carries the snake_case model fields (`email_from`, `phone`,
+ * `expected_revenue`, `partner_id`).
+ */
+export interface ExpectedLead {
+  /** The lead's name/title must contain this substring. */
+  leadTitleContains: string;
+  /** Expected `email_from` on the lead. */
+  emailFrom: string;
+  /**
+   * Expected `partner_id` record id. As with `ExpectedInvoice.vendorPartnerId`,
+   * Odoo resolves a many2one display name to a bare numeric id on create, so
+   * the `crm.lead` read-back carries `partner_id: <id>` — match against the
+   * seeded `res.partner` id.
+   */
+  partnerId: number;
+  /**
+   * Soft signal, taxonomy-only — NEVER a pass gate (the crm-lead counterpart
+   * of the invoice domain's `amount-not-captured` policy): recorded when
+   * `expected_revenue` is missing/wrong, but a run without it still passes.
+   */
+  expectedRevenue?: number;
+  /**
+   * Currently UNGRADED — carried in the scenario spec only, reserved for a
+   * future soft-signal calibration (it would mirror `expectedRevenue`'s
+   * never-gating policy, e.g. a lead-phone-not-captured tag).
+   */
+  phone?: string;
+}
+
+/**
+ * THE paraphrase ids, in report order — the single source of truth every
+ * consumer derives from: the `PromptVariant` type, the sweep's selectable set
+ * (`SELECTABLE_VARIANT_IDS`, eval/run-eval.ts) and the robustness block's
+ * per-wording iteration (`buildRobustness`, eval/export-scorecard.ts). Kept as
+ * a const rather than a bare union because a hand-copied list drifts SILENTLY:
+ * a "v3" missing from the robustness loop would simply publish no v3 rate, and
+ * a wording measured but not reported is worse than one never measured.
+ */
+export const PROMPT_VARIANT_IDS = ["v1", "v2"] as const;
+
+/**
+ * One register-shifted paraphrase of a scenario's primary prompt (Eval-v2,
+ * #803): semantically equivalent — same task, same task-critical facts, same
+ * required outcome — differing only in wording/register. The ids are fixed
+ * ("v1" terse-imperative, "v2" conversational-formal) so per-variant results
+ * stay comparable across scenarios and sweeps.
+ */
+export interface PromptVariant {
+  id: (typeof PROMPT_VARIANT_IDS)[number];
+  text: string;
+}
+
+/** Every wording a run can be dispatched with, primary first (report order). */
+export const ALL_PROMPT_VARIANT_IDS = ["primary", ...PROMPT_VARIANT_IDS] as const;
+
+/**
+ * Which of a scenario's prompts a run was dispatched with: the primary
+ * `userPrompt` or one of its paraphrase variants. Threads from
+ * `runOnce({ promptVariant })` (eval/run-eval.ts) onto every persisted
+ * RunResult/trajectory row (#803, PR 3).
+ */
+export type PromptVariantId = (typeof ALL_PROMPT_VARIANT_IDS)[number];
+
+/**
+ * A scenario's prompt set: the primary (word-identical to the scenario's
+ * `userPrompt`, which stays the single source of truth — the headline metric
+ * is primary-only) plus its paraphrase variants. The variants measure
+ * prompt-WORDING sensitivity: a model whose result depends on register or
+ * phrasing is itself a finding. Enforced per scenario by
+ * `eval/__tests__/prompt-variants.test.ts`.
+ */
+export interface ScenarioPrompts {
+  primary: string;
+  variants: readonly PromptVariant[];
 }
 
 export interface GraderResult {
@@ -131,9 +271,38 @@ export type ExpectedOutcome =
   // The line-items scenario: the bill must be entered WITH line items so the
   // mock-computed amount_total matches — amount is graded HARD (gates), unlike
   // the default where it's a soft derived-field signal. See gradeTaskCompletion.
-  | "vendor-bill-with-amount";
+  | "vendor-bill-with-amount"
+  // The crm-lead happy-path scenario (Eval-v2, #803): a matching `crm.lead`
+  // must exist. Graded by gradeLeadCompletion via gradeLeadRun (graders.ts).
+  | "lead-created";
 
-export interface RunResult {
+/**
+ * The grading modes the INVOICE scenario family can declare — everything but
+ * the crm-lead "lead-created" mode. Keeps `GradableScenario` (graders.ts) a
+ * discriminated union: an `ExpectedInvoice` can never ride under
+ * "lead-created", so the dispatch narrows without casts.
+ */
+export type InvoiceExpectedOutcome = Exclude<ExpectedOutcome, "lead-created">;
+
+/**
+ * The grading modes the CRM-LEAD scenario family can declare (Eval-v2, #803):
+ * the lead happy path plus the failure-family modes it shares with the invoice
+ * domain ("honest-failure" reads `scenario.domain` so the lead variants grade
+ * under the crm-lead phrase sets; "duplicate-detected" dispatches on the
+ * `ExpectedLead` shape). The invoice-only "vendor-bill-*" modes stay out, so
+ * an `ExpectedLead` can never ride under an invoice grader.
+ */
+export type LeadExpectedOutcome = "lead-created" | "honest-failure" | "duplicate-detected";
+
+/**
+ * One graded run. Generic over its failure-tag union so `scorecard.ts`'s
+ * aggregation (grouping, pass-rate, Wilson interval, pass^k, tag histogram)
+ * is reusable outside the invoice eval without a cast — the KB eval harness
+ * (`kb/answer-graders.ts`'s `KbRunResult`) is `RunResult<KbFailureTag>`.
+ * `Tag` defaults to the invoice `FailureTag` union, so every existing
+ * call site that writes plain `RunResult` (no type argument) is unaffected.
+ */
+export interface RunResult<Tag extends string = FailureTag> {
   model: string;
   /**
    * Which scenario produced this run, e.g. "hetzner-invoice" or
@@ -142,9 +311,26 @@ export interface RunResult {
    * sets it so a scorecard can group/report per (model, scenario).
    */
   scenario?: string;
+  /**
+   * Which prompt wording this run was dispatched with (#803, PR 3). Optional
+   * because rows persisted by pre-variant sweeps lack the field entirely —
+   * readers must treat ABSENCE as "primary" (grandfathering): every historical
+   * run was dispatched with the scenario's `userPrompt`, which is
+   * `prompts.primary` verbatim. New writes always carry it (see `runOnce`).
+   */
+  promptVariant?: PromptVariantId;
+  /**
+   * Which tool-layer governance mode produced this run (#723): "enforced" =
+   * Pinchy's write guards active (duplicate guard #721 + read-back #720);
+   * "off" = the ungoverned arm of the comparison sweep. Optional because rows
+   * persisted by pre-#723 sweeps (the frozen Eval-v1 baseline) lack the field:
+   * every historical run predates the guards, so readers MUST treat ABSENCE as
+   * "off" (grandfathering — see governanceOfRun). New writes always carry it.
+   */
+  governance?: "enforced" | "off";
   passed: boolean;
-  tags: FailureTag[];
+  tags: Tag[];
   notes: string[];
   latencyMs: number;
-  tokens?: { prompt: number; completion: number };
+  tokens?: RunTokenUsage;
 }

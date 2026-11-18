@@ -1,7 +1,16 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import "@testing-library/jest-dom";
 import { MobileChatHeader } from "@/components/mobile-chat-header";
+
+vi.mock("@/components/knowledge-search-sheet", () => ({
+  KnowledgeSearchSheet: ({ agentId }: { agentId: string }) => (
+    <button type="button" data-testid="knowledge-search" data-agent-id={agentId}>
+      What can this agent search?
+    </button>
+  ),
+}));
 
 // The header now renders <ChatSwitcher>, which uses the app router and fetches
 // the chat list. Stub both so the header renders in isolation.
@@ -24,6 +33,15 @@ describe("MobileChatHeader", () => {
     render(<MobileChatHeader {...defaultProps} />);
     const header = screen.getByRole("banner");
     expect(header).toHaveClass("border-b");
+  });
+
+  it("does not shrink when the chat column runs out of space (#955)", () => {
+    // The header sits in `flex flex-col h-full min-h-0` next to a growing
+    // message list. Without shrink-0 it gets compressed — visibly so once the
+    // on-screen keyboard shortens the layout viewport. Its desktop sibling in
+    // chat.tsx has carried shrink-0 all along.
+    render(<MobileChatHeader {...defaultProps} />);
+    expect(screen.getByRole("banner")).toHaveClass("shrink-0");
   });
 
   it("is hidden on md screens and above", () => {
@@ -76,5 +94,14 @@ describe("MobileChatHeader", () => {
     const img = screen.getByRole("img");
     expect(img).toHaveAttribute("alt", "Smithers");
     expect(img).toHaveClass("size-8");
+  });
+
+  it("offers 'What can this agent search?' only for a knowledge-base agent", () => {
+    const { unmount } = render(<MobileChatHeader {...defaultProps} searchesKnowledge />);
+    expect(screen.getByTestId("knowledge-search")).toHaveAttribute("data-agent-id", "agent-123");
+    unmount();
+
+    render(<MobileChatHeader {...defaultProps} />);
+    expect(screen.queryByTestId("knowledge-search")).not.toBeInTheDocument();
   });
 });

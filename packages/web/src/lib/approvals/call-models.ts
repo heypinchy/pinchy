@@ -1,0 +1,161 @@
+import { createDecipheriv } from "crypto";
+
+/**
+ * Which resources a tool call touches, so the confirmation policy can be read
+ * per resource and not only per tool (#1133).
+ *
+ * Two sources, and neither is a hand-maintained table:
+ *
+ * 1. An explicit `model` parameter — `odoo_read` / `create` / `write` /
+ *    `delete` / `count` / `aggregate` take one.
+ * 2. The opaque `_pinchy_ref` tokens the record-action tools take instead
+ *    (`odoo_confirm_order`, `odoo_validate_picking`, `odoo_reconcile`, …).
+ *    **The ref carries its own model**, so reading it beats mirroring a
+ *    tool→model list from the plugin: a list is wrong the moment someone adds
+ *    a ref tool and forgets it, and it needs a drift guard to say so. A ref
+ *    cannot drift from itself, and a new ref tool works here on the day it
+ *    ships.
+ *
+ * The decode half of pinchy-odoo's `integration-ref.ts` is reimplemented rather
+ * than imported: the plugin resolves its key from a container path
+ * (`/openclaw-secrets/secrets.json`) that pinchy-web has no business reading,
+ * and pinchy-web already holds the same key in its settings DB, which is where
+ * it was generated. What keeps the two in step is `call-models.test.ts`, which
+ * encodes with the plugin's own encoder and decodes here — a format change
+ * fails that round trip immediately, where a textual comparison would let a
+ * changed IV length through.
+ */
+
+const PREFIX = "pinchy_ref:v1:";
+const ALGORITHM = "aes-256-gcm";
+const IV_LENGTH = 12;
+const TAG_LENGTH = 16;
+const HEX_64 = /^[0-9a-fA-F]{64}$/;
+const REF_SHAPE = /^pinchy_ref:v1:[A-Za-z0-9_-]+$/;
+
+/**
+ * True only for a string in the exact form pinchy-odoo's encoder writes: the
+ * prefix, unpadded base64url, and nothing after it — the same rule the
+ * plugin's `decodeRef` applies.
+ *
+ * Checked before any decode because Node's base64url decoder is lenient: it stops
+ * at the first `=` and drops whatever follows, skips whitespace, and ignores the
+ * unused bits of the last character. So `<valid ref>=\n\n<any text>` decoded to
+ * the record, the card named only the record, and the tool received the whole
+ * string. A string that is not exactly a ref is text, and is shown as text.
+ */
+export function isCanonicalRef(value: string): boolean {
+  if (!REF_SHAPE.test(value)) return false;
+  const body = value.slice(PREFIX.length);
+  return Buffer.from(body, "base64url").toString("base64url") === body;
+}
+
+/**
+ * A resource the call touches. `null` is one we could not name — a ref that
+ * did not decode, or none configured. It is deliberately not the same as "no
+ * resource": the call still acts on something, so it must inherit the
+ * tool-level setting rather than fall through to allow.
+ */
+export type CallResource = string | null;
+
+/** What a ref points at, as far as the card needs to name it. */
+export interface RefRecord {
+  model: string;
+  id: number;
+  label: string;
+}
+
+function decodeRefPayload(ref: string, key: string): Record<string, unknown> | null {
+  if (!isCanonicalRef(ref)) return null;
+  try {
+    const raw = Buffer.from(ref.slice(PREFIX.length), "base64url");
+    if (raw.length <= IV_LENGTH + TAG_LENGTH) return null;
+    const decipher = createDecipheriv(
+      ALGORITHM,
+      Buffer.from(key, "hex"),
+      raw.subarray(0, IV_LENGTH)
+    );
+    decipher.setAuthTag(raw.subarray(IV_LENGTH, IV_LENGTH + TAG_LENGTH));
+    const plaintext = Buffer.concat([
+      decipher.update(raw.subarray(IV_LENGTH + TAG_LENGTH)),
+      decipher.final(),
+    ]).toString("utf8");
+    const payload: unknown = JSON.parse(plaintext);
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+    return payload as Record<string, unknown>;
+  } catch {
+    // Every decode failure is the same answer here — an unnamed resource.
+    // Telling a garbled ref from a rotated key matters to the tool that has to
+    // explain itself to the model; it does not change what the gate must do.
+    return null;
+  }
+}
+
+function decodeRefModel(ref: string, key: string): string | null {
+  const model = decodeRefPayload(ref, key)?.model;
+  return typeof model === "string" && model.length > 0 ? model : null;
+}
+
+/**
+ * The full record a ref names — model, id and label — or `null`.
+ *
+ * Stricter than `decodeRefModel` on purpose. The gate needs only to know that
+ * SOME resource of a model is involved, so a model alone is enough there. The
+ * card claims to name the one record the call acts on, and it may only do that
+ * for a payload pinchy-odoo itself would accept (`isPayload` in
+ * integration-ref.ts): a positive integer id and a string label. Anything else
+ * the tool refuses to run, and a name for it would describe nothing.
+ */
+function decodeRefRecord(ref: string, key: string): RefRecord | null {
+  const payload = decodeRefPayload(ref, key);
+  if (!payload) return null;
+  const { model, id, label } = payload;
+  if (typeof model !== "string" || model.length === 0) return null;
+  if (typeof id !== "number" || !Number.isInteger(id) || id <= 0) return null;
+  if (typeof label !== "string") return null;
+  return { model, id, label };
+}
+
+/** Resolves a single ref to the record it points at; `null` when it cannot. */
+export function makeRefResolver(key: string | null): (ref: string) => RefRecord | null {
+  const usableKey = key && HEX_64.test(key) ? key : null;
+  return (ref) => (usableKey ? decodeRefRecord(ref, usableKey) : null);
+}
+
+/**
+ * Walks the call's arguments for resources. Refs are found by their prefix
+ * wherever they sit — no parameter-name list, because the tools spell it
+ * `target`, `targetRef`, `moveRef`, … and a name list is the same maintenance
+ * trap as a model table.
+ */
+export function collectCallModels(params: unknown, key: string | null): CallResource[] {
+  const found: CallResource[] = [];
+  const usableKey = key && HEX_64.test(key) ? key : null;
+
+  const visit = (value: unknown): void => {
+    if (typeof value === "string") {
+      if (value.startsWith(PREFIX)) {
+        found.push(usableKey ? decodeRefModel(value, usableKey) : null);
+      }
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (value && typeof value === "object") {
+      Object.values(value).forEach(visit);
+    }
+  };
+
+  if (params && typeof params === "object" && !Array.isArray(params)) {
+    const explicit = (params as Record<string, unknown>).model;
+    // Scoped by tool name downstream (`<tool>:<model>`), so a non-Odoo tool
+    // that happens to carry a `model` argument produces a key nobody has
+    // configured — which inherits the tool setting and changes nothing.
+    if (typeof explicit === "string" && explicit.length > 0) found.push(explicit);
+  }
+  visit(params);
+
+  return found;
+}

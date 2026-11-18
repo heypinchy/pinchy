@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Tier 2b: `handleHistory` includes an `activeRun` signal when there's a
  * matching in-flight run, and adds the requesting ws to the listener set
@@ -36,10 +37,18 @@ vi.mock("@/db", () => ({
       agents: { findFirst: mockFindFirst },
       users: { findFirst: mockUserFindFirst },
     },
+    // History re-attach (#703) reads agent_delivered_files; no grants here.
+    select: () => ({ from: () => ({ where: () => [] }) }),
   },
 }));
 
 vi.mock("@/db/schema", () => ({
+  agentDeliveredFiles: {
+    filename: "filename",
+    mimeType: "mime_type",
+    createdAt: "created_at",
+    sessionKey: "session_key",
+  },
   agents: { id: "id" },
   users: { id: "id" },
 }));
@@ -48,9 +57,14 @@ vi.mock("drizzle-orm", () => ({
   eq: vi.fn((col, val) => ({ col, val })),
 }));
 
+vi.mock("@/lib/budgets", () => ({
+  getExhaustedBlockingBudget: vi.fn().mockResolvedValue(null),
+}));
+
 vi.mock("@/lib/agent-access", () => ({
   assertAgentAccess: vi.fn(() => {}),
   effectiveVisibility: (v: string) => v,
+  isPersonalAgentPausedFor: vi.fn().mockResolvedValue(false),
 }));
 
 vi.mock("@/lib/enterprise", () => ({
@@ -188,6 +202,71 @@ describe("ClientRouter handleHistory ↔ ActiveRuns resume (#310 Tier 2b)", () =
     const run = activeRuns.get(sessionKey);
     expect(run?.listeners.has(wsReconnect)).toBe(true);
     expect(run?.listeners.has(wsOriginal)).toBe(true);
+  });
+
+  it("never counts a chunk twice when it streams in during an await of the history path", async () => {
+    // The reconnecting ws joins the listener set before the history frame is
+    // built, so a chunk emitted in between reaches it as a live delta (the
+    // client buffers it and appends it after seeding the bubble with
+    // `partialContent`). If the snapshot is taken after an await, that same
+    // chunk is also inside `partialContent` — the client then shows
+    // "one two two three…" (CI run 43218396411, integration spec 17).
+    const sessionKey = "agent:agent-1:direct:user-1";
+    activeRuns.register({
+      runId: "run-active",
+      sessionKey,
+      agentId: "agent-1",
+      userId: "user-1",
+      agentName: "Smithers",
+      startedAt: 1000,
+      currentMessageId: "msg-inflight",
+      ws: createMockWs(),
+    });
+    activeRuns.setContent(sessionKey, "one");
+    // Emits a chunk the way stream-pipe does: accumulate, mirror into the
+    // registry, broadcast to every listener — all in one synchronous block.
+    const emitChunk = (text: string) => {
+      const run = activeRuns.get(sessionKey)!;
+      activeRuns.setContent(sessionKey, run.currentContent + text);
+      for (const listener of run.listeners) {
+        listener.send(JSON.stringify({ type: "chunk", content: text, messageId: "msg-inflight" }));
+      }
+    };
+    // A chunk lands during each await of the history path: the live-sync
+    // subscription and the OpenClaw history fetch.
+    const pokeBridge = {
+      view: vi.fn(async () => {
+        emitChunk(" two");
+      }),
+    };
+    mockSessionsHistory.mockImplementationOnce(async () => {
+      emitChunk(" three");
+      return { messages: [{ role: "user", content: "count" }] };
+    });
+
+    const wsReconnect = createMockWs();
+    const router = new ClientRouter(
+      buildClient() as never,
+      "user-1",
+      "member",
+      sessionCache,
+      activeRuns,
+      undefined,
+      pokeBridge as never
+    );
+
+    await router.handleMessage(wsReconnect, { type: "history", agentId: "agent-1" });
+
+    const historyFrame = wsReconnect.sent.find((f) => f.type === "history") as {
+      activeRun?: { partialContent: string };
+    };
+    const liveDeltas = wsReconnect.sent
+      .filter((f) => f.type === "chunk")
+      .map((f) => f.content as string)
+      .join("");
+    expect(historyFrame.activeRun).toBeDefined();
+    // What the client renders: the seed plus every delta it received.
+    expect(historyFrame.activeRun!.partialContent + liveDeltas).toBe("one two three");
   });
 
   it("omits activeRun signal when there is no in-flight run", async () => {

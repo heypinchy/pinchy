@@ -1,8 +1,9 @@
 import { test, expect } from "@playwright/test";
 import {
   seedProviderConfig,
+  apiSignInAsAdmin,
+  apiSignIn,
   loginAsAdmin,
-  loginAs,
   switchUser,
   ADMIN_USER,
   createSecondUserViaInvite,
@@ -21,7 +22,7 @@ import {
  * 2. SECOND_USER's Smithers (personal) is NOT visible to admin
  *
  * Both Smithers agents are seeded automatically:
- * - Admin's: by seedDefaultAgent() during the setup wizard (isPersonal: true)
+ * - Admin's: by seedAdminSmithers() during the setup wizard (isPersonal: true)
  * - Second user's: by seedPersonalAgent() during invite claim (isPersonal: true)
  */
 test.describe.serial("Agent visibility — personal vs shared", () => {
@@ -30,14 +31,19 @@ test.describe.serial("Agent visibility — personal vs shared", () => {
 
   test.beforeAll(async ({ browser }) => {
     await seedProviderConfig();
-    const page = await browser.newPage();
-    await loginAsAdmin(page);
+
+    // Pure data-setup hook — only uses request contexts, never the page UI.
+    // Authenticate over the API (not the UI logins, which each wait up to 15 s
+    // for hydration) so the hook — which signs in as two different users —
+    // stays inside its 30 s budget under CI load. See `apiSignIn`.
+    const adminContext = await browser.newContext();
+    await apiSignInAsAdmin(adminContext.request);
 
     // Create second user via invite (idempotent: catch if already exists)
-    await createSecondUserViaInvite(page.context().request).catch(() => {});
+    await createSecondUserViaInvite(adminContext.request).catch(() => {});
 
     // Resolve the admin's personal Smithers ID
-    const agentsRes = await page.context().request.get("/api/agents");
+    const agentsRes = await adminContext.request.get("/api/agents");
     expect(agentsRes.ok()).toBeTruthy();
     const adminAgents = await agentsRes.json();
     const adminSmithers = (
@@ -46,12 +52,12 @@ test.describe.serial("Agent visibility — personal vs shared", () => {
     if (!adminSmithers) throw new Error("Admin's personal Smithers not found in /api/agents");
     adminSmithersId = adminSmithers.id;
 
-    await page.close();
+    await adminContext.close();
 
-    // Log in as second user to resolve their personal Smithers ID
-    const secondPage = await browser.newPage();
-    await loginAs(secondPage, SECOND_USER.email, SECOND_USER.password);
-    const secondAgentsRes = await secondPage.context().request.get("/api/agents");
+    // Sign in as second user to resolve their personal Smithers ID
+    const secondContext = await browser.newContext();
+    await apiSignIn(secondContext.request, SECOND_USER.email, SECOND_USER.password);
+    const secondAgentsRes = await secondContext.request.get("/api/agents");
     expect(secondAgentsRes.ok()).toBeTruthy();
     const secondAgents = await secondAgentsRes.json();
     const secondSmithers = (
@@ -61,7 +67,7 @@ test.describe.serial("Agent visibility — personal vs shared", () => {
       throw new Error("Second user's personal Smithers not found in /api/agents");
     secondUserSmithersId = secondSmithers.id;
 
-    await secondPage.close();
+    await secondContext.close();
   });
 
   test("admin's personal agent is not visible to a different user", async ({ page }) => {
@@ -86,11 +92,19 @@ test.describe.serial("Agent visibility — personal vs shared", () => {
     );
     expect(secondSeesAdminsSmithers).toBe(false);
 
-    // Direct fetch of the agent resource must return 403 (Forbidden).
-    // Accepting 404 here would mask a regression where the privacy check
-    // silently degrades to a not-found path. Match the second test exactly.
+    // Direct fetch of the agent resource must return 404 — the same answer an
+    // id that was never issued gets, so this cannot be used to confirm the
+    // agent exists (see the docblock on getAgentWithAccess).
+    //
+    // The original worry behind this assertion still stands and is still
+    // covered: a 404 must not be allowed to mask "the privacy check degraded
+    // into a not-found path" or "the id is simply wrong". What rules that out
+    // is the assertion above — the admin saw this exact id in their OWN
+    // /api/agents list moments ago, so the agent demonstrably exists and the
+    // 404 can only come from the access gate. Keep those two together; the
+    // status check alone would prove nothing.
     const directRes = await page.context().request.get(`/api/agents/${adminSmithersId}`);
-    expect(directRes.status()).toBe(403);
+    expect(directRes.status()).toBe(404);
 
     // Sidebar: admin's Smithers link must not be present
     // Both users have a Smithers agent, so we check by agentId in the href
@@ -125,9 +139,13 @@ test.describe.serial("Agent visibility — personal vs shared", () => {
     );
     expect(adminSeesSecondSmithers).toBe(false);
 
-    // Direct fetch should also return 403 (not just absent from list)
+    // Direct fetch should also return 404 (not just absent from list) — and
+    // note this caller is an ADMIN. Admins cannot list other users' personal
+    // agents either, so a 403 would hand even them an existence oracle.
+    // As in the first test, the id is proven real by the assertion above:
+    // the second user saw it in their own list before the switch.
     const directRes = await page.context().request.get(`/api/agents/${secondUserSmithersId}`);
-    expect(directRes.status()).toBe(403);
+    expect(directRes.status()).toBe(404);
 
     // UI: second user's Smithers link must not be present in admin's sidebar
     // /chat is not a route on its own — only /chat/[agentId]. Use /agents

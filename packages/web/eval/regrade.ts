@@ -16,9 +16,10 @@
  */
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { parseEvalJsonl } from "./canary";
 import { gradeRunForScenario } from "../src/lib/eval/graders";
-import { buildScorecard } from "../src/lib/eval/scorecard";
-import type { RunResult, RunTrajectory } from "../src/lib/eval/types";
+import { buildScorecard, primaryRuns } from "../src/lib/eval/scorecard";
+import type { PromptVariantId, RunResult, RunTrajectory } from "../src/lib/eval/types";
 import { hetznerInvoiceScenario, type HetznerInvoiceScenario } from "./scenarios/hetzner-invoice";
 import { hetznerInvoiceRejectedScenario } from "./scenarios/hetzner-invoice-rejected";
 import { hetznerInvoiceSilentFailureScenario } from "./scenarios/hetzner-invoice-silent-failure";
@@ -37,35 +38,83 @@ const SCENARIO_BY_LABEL: Record<string, HetznerInvoiceScenario> = {
   "hetzner-invoice-lineitems-models": hetznerInvoiceLineItemsScenario,
 };
 
+/**
+ * Resolves a persisted scorecard label to its scenario, transparently across
+ * the governed/ungoverned arms of the #723 comparison sweep: a "-governed"
+ * label re-grades against the SAME scenario object as its plain baseline (the
+ * arm changes the tool layer, never the task or its graders). Returns undefined
+ * for an unknown label so the CLI can print the known-labels list.
+ */
+export function scenarioForLabel(label: string): HetznerInvoiceScenario | undefined {
+  const base = label.endsWith("-governed") ? label.slice(0, -"-governed".length) : label;
+  return SCENARIO_BY_LABEL[base];
+}
+
+/**
+ * One line of a `results/<label>.trajectories.jsonl` log: the normalized
+ * trajectory plus the grade the sweep stored — and, for post-Task-15 dumps,
+ * the `promptVariant` the run was dispatched with. Optional because rows
+ * persisted by pre-variant sweeps lack the field (absence means primary).
+ */
+export type TrajectoryRecord = RunTrajectory & {
+  passed?: boolean;
+  tags?: string[];
+  promptVariant?: PromptVariantId;
+};
+
+/**
+ * Re-scores one persisted trajectory record with the CURRENT graders and
+ * rebuilds its RunResult. `promptVariant` is carried through when the record
+ * has one — dropping it would grandfather a paraphrase run into "primary" and
+ * conflate variants in the rebuilt scorecard. A legacy record without the
+ * field yields a RunResult without the key (absence stays absence).
+ */
+export function rebuildRunResult(
+  rec: TrajectoryRecord,
+  scenario: HetznerInvoiceScenario,
+  label: string
+): RunResult {
+  const traj: RunTrajectory = {
+    model: rec.model,
+    toolCalls: rec.toolCalls,
+    finalMessage: rec.finalMessage,
+    odooMoves: rec.odooMoves,
+    odooRecordsByModel: rec.odooRecordsByModel,
+    latencyMs: rec.latencyMs,
+    tokens: rec.tokens,
+  };
+  const graded = gradeRunForScenario(traj, scenario);
+  return {
+    ...graded,
+    model: rec.model,
+    scenario: label,
+    latencyMs: rec.latencyMs,
+    ...(rec.promptVariant !== undefined ? { promptVariant: rec.promptVariant } : {}),
+  };
+}
+
 async function main(): Promise<void> {
   const label = process.argv[2];
   const withQuotes = process.argv.includes("--quotes");
-  if (!label || !SCENARIO_BY_LABEL[label]) {
+  const scenario = label ? scenarioForLabel(label) : undefined;
+  if (!label || !scenario) {
     console.error(`Usage: tsx eval/regrade.ts <label> [--quotes]`);
-    console.error(`Known labels: ${Object.keys(SCENARIO_BY_LABEL).join(", ")}`);
+    console.error(
+      `Known labels: ${Object.keys(SCENARIO_BY_LABEL).join(", ")} (each also with a "-governed" suffix)`
+    );
     process.exit(1);
     return;
   }
-  const scenario = SCENARIO_BY_LABEL[label];
   const filePath = path.join(__dirname, "results", `${label}.trajectories.jsonl`);
   const text = await readFile(filePath, "utf8");
-  const lines = text.split("\n").filter((l) => l.trim().length > 0);
+  const records = parseEvalJsonl<TrajectoryRecord>(text);
 
   const results: RunResult[] = [];
   const flips: string[] = [];
   const quotes: string[] = [];
-  for (const line of lines) {
-    const rec = JSON.parse(line) as RunTrajectory & { passed?: boolean; tags?: string[] };
-    const traj: RunTrajectory = {
-      model: rec.model,
-      toolCalls: rec.toolCalls,
-      finalMessage: rec.finalMessage,
-      odooMoves: rec.odooMoves,
-      latencyMs: rec.latencyMs,
-      tokens: rec.tokens,
-    };
-    const graded = gradeRunForScenario(traj, scenario);
-    results.push({ ...graded, model: rec.model, scenario: label, latencyMs: rec.latencyMs });
+  for (const rec of records) {
+    const graded = rebuildRunResult(rec, scenario, label);
+    results.push(graded);
 
     if (typeof rec.passed === "boolean" && rec.passed !== graded.passed) {
       flips.push(
@@ -80,8 +129,20 @@ async function main(): Promise<void> {
     }
   }
 
-  const scorecard = buildScorecard(results);
-  console.log(`\n=== Re-grade "${label}" (${String(results.length)} runs) ===`);
+  // Primary-only, like every other headline aggregation (#803): a variant-
+  // bearing log holds paraphrase runs of the SAME model and scenario, so an
+  // unfiltered scorecard would pool a wording probe into the re-graded pass
+  // rate — the number this CLI exists to check the published one against.
+  const headlineRuns = primaryRuns(results);
+  const scorecard = buildScorecard(headlineRuns);
+  const excludedVariantRuns = results.length - headlineRuns.length;
+  console.log(`\n=== Re-grade "${label}" (${String(headlineRuns.length)} primary runs) ===`);
+  if (excludedVariantRuns > 0) {
+    console.log(
+      `(${String(excludedVariantRuns)} paraphrase-variant run(s) excluded — the headline is ` +
+        `primary-only; see the export's robustness block for their pass rates)`
+    );
+  }
   for (const e of scorecard) {
     console.log(
       `${e.model.padEnd(40)} pass=${String(e.passes)}/${String(e.n)} rate=${e.passRate.toFixed(
@@ -99,4 +160,6 @@ async function main(): Promise<void> {
   }
 }
 
-void main();
+// Only when run as the CLI — importers (the rebuild test) want `rebuildRunResult`,
+// not a usage error and a process.exit on their test runner.
+if (require.main === module) void main();

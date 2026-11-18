@@ -1,0 +1,231 @@
+import { NextRequest, NextResponse } from "next/server";
+import { eq } from "drizzle-orm";
+import { validateGatewayToken } from "@/lib/gateway-auth";
+import { parseRequestBody } from "@/lib/api-validation";
+import { gateCheckSchema } from "@/lib/schemas/approvals";
+import { decideGate } from "@/lib/approvals/service";
+import { computeArgsDigest } from "@/lib/approvals/digest";
+import { describeRefusal, summarizeCall, type SummaryLimit } from "@/lib/approvals/summary";
+import { approvalPromptFor } from "@/lib/approvals/prompt";
+import { resolveConfirmation, toolIsConfigured } from "@/lib/approvals/policy";
+import { collectCallModels, makeRefResolver } from "@/lib/approvals/call-models";
+import { readPluginSecret } from "@/lib/plugin-secrets-source";
+import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
+import { recordAuditFailure } from "@/lib/audit-deferred";
+import { directSessionUserId } from "@/lib/session-key";
+import { findUserIdIgnoringCase } from "@/lib/user-id-case";
+import { db } from "@/db";
+import { agents, users } from "@/db/schema";
+
+/**
+ * The AES key the opaque `_pinchy_ref` tokens are encrypted under. Pinchy
+ * generates it (`collectPluginSecrets`) and materialises it into secrets.json
+ * for the OC-side plugin, so reading it back here decodes a ref without any
+ * round trip — which is how a ref-based tool call names the model it touches.
+ */
+const REF_TOKEN_KEY = "pinchy-odoo:ref-token-key";
+
+/**
+ * The pinchy-approvals gate calls this for every tool it has decided is gated.
+ * It is the server-side security boundary: it consumes a valid ticket (allow)
+ * or records a pending confirmation (block). The acting user approves their
+ * own request via the session-authed decision route.
+ */
+function deriveRequesterPrincipal(
+  senderId: string | undefined,
+  sessionKey: string | undefined
+): string | undefined {
+  if (senderId) return senderId;
+  return directSessionUserId(sessionKey);
+}
+
+export async function POST(request: NextRequest) {
+  if (!validateGatewayToken(request.headers)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const parsed = await parseRequestBody(gateCheckSchema, request);
+  if ("error" in parsed) return parsed.error;
+  const { agentId, sessionKey, senderId, toolCallId, toolName, params } = parsed.data;
+
+  // Policy lives server-side: load the agent and short-circuit ungated tools
+  // so the gate adds no pending row (and the plugin can safely call this for
+  // every tool). One DB read keeps the policy always-fresh — no plugin cache.
+  const [agent] = await db
+    .select({ name: agents.name, pluginConfig: agents.pluginConfig })
+    .from(agents)
+    .where(eq(agents.id, agentId))
+    .limit(1);
+  if (!agent || !toolIsConfigured(agent.pluginConfig, toolName)) {
+    return NextResponse.json({ decision: "allow" });
+  }
+
+  // Which records this call touches, so a policy can be set per resource and
+  // not only per tool (#1133). Only reached for a tool the policy mentions —
+  // reading the ref key is a second settings query, and the answer for almost
+  // every tool call is already decided above.
+  const refKey = await readPluginSecret(REF_TOKEN_KEY);
+  const resources = collectCallModels(params, refKey);
+  if (resolveConfirmation(agent.pluginConfig, toolName, resources) === "allow") {
+    return NextResponse.json({ decision: "allow" });
+  }
+
+  const principal = deriveRequesterPrincipal(senderId, sessionKey);
+  const requesterId = principal ? await findUserIdIgnoringCase(principal) : undefined;
+  if (!requesterId || !sessionKey) {
+    // Fail closed: a gated tool must not run for an unidentifiable user — only
+    // a real Pinchy user can confirm it.
+    //
+    // A missing sessionKey lands here for the same reason and not by accident:
+    // a grant is bound to one session, so without one there is nothing to bind
+    // it to and no inbox the card would appear in. This is the branch the
+    // plugin used to pre-empt by allowing the call outright.
+    return NextResponse.json({
+      decision: "block",
+      reason:
+        `This action needs a confirmation from the person who asked for it, ` +
+        `but that person could not be identified in this conversation — so it was not run. ` +
+        `This happens outside the Pinchy app, where nobody can confirm. ` +
+        `Tell them that, then stop — do not call this tool again.`,
+    });
+  }
+
+  const argsDigest = computeArgsDigest(params);
+  const refRecord = makeRefResolver(refKey);
+  const call = summarizeCall(params, { refRecord });
+  const { summary: argsSummary, exceeded } = call;
+  const requesterName = async () => {
+    const [requester] = await db
+      .select({ name: users.name })
+      .from(users)
+      .where(eq(users.id, requesterId))
+      .limit(1);
+    return requester?.name ?? null;
+  };
+
+  // Fail closed on a call the card or the prompt cannot show in full. The
+  // summary marks what it left out, but a person who approves "1 more field not
+  // shown" still approves that field — the digest binds the whole call, and the
+  // whole call runs. So no confirmation is opened at all: there is nothing to
+  // approve. The bounds in `summary.ts` are sized for ordinary work; only an
+  // oversized call lands here. No pending row exists, so no grant can ever
+  // clear this digest. The model is told which bound the call crossed, and to
+  // split it only where that can help.
+  const refuse = async (limit: SummaryLimit) => {
+    const entry: AuditLogEntry = {
+      actorType: "agent",
+      actorId: agentId,
+      eventType: "approval.refused",
+      resource: `agent:${agentId}`,
+      detail: {
+        agent: { id: agentId, name: agent?.name ?? null },
+        // Name only: `detail` is immutable, so a users.id here is out of reach
+        // of crypto-erasure (#824).
+        requester: { name: await requesterName() },
+        toolName,
+        argsDigest,
+        reason: "too-large-to-show",
+        exceeded: limit.kind,
+      },
+      outcome: "failure",
+    };
+    try {
+      await appendAuditLog(entry);
+    } catch (err) {
+      recordAuditFailure(err, entry);
+    }
+    return NextResponse.json({ decision: "block", reason: describeRefusal(limit) });
+  };
+  if (exceeded) return refuse(exceeded);
+
+  // The wording every approval surface shows, and where "allow" runs the tool
+  // as surely as the card's Approve does. Built before anything is opened: a
+  // call whose hosts it cannot all name is refused here (`approvalPromptFor`).
+  // From the summary above: summarized again, a large call would cost the
+  // server's one event loop twice.
+  const approval = approvalPromptFor(toolName, call, resources);
+  if ("exceeded" in approval) return refuse(approval.exceeded);
+
+  const result = await decideGate({
+    agentId,
+    requesterId,
+    sessionKey,
+    toolName,
+    toolCallId,
+    argsDigest,
+    argsSummary,
+  });
+
+  // Audit a fresh request once (not on retries) and every consume.
+  if (result.created || result.decision === "allow") {
+    const entry: AuditLogEntry = {
+      actorType: "agent",
+      actorId: agentId,
+      eventType: result.decision === "allow" ? "approval.consumed" : "approval.requested",
+      resource: `approval:${result.requestId}`,
+      detail: {
+        request: { id: result.requestId },
+        agent: { id: agentId, name: agent?.name ?? null },
+        requester: { name: await requesterName() },
+        toolName,
+        argsDigest,
+      },
+      outcome: "success",
+    };
+    try {
+      await appendAuditLog(entry);
+    } catch (err) {
+      recordAuditFailure(err, entry);
+    }
+  }
+
+  if (result.decision === "allow") {
+    return NextResponse.json({ decision: "allow", requestId: result.requestId });
+  }
+
+  // Backpressure, not a confirmation request: nothing was opened, so there is
+  // nothing to audit as `approval.requested` either (the block above already
+  // skipped it — `created` is false). Say what is actually in the way, or the
+  // user goes looking for a card that was never created.
+  if (result.limited) {
+    return NextResponse.json({
+      decision: "block",
+      requestId: result.requestId,
+      reason:
+        `This action was not run: the user already has the maximum number of ` +
+        `confirmations waiting in Pinchy. Ask them to work through those first, ` +
+        `then stop — do not call this tool again, and do not suggest any command.`,
+    });
+  }
+  // This reason is consumed by the MODEL as the tool result, and the model
+  // relays it to the person in the chat — so it is written for that relay, not
+  // as an error string.
+  //
+  // It deliberately carries NO request id: `/approve <id>` is a real OpenClaw
+  // command for OpenClaw's OWN approvals, and given an id the model helpfully
+  // invents that command. Ours are Pinchy rows OpenClaw has never heard of, so
+  // the user is handed an instruction that fails. The id still travels in the
+  // response body, where the plugin — not the model — can read it.
+  //
+  // It also tells the model to stop rather than retry: without that, a model
+  // that reads "confirmation required" often calls the tool again immediately
+  // and burns the same block on a loop.
+  return NextResponse.json({
+    decision: "block",
+    requestId: result.requestId,
+    reason:
+      `This action needs the user's confirmation before it can run. ` +
+      `A confirmation card is waiting for them in Pinchy. ` +
+      `Tell them what you are about to do and that you are waiting for their confirmation, ` +
+      `then stop — do not call this tool again, and do not suggest any command.`,
+    // The wording the PERSON reads, as opposed to `reason`, which the model
+    // reads. It is built here rather than in the plugin because the plugin has
+    // no tool registry and must not grow one: what a tool is called in the UI
+    // and whether it needs confirming are the same decision, and that decision
+    // lives on this side of the gateway token.
+    //
+    // The plugin keys on the presence of this field to decide whether to pause
+    // the run, so it is absent from every non-blocking answer.
+    approval,
+  });
+}

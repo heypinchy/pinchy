@@ -114,15 +114,83 @@ describe("pinchy-context plugin", () => {
     )?.[0];
     const tool = factory({ agentId: "agent-1" });
 
-    global.fetch = vi.fn().mockResolvedValueOnce(
-      new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 })
-    );
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 })
+      );
 
     const result = await tool.execute("call-1", { content: "..." });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("Failed to save");
   });
 
+  it("save_user_context quotes the validation detail so the model can act on it", async () => {
+    const api = createMockApi(defaultConfig);
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = mockRegisterTool.mock.calls.find(
+      (call: any[]) => call[1]?.name === "pinchy_save_user_context"
+    )?.[0];
+    const tool = factory({ agentId: "agent-1" });
+
+    // Pinchy's 400 for an over-long context: `error` is the generic
+    // "Validation failed", the reason the model needs is in details.fieldErrors.
+    global.fetch = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          error: "Validation failed",
+          details: {
+            formErrors: [],
+            fieldErrors: {
+              content: ["Context is too long — the limit is 16,000 characters."],
+            },
+          },
+        }),
+        { status: 400 }
+      )
+    );
+
+    const result = await tool.execute("call-1", { content: "..." });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("the limit is 16,000 characters");
+  });
+
+  // A 401 from Pinchy (the shared gateway token was momentarily unreadable)
+  // means the user's context was NOT saved. That must reach the audit trail
+  // as a failure — details.error, the one signal that survives OpenClaw's
+  // stripping of isError (#404) — whatever the body looks like.
+  it.each([
+    [
+      "a JSON error",
+      () => new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 }),
+    ],
+    ["an HTML page", () => new Response("<html>401</html>", { status: 401 })],
+  ])("save_user_context reports a 401 with %s as a failed save", async (_label, response) => {
+    const api = createMockApi(defaultConfig);
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = mockRegisterTool.mock.calls.find(
+      (call: any[]) => call[1]?.name === "pinchy_save_user_context"
+    )?.[0];
+    const tool = factory({ agentId: "agent-1" });
+
+    global.fetch = vi.fn().mockResolvedValueOnce(response());
+
+    const result = await tool.execute("call-1", { content: "..." });
+    expect(result.isError).toBe(true);
+    expect(result.details.error).toEqual(expect.any(String));
+    expect(result.details.error.length).toBeGreaterThan(0);
+    expect(result.content[0].text).not.toMatch(/saved\./);
+  });
+
+  // OpenClaw strips the MCP `isError` flag before forwarding the tool result
+  // to /api/internal/audit/tool-use, so details.error is the audit route's
+  // only remaining failure signal (#404). Without it a failed save is
+  // silently audited as outcome: success — hence the details assertion here
+  // and on the save_org_context sibling below.
   it("save_user_context marks thrown errors with isError=true", async () => {
     const api = createMockApi(defaultConfig);
     const { default: plugin } = await import("./index");
@@ -138,6 +206,44 @@ describe("pinchy-context plugin", () => {
     const result = await tool.execute("call-1", { content: "..." });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toBe("Network down");
+    expect(result.details).toEqual({ error: "Network down" });
+  });
+
+  it("aborts a hung save_user_context POST via AbortSignal.timeout(10_000) instead of blocking forever", async () => {
+    const api = createMockApi(defaultConfig);
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = mockRegisterTool.mock.calls.find(
+      (call: any[]) => call[1]?.name === "pinchy_save_user_context"
+    )?.[0];
+    const tool = factory({ agentId: "agent-1" });
+
+    // Simulates a Pinchy container that never answers (mid-deploy, network
+    // blackhole) — the mock only ever settles via the AbortSignal the tool
+    // passes to fetch, exactly like a real hung `fetch` would once the
+    // signal fires.
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockImplementation((_ms: number) => {
+      const controller = new AbortController();
+      setTimeout(
+        () => controller.abort(new DOMException("The operation timed out.", "TimeoutError")),
+        1
+      );
+      return controller.signal;
+    });
+    global.fetch = vi.fn((_url: RequestInfo | URL, init?: RequestInit) => {
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        signal?.addEventListener("abort", () => {
+          reject(signal.reason ?? new Error("The operation was aborted"));
+        });
+      });
+    });
+
+    const result = await tool.execute("call-1", { content: "..." });
+    expect(result.isError).toBe(true);
+    expect(timeoutSpy).toHaveBeenCalledWith(10_000);
+    timeoutSpy.mockRestore();
   });
 
   it("save_org_context marks HTTP errors with isError=true", async () => {
@@ -150,9 +256,9 @@ describe("pinchy-context plugin", () => {
     )?.[0];
     const tool = factory({ agentId: "agent-2" });
 
-    global.fetch = vi.fn().mockResolvedValueOnce(
-      new Response(JSON.stringify({ error: "Forbidden" }), { status: 403 })
-    );
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: "Forbidden" }), { status: 403 }));
 
     const result = await tool.execute("call-1", { content: "..." });
     expect(result.isError).toBe(true);
@@ -174,6 +280,7 @@ describe("pinchy-context plugin", () => {
     const result = await tool.execute("call-1", { content: "..." });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toBe("Timeout");
+    expect(result.details).toEqual({ error: "Timeout" });
   });
 
   it("exports plugin definition with id and configSchema", async () => {

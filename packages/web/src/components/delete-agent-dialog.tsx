@@ -15,6 +15,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { useRestart } from "@/components/restart-provider";
+import { apiDelete, errorMessage } from "@/lib/api-client";
 
 interface DeleteAgentDialogProps {
   agentId: string;
@@ -28,17 +29,12 @@ export function DeleteAgentDialog({ agentId, agentName }: DeleteAgentDialogProps
 
   async function handleDelete() {
     try {
-      const res = await fetch(`/api/agents/${agentId}`, { method: "DELETE" });
-      if (!res.ok) {
-        const data = await res.json();
-        setError(data.error || "Failed to delete agent");
-        return;
-      }
+      await apiDelete(`/api/agents/${agentId}`);
       triggerRestart();
       router.push("/");
       router.refresh();
-    } catch {
-      setError("Failed to delete agent");
+    } catch (e) {
+      setError(errorMessage(e, "Failed to delete agent"));
     }
   }
 

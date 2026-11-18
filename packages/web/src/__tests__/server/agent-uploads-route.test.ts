@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "fs";
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, symlinkSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { makeNextRequest, routeContext } from "@/test-helpers/route";
@@ -51,16 +51,29 @@ afterEach(() => {
 
 const PDF_BYTES = Buffer.from("%PDF-1.4\n" + "\x00".repeat(128));
 
+// The bytes a symlink escape must never deliver. Shaped so the route WOULD
+// serve them without the containment check: real PDF magic bytes, so
+// `file-type` sniffs `application/pdf` and the MIME allowlist waves them
+// through. Content with no magic bytes is the weaker fixture — `.pdf` is
+// absent from EXTENSION_TO_MIME, so the unfixed route answers 415 and the
+// test then passes on a MIME rejection rather than on the leak (a check that
+// only ever turned 415 into 404 would satisfy it). Verified by reproduction:
+// reverted to the pre-fix routes, this payload is answered 200 with the
+// secret in the body.
+const SECRET_MARKER = "SECRET-CONTENTS-NOT-AN-UPLOAD";
+const SECRET_PDF_BYTES = Buffer.from("%PDF-1.4\n" + SECRET_MARKER + "\n" + "\x00".repeat(128));
+
 function writeUpload(agentId: string, filename: string, bytes: Buffer) {
   const dir = join(tmpRoot, agentId, "uploads");
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, filename), bytes);
 }
 
-async function callGET(agentId: string, filename: string) {
+async function callGET(agentId: string, filename: string, headers?: HeadersInit) {
   const { GET } = await import("@/app/api/agents/[agentId]/uploads/[filename]/route");
   const req = makeNextRequest(
-    `http://localhost/api/agents/${agentId}/uploads/${encodeURIComponent(filename)}`
+    `http://localhost/api/agents/${agentId}/uploads/${encodeURIComponent(filename)}`,
+    headers ? { headers } : undefined
   );
   return GET(req, routeContext({ agentId, filename }));
 }
@@ -108,8 +121,12 @@ describe("GET /api/agents/[agentId]/uploads/[filename]", () => {
     expect(res.status).toBe(404);
   });
 
-  it("forwards the getAgentWithAccess denial response verbatim (403 from helper → 403 to caller)", async () => {
-    // getAgentWithAccess returns a NextResponse on denial.
+  it("forwards the getAgentWithAccess denial response verbatim, whatever its status", async () => {
+    // getAgentWithAccess returns a NextResponse on denial. The 403 below is a
+    // SYNTHETIC sentinel, not the helper's real answer — it really denies with
+    // 404 (see its docblock). A status the helper never emits is what makes
+    // this test meaningful: a 404 here would also be produced by the route's
+    // own missing-file path, so it could not tell forwarding from minting.
     const { NextResponse } = await import("next/server");
     mockGetAgentWithAccess.mockResolvedValue(
       NextResponse.json({ error: "forbidden" }, { status: 403 })
@@ -150,12 +167,14 @@ describe("GET /api/agents/[agentId]/uploads/[filename]", () => {
     expect(res.status).toBe(415);
   });
 
-  it("sets X-Frame-Options: SAMEORIGIN so the browser can <embed> the file inline (PDF viewer)", async () => {
-    // Pinchy's global Next.js header rule emits X-Frame-Options: DENY for every
-    // path — which blocks AttachmentPreview's <embed> from loading the PDF.
-    // The uploads route MUST override this with SAMEORIGIN. Without this
-    // header the PDF preview silently fails: the user sees an empty modal
-    // and no console error.
+  it("declares X-Frame-Options: SAMEORIGIN so the browser can <embed> the file inline (PDF viewer)", async () => {
+    // This asserts what the HANDLER declares, which is NOT what the URL
+    // receives: next.config.ts's global `/(.*)` rule sets DENY and overrides
+    // anything set here, so this test stays green even when every PDF renders
+    // as a blank pane. The value a browser actually gets is asserted in
+    // src/__tests__/security/security-headers.test.ts (resolved per path) and
+    // enforced for every serving route by frame-options-route-coverage.test.ts.
+    // Keep this one anyway — the declaration is what those two resolve against.
     writeUpload("agent-1", "invoice.pdf", PDF_BYTES);
     const res = await callGET("agent-1", "invoice.pdf");
     expect(res.status).toBe(200);
@@ -180,5 +199,87 @@ describe("GET /api/agents/[agentId]/uploads/[filename]", () => {
     writeUpload("agent-1", "Profile (38).pdf", PDF_BYTES);
     const res = await callGET("agent-1", "Profile (38).pdf");
     expect(res.status).toBe(200);
+  });
+
+  // Defence in depth beyond sanitizeFilename + the lexical startsWith check:
+  // a symlink placed inside uploads/ (its filename itself passes
+  // sanitizeFilename) can point anywhere on disk. The lexical containment
+  // check above sees only the symlink's own in-scope path, never its target
+  // — only a realpath-based check catches this. 404, not 403 (or 200), so an
+  // escape attempt looks identical to a missing file.
+  it("returns 404 when a symlink inside uploads/ resolves outside the workspace", async () => {
+    const outsideDir = mkdtempSync(join(tmpdir(), "pinchy-uploads-escape-target-"));
+    const secretPath = join(outsideDir, "secret.pdf");
+    writeFileSync(secretPath, SECRET_PDF_BYTES);
+
+    const uploadsDir = join(tmpRoot, "agent-1", "uploads");
+    mkdirSync(uploadsDir, { recursive: true });
+    symlinkSync(secretPath, join(uploadsDir, "escape.pdf"));
+
+    try {
+      const res = await callGET("agent-1", "escape.pdf");
+      // Both assertions, deliberately: the status alone would still pass if a
+      // future change served the bytes under some other code, and the body
+      // alone would pass on a 403 that hands an attacker an existence oracle.
+      expect(res.status).toBe(404);
+      const body = Buffer.from(await res.arrayBuffer());
+      expect(body.includes(SECRET_MARKER)).toBe(false);
+    } finally {
+      rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  // The counterpart the escape test cannot give: what is enforced is
+  // CONTAINMENT, not "no symlinks". Without this, rejecting every symlink
+  // outright would satisfy the test above while silently breaking any
+  // workspace that uses one.
+  it("still serves a symlink inside uploads/ whose target stays inside uploads/", async () => {
+    writeUpload("agent-1", "invoice.pdf", PDF_BYTES);
+    const uploadsDir = join(tmpRoot, "agent-1", "uploads");
+    symlinkSync(join(uploadsDir, "invoice.pdf"), join(uploadsDir, "link.pdf"));
+
+    const res = await callGET("agent-1", "link.pdf");
+    expect(res.status).toBe(200);
+    const body = Buffer.from(await res.arrayBuffer());
+    expect(body.equals(PDF_BYTES)).toBe(true);
+  });
+});
+
+describe("GET /api/agents/[agentId]/uploads/[filename] — a cached copy is re-checked on every reuse", () => {
+  async function cachedEtag(): Promise<string> {
+    writeUpload("agent-1", "invoice.pdf", PDF_BYTES);
+    const first = await callGET("agent-1", "invoice.pdf");
+    expect(first.status).toBe(200);
+    return first.headers.get("etag")!;
+  }
+
+  it("answers an unchanged upload with 304 and no body", async () => {
+    const etag = await cachedEtag();
+
+    const res = await callGET("agent-1", "invoice.pdf", { "if-none-match": etag });
+
+    expect(res.status).toBe(304);
+    expect(res.body).toBeNull();
+  });
+
+  it("answers revoked access to the agent with that denial, never with 304", async () => {
+    const { NextResponse } = await import("next/server");
+    const etag = await cachedEtag();
+    mockGetAgentWithAccess.mockResolvedValue(
+      NextResponse.json({ error: "Forbidden" }, { status: 403 })
+    );
+
+    const res = await callGET("agent-1", "invoice.pdf", { "if-none-match": etag });
+
+    expect(res.status).toBe(403);
+  });
+
+  it("answers a user who no longer owns the upload with 404, never with 304", async () => {
+    const etag = await cachedEtag();
+    mockOwnershipLookup.mockResolvedValue([]);
+
+    const res = await callGET("agent-1", "invoice.pdf", { "if-none-match": etag });
+
+    expect(res.status).toBe(404);
   });
 });

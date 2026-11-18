@@ -27,15 +27,17 @@ tell the user to run `update-openclaw` separately.
 ## Procedure
 
 1. **Enumerate outdated packages per workspace**, not just root:
+
    ```bash
    pnpm outdated                              # root
    pnpm -C packages/web outdated
    for d in packages/plugins/*/; do pnpm -C "$d" outdated; done
    cd docs && pnpm outdated                    # standalone package.json/lockfile
    ```
+
    If `node_modules` isn't installed in the current worktree, every row shows
    "missing (wanted X)" — that's not a signal, ignore it. The `wanted →
-   latest` columns are what matter.
+latest` columns are what matter.
 
 2. **Bucket every outdated package into one of three groups** before touching
    any file:
@@ -63,7 +65,7 @@ tell the user to run `update-openclaw` separately.
        `eslint-config-next` ships a major that drops this constraint.
      - A dependency's major version just became `latest` days/weeks ago
        (check `npm view <pkg> time` or the dist-tags) — prefer the newest
-       release within the *previous* major and flag the fresh major as a
+       release within the _previous_ major and flag the fresh major as a
        separate, deliberate follow-up once it has real-world mileage.
      - A dependency that's a hand-rolled integration point, not a thin
        passthrough (e.g. a PDF/document engine used directly by our own
@@ -72,6 +74,7 @@ tell the user to run `update-openclaw` separately.
        sweep.
 
 3. **Apply the safe-bump and paired-bump groups**, then verify:
+
    ```bash
    pnpm install
    pnpm -C packages/web lint
@@ -82,6 +85,7 @@ tell the user to run `update-openclaw` separately.
    pnpm format
    cd docs && pnpm build           # if docs/ package.json changed
    ```
+
    Run the relevant `pnpm -C packages/web test:e2e:<suffix>` for any plugin
    whose external-API client library was bumped (e.g. `googleapis` →
    `test:e2e:email`).
@@ -95,12 +99,12 @@ tell the user to run `update-openclaw` separately.
 
 ## Quick Reference
 
-| Situation | Action |
-|---|---|
-| `openclaw` / `openclaw-node` outdated | Don't bump here — use `update-openclaw` |
-| `eslint` 9 → 10 available | Skip, known peer-dep blocker via `eslint-config-next` |
-| Package in `pnpm.patchedDependencies` | Bump in its own commit, re-verify the patch applies |
-| Two packages from one vendor, only one has a new major | Leave both pinned until the pair catches up |
-| Major version is brand new (days/weeks old) | Take the latest previous-major patch instead, flag the major separately |
-| Hand-rolled integration (PDF, parsing engine, etc.) major bump | Own PR, run its specific test suite against real data |
-| Any dependency bump at all | Never auto-commit — report the diff and ask |
+| Situation                                                      | Action                                                                  |
+| -------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `openclaw` / `openclaw-node` outdated                          | Don't bump here — use `update-openclaw`                                 |
+| `eslint` 9 → 10 available                                      | Skip, known peer-dep blocker via `eslint-config-next`                   |
+| Package in `pnpm.patchedDependencies`                          | Bump in its own commit, re-verify the patch applies                     |
+| Two packages from one vendor, only one has a new major         | Leave both pinned until the pair catches up                             |
+| Major version is brand new (days/weeks old)                    | Take the latest previous-major patch instead, flag the major separately |
+| Hand-rolled integration (PDF, parsing engine, etc.) major bump | Own PR, run its specific test suite against real data                   |
+| Any dependency bump at all                                     | Never auto-commit — report the diff and ask                             |

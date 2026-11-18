@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import "@testing-library/jest-dom";
@@ -12,7 +13,7 @@ vi.mock("@/lib/auth-client", () => ({
 }));
 
 vi.mock("next/navigation", () => ({
-  useRouter: vi.fn().mockReturnValue({ replace: vi.fn() }),
+  useRouter: vi.fn().mockReturnValue({ replace: vi.fn(), push: vi.fn() }),
   useSearchParams: vi.fn().mockReturnValue(new URLSearchParams()),
   usePathname: vi.fn().mockReturnValue("/settings"),
 }));

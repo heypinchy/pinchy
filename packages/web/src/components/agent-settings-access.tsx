@@ -11,10 +11,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { EnterpriseFeatureCard } from "@/components/enterprise-feature-card";
-import type { LicenseState } from "@/lib/license-state";
+import { useLicenseStatus } from "@/hooks/use-license-status";
+import type { AgentVisibility } from "@/db/enums";
 
 interface AccessValues {
-  visibility: string;
+  // Narrowed to the enum the agents table's CHECK constraint enforces, so the
+  // PATCH body this feeds type-checks against the route's own schema.
+  visibility: AgentVisibility;
   groupIds: string[];
 }
 
@@ -24,7 +27,7 @@ interface Group {
 }
 
 interface AgentSettingsAccessProps {
-  agent: { visibility: string };
+  agent: { visibility: AgentVisibility };
   currentGroupIds: string[];
   onChange: (values: AccessValues, isDirty: boolean) => void;
   isAdmin?: boolean;
@@ -43,9 +46,9 @@ export function AgentSettingsAccess({
   const [visibility, setVisibility] = useState(agent.visibility || "restricted");
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>(currentGroupIds);
   const [groups, setGroups] = useState<Group[]>([]);
-  const [isEnterprise, setIsEnterprise] = useState<boolean | null>(null);
-  const [licenseState, setLicenseState] = useState<LicenseState>("community");
-  const [licensePeriodEnd, setLicensePeriodEnd] = useState<string | null>(null);
+  const { license } = useLicenseStatus({ notifyOnFailure: true });
+  // null = unknown: stay in the loading state rather than show the upgrade card.
+  const isEnterprise = license?.enterprise ?? null;
 
   // Baseline tracks the last saved server state (updates when props change after save + refetch)
   const [baselineVisibility, setBaselineVisibility] = useState(agent.visibility || "restricted");
@@ -67,17 +70,6 @@ export function AgentSettingsAccess({
   }
 
   useEffect(() => {
-    fetch("/api/enterprise/status")
-      .then((res) => (res.ok ? res.json() : { enterprise: false }))
-      .then((data) => {
-        setIsEnterprise(data.enterprise);
-        if (data.state) setLicenseState(data.state);
-        setLicensePeriodEnd(data.paidUntil ?? data.expiresAt ?? null);
-      })
-      .catch(() => setIsEnterprise(false));
-  }, []);
-
-  useEffect(() => {
     if (!isEnterprise) return;
     fetch("/api/groups")
       .then((res) => (res.ok ? res.json() : []))
@@ -93,7 +85,8 @@ export function AgentSettingsAccess({
   }, [visibility, selectedGroupIds, baselineVisibility, baselineGroupIds, onChange]);
 
   function handleVisibilityChange(value: string) {
-    setVisibility(value);
+    // Radix hands back a bare string; the SelectItems below are the enum.
+    setVisibility(value as AgentVisibility);
     if (value !== "restricted") {
       setSelectedGroupIds([]);
     }
@@ -116,8 +109,8 @@ export function AgentSettingsAccess({
         description="Control which users and groups can access this agent. Set visibility to specific groups or make agents available to everyone."
         campaign="visibility"
         isAdmin={isAdmin}
-        licenseState={licenseState}
-        periodEnd={licensePeriodEnd}
+        licenseState={license?.state ?? "community"}
+        periodEnd={license?.paidUntil ?? license?.expiresAt ?? null}
       />
     );
   }
@@ -147,11 +140,19 @@ export function AgentSettingsAccess({
         <section className="space-y-4">
           <h3 className="text-lg font-semibold">Allowed Groups</h3>
           <p className="text-sm text-muted-foreground">
-            Select which groups can access this agent.
+            Members of the selected groups can use this agent. Admins always can.
           </p>
+          {/* Restricted with no group is a valid, deliberate state ("admins
+              only") and the default for every new agent — but on its own the
+              dropdown reads as if members had access. Say what it means. */}
+          {selectedGroupIds.length === 0 && (
+            <p className="rounded-md border bg-muted/50 p-3 text-sm">
+              Only admins can use this agent until you pick at least one group.
+            </p>
+          )}
           {groups.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              No groups available. Create groups in Settings first.
+              No groups yet. Create one in Settings → Groups, or choose All users above.
             </p>
           ) : (
             <div className="space-y-3">

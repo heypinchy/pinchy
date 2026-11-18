@@ -1,12 +1,16 @@
 import { betterAuth, type BetterAuthRateLimitOptions } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { createAuthMiddleware } from "better-auth/api";
+import { createAuthMiddleware, APIError } from "better-auth/api";
 import { admin } from "better-auth/plugins";
+import { apiKey } from "@better-auth/api-key";
 import { verifyPassword as verifyScrypt } from "better-auth/crypto";
 import bcrypt from "bcryptjs";
 import { db } from "@/db";
 import * as schema from "@/db/schema";
 import { appendAuditLog, redactEmail } from "@/lib/audit";
+import { API_KEY_PREFIX } from "@/lib/api-key-format";
+import { SIGN_IN_RATE_LIMIT_WINDOW_SECONDS } from "@/lib/auth-rate-limit";
+import { CLIENT_IP_HEADER, getTrustedProxies } from "@/server/client-ip";
 import { getCachedDomain } from "@/lib/domain";
 import { shouldUseSecureCookies } from "@/lib/secure-cookies";
 import { PASSWORD_MIN_LENGTH } from "@/lib/validate-password";
@@ -75,6 +79,41 @@ export const auditAfterHook = createAuthMiddleware(async (ctx) => {
 });
 
 /**
+ * The ONLY Better Auth endpoints an HTTP client may reach, by declared path.
+ *
+ * `app/api/auth/[...all]/route.ts` mounts the whole Better Auth handler, so
+ * every endpoint the core and our plugins (admin, apiKey) register is a live
+ * route unless the `hooks.before` guard below refuses it. An allowlist, not a
+ * blocklist: the blocklist this replaced closed sign-up, admin/* and the
+ * account-mutation endpoints and still missed /verify-password — a password
+ * oracle for anyone holding a stolen session. A Better Auth upgrade that adds
+ * an endpoint is closed by construction here; the drift guard in
+ * auth-client-surface.integration.test.ts enumerates `auth.api` to prove it.
+ *
+ * Established by what actually calls /api/auth/* (grep the repo for
+ * `authClient.` and `/api/auth/`):
+ */
+export const CLIENT_REACHABLE_AUTH_PATHS: ReadonlySet<string> = new Set([
+  // Login page (authClient.signIn.email); e2e + screenshot seed helpers.
+  "/sign-in/email",
+  // Logout button and the settings profile (authClient.signOut).
+  "/sign-out",
+  // authClient.useSession — the session atom's fetch and its refresh.
+  "/get-session",
+]);
+// Deliberately absent although harmless-looking: `/ok` (nothing probes it;
+// the container healthcheck is /api/health) and `/error` (Better Auth's error
+// page for OAuth/email-verification redirects, flows Pinchy does not use).
+
+/**
+ * The guard's refusal: the same bodyless 404 Better Auth's router gives a
+ * route that does not exist, rather than an `APIError`'s JSON body.
+ */
+function clientNotFound(): Response {
+  return new Response(null, { status: 404, statusText: "Not Found" });
+}
+
+/**
  * Hardened rate-limit config for Better Auth (see issue #239).
  *
  * Better Auth's defaults (3 req / 10s per IP on `/sign-in/*`) are too weak
@@ -120,10 +159,24 @@ export function getAuthRateLimitConfig(): BetterAuthRateLimitOptions {
     // order, so exact paths are listed BEFORE their corresponding wildcard
     // entries — `/sign-in/email` matches first; the `/sign-in/*` fallback
     // covers any future sub-path (OAuth, magic-link, passkey) we add.
+    //
+    // What these rules can and cannot do — read before relying on one:
+    //   - They run in the HTTP router's `onRequest`, keyed on the URL path,
+    //     BEFORE route matching and before `hooks.before`. Server-side
+    //     `auth.api.*` calls never pass through them (setup, invite claim,
+    //     /api/users/me/password — which is why that route has its own
+    //     limiter, lib/password-change-rate-limiter.ts).
+    //   - Of the paths below, only `/sign-in/email` is open to clients
+    //     (CLIENT_REACHABLE_AUTH_PATHS). For every other one the rule merely
+    //     caps how fast a client collects the guard's 404 — and, being path-
+    //     keyed, answers 429 once that cap is hit. They are kept as a second
+    //     layer: re-opening one of these endpoints must not ship it unthrottled.
     customRules: {
       // Pre-auth — brute-force / credential-stuffing protection
-      "/sign-in/email": { window: 60, max: 5 }, // was 3/10s = 18/min
-      "/sign-in/*": { window: 60, max: 5 },
+      // The window is shared with the login page, which tells the user how long
+      // to wait — see @/lib/auth-rate-limit.
+      "/sign-in/email": { window: SIGN_IN_RATE_LIMIT_WINDOW_SECONDS, max: 5 }, // was 3/10s = 18/min
+      "/sign-in/*": { window: SIGN_IN_RATE_LIMIT_WINDOW_SECONDS, max: 5 },
       "/sign-up/email": { window: 300, max: 3 },
       "/sign-up/*": { window: 300, max: 3 },
       // Reset flow — also a spam-DOS vector against user inboxes
@@ -163,6 +216,38 @@ export const auth = betterAuth({
     // (Without HTTPS the Secure flag/`__Secure-` prefix must be off or browsers
     // reject the cookie — the flag defaults to insecure when absent.)
     useSecureCookies: shouldUseSecureCookies(),
+    // Explicit rather than relying on Better Auth's/the browser's implicit
+    // default. The WS upgrade path (server.ts) has no CORS-equivalent
+    // defense of its own — WebSocket handshakes aren't subject to CORS/SOP —
+    // so the session cookie's SameSite attribute is part of the actual
+    // defense-in-depth against cross-site WebSocket hijacking. "lax" (not
+    // "strict") preserves today's behavior: "strict" would drop the cookie on
+    // legitimate top-level-navigation flows, e.g. an email-verification link
+    // landing the user on an authenticated page.
+    defaultCookieAttributes: {
+      sameSite: "lax",
+    },
+    // Which address the sign-in throttle buckets by (#825). Unconfigured,
+    // Better Auth reads `x-forwarded-for` and trusts a single value blindly —
+    // rotate the header, get a fresh 5-per-60s bucket, brute-force protection
+    // gone — while a proxy that appends produces two values, which it refuses
+    // to read at all, collapsing every sign-in on the instance into one bucket
+    // that five failures can lock for everyone.
+    //
+    // `server.ts` has already answered the question properly (it can see the
+    // socket, which Better Auth cannot) and stamped the answer, so that header
+    // comes first. It is an internal name the gate overwrites on every request;
+    // a client-supplied copy never survives to here.
+    //
+    // `x-forwarded-for` stays as a second entry for the paths that reach Better
+    // Auth without passing the stamp — a route imported directly by a test,
+    // or any future entry point that is not our HTTP server. With
+    // `trustedProxies` set, that fallback resolves right-to-left too, so it is
+    // a weaker source, not a spoofable one.
+    ipAddress: {
+      ipAddressHeaders: [CLIENT_IP_HEADER, "x-forwarded-for"],
+      trustedProxies: getTrustedProxies().trusted,
+    },
   },
   database: drizzleAdapter(db, {
     provider: "pg",
@@ -171,6 +256,7 @@ export const auth = betterAuth({
       user: schema.users,
       session: schema.sessions,
       account: schema.accounts,
+      apikey: schema.apiKeys,
     },
   }),
   emailAndPassword: {
@@ -204,12 +290,123 @@ export const auth = betterAuth({
     admin({
       defaultRole: "member",
     }),
+    // Agent Provisioning API (#572): programmatic clients authenticate with
+    // `pinchy_`-prefixed API keys instead of session cookies.
+    apiKey({
+      // D1 security: an API key must NEVER resolve to a full user session —
+      // keys are scoped machine credentials, not login tokens. Defaults false;
+      // set explicitly as belt-and-suspenders against a future default flip.
+      //
+      // ⚠️ Also load-bearing for key OWNERSHIP (lib/api-key-identity.ts):
+      // keys are issued against a constant service-account `referenceId`, not
+      // a user id. The plugin's session-from-key hook is the one place that
+      // resolves that column (`findUserById`, rejecting a miss with
+      // UNAUTHORIZED), and this flag is what stops that hook from ever being
+      // registered — the plugin gates its own matcher on it. Turning this on
+      // would therefore break every key at once: fail-closed, but baffling
+      // unless you've read this. D1 and the service-account id are one
+      // decision, not two.
+      enableSessionForAPIKeys: false,
+      // One-time key format: `pinchy_<random>`.
+      // Shared with `looksLikeApiKey` (lib/api-key-format.ts), which rejects a
+      // candidate carrying anything else BEFORE paying for verification. One
+      // constant rather than two agreeing strings: a drift between them would
+      // reject every valid key at once.
+      defaultPrefix: API_KEY_PREFIX,
+      // MUST stay longer than `defaultPrefix`. The plugin stores
+      // `start = key.substring(0, charactersLength)` as the masked identifier,
+      // and its default is 6 — one character SHORTER than `pinchy_`. Left
+      // alone, every key's `start` is the constant "pinchy": the Settings →
+      // API Keys column that exists to tell keys apart would show `pinchy…` on
+      // every row. That column is the only handle an admin has, because the
+      // plaintext is shown once and never stored — so 7 for the prefix + 6 real
+      // characters, matching the plugin's own intent for the field.
+      // Locked in by auth-apikey.integration.test.ts, against a real key.
+      startingCharactersConfig: { charactersLength: API_KEY_PREFIX.length + 6 },
+      // Defaults to false. Pinchy stores exactly one thing here: the
+      // `createdBy` provenance snapshot behind "whose key is this, and do we
+      // rotate it now that they've left?" (lib/api-key-identity.ts). Never
+      // secrets — the column is plain text to anything holding a DB
+      // connection, and GET /api/settings/api-keys masks it down to
+      // `createdBy` on the way out.
+      enableMetadata: true,
+      // The plugin's built-in per-key limiter defaults to 10 requests / 24h,
+      // which would throttle a legitimately busy API client, so it's off.
+      // The replacement is Pinchy-side, not delegated: `withApiKey`
+      // (lib/api-auth.ts, backed by lib/api-key-rate-limiter.ts) applies its
+      // own per-key request cap and a per-IP invalid-attempt cap to every
+      // /api/v1/* request (#1086).
+      rateLimit: { enabled: false },
+    }),
   ],
   session: {
     expiresIn: 60 * 60 * 24 * 7, // 7 days
     updateAge: 60 * 60 * 24, // refresh after 1 day
   },
   hooks: {
+    before: createAuthMiddleware(async (ctx) => {
+      // Allowlist guard. A CLIENT request — one that came through the HTTP
+      // router, which always sets `ctx.request` — to any endpoint outside
+      // CLIENT_REACHABLE_AUTH_PATHS gets a 404. That closes, among others:
+      //
+      //   /sign-up/*  open self-registration: any unauthenticated client got a
+      //               "member" account + session (invites and seat limits
+      //               bypassed). Users are created ONLY server-side
+      //               (auth.api.signUpEmail in lib/setup.ts and
+      //               app/api/invite/claim/route.ts).
+      //   /admin/*    impersonate-user, set-role, set-user-password,
+      //               remove-user, create-user, … — unaudited, and they bypass
+      //               Pinchy's guarantee that personal agents stay private
+      //               even from admins. Pinchy manages users via /api/users/*.
+      //   /update-user, /change-password, /change-email, /delete-user
+      //               unvalidated, unaudited account mutation. Pinchy has
+      //               /api/users/me, /api/users/me/password, /api/users/:id.
+      //   /verify-password
+      //               "is this the password?" for the session's own user,
+      //               outside the sign-in rate limit — a password oracle for a
+      //               stolen session.
+      //   /api-key/*  C1 (#572 whole-branch review, CRITICAL): the apiKey()
+      //               plugin's create/update/delete/get/list routes, live for
+      //               ANY session, bypassing the admin-gated, audited
+      //               /api/settings/api-keys route.
+      //   …and whatever else the core and plugins register (sessions, OAuth,
+      //   password reset, email verification). Not listed one by one, on
+      //   purpose: a list is what missed /verify-password.
+      //
+      // `ctx.path` is the endpoint's DECLARED path (dispatchAuthEndpoint sets
+      // it before running hooks), never the raw URL, so query strings and path
+      // tricks cannot reach a closed endpoint under an allowlisted name.
+      //
+      // Discriminator is `ctx.request` ONLY, not `ctx.headers`: a server-side
+      // call carries no request, and /api/users/me/password calls
+      // `auth.api.changePassword({ headers })` with the caller's headers
+      // forwarded — it must keep working.
+      //
+      // The answer is the router's own not-found shape (bodyless 404), so the
+      // guard does not advertise itself with a JSON body. It is NOT
+      // indistinguishable from a path that does not exist, and nothing should
+      // claim so: Better Auth's rate limiter and origin check run before the
+      // hook, so a closed path can still answer 429 (path-keyed rule) or 403
+      // (cookie-carrying POST from an untrusted Origin) where a missing route
+      // would say 404.
+      if (ctx.request && !CLIENT_REACHABLE_AUTH_PATHS.has(ctx.path)) {
+        return clientNotFound();
+      }
+
+      // The one server-side refusal. The apiKey() plugin's own create/update
+      // handlers treat `ctx.request || ctx.headers` as "client request"
+      // (@better-auth/api-key/dist/index.mjs: `isClientRequest`), so a
+      // server-side call that forwards a caller's headers to /api-key/* is
+      // refused too. Pinchy's own call — `auth.api.createApiKey({ body })` in
+      // app/api/settings/api-keys/route.ts — passes neither and is
+      // unaffected. The server-only `verifyApiKey` (every /api/v1 request via
+      // withApiKey) declares no path, so `ctx.path` there is "/" and never
+      // matches. Verified against the real dispatch pipeline, not just read
+      // from source.
+      if (ctx.path.startsWith("/api-key/") && ctx.headers) {
+        throw new APIError("NOT_FOUND", { message: "Not found" });
+      }
+    }),
     after: auditAfterHook,
   },
 });

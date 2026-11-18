@@ -2,7 +2,7 @@ import { z } from "zod";
 
 // Shared with POST /api/settings/oauth (parseRequestBody) and the client
 // dialogs (add-integration-dialog.tsx, edit-oauth-dialog.tsx) that build the
-// typed request body, per AGENTS.md's "Shared Schemas And Typed Client" rule.
+// typed request body, per agent-rules/web-routes.md's "Shared Schemas And Typed Client" rule.
 export const saveGoogleOAuthSchema = z.object({
   provider: z.literal("google"),
   clientId: z.string().min(1),

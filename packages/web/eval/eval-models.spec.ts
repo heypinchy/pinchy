@@ -45,41 +45,25 @@ import {
   pinAgentModel,
   runOnce,
   writeScorecard,
+  PINCHY_URL,
   appendRunResult,
   readExistingRuns,
   candidateModelsFromEnv,
   runsPerModelFromEnv,
+  promptVariantsFromEnv,
+  variantRunsPerModelFromEnv,
+  countRunsForVariant,
   injectOdooCreateFailure,
   injectOdooCreateSilentSuccess,
+  governanceModeFromEnv,
+  governedScorecardLabel,
 } from "./run-eval";
+import { DEFAULT_INVOICE_CANDIDATES } from "./candidates";
+import { describeError } from "./error-detail";
+import { captureRunFingerprint } from "./fingerprint";
+import { makeTokenCollector } from "./token-usage";
 import { setupHetznerAgent } from "./eval-shared";
-import type { RunResult } from "../src/lib/eval/types";
-
-// The curated candidate set for a public open-weight agent-reliability
-// benchmark (pinchy#669). Chosen for vendor breadth AND intra-family
-// comparisons (does the bigger/newer sibling actually behave better on a real
-// tool-using workflow?). Every id must exist in
-// src/lib/ollama-cloud-models.ts TOOL_CAPABLE_OLLAMA_CLOUD_MODELS — that file
-// is the source of truth for which models the /v1 path actually serves with
-// working tool calls. Override per-run with EVAL_CANDIDATE_MODELS.
-const DEFAULT_CANDIDATES = [
-  // — original 8-model sweep (2026-07-11) —
-  "ollama-cloud/kimi-k2.6",
-  "ollama-cloud/gemma4:31b",
-  "ollama-cloud/glm-4.7",
-  "ollama-cloud/glm-5.2",
-  "ollama-cloud/qwen3.5:397b",
-  "ollama-cloud/minimax-m3",
-  "ollama-cloud/gpt-oss:120b",
-  "ollama-cloud/mistral-large-3:675b",
-  // — breadth expansion: new vendors (DeepSeek, NVIDIA) + intra-family pairs —
-  "ollama-cloud/deepseek-v3.2",
-  "ollama-cloud/deepseek-v4-pro",
-  "ollama-cloud/nemotron-3-ultra",
-  "ollama-cloud/gpt-oss:20b",
-  "ollama-cloud/glm-5.1",
-  "ollama-cloud/minimax-m2.7",
-];
+import type { PromptVariantId, RunResult } from "../src/lib/eval/types";
 
 /**
  * The scenarios the sweep runs for every candidate model. `label` becomes
@@ -149,6 +133,25 @@ test.describe("Eval-v1: model sweep (real Ollama Cloud)", () => {
     await waitForGraphMock();
     const cookie = await login();
 
+    // Fingerprint the platform build now the stack is up, before any run. The
+    // sweep resumes across restarts, so capture once at the start rather than
+    // per scenario — every scorecard this sweep writes carries the same one. A
+    // fingerprint with comparable:false (e.g. a `dev` build) is a loud signal
+    // the run cannot anchor a version-regression baseline (#799).
+    const fingerprint = await captureRunFingerprint(PINCHY_URL, new Date().toISOString());
+    console.log(
+      `[eval] run fingerprint: pinchy=${fingerprint.pinchyVersion} openclaw=${fingerprint.openclawVersion} ` +
+        `build=${fingerprint.build} harness=${fingerprint.harnessSha.slice(0, 12)}${
+          fingerprint.harnessDirty ? "-dirty" : ""
+        } comparable=${String(fingerprint.comparable)}`
+    );
+    if (!fingerprint.comparable) {
+      console.warn(
+        "[eval] ⚠️ fingerprint is NOT comparable — this sweep cannot anchor a cross-version " +
+          "regression baseline (build is 'dev'/unknown, harness dirty, or a version field missing)."
+      );
+    }
+
     // Resolve the Ollama Cloud key from the environment, or fall back to the
     // copy already stored in the eval DB. The fallback is what lets an
     // unattended watchdog RESUME a sweep with NO secret on disk or in its
@@ -179,10 +182,29 @@ test.describe("Eval-v1: model sweep (real Ollama Cloud)", () => {
     `;
     await sql.end();
 
-    const candidates = candidateModelsFromEnv(DEFAULT_CANDIDATES);
+    const candidates = candidateModelsFromEnv(DEFAULT_INVOICE_CANDIDATES);
     const n = runsPerModelFromEnv(5);
 
+    // Paraphrase-variant opt-in (#803, PR 3): EVAL_PROMPT_VARIANTS selects
+    // which variants to dispatch IN ADDITION to the primary; each runs at
+    // EVAL_VARIANT_RUNS per model (default 6, vs. the primary's EVAL_N).
+    // Default (unset) is primary-only — byte-identical to the pre-variant
+    // sweep. Each (variant, target) pair fills independently on resume.
+    const variantIds = promptVariantsFromEnv();
+    const variantN = variantRunsPerModelFromEnv(6);
+    const dispatchPlan: Array<{ variant: PromptVariantId; target: number }> = [
+      { variant: "primary", target: n },
+      ...variantIds.map((variant) => ({ variant, target: variantN })),
+    ];
+
     const { agentId } = await setupHetznerAgent(cookie);
+
+    // A sweep-lived DB client for the #798 token join. Separate from the seeding
+    // `sql` above (already ended) so its lifetime spans every run; closed in the
+    // finally below. The collector polls `usage_records` per run by the run's
+    // unique session key — best-effort, never fails a run.
+    const tokenSql = postgres(dbUrl);
+    const collectTokens = makeTokenCollector(tokenSql);
 
     // Each scenario in SWEEP_SCENARIOS gets its OWN run list + scorecard file
     // (label) so "vendor-bill-created" and "honest-failure" (failure-
@@ -198,6 +220,16 @@ test.describe("Eval-v1: model sweep (real Ollama Cloud)", () => {
     const scenariosToRun = scenarioFilter
       ? SWEEP_SCENARIOS.filter((s) => scenarioFilter.includes(s.label))
       : SWEEP_SCENARIOS;
+
+    // The tool-layer governance arm this sweep measures (#723). Resolved ONCE
+    // from PINCHY_ODOO_GOVERNANCE — the same env the openclaw container obeys —
+    // so the scorecard label and the plugin's real behaviour cannot disagree.
+    // "enforced" writes to "<label>-governed" (protecting the frozen ungoverned
+    // Eval-v1 baseline that lives under the plain label); "off" writes the plain
+    // label. EVAL_SCENARIO still filters on the BASE label (the scenario name),
+    // not the arm-specific one.
+    const governance = governanceModeFromEnv();
+    console.log(`[eval] governance arm: ${governance}`);
 
     // Retry a stack/network operation a few times — over a multi-hour sweep a
     // host<->container fetch transiently fails ("TypeError: fetch failed")
@@ -218,92 +250,127 @@ test.describe("Eval-v1: model sweep (real Ollama Cloud)", () => {
       }
     };
 
-    for (const { label, scenario, extraSetup } of scenariosToRun) {
-      // Resume: seed the scorecard with runs already persisted to the JSONL
-      // (from a prior interrupted invocation) and skip models already at N.
-      const existingRuns = await readExistingRuns(label);
-      const scenarioRuns: RunResult[] = [...existingRuns];
+    try {
+      for (const { label: baseLabel, scenario, extraSetup } of scenariosToRun) {
+        // The arm-specific scorecard label: "<base>-governed" for the enforced
+        // arm, the plain base label for the ungoverned arm (#723). Everything
+        // downstream (resume, append, scorecard) keys on this so the two arms
+        // never share a JSONL file.
+        const label = governedScorecardLabel(baseLabel, governance);
+        // Resume: seed the scorecard with runs already persisted to the JSONL
+        // (from a prior interrupted invocation) and skip models already at N.
+        const existingRuns = await readExistingRuns(label);
+        const scenarioRuns: RunResult[] = [...existingRuns];
 
-      for (const model of candidates) {
-        const alreadyDone = existingRuns.filter((r) => r.model === model).length;
-        if (alreadyDone >= n) continue; // fully covered by a previous run
+        for (const model of candidates) {
+          // Resume counting keys on (model, variant) — absence ≡ primary — so
+          // the primary (n) and each variant (variantN) fill independently. A
+          // model-only count would mistake v1 rows for primary coverage and
+          // skip needed primary runs.
+          const pendingCells = dispatchPlan
+            .map(({ variant, target }) => ({
+              variant,
+              target,
+              alreadyDone: countRunsForVariant(existingRuns, model, variant),
+            }))
+            .filter(({ alreadyDone, target }) => alreadyDone < target);
+          if (pendingCells.length === 0) continue; // fully covered by a previous run
 
-        // Per-model setup (pin + stack readiness) with retry; if the stack
-        // stays unreachable, SKIP this model rather than aborting the sweep.
-        try {
-          await withRetry(async () => {
-            await pinAgentModel(cookie, agentId, model);
-            await waitForOpenClawStable(() => pinchyGet("/api/health/openclaw", cookie));
-            await waitForAgentDispatchable(
-              (id) => pinchyGet(`/api/health/openclaw?agentId=${id}`, cookie),
-              agentId
-            );
-          }, `setup ${model} / ${label}`);
-        } catch (err) {
-          console.warn(
-            `[eval] SKIPPING ${model} / ${label} — setup failed after retries: ${String(err)}`
-          );
-          continue;
-        }
-
-        for (let i = alreadyDone; i < n; i++) {
-          const runStart = Date.now();
+          // Per-model setup (pin + stack readiness) with retry; if the stack
+          // stays unreachable, SKIP this model rather than aborting the sweep.
           try {
-            await withRetry(
-              async () => {
-                await resetGraphMock();
-                await seedGraphMockMessages([
-                  scenario.graphSeedMessage,
-                  ...(scenario.extraGraphMessages ?? []),
-                ]);
-                await resetOdooMock();
-                await seedOdooBaseline(scenario.odooBaseline);
-                if (extraSetup) await extraSetup();
-                await loginViaUI(page, getAdminEmail(), getAdminPassword());
-              },
-              `run-setup ${model} #${String(i)}`
-            );
-            const result = await runOnce({
-              page,
-              cookie,
-              agentId,
-              model,
-              scenario,
-              scenarioLabel: label,
-            });
-            scenarioRuns.push(result);
-            await appendRunResult(label, result);
+            await withRetry(async () => {
+              await pinAgentModel(cookie, agentId, model);
+              await waitForOpenClawStable(() => pinchyGet("/api/health/openclaw", cookie));
+              await waitForAgentDispatchable(
+                (id) => pinchyGet(`/api/health/openclaw?agentId=${id}`, cookie),
+                agentId
+              );
+            }, `setup ${model} / ${label}`);
           } catch (err) {
-            // A hung/looping run (dispatch idle-timeout) or any per-run error
-            // must NOT abort the whole sweep or discard the scenario's data. A
-            // hang is itself a reliability signal (some models spiral when a
-            // tool result contradicts their plan), so record it as a graded
-            // run-timeout failure and keep going.
-            const latencyMs = Date.now() - runStart;
             console.warn(
-              `[eval] run ${String(i + 1)}/${String(n)} for ${model} / ${label} recorded as run-timeout: ${String(err)}`
+              `[eval] SKIPPING ${model} / ${label} — setup failed after retries: ${String(err)}`
             );
-            const timeoutResult: RunResult = {
-              model,
-              passed: false,
-              tags: ["run-timeout"],
-              notes: [String(err)],
-              latencyMs,
-              scenario: label,
-            };
-            scenarioRuns.push(timeoutResult);
-            await appendRunResult(label, timeoutResult);
+            continue;
+          }
+
+          for (const { variant, target, alreadyDone } of pendingCells) {
+            for (let i = alreadyDone; i < target; i++) {
+              const runStart = Date.now();
+              try {
+                await withRetry(
+                  async () => {
+                    await resetGraphMock();
+                    await seedGraphMockMessages([
+                      scenario.graphSeedMessage,
+                      ...(scenario.extraGraphMessages ?? []),
+                    ]);
+                    await resetOdooMock();
+                    await seedOdooBaseline(scenario.odooBaseline);
+                    if (extraSetup) await extraSetup();
+                    await loginViaUI(page, getAdminEmail(), getAdminPassword());
+                  },
+                  `run-setup ${model} [${variant}] #${String(i)}`
+                );
+                const result = await runOnce({
+                  page,
+                  cookie,
+                  agentId,
+                  model,
+                  scenario,
+                  scenarioLabel: label,
+                  promptVariant: variant,
+                  governance,
+                  collectTokens,
+                });
+                scenarioRuns.push(result);
+                await appendRunResult(label, result);
+              } catch (err) {
+                // A hung/looping run (dispatch idle-timeout) or any per-run error
+                // must NOT abort the whole sweep or discard the scenario's data. A
+                // hang is itself a reliability signal (some models spiral when a
+                // tool result contradicts their plan), so record it as a graded
+                // run-timeout failure and keep going.
+                const latencyMs = Date.now() - runStart;
+                console.warn(
+                  `[eval] run ${String(i + 1)}/${String(target)} [${variant}] for ${model} / ${label} recorded as run-timeout: ${describeError(err)}`
+                );
+                const timeoutResult: RunResult = {
+                  model,
+                  passed: false,
+                  tags: ["run-timeout"],
+                  notes: [describeError(err)],
+                  latencyMs,
+                  scenario: label,
+                  // Stamp the DISPATCHED variant so a timed-out variant run
+                  // counts against ITS cell on resume, not the primary's
+                  // (#803, PR 3).
+                  promptVariant: variant,
+                  // Stamp the governance arm too (#723) so a timed-out row is
+                  // attributed to the correct arm, matching runOnce's stamp.
+                  governance,
+                };
+                scenarioRuns.push(timeoutResult);
+                await appendRunResult(label, timeoutResult);
+              }
+            }
           }
         }
+
+        const scorecard = await writeScorecard(label, scenarioRuns, fingerprint);
+        console.log(
+          `[eval] wrote scorecard "${label}" for ${String(scenarioRuns.length)} runs:`,
+          scorecard
+        );
       }
-
-      const scorecard = await writeScorecard(label, scenarioRuns);
-      console.log(
-        `[eval] wrote scorecard "${label}" for ${String(scenarioRuns.length)} runs:`,
-        scorecard
+    } finally {
+      // Clean up the ephemeral sweep agent even when a run throws, then always
+      // close the token DB client. Each cleanup is isolated so one failing does
+      // not skip the other.
+      await pinchyDelete(`/api/agents/${agentId}`, cookie).catch((err: unknown) =>
+        console.warn(`[eval] agent cleanup failed: ${String(err)}`)
       );
+      await tokenSql.end();
     }
-
-    await pinchyDelete(`/api/agents/${agentId}`, cookie);
   });
 });

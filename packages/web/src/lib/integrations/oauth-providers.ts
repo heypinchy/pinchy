@@ -12,13 +12,15 @@
  * from oauth-settings.ts would drag `@/lib/settings` → `db` → `postgres` into
  * the client bundle and break the build.
  *
- * `validateMicrosoftTenant` from oauth-preflight.ts is the one exception to
- * "no imports beyond this file's own data": that module has zero imports of
- * its own (only global fetch/process/AbortSignal), so it is just as
- * client-safe as this file and is used to implement the microsoft
- * descriptor's `validateConfig`.
+ * `validateMicrosoftTenant` from oauth-preflight.ts and
+ * `resolveInsecureMockBaseUrl` from insecure-mock-base-url.ts are the two
+ * exceptions to "no imports beyond this file's own data". The latter has zero
+ * imports (only global process/console); the former's only import is the
+ * latter. Neither reaches the settings/db layer, so both are as client-safe as
+ * this file.
  */
 import { validateMicrosoftTenant } from "@/lib/integrations/oauth-preflight";
+import { resolveInsecureMockBaseUrl } from "@/lib/integrations/insecure-mock-base-url";
 // Type-only import (erased at compile time), so it keeps this module client-safe
 // while tying `connectionType` to the enum the DB CHECK constraint enforces.
 import type { IntegrationConnectionType } from "@/db/enums";
@@ -151,12 +153,14 @@ const MICROSOFT_GRAPH_DEFAULT = "https://graph.microsoft.com";
 /**
  * Resolve the Microsoft login host + effective tenant used by both the
  * authorize and token endpoints, so the two can never drift. The host honours
- * the `MICROSOFT_OAUTH_BASE_URL` env override (staging/mock); the tenant falls
- * back to "organizations" when absent or blank.
+ * the `MICROSOFT_OAUTH_BASE_URL` env override (staging/mock) only alongside
+ * `PINCHY_INSECURE_MAIL_MOCK=1` — the token endpoint receives the client secret
+ * and the refresh token, so an unflagged redirect would hand those over. The
+ * tenant falls back to "organizations" when absent or blank.
  */
 function microsoftHostAndTenant(tenantId?: string): { host: string; tenant: string } {
   const tenant = tenantId?.trim() || "organizations";
-  const host = process.env.MICROSOFT_OAUTH_BASE_URL ?? MICROSOFT_LOGIN_DEFAULT;
+  const host = resolveInsecureMockBaseUrl("MICROSOFT_OAUTH_BASE_URL") ?? MICROSOFT_LOGIN_DEFAULT;
   return { host, tenant };
 }
 
@@ -206,8 +210,10 @@ export const OAUTH_PROVIDERS: Record<OAuthProviderId, OAuthProviderDescriptor> =
       return `${host}/${tenant}/oauth2/v2.0/token`;
     },
     // Getter so the GRAPH_API_BASE_URL env override is read lazily (staging/mock).
+    // Honoured only alongside PINCHY_INSECURE_MAIL_MOCK=1 — this fetch carries
+    // the freshly minted access token.
     get profileUrl() {
-      const graphBase = process.env.GRAPH_API_BASE_URL ?? MICROSOFT_GRAPH_DEFAULT;
+      const graphBase = resolveInsecureMockBaseUrl("GRAPH_API_BASE_URL") ?? MICROSOFT_GRAPH_DEFAULT;
       return `${graphBase}/v1.0/me`;
     },
     extractEmail(profile) {

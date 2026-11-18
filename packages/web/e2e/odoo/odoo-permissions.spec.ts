@@ -75,17 +75,22 @@ test.describe.serial("Odoo Permission Setup", () => {
     const conn = await connRes.json();
     connectionId = conn.id;
 
-    // Wait for the sync to populate models on the connection.
+    // Trigger a sync to populate models on the connection.
     // The wizard flow triggers sync automatically, but API creation may need
-    // the sync endpoint called explicitly.
+    // the sync endpoint called explicitly. No wait needed after: the sync
+    // route (POST /api/integrations/[connectionId]/sync) awaits its DB write
+    // of `data.models` before responding, so once the request resolves the
+    // models are already committed — there is nothing left to wait for.
     const syncRes = await fetch(`${PINCHY_URL}/api/integrations/${connectionId}/sync`, {
       method: "POST",
       headers: { Cookie: cookie, Origin: PINCHY_URL },
     });
-    // Sync may or may not exist — if not, the wizard already synced
-    if (syncRes.ok) {
-      // Give it a moment to complete
-      await new Promise((r) => setTimeout(r, 2000));
+    // A non-ok sync stays tolerated (the wizard may already have synced), but
+    // it is the one way the "models are committed" claim above does not hold —
+    // so say so instead of letting it surface later as an unexplained empty
+    // model list.
+    if (!syncRes.ok) {
+      console.warn(`[odoo-permissions] explicit sync returned ${String(syncRes.status)}`);
     }
 
     // Ensure we have a shared (non-personal) agent
@@ -131,7 +136,24 @@ test.describe.serial("Odoo Permission Setup", () => {
     await expect(page.getByRole("button", { name: /add model/i })).toBeVisible();
   });
 
-  test("add a model and verify checkboxes", async ({ page }) => {
+  /**
+   * The matrix cell is a three-state radiogroup since #1133 (not allowed ·
+   * ask first · allowed), so an assertion has to name WHICH state is set
+   * rather than checked/unchecked. That is stricter than what it replaced:
+   * "not checked" could not tell "not allowed" from "allowed but pausing".
+   */
+  // Exact string rather than a constructed RegExp: `new RegExp(op)` trips
+  // security/detect-non-literal-regexp, and an exact name is the stronger
+  // assertion anyway — "read Orders" must not be satisfied by a cell whose
+  // label merely contains it.
+  const cell = (page: Page, op: string, model = "Orders") =>
+    page.getByRole("radiogroup", { name: `${op} ${model}`, exact: true });
+  const expectState = (page: Page, op: string, state: RegExp) =>
+    expect(cell(page, op).getByRole("radio", { name: state })).toBeChecked();
+  const ALLOWED = /^allowed/i;
+  const NOT_ALLOWED = /^not allowed/i;
+
+  test("add a model and verify its access states", async ({ page }) => {
     await loginViaUI(page);
 
     await page.goto(`/chat/${agentId}/settings?tab=permissions`);
@@ -161,18 +183,11 @@ test.describe.serial("Odoo Permission Setup", () => {
     // Model should now appear in the table
     await expect(page.getByText("sale.order")).toBeVisible();
 
-    // At Read-only: Read checkbox should be checked
-    const readCheckbox = page.getByRole("checkbox", { name: /read orders/i });
-    await expect(readCheckbox).toBeChecked();
-
-    // Create, Write, Delete should be unchecked at Read-only level
-    const createCheckbox = page.getByRole("checkbox", { name: /create orders/i });
-    const writeCheckbox = page.getByRole("checkbox", { name: /write orders/i });
-    const deleteCheckbox = page.getByRole("checkbox", { name: /delete orders/i });
-
-    await expect(createCheckbox).not.toBeChecked();
-    await expect(writeCheckbox).not.toBeChecked();
-    await expect(deleteCheckbox).not.toBeChecked();
+    // At Read-only: read is granted and ungated, the rest not granted at all.
+    await expectState(page, "read", ALLOWED);
+    await expectState(page, "create", NOT_ALLOWED);
+    await expectState(page, "write", NOT_ALLOWED);
+    await expectState(page, "delete", NOT_ALLOWED);
   });
 
   test("change access level updates existing models", async ({ page }) => {
@@ -196,20 +211,20 @@ test.describe.serial("Odoo Permission Setup", () => {
       .first()
       .click();
 
-    // Verify only Read is checked
-    await expect(page.getByRole("checkbox", { name: /read orders/i })).toBeChecked();
-    await expect(page.getByRole("checkbox", { name: /create orders/i })).not.toBeChecked();
-    await expect(page.getByRole("checkbox", { name: /write orders/i })).not.toBeChecked();
-    await expect(page.getByRole("checkbox", { name: /delete orders/i })).not.toBeChecked();
+    // Verify only Read is granted
+    await expectState(page, "read", ALLOWED);
+    await expectState(page, "create", NOT_ALLOWED);
+    await expectState(page, "write", NOT_ALLOWED);
+    await expectState(page, "delete", NOT_ALLOWED);
 
     // Switch to "Read & Write"
     await page.getByRole("radio", { name: "Read & Write" }).click();
 
-    // Now Read, Create, Write should be checked; Delete still unchecked
-    await expect(page.getByRole("checkbox", { name: /read orders/i })).toBeChecked();
-    await expect(page.getByRole("checkbox", { name: /create orders/i })).toBeChecked();
-    await expect(page.getByRole("checkbox", { name: /write orders/i })).toBeChecked();
-    await expect(page.getByRole("checkbox", { name: /delete orders/i })).not.toBeChecked();
+    // Now Read, Create and Write are granted; Delete still is not
+    await expectState(page, "read", ALLOWED);
+    await expectState(page, "create", ALLOWED);
+    await expectState(page, "write", ALLOWED);
+    await expectState(page, "delete", NOT_ALLOWED);
   });
 
   test("remove a model", async ({ page }) => {
@@ -311,11 +326,14 @@ test.describe.serial("Odoo Permission Setup", () => {
     await page.goto(`/chat/${agentId}/settings?tab=permissions`);
     await expect(page.getByRole("heading", { name: "Odoo" })).toBeVisible({ timeout: 10000 });
 
-    // Toggle a KB tool — its change crosses one of the snapshots that the
-    // child component used to freeze at mount. Use "Write files" (pinchy_write):
-    // it's the only KB toggle still rendered after pinchy_ls/pinchy_read became
-    // implicit always-on tools (#384).
-    await page.getByLabel("Write files").click();
+    // Toggle a workspace tool — its change crosses one of the snapshots that
+    // the child component used to freeze at mount. Use "Create files"
+    // (pinchy_write): the Knowledge Base section has no toggle left of its own
+    // since pinchy_ls/pinchy_read became implicit always-on tools (#384), and
+    // this checkbox moved into its own Workspace section when memory became a
+    // separate grant. What the test needs is any non-Odoo checkbox whose change
+    // propagates through the same onChange — not a Knowledge Base one.
+    await page.getByLabel("Create files").click();
     await expect(page.getByText("Unsaved changes")).toBeVisible({ timeout: 10000 });
 
     // Remove enterprise badge overlay if present (blocks button clicks).

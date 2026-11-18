@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -5,7 +6,7 @@ import "@testing-library/jest-dom";
 import { toast } from "sonner";
 import { SettingsGroups } from "@/components/settings-groups";
 
-vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn(), dismiss: vi.fn() } }));
 
 describe("SettingsGroups", () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>;
@@ -59,6 +60,9 @@ describe("SettingsGroups", () => {
       if (String(url) === "/api/users") {
         return jsonResponse({ users });
       }
+      if (/^\/api\/groups\/[^/]+\/members$/.test(String(url))) {
+        return jsonResponse([]);
+      }
       return { ok: false, status: 404, json: async () => ({}), text: async () => "" } as Response;
     });
   }
@@ -78,6 +82,23 @@ describe("SettingsGroups", () => {
     expect(tableView.getByText("Dev team")).toBeInTheDocument();
     expect(tableView.getByText("3")).toBeInTheDocument();
     expect(tableView.getByText("1")).toBeInTheDocument();
+  });
+
+  it("gives the Members and Actions headers room of their own (#1278)", async () => {
+    // A 10% column with a nowrap header ran "Members" into "Actions"
+    // ("MembersActions"); fixed widths instead squeezed Description to nothing
+    // on a narrow card. jsdom does no layout, so this pins the shape that
+    // cannot overflow: no share-based widths, Description absorbs the slack.
+    mockFetch();
+    render(<SettingsGroups />);
+
+    const table = await screen.findByRole("table");
+    expect(table).not.toHaveClass("table-fixed");
+    for (const header of within(table).getAllByRole("columnheader")) {
+      expect(header.className).not.toMatch(/\bw-\[\d+%\]/);
+    }
+    expect(within(table).getByRole("columnheader", { name: "Description" })).toHaveClass("w-full");
+    expect(within(table).getByRole("columnheader", { name: "Actions" })).toHaveClass("text-right");
   });
 
   it("should show create dialog on button click", async () => {
@@ -219,6 +240,39 @@ describe("SettingsGroups", () => {
     expect(
       screen.getByText(/Create groups to control which users can access which agents/)
     ).toBeInTheDocument();
+  });
+
+  // A status fetch that never reached the server (a restarting container, a
+  // dropped connection) or came back non-OK says nothing about the license.
+  // Rendering the upgrade card for it tells an enterprise admin they are on
+  // Community. "Unknown" stays in the loading state and retries.
+  it.each([
+    ["the status fetch rejects", () => Promise.reject(new TypeError("Failed to fetch"))],
+    [
+      "the status fetch answers 500",
+      async () => jsonResponse({ error: "Internal Server Error" }, { status: 500 }),
+    ],
+  ])("does not render the upgrade card when %s", async (_label, statusResponse) => {
+    vi.mocked(global.fetch).mockImplementation(async (url) => {
+      if (String(url) === "/api/enterprise/status") return statusResponse();
+      return jsonResponse([]);
+    });
+    render(<SettingsGroups />);
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(
+        expect.stringMatching(/license status/i),
+        expect.objectContaining({
+          id: expect.any(String),
+        })
+      );
+    });
+
+    expect(screen.queryByText("Pro")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/Create groups to control which users can access which agents/)
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("Loading...")).toBeInTheDocument();
   });
 
   it("on edit partial-failure (PATCH ok, PUT members fails), surfaces a specific toast and refreshes data", async () => {
@@ -390,5 +444,96 @@ describe("SettingsGroups", () => {
     ).toBeInTheDocument();
     // Stronger check: an interactive form field is only accessible when the dialog is truly open
     expect(screen.getByLabelText(/^name$/i)).toBeInTheDocument();
+  });
+
+  // The load runs from an effect that awaits nothing. Before it caught, a
+  // network failure left the table empty — "no groups" — and a 500 did the
+  // same silently, so neither could be told apart from a fresh install.
+  it.each([
+    ["the groups load rejects", () => Promise.reject(new TypeError("Failed to fetch"))],
+    ["the groups load answers 500", async () => jsonResponse({}, { status: 500, ok: false })],
+  ])("says the groups could not be loaded when %s", async (_label, groupsResponse) => {
+    vi.mocked(global.fetch).mockImplementation(async (url) => {
+      if (String(url) === "/api/enterprise/status") return jsonResponse({ enterprise: true });
+      if (String(url) === "/api/groups") return groupsResponse();
+      return jsonResponse({ users: mockUsers });
+    });
+    render(<SettingsGroups />);
+
+    // The tab is mounted in the background, so a toast would be gone by the
+    // time the admin opens it: the failure stands where the list would be.
+    expect(await screen.findByRole("alert")).toHaveTextContent(/couldn't load your groups/i);
+    expect(screen.queryByText(/No groups yet/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "New Group" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Loading...")).not.toBeInTheDocument();
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it("keeps the list and toasts when the refresh after a change fails", async () => {
+    const user = userEvent.setup();
+    mockFetch();
+    render(<SettingsGroups />);
+    await waitFor(() => expect(screen.getAllByText("Engineering").length).toBeGreaterThan(0));
+
+    vi.mocked(global.fetch).mockImplementation(async (url, init) => {
+      if (init?.method === "DELETE") return jsonResponse({ success: true });
+      if (String(url) === "/api/groups") return jsonResponse({}, { status: 500, ok: false });
+      return jsonResponse({ users: mockUsers });
+    });
+    const table = screen.getByRole("table");
+    const row = within(table).getByText("Design").closest("tr")!;
+    await user.click(within(row).getByRole("button", { name: "Delete" }));
+    const dialog = await screen.findByRole("alertdialog");
+    await user.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Failed to load groups"));
+    expect(screen.getAllByText("Engineering").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  // An edit dialog opened with no members checked would save that: PUT
+  // /members { userIds: [] } removes every member of the group.
+  it.each([
+    ["rejects", () => Promise.reject(new TypeError("Failed to fetch"))],
+    ["answers 500", async () => jsonResponse({}, { status: 500, ok: false })],
+  ])("does not open the edit dialog when the members load %s", async (_label, membersResponse) => {
+    const user = userEvent.setup();
+    mockFetch();
+    render(<SettingsGroups />);
+    await waitFor(() => expect(screen.getAllByText("Engineering").length).toBeGreaterThan(0));
+
+    vi.mocked(global.fetch).mockImplementation(async (url) => {
+      if (String(url) === "/api/groups/g1/members") return membersResponse();
+      return jsonResponse([]);
+    });
+    const table = screen.getByRole("table");
+    const row = within(table).getByText("Engineering").closest("tr")!;
+    await user.click(within(row).getByRole("button", { name: "Edit" }));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    expect(
+      screen.queryByText("Edit Group", { selector: "[data-slot='dialog-title']" })
+    ).not.toBeInTheDocument();
+  });
+
+  it("cancels the load and says nothing when it unmounts mid-flight", async () => {
+    const signals: (AbortSignal | undefined)[] = [];
+    vi.mocked(global.fetch).mockImplementation(async (url, init) => {
+      if (String(url) === "/api/enterprise/status") return jsonResponse({ enterprise: true });
+      signals.push(init?.signal ?? undefined);
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () =>
+          reject(new DOMException("The operation was aborted.", "AbortError"))
+        );
+      });
+    });
+    const { unmount } = render(<SettingsGroups />);
+
+    await waitFor(() => expect(signals).toHaveLength(2));
+    unmount();
+
+    expect(signals.every((signal) => signal?.aborted)).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(toast.error).not.toHaveBeenCalled();
   });
 });

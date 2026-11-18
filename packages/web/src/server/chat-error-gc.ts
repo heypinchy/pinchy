@@ -1,16 +1,17 @@
 /**
  * Retention sweep for the durable chat-error store. Rows are tiny (one per agent
  * error), but resolved ones — superseded by a later success or dismissed by the
- * user — accumulate. Two windows: resolved rows are reaped after
- * RESOLVED_RETENTION_DAYS; un-resolved rows (the live banner state) are kept far
- * longer but still reaped after a hard UNRESOLVED_RETENTION_DAYS cap so an error
- * a user neither retried nor dismissed can't leak forever.
+ * user — accumulate. Two windows: rows that are resolved OR were never
+ * banner-eligible are reaped after RESOLVED_RETENTION_DAYS; un-resolved rows
+ * (the live banner state) are kept far longer but still reaped after a hard
+ * UNRESOLVED_RETENTION_DAYS cap so an error a user neither retried nor dismissed
+ * can't leak forever.
  *
  * Mirrors `upload-gc.ts`: an hourly interval plus a post-startup kick, and a
  * single `sweepId` UUID per run on the summary audit row so an analyst can
  * correlate the sweep (AGENTS.md §"Audit logging rules").
  */
-import { and, lt, or, isNotNull } from "drizzle-orm";
+import { and, eq, lt, or, isNotNull } from "drizzle-orm";
 
 import { db } from "@/db";
 import { chatSessionErrors } from "@/db/schema";
@@ -35,10 +36,17 @@ export async function sweepResolvedChatErrors(): Promise<ChatErrorSweepResult> {
     .delete(chatSessionErrors)
     .where(
       or(
-        // Resolved (superseded/dismissed) past the short window…
+        // Resolved (superseded/dismissed) past the short window — plus rows
+        // that never show a banner at all (#1013). Those exist only to answer
+        // the retry gate for their run, and nobody retries a run a month later;
+        // they are not the live banner state the 90-day cap protects.
         and(
           lt(chatSessionErrors.createdAt, resolvedCutoff),
-          or(isNotNull(chatSessionErrors.supersededAt), isNotNull(chatSessionErrors.dismissedAt))
+          or(
+            isNotNull(chatSessionErrors.supersededAt),
+            isNotNull(chatSessionErrors.dismissedAt),
+            eq(chatSessionErrors.showBanner, false)
+          )
         ),
         // …or anything (incl. un-resolved/abandoned) past the hard cap.
         lt(chatSessionErrors.createdAt, hardCutoff)

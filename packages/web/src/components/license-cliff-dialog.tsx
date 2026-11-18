@@ -17,6 +17,7 @@ import {
   conversionLink,
   type UtmCampaign,
 } from "@/lib/conversion-links";
+import { formatLicenseDate } from "@/lib/format-date";
 
 interface LicenseCliffDialogProps {
   open: boolean;
@@ -29,14 +30,6 @@ interface LicenseCliffDialogProps {
   licenseState: LicenseState;
   /** ISO date the license period ended (paidUntil, or exp as fallback). */
   periodEnd: string | null;
-}
-
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
 }
 
 /**
@@ -53,7 +46,7 @@ export function LicenseCliffDialog({
   licenseState,
   periodEnd,
 }: LicenseCliffDialogProps) {
-  const ended = periodEnd ? ` on ${formatDate(periodEnd)}` : "";
+  const ended = periodEnd ? ` on ${formatLicenseDate(periodEnd)}` : "";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

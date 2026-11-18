@@ -40,15 +40,15 @@ const CASES: Array<{ templateId: string; provider: ProviderName; expected: strin
   {
     templateId: "odoo-crm-assistant",
     provider: "anthropic",
-    expected: "anthropic/claude-sonnet-4-6",
+    expected: "anthropic/claude-sonnet-5",
   },
-  { templateId: "knowledge-base", provider: "anthropic", expected: "anthropic/claude-sonnet-4-6" },
+  { templateId: "knowledge-base", provider: "anthropic", expected: "anthropic/claude-sonnet-5" },
 
   // Balanced + vision/long-context/tools — all Anthropic tiers satisfy these capabilities
   {
     templateId: "contract-analyzer",
     provider: "anthropic",
-    expected: "anthropic/claude-sonnet-4-6",
+    expected: "anthropic/claude-sonnet-5",
   },
   { templateId: "contract-analyzer", provider: "openai", expected: "openai/gpt-5.5" },
   { templateId: "contract-analyzer", provider: "google", expected: "google/gemini-2.5-pro" },

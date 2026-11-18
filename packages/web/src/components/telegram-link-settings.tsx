@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { QRCodeSVG } from "qrcode.react";
+import { apiPost, apiDelete, errorMessage } from "@/lib/api-client";
+import type { LinkTelegramInput } from "@/lib/schemas/telegram";
 import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -113,23 +115,13 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
     setLinking(true);
     setLinkError("");
     try {
-      const res = await fetch("/api/settings/telegram", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code: code.trim() }),
-      });
-
-      if (res.ok) {
-        setCode("");
-        setLinkError("");
-        toast.success("Telegram account linked");
-        await fetchData();
-      } else {
-        const data = await res.json();
-        setLinkError(data.error || "Failed to link Telegram account");
-      }
-    } catch {
-      setLinkError("Failed to link Telegram account");
+      await apiPost<unknown, LinkTelegramInput>("/api/settings/telegram", { code: code.trim() });
+      setCode("");
+      setLinkError("");
+      toast.success("Telegram account linked");
+      await fetchData();
+    } catch (e) {
+      setLinkError(errorMessage(e, "Failed to link Telegram account"));
     } finally {
       setLinking(false);
     }
@@ -138,20 +130,12 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
   async function handleUnlink() {
     setUnlinking(true);
     try {
-      const res = await fetch("/api/settings/telegram", {
-        method: "DELETE",
-      });
-
-      if (res.ok) {
-        setPairingStep(1);
-        toast.success("Telegram account unlinked");
-        await fetchData();
-      } else {
-        const data = await res.json();
-        toast.error(data.error || "Failed to unlink Telegram account");
-      }
-    } catch {
-      toast.error("Failed to unlink Telegram account");
+      await apiDelete("/api/settings/telegram");
+      setPairingStep(1);
+      toast.success("Telegram account unlinked");
+      await fetchData();
+    } catch (e) {
+      toast.error(errorMessage(e, "Failed to unlink Telegram account"));
     } finally {
       setUnlinking(false);
     }
@@ -160,16 +144,11 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
   async function handleRemoveAll() {
     setRemovingAll(true);
     try {
-      const res = await fetch("/api/settings/telegram/all", { method: "DELETE" });
-      if (res.ok) {
-        toast.success("Telegram removed");
-        await fetchData();
-      } else {
-        const data = await res.json();
-        toast.error(data.error || "Failed to remove Telegram");
-      }
-    } catch {
-      toast.error("Failed to remove Telegram");
+      await apiDelete("/api/settings/telegram/all");
+      toast.success("Telegram removed");
+      await fetchData();
+    } catch (e) {
+      toast.error(errorMessage(e, "Failed to remove Telegram"));
     } finally {
       setRemovingAll(false);
     }

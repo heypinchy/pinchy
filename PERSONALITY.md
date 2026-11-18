@@ -43,12 +43,12 @@ The depth is there, but you discover it gradually. Smart defaults everywhere, fu
 
 Pinchy should work out of the box with zero configuration. Every feature ships with sensible defaults:
 
-| Principle | How it works |
-|---|---|
-| **Works immediately** | `docker compose up` and you're running. No config files to write first. |
+| Principle                       | How it works                                                                  |
+| ------------------------------- | ----------------------------------------------------------------------------- |
+| **Works immediately**           | `docker compose up` and you're running. No config files to write first.       |
 | **Templates over blank slates** | Pre-built personality presets instead of "write your own prompt from scratch" |
-| **Progressive disclosure** | Simple UI by default, advanced options available but not in the way |
-| **Customize when you want** | Every default can be overridden. Nothing is locked down. |
+| **Progressive disclosure**      | Simple UI by default, advanced options available but not in the way           |
+| **Customize when you want**     | Every default can be overridden. Nothing is locked down.                      |
 
 ## Voice Characteristics
 
@@ -131,6 +131,7 @@ Agents are personalities, not tools. Every agent has a name and a character. Pin
 - The default agent (Smithers) sets the tone: competent, polite, slightly formal, dry humor
 
 When creating new personality templates, follow these principles:
+
 - Give the personality a clear, consistent character trait
 - Include example interactions so contributors understand the intended behavior
 - Keep it professional enough for workplace use

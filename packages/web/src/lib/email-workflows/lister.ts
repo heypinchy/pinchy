@@ -40,6 +40,29 @@ export interface EmailReadResult {
 export interface EmailPort {
   search(opts: { sinceDays?: number; folder?: string; limit?: number }): Promise<EmailListItem[]>;
   read(id: string): Promise<EmailReadResult>;
+  /**
+   * Release whatever the port holds open. Optional: stateless HTTP providers
+   * (Graph, Gmail) have nothing to release, while the IMAP adapter serves the
+   * lister's 1×search + N×read over ONE connection — a connection per message is
+   * not an option — and only the sweep can close it, since the port is created
+   * per (workflow × connection) there and discarded there.
+   */
+  close?(): Promise<void>;
+}
+
+/**
+ * The lister's output. `emails` is the hydrated, usable batch; `candidateCount`
+ * is how many candidates `search` returned *before* hydration dropped any.
+ *
+ * The two differ by the poison messages the lister isolates, and that gap is
+ * exactly why the sweep's saturation check must read `candidateCount`, not
+ * `emails.length`: a full page with a single unusable message hands back
+ * `limit - 1` emails, so gating truncation on the hydrated count would fall
+ * silent on the worst pass — one that is both truncated AND lossy.
+ */
+export interface EmailListResult {
+  emails: DispatchableEmail[];
+  candidateCount: number;
 }
 
 /** Extract the bare, lower-cased address from `Display Name <addr>` or a raw `addr`. */
@@ -89,9 +112,11 @@ function normalizeAddressList(raw: string): string[] {
 /**
  * List a connection's candidate messages and hydrate each into a
  * {@link DispatchableEmail} (design §6). The filter needs attachment metadata,
- * which only `read` returns, so every candidate is hydrated — an N+1 that is
- * fine on the bounded sweep path this serves (the token-free steady-state poll
- * lives in the OpenClaw event-trigger, a later brick).
+ * which only `read` returns, so every *un-skipped* candidate is hydrated — an
+ * N+1 whose N the cheap poll keeps near zero: `resolveAlreadyProcessed` (when
+ * injected) names the ids the ledger already holds, and hydration skips them, so
+ * a steady-state pass costs one `search` and no reads. That is what makes running
+ * this sweep on a short cadence — the low-latency path — affordable.
  *
  * Normalization is the deterministic substance: providers hand back
  * inconsistent header shapes (Gmail raw `Display Name <addr>` and
@@ -103,15 +128,67 @@ function normalizeAddressList(raw: string): string[] {
  */
 export async function listDispatchableEmails(
   port: EmailPort,
-  opts: { sinceDays?: number; folder?: string; limit?: number }
-): Promise<DispatchableEmail[]> {
-  const candidates = await port.search(opts);
-  const emails: DispatchableEmail[] = [];
-  for (const candidate of candidates) {
-    const msg = await port.read(candidate.id);
-    emails.push(normalize(msg));
+  opts: {
+    sinceDays?: number;
+    folder?: string;
+    limit?: number;
+    /**
+     * Given every candidate id `search` returned, resolve the subset already in
+     * the ledger, which hydration then skips. Injected so the lister stays
+     * DB-decoupled (like the port); the sweep supplies a closure over the ledger.
+     * Absent ⟹ hydrate every candidate (the plain re-list).
+     */
+    resolveAlreadyProcessed?: (candidateIds: string[]) => Promise<ReadonlySet<string>>;
   }
-  return emails;
+): Promise<EmailListResult> {
+  // `search` is the mailbox-level probe: if it throws, nothing was listed and the
+  // failure is the connection's, so it propagates to the sweep's unit-level catch
+  // and surfaces as the workflow's `error` status.
+  const candidates = await port.search(opts);
+  // Ask the ledger which candidates are already accounted for, BEFORE the N+1:
+  // skipping the read is the whole point — re-hydrating a claimed email only to
+  // have the claim `onConflictDoNothing` is pure provider I/O for no effect.
+  const alreadyProcessed = opts.resolveAlreadyProcessed
+    ? await opts.resolveAlreadyProcessed(candidates.map((c) => c.id))
+    : null;
+  const emails: DispatchableEmail[] = [];
+  const failures: unknown[] = [];
+  for (const candidate of candidates) {
+    if (alreadyProcessed?.has(candidate.id)) continue;
+    // Isolate per message: one unusable mail (unparseable date, a read that 404s
+    // on a message deleted mid-sweep) must cost exactly that mail, not the whole
+    // mailbox's pass. Without this, a single corrupt message stops every other
+    // message on the connection from ever being dispatched — indefinitely, since
+    // the sweep re-lists the same window every cadence.
+    try {
+      emails.push(normalize(await port.read(candidate.id)));
+    } catch (err) {
+      failures.push(err);
+      console.warn(`mail lister: skipping unusable message ${candidate.id}`, err);
+    }
+  }
+  // But isolation must not swallow a dead mailbox. Credentials expiring between
+  // `search` and `read` fail EVERY hydration; reported as an empty inbox that
+  // would read as "nothing new" and silently retire the workflow while its status
+  // stayed `active`.
+  //
+  // "Dead" means every listed candidate was attempted and failed — NOT merely
+  // that the hydrated batch came back empty. `resolveAlreadyProcessed` breaks the
+  // old shorthand: a healthy, caught-up mailbox skips its processed mail and may
+  // attempt only a single un-skipped candidate, and if that one is a persistently
+  // unhydratable message (unparseable date, a mid-sweep 404) then
+  // `emails.length === 0 && failures.length > 0` holds while the mailbox is
+  // perfectly alive — flipping the whole workflow to `error` every pass and
+  // defeating the per-message isolation above. So require that NOTHING hydrated
+  // and NOTHING was skipped, i.e. every candidate failed. A real credential death
+  // that races in after some mail was skipped simply surfaces one cadence later,
+  // when the next `search` itself throws — no email is lost.
+  if (candidates.length > 0 && failures.length === candidates.length) {
+    throw failures[0];
+  }
+  // `candidateCount` is the pre-hydration count on purpose: the sweep reads it to
+  // detect a truncated page, and a dropped poison message must not mask a full one.
+  return { emails, candidateCount: candidates.length };
 }
 
 function normalize(msg: EmailReadResult): DispatchableEmail {

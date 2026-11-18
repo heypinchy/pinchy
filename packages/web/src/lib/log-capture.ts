@@ -1,3 +1,10 @@
+// Both imports are deliberately the dependency-free redaction leaves, not
+// `@/lib/audit` — that module opens a postgres pool when it is evaluated, and
+// this one is imported by `server.ts` before anything else and is a plausible
+// future import from a Client Component.
+import { scrubEmails } from "@/lib/scrub-emails";
+import { sanitizeDetail } from "@/lib/audit-sanitize";
+
 type LogLevel = "error" | "warn";
 
 interface LogEntry {
@@ -16,7 +23,22 @@ class LogCapture {
     this.entries.push({
       timestamp: new Date().toISOString(),
       level,
-      message,
+      // Even restricted to admins (see the diagnostics route), this buffer
+      // is process-global and can carry provider error text or stack traces
+      // from OTHER users' chat runs — apply the same redaction other
+      // free-text audit fields get before it lands anywhere. scrubEmails
+      // strips email addresses; sanitizeDetail (on a string) strips known
+      // secret patterns (sk-ant-*, ghp_*, Bearer *, …). Order is safe either
+      // way: no secret pattern contains an `@`, so scrubbing first can never
+      // eat a secret before sanitizeDetail sees it. The two do overlap on an
+      // env line like `SMTP_PASSWORD=user@example.com` — which ends up
+      // redacted whichever runs first.
+      //
+      // The console hook still forwards the ORIGINAL args to the real
+      // console.error/warn, so stdout — and therefore
+      // `docker compose logs pinchy` — keeps the unredacted line for whoever
+      // operates the host.
+      message: sanitizeDetail(scrubEmails(message)),
     });
     if (this.entries.length > MAX_ENTRIES) {
       this.entries.shift();

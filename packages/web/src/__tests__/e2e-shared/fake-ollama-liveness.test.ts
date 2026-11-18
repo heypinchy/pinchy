@@ -21,19 +21,58 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as http from "http";
 import type { AddressInfo } from "net";
+import { DELAY_HINT_MS } from "@/lib/chat-liveness";
 import {
   handleRequest,
+  readDelayOverride,
   FAKE_OLLAMA_LIVENESS_SLOW_TRIGGER,
   FAKE_OLLAMA_LIVENESS_SLOW_RESPONSE,
-  FAKE_OLLAMA_LIVENESS_SLOW_DELAY_MS,
+  FAKE_OLLAMA_LIVENESS_SLOW_DEFAULT_DELAY_MS,
   FAKE_OLLAMA_LIVENESS_DYING_TRIGGER,
   FAKE_OLLAMA_LIVENESS_DYING_PARTIAL,
 } from "../../../e2e/shared/fake-ollama/fake-ollama-server";
 
+/**
+ * The stall this file drives the dispatcher with, via the server's env
+ * override.
+ *
+ * The real trigger stalls FAKE_OLLAMA_LIVENESS_SLOW_DEFAULT_DELAY_MS (18 s) so
+ * the E2E banner spec has something to engage on. Sitting through that here bought
+ * nothing — these cases assert trigger selection and wire shape, and both are
+ * identical at any stall — while costing 49 s, a third of the file time of
+ * `pnpm test` and therefore of every merge's required `quality` check.
+ *
+ * The 18 s value is NOT untested as a result: "the real stall out-waits the
+ * client's delay hint" is the property that actually matters, and it is now
+ * asserted directly (and instantly) at the bottom of this file, where before it
+ * was only implied by a slow test that would have kept passing if someone
+ * raised DELAY_HINT_MS past 18 s.
+ *
+ * 750 ms keeps the ordering assertion meaningful: with a 250 ms tolerance for
+ * timer overshoot on a loaded CI host, a first byte before 500 ms still means
+ * the stall did not precede the token.
+ */
+const TEST_STALL_MS = 750;
+const STALL_TOLERANCE_MS = 250;
+
+/**
+ * Stream the words back-to-back too. After the stall, the fake emits the
+ * response word-by-word at a real 500 ms — ~7 s for this 14-word response, on
+ * top of the stall, per test. The rate changes nothing about the bytes these
+ * cases assert, and the E2E specs (which DO need it slow) never set this.
+ */
+const TEST_STREAM_DELAY_MS = 0;
+
 let server: http.Server;
 let baseUrl: string;
+let previousOverride: string | undefined;
+let previousStreamOverride: string | undefined;
 
 beforeEach(async () => {
+  previousOverride = process.env.FAKE_OLLAMA_LIVENESS_SLOW_DELAY_MS_OVERRIDE;
+  previousStreamOverride = process.env.FAKE_OLLAMA_SLOW_STREAM_DELAY_MS_OVERRIDE;
+  process.env.FAKE_OLLAMA_LIVENESS_SLOW_DELAY_MS_OVERRIDE = String(TEST_STALL_MS);
+  process.env.FAKE_OLLAMA_SLOW_STREAM_DELAY_MS_OVERRIDE = String(TEST_STREAM_DELAY_MS);
   server = http.createServer(handleRequest);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
@@ -41,6 +80,12 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  if (previousOverride === undefined)
+    delete process.env.FAKE_OLLAMA_LIVENESS_SLOW_DELAY_MS_OVERRIDE;
+  else process.env.FAKE_OLLAMA_LIVENESS_SLOW_DELAY_MS_OVERRIDE = previousOverride;
+  if (previousStreamOverride === undefined)
+    delete process.env.FAKE_OLLAMA_SLOW_STREAM_DELAY_MS_OVERRIDE;
+  else process.env.FAKE_OLLAMA_SLOW_STREAM_DELAY_MS_OVERRIDE = previousStreamOverride;
   await new Promise<void>((resolve, reject) =>
     server.close((err) => (err ? reject(err) : resolve()))
   );
@@ -94,9 +139,9 @@ describe("fake-ollama liveness SLOW trigger", () => {
         `Please help ${FAKE_OLLAMA_LIVENESS_SLOW_TRIGGER} now`
       );
       expect(ok).toBe(true);
-      // First byte must arrive only AFTER the configured stall — that delay is
-      // what makes a "taking longer" UI state engage.
-      expect(firstByteMs).toBeGreaterThanOrEqual(FAKE_OLLAMA_LIVENESS_SLOW_DELAY_MS - 250);
+      // First byte must arrive only AFTER the configured stall — that ordering
+      // is what makes a "taking longer" UI state engage before any text renders.
+      expect(firstByteMs).toBeGreaterThanOrEqual(TEST_STALL_MS - STALL_TOLERANCE_MS);
       // The stream completes normally with the configured response text.
       const final = body
         .split("\n")
@@ -113,7 +158,7 @@ describe("fake-ollama liveness SLOW trigger", () => {
         .join("");
       expect(text).toBe(FAKE_OLLAMA_LIVENESS_SLOW_RESPONSE);
     },
-    FAKE_OLLAMA_LIVENESS_SLOW_DELAY_MS + 10_000
+    TEST_STALL_MS + 10_000
   );
 
   it(
@@ -124,7 +169,7 @@ describe("fake-ollama liveness SLOW trigger", () => {
         `Please help ${FAKE_OLLAMA_LIVENESS_SLOW_TRIGGER} now`
       );
       expect(ok).toBe(true);
-      expect(firstByteMs).toBeGreaterThanOrEqual(FAKE_OLLAMA_LIVENESS_SLOW_DELAY_MS - 250);
+      expect(firstByteMs).toBeGreaterThanOrEqual(TEST_STALL_MS - STALL_TOLERANCE_MS);
       // Completes cleanly: SSE [DONE] terminator and a stop finish_reason.
       expect(body).toContain("[DONE]");
       const text = body
@@ -136,8 +181,47 @@ describe("fake-ollama liveness SLOW trigger", () => {
         .join("");
       expect(text).toBe(FAKE_OLLAMA_LIVENESS_SLOW_RESPONSE);
     },
-    FAKE_OLLAMA_LIVENESS_SLOW_DELAY_MS + 10_000
+    TEST_STALL_MS + 10_000
   );
+
+  // The property the 18 s constant exists for, asserted directly instead of
+  // being implied by a test that sat through it. A stall at or under the
+  // client's delay hint means the E2E banner spec silently stops exercising the
+  // banner: the run completes before the hint ever fires, the spec's other
+  // assertions still pass, and the regression it guards ships unnoticed.
+  it("stalls past the client's delay hint, so the 'taking longer' banner engages", () => {
+    expect(FAKE_OLLAMA_LIVENESS_SLOW_DEFAULT_DELAY_MS).toBeGreaterThan(DELAY_HINT_MS);
+  });
+});
+
+// The override exists to make THIS file fast. It must not be capable of making
+// the E2E stacks fast, because there "fast" means the banner never engages and
+// the spec that proves it does goes quietly green.
+describe("fake-ollama delay override parsing", () => {
+  const REAL = 18000;
+
+  // `Number("")` is 0, not NaN — an env var that EXISTS but is empty is the
+  // realistic accident here (a workflow's `FOO: ${{ env.UNSET }}`, a valueless
+  // compose `environment:` entry), and reading it as "0 ms" would be exactly the
+  // silent failure above.
+  it.each([
+    { raw: undefined, why: "unset — the normal E2E case" },
+    { raw: "", why: "set but empty (Number('') is 0, not NaN)" },
+    { raw: "   ", why: "whitespace only" },
+    { raw: "abc", why: "not a number" },
+    { raw: "-1", why: "negative" },
+    { raw: "Infinity", why: "not finite" },
+  ])("falls back to the real delay when the override is $why", ({ raw }) => {
+    expect(readDelayOverride(raw, REAL)).toBe(REAL);
+  });
+
+  it.each([
+    { raw: "0", expected: 0 },
+    { raw: "750", expected: 750 },
+    { raw: " 750 ", expected: 750 },
+  ])("honours a valid override of $raw", ({ raw, expected }) => {
+    expect(readDelayOverride(raw, REAL)).toBe(expected);
+  });
 });
 
 describe("fake-ollama liveness DYING trigger", () => {

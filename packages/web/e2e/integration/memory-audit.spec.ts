@@ -23,6 +23,7 @@ import { test, expect } from "@playwright/test";
 import { execSync } from "child_process";
 import path from "path";
 import { login, getSmithersAgentId } from "./helpers";
+import { pollAuditForEvent } from "../shared/dispatch-probe";
 
 const COMPOSE_FILES =
   "-f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.integration.yml";
@@ -104,59 +105,69 @@ test.describe("memory-audit watcher emits agent.memory_changed on MEMORY.md writ
     // 5. Poll the audit API. The watcher debounces writes through chokidar's
     //    awaitWriteFinish (200 ms stability + 50 ms poll), plus a 250 ms poll
     //    interval (usePolling) on the chokidar side, plus there's a
-    //    fs → handler hop and a DB insert. 30 × 500 ms = 15 s is comfortably
-    //    above the worst case under CI load.
-    type AuditEntry = {
-      eventType: string;
-      resource: string;
-      actorType: string;
-      actorId: string;
-      outcome: string;
-      detail: {
-        agent?: { id?: string; name?: string };
-        file?: string;
-        addedLines?: number;
-        removedLines?: number;
-        byteSize?: number;
-      };
+    //    fs → handler hop and a DB insert. 15 s is comfortably above the worst
+    //    case under CI load.
+    //
+    //    The predicate must match every condition the assertions below check,
+    //    not just agent + file. One write can surface as MORE THAN ONE
+    //    memory_changed row — `mkdir -p` then `base64 -d >` can settle as an
+    //    empty-file event followed by a content event, and awaitWriteFinish
+    //    only narrows that window rather than closing it. The later row diffs
+    //    the new content against a snapshot that ALREADY holds it, so it
+    //    carries addedLines: 0 with an identical byteSize.
+    //
+    //    pollAuditForEvent scans newest-first and returns the first match, so a
+    //    predicate that only knows agent + file happily returns that zero row —
+    //    every identity assertion passes and the line-diff one fails with
+    //    "Expected >= 3, Received 0", blaming the watcher for a poll that
+    //    picked the wrong row. Observed on this branch in CI.
+    type MemoryDetail = {
+      agent?: { id?: string; name?: string };
+      file?: string;
+      addedLines?: number;
+      removedLines?: number;
+      byteSize?: number;
     };
-    let entry: AuditEntry | undefined;
-    for (let attempt = 0; attempt < 30; attempt++) {
-      const res = await page
-        .context()
-        .request.get(`/api/audit?eventType=agent.memory_changed&limit=50`);
-      expect(res.ok()).toBe(true);
-      const body = (await res.json()) as { entries: AuditEntry[] };
-      entry = body.entries.find(
-        (e) => e.detail?.agent?.id === smithersId && e.detail?.file === "MEMORY.md"
-      );
-      if (entry) break;
-      await page.waitForTimeout(500);
-    }
-
-    expect(
-      entry,
-      `agent.memory_changed for ${smithersId}/MEMORY.md not found in audit log`
-    ).toBeDefined();
+    const entry = await pollAuditForEvent(page, {
+      eventType: "agent.memory_changed",
+      predicate: (e) => {
+        const detail = e.detail as MemoryDetail | null;
+        return (
+          detail?.agent?.id === smithersId &&
+          detail?.file === "MEMORY.md" &&
+          detail?.byteSize === expectedByteSize &&
+          (detail?.addedLines ?? 0) >= 3
+        );
+      },
+      deadlineMs: 15_000,
+      limit: 50,
+    });
+    const detail = entry.detail as MemoryDetail;
 
     // 6. Core shape: actor identity and resource framing.
-    expect(entry!.eventType).toBe("agent.memory_changed");
-    expect(entry!.resource).toBe(`agent:${smithersId}`);
-    expect(entry!.actorType).toBe("agent");
-    expect(entry!.actorId).toBe(smithersId);
-    expect(entry!.outcome).toBe("success");
+    expect(entry.eventType).toBe("agent.memory_changed");
+    expect(entry.resource).toBe(`agent:${smithersId}`);
+    expect(entry.actorType).toBe("agent");
+    expect(entry.actorId).toBe(smithersId);
+    expect(entry.outcome).toBe("success");
 
     // 7. Detail: snapshotted agent + file id + byte size match exactly.
-    expect(entry!.detail.agent).toEqual({ id: smithersId, name: smithersName });
-    expect(entry!.detail.file).toBe("MEMORY.md");
-    expect(entry!.detail.byteSize).toBe(expectedByteSize);
+    expect(detail.agent).toEqual({ id: smithersId, name: smithersName });
+    expect(detail.file).toBe("MEMORY.md");
+    expect(detail.byteSize).toBe(expectedByteSize);
 
     // 8. Line diff: we wrote 3 lines and never removed any in this write.
     //    `>= 3` (rather than `=== 3`) is intentional — the watcher's prior
     //    snapshot at the moment of our write is non-deterministic (an earlier
     //    test or a stale on-disk MEMORY.md could have populated it). Three
     //    new fact lines are guaranteed to surface as "added" regardless.
-    expect(entry!.detail.addedLines).toBeGreaterThanOrEqual(3);
-    expect(entry!.detail.removedLines).toBeGreaterThanOrEqual(0);
+    //
+    //    This now restates what the poll already required, deliberately: the
+    //    predicate is what makes the poll pick the right row, and this line is
+    //    what says why the number matters. If the watcher genuinely stops
+    //    counting added lines, the failure arrives as the poll timing out with
+    //    no matching row rather than as this assertion.
+    expect(detail.addedLines).toBeGreaterThanOrEqual(3);
+    expect(detail.removedLines).toBeGreaterThanOrEqual(0);
   });
 });

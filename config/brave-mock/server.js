@@ -19,7 +19,8 @@ const requestLog = [];
 app.get("/res/v1/web/search", (req, res) => {
   const apiKey = req.headers["x-subscription-token"];
   requestLog.push({ query: req.query.q, apiKey });
-  if (apiKey === "invalid") return res.status(401).json({ error: "Unauthorized" });
+  if (apiKey === "invalid")
+    return res.status(401).json({ error: "Unauthorized" });
   res.json({
     web: {
       results: fixture.results.map((r) => ({

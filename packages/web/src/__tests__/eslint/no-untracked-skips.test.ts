@@ -46,6 +46,16 @@ tester.run("no-untracked-skips", rule, {
       code: `test("foo", () => {});\nit("bar", () => {});\ndescribe("baz", () => {});`,
       filename: "/x.test.ts",
     },
+    // An aliased skip with a tracking issue is allowed, like a called one
+    {
+      code: `// tracked in #1071\nconst d = describe.skip;\nd("g", () => {});`,
+      filename: "/x.test.ts",
+    },
+    // Aliasing a non-skip member is ordinary code
+    {
+      code: `const d = describe.skipIf(!process.env.RUN);\nd("g", () => {});`,
+      filename: "/x.test.ts",
+    },
   ],
   invalid: [
     // Plain skip, no comment
@@ -88,6 +98,30 @@ tester.run("no-untracked-skips", rule, {
     {
       code: `test.describe.skip("group", () => {});`,
       filename: "/e2e/x.spec.ts",
+      errors: [{ messageId: "untrackedSkip" }],
+    },
+    // Aliased skip: the ternary gate #1071 had to find by hand
+    {
+      code: `const d = process.env.X ? describe : describe.skip;\nd("g", () => {});`,
+      filename: "/x.test.ts",
+      errors: [{ messageId: "aliasedSkip" }],
+    },
+    // Aliased skip: unconditional, i.e. a permanent skip no guard could see
+    {
+      code: `const d = describe.skip;\nd("g", () => {});`,
+      filename: "/x.test.ts",
+      errors: [{ messageId: "aliasedSkip" }],
+    },
+    // Aliased chained skip
+    {
+      code: `const d = test.describe.skip;\nd("g", () => {});`,
+      filename: "/e2e/x.spec.ts",
+      errors: [{ messageId: "aliasedSkip" }],
+    },
+    // A skip invoked through `.each` is a call, not an alias
+    {
+      code: `test.skip.each([1])("g", () => {});`,
+      filename: "/x.test.ts",
       errors: [{ messageId: "untrackedSkip" }],
     },
     // Issue ref too far away (>40 lines)

@@ -6,8 +6,17 @@ import {
   FAKE_OLLAMA_DOMAIN_LOCK_TOOL_TRIGGER,
   FAKE_OLLAMA_FILES_LS_TOOL_TRIGGER,
   FAKE_OLLAMA_FILES_READ_DOCX_TOOL_TRIGGER,
+  FAKE_OLLAMA_GENERATE_FILE_TOOL_TRIGGER,
+  FAKE_OLLAMA_KNOWLEDGE_SEARCH_TOOL_TRIGGER,
   FAKE_OLLAMA_RESPONSE,
 } from "../shared/fake-ollama/fake-ollama-server";
+import {
+  pollAuditForEvent,
+  pollAuditForTool,
+  waitForOpenClawStable,
+  waitForAgentDispatchable,
+  ensureAgentDispatchable,
+} from "../shared/dispatch-probe";
 import { login, getSmithersAgentId, waitForOpenClawConnected } from "./helpers";
 
 test.describe("Agent chat — full integration", () => {
@@ -288,7 +297,7 @@ test.describe("Plugin behavior — pinchy-context", () => {
 // ── Plugin behavior: pinchy-files ────────────────────────────────────────────
 // Proves pinchy-files loaded correctly and registerTool() worked end-to-end.
 //
-// Reuses the existing Smithers agent (already has its workspace + auth-profiles
+// Reuses the existing Smithers agent (already has its workspace + agent
 // directory created by the setup wizard) and temporarily grants it
 // pinchy_ls / pinchy_read plus a /data allow-list via PATCH. Creating a brand
 // new agent here would hit EACCES because the integration suite bind-mounts
@@ -303,11 +312,17 @@ test.describe("Plugin behavior — pinchy-context", () => {
 // agents"). The pre-#196 /tmp-ownership blocker on the create-new-agent
 // path is gone (the integration stack now runs Pinchy in a container with
 // uid 999 matching production), but the personal-agent permission rule
-// still prevents the easier reuse path. Leaving the test code in place so
-// the dispatch-probe coverage guard still sees the pinchy_ls token (skipped
-// tests count for static scans). Re-enable once Pinchy supports either
+// still prevents the easier reuse path. Re-enable once Pinchy supports either
 // (a) creating a shared agent via API for tests, or (b) overriding the
 // permissions guard for the integration admin.
+//
+// This block is kept for the work #427 will do, NOT as coverage: since #834
+// the plugin-tool-coverage guard drops matches inside skipped blocks, so the
+// `pinchy_ls` reference below counts for nothing. (It used to count, and the
+// comment here used to say so — a guard a never-running test satisfies
+// reports on a string, not on a test.) pinchy-files' real dispatch coverage
+// is the running `pinchy_generate_file` probe further down this file and the
+// `pinchy_read` probe in upload-and-send.spec.ts.
 test.describe("Plugin behavior — pinchy-files", () => {
   test.skip("pinchy_ls dispatches via fake-LLM and writes audit entry", async ({ page }) => {
     await login(page);
@@ -368,12 +383,10 @@ test.describe("Plugin behavior — pinchy-files", () => {
     }
   });
 
-  // Skipped (tracked in #427) for the same /tmp ownership reasons as
-  // pinchy_ls above. Kept as a static coverage probe so the
-  // plugin-tool-coverage guard sees a `eventType=tool.pinchy_read`
-  // reference for the .docx code path. The real .docx extraction is
-  // exercised by docx-extract.test.ts and the pinchy_read DOCX
-  // integration block in pinchy-files/index.test.ts.
+  // Skipped (tracked in #427) for the same reasons as pinchy_ls above, and
+  // likewise NOT counted as coverage since #834. The .docx extraction it
+  // would exercise is covered by docx-extract.test.ts and the pinchy_read
+  // DOCX integration block in pinchy-files/index.test.ts.
   test.skip("pinchy_read dispatches on .docx via fake-LLM and writes audit entry", async ({
     page,
   }) => {
@@ -431,6 +444,419 @@ test.describe("Plugin behavior — pinchy-files", () => {
           allowedTools: originalAllowedTools,
           pluginConfig: originalPluginConfig,
         },
+      });
+    }
+  });
+});
+
+// ── Plugin behavior: pinchy-knowledge ────────────────────────────────────────
+// DISPATCH-COVERAGE ONLY. Proves the pinchy-knowledge plugin loaded into
+// OpenClaw, its registerTool("knowledge_search") took effect, the tool is
+// callable, Pinchy's internal POST /api/internal/knowledge/search route is
+// reached, and a `tool.knowledge_search` audit row fires end-to-end.
+//
+// The probe agent is granted knowledge_search but NO pinchy-files
+// `allowed_paths`, so the route resolves `allowedPaths = []` and `retrieve()`
+// short-circuits to `[]` WITHOUT ever calling the embedder — the fake-ollama
+// server needs no /api/embed support. The tool returns "No matching passages
+// found" with a success outcome, which is exactly the audit signal this guard
+// needs. The REAL data path (ingested docs, RRF ranking, citations, page
+// links) is verified by Task 14's end-to-end check, not here.
+//
+// Uses a fresh SHARED custom agent because Smithers is personal and PATCH
+// allowedTools on a personal agent returns 400 ("Cannot change permissions
+// for personal agents", #427); a custom shared agent accepts the grant.
+test.describe.serial("Plugin behavior — pinchy-knowledge", () => {
+  let agentId: string;
+
+  test.beforeAll(async ({ browser }) => {
+    // The config-regen wait — plus recovery from OC's hardcoded config.apply
+    // rate limit (a toggle + extra stability waits) — can far exceed the 120 s
+    // per-test default; give the setup hook its own generous budget so the
+    // dispatch test stays focused. `ensureAgentDispatchable` self-bounds to
+    // ~360 s, so this 420 s budget leaves margin for its own informative
+    // give-up error to surface instead of a bare Playwright timeout.
+    test.setTimeout(420_000);
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    try {
+      await login(page);
+
+      // Name must stay <=30 chars (agent-name schema cap): "KB-Dispatch-"
+      // (12) + a 13-digit epoch = 25, safely under the limit — a bare
+      // `KnowledgeDispatch-${Date.now()}` was 31 and 400'd here.
+      const createRes = await page.request.post("/api/agents", {
+        data: { name: `KB-Dispatch-${Date.now()}`, templateId: "custom" },
+      });
+      expect(createRes.status(), await createRes.text()).toBe(201);
+      agentId = ((await createRes.json()) as { id: string }).id;
+
+      // Grant knowledge_search and NOTHING else — crucially no pinchy-files
+      // allowed_paths, so the route's allowedPaths stays [] (clean
+      // empty-success path, no embedder needed).
+      const patchRes = await page.request.patch(`/api/agents/${agentId}`, {
+        data: { allowedTools: ["knowledge_search"] },
+      });
+      expect(patchRes.status(), await patchRes.text()).toBe(200);
+
+      // Wait for OC to settle after the create+PATCH regens, then confirm the
+      // new agent is actually in OC's runtime agents.list before dispatching —
+      // with recovery from OC's hardcoded config.apply rate limit
+      // (heypinchy/pinchy#901).
+      await ensureAgentDispatchable({
+        agentId,
+        allowedTools: ["knowledge_search"],
+        fetchHealth: async () => {
+          const r = await page.request.get("/api/health/openclaw");
+          return { ok: r.ok(), json: () => r.json() };
+        },
+        fetchDispatch: async (id) => {
+          const r = await page.request.get(`/api/health/openclaw?agentId=${id}`);
+          return { ok: r.ok(), json: () => r.json() };
+        },
+        setAllowedTools: async (tools) => {
+          const r = await page.request.patch(`/api/agents/${agentId}`, {
+            data: { allowedTools: tools },
+          });
+          expect(r.status(), await r.text()).toBe(200);
+        },
+      });
+    } finally {
+      await context.close();
+    }
+  });
+
+  test.afterAll(async ({ browser }) => {
+    if (!agentId) return;
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    try {
+      await login(page);
+      await page.request.delete(`/api/agents/${agentId}`);
+    } finally {
+      await context.close();
+    }
+  });
+
+  test("knowledge_search dispatches via fake-LLM and writes audit entry", async ({
+    page,
+  }, testInfo) => {
+    testInfo.setTimeout(180_000);
+    await login(page);
+
+    await page.goto(`/chat/${agentId}`);
+    await expect(page).toHaveURL(`/chat/${agentId}`, { timeout: 10_000 });
+
+    const input = page.getByPlaceholder(/send a message/i);
+    await expect(input).toBeVisible({ timeout: 10_000 });
+    await input.fill(`${FAKE_OLLAMA_KNOWLEDGE_SEARCH_TOOL_TRIGGER}: search the knowledge base`);
+    await input.press("Enter");
+
+    const found = await pollAuditForTool(page, {
+      toolName: "knowledge_search",
+      agentId,
+      deadlineMs: 160_000,
+    });
+    expect(found).toBe(true);
+  });
+});
+
+// ── Plugin behavior: pinchy-files generate_file (#788) ──────────────────────
+// DISPATCH + DELIVERY COVERAGE. Proves pinchy_generate_file registered,
+// dispatched, wrote its output under the agent's workbench, AND that the file
+// round-trips end to end through the #703 delivery path as a downloadable
+// artifact — not just that the tool ran.
+//
+// Uses a fresh SHARED custom agent, same reasoning as the pinchy-knowledge
+// block above: Smithers is personal and PATCH allowedTools 400s on personal
+// agents ("Cannot change permissions for personal agents", #427).
+//
+// Only `pinchy_write` needs to be granted. build.ts gates pinchy-files'
+// `write_paths` (which includes the workbench zone) on
+// `allowedTools.includes("pinchy_write")` alone (build.ts:579-606), and
+// pinchy_generate_file's own registerTool context (index.ts) requires a
+// `.../workbench` write path to exist before the tool becomes available at
+// all. OpenClaw's per-agent `tools.allow` names every Pinchy plugin tool for
+// every agent (tool-registry.ts computeAllowedTools — only the memory built-ins
+// vary, on the `pinchy_memory` grant), so pinchy_generate_file never needs to
+// appear in allowedTools itself.
+test.describe.serial("Plugin behavior — pinchy-files generate_file", () => {
+  let agentId: string;
+
+  test.beforeAll(async ({ browser }) => {
+    // The config-regen wait can exceed the 120 s per-test default; give the
+    // setup hook its own generous budget so the dispatch test stays focused.
+    test.setTimeout(300_000);
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    try {
+      await login(page);
+
+      // Name must stay <=30 chars (agent-name schema cap).
+      const createRes = await page.request.post("/api/agents", {
+        data: { name: `GenFileDispatch-${Date.now()}`, templateId: "custom" },
+      });
+      expect(createRes.status(), await createRes.text()).toBe(201);
+      agentId = ((await createRes.json()) as { id: string }).id;
+
+      const patchRes = await page.request.patch(`/api/agents/${agentId}`, {
+        data: { allowedTools: ["pinchy_write"] },
+      });
+      expect(patchRes.status(), await patchRes.text()).toBe(200);
+
+      // Wait for OC to settle after the create+PATCH regens, then confirm the
+      // new agent is actually in OC's runtime agents.list before dispatching.
+      await waitForOpenClawStable(async () => {
+        const r = await page.request.get("/api/health/openclaw");
+        return { ok: r.ok(), json: () => r.json() };
+      });
+      await waitForAgentDispatchable(
+        async (id) => {
+          const r = await page.request.get(`/api/health/openclaw?agentId=${id}`);
+          return { ok: r.ok(), json: () => r.json() };
+        },
+        agentId,
+        { deadlineMs: 120_000 }
+      );
+    } finally {
+      await context.close();
+    }
+  });
+
+  test.afterAll(async ({ browser }) => {
+    if (!agentId) return;
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    try {
+      await login(page);
+      await page.request.delete(`/api/agents/${agentId}`);
+    } finally {
+      await context.close();
+    }
+  });
+
+  test("pinchy_generate_file dispatches, succeeds, and the file downloads via the #703 delivery route", async ({
+    page,
+  }, testInfo) => {
+    testInfo.setTimeout(300_000);
+    await login(page);
+
+    await page.goto(`/chat/${agentId}`);
+    await expect(page).toHaveURL(`/chat/${agentId}`, { timeout: 10_000 });
+
+    const input = page.getByPlaceholder(/send a message/i);
+    await expect(input).toBeVisible({ timeout: 10_000 });
+    await input.fill(`${FAKE_OLLAMA_GENERATE_FILE_TOOL_TRIGGER}: generate a csv export`);
+    await input.press("Enter");
+
+    const found = await pollAuditForTool(page, {
+      toolName: "pinchy_generate_file",
+      agentId,
+      deadlineMs: 160_000,
+    });
+    expect(found).toBe(true);
+
+    // outcome=success, not merely a row existing: a validation error inside
+    // generateFile (or a failed write/chown) still emits an audited row, just
+    // with outcome=failure — see the odoo ref-tool dispatch probes for the
+    // same reasoning.
+    const entry = await pollAuditForEvent(page, {
+      eventType: "tool.pinchy_generate_file",
+      predicate: (e) => e.resource === `agent:${agentId}`,
+      deadlineMs: 30_000,
+    });
+    expect(entry.outcome).toBe("success");
+
+    // Delivery round-trip (#703): deliverRunArtifacts polls artifacts.list
+    // AFTER the run completes and writes the agent_delivered_files grant
+    // asynchronously, so the download may not be authorized the instant the
+    // tool's own audit row lands — poll until the serve route 200s.
+    const deadline = Date.now() + 30_000;
+    let downloadOk = false;
+    while (Date.now() < deadline) {
+      const res = await page.request.get(`/api/agents/${agentId}/artifacts/e2e-export.csv`);
+      if (res.status() === 200) {
+        expect(res.headers()["content-type"]).toContain("text/csv");
+        // The RESOLVED header off a real Next.js server, not the one the route
+        // handler asked for. next.config.ts's `/(.*)` rule sets
+        // X-Frame-Options: DENY and OVERRIDES the handler's SAMEORIGIN, so
+        // without a per-route relaxation in next.config.ts this route serves
+        // perfect bytes that the browser then refuses to embed
+        // (net::ERR_BLOCKED_BY_RESPONSE → blank PDF viewer). Asserting it here,
+        // against the production image, is the only layer that sees the value
+        // a user's browser actually gets.
+        //
+        // Limit worth knowing: this artifact is a CSV, so a pass proves the
+        // header, not that an <embed> renders. Nothing in CI drives the PDF
+        // lightbox end to end — that was verified by hand when the defect was
+        // reproduced.
+        expect(res.headers()["x-frame-options"]).toBe("SAMEORIGIN");
+        downloadOk = true;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    expect(downloadOk).toBe(true);
+
+    // The chip itself (#1298): a CSV has no viewer, so the chip must be the
+    // download — and the model's `MEDIA:<path>` line must not reach the reply.
+    // Checked live, then again after a reload, where the text comes from
+    // history and the chip from the delivery grant.
+    for (const phase of ["live", "reload"] as const) {
+      if (phase === "reload") await page.reload();
+      const chip = page.getByRole("link", { name: "Download e2e-export.csv" });
+      await expect(chip, phase).toBeVisible({ timeout: 30_000 });
+      await expect(chip, phase).toHaveAttribute(
+        "href",
+        `/api/agents/${agentId}/artifacts/e2e-export.csv`
+      );
+      await expect(page.getByText("File generated: coverage probe complete."), phase).toBeVisible();
+      await expect(page.getByText("MEDIA:", { exact: false }), phase).toHaveCount(0);
+      const [download] = await Promise.all([page.waitForEvent("download"), chip.click()]);
+      expect(download.suggestedFilename(), phase).toBe("e2e-export.csv");
+    }
+  });
+});
+
+// ── Plugin behavior: pinchy-approvals ────────────────────────────────────────
+// Proves the pinchy-approvals before_tool_call gate loaded and enforces the
+// per-agent confirmation policy end-to-end: a tool an admin marked as
+// "require confirmation" is BLOCKED (no tool.<name> dispatch) and instead
+// produces an approval.requested record; the acting user can then approve it
+// via the decision route (approval.granted). Mirrors the pinchy-files probe:
+// gate pinchy_ls on Smithers, trigger it, assert the audit lifecycle.
+test.describe("Plugin behavior — pinchy-approvals", () => {
+  test("a gated tool is blocked into an approval request the user can grant", async ({ page }) => {
+    await login(page);
+    const agentId = await getSmithersAgentId(page);
+
+    const beforeRes = await page.request.get(`/api/agents/${agentId}`);
+    expect(beforeRes.status()).toBe(200);
+    const before = (await beforeRes.json()) as {
+      pluginConfig: Record<string, unknown> | null;
+    };
+    const originalPluginConfig = before.pluginConfig ?? null;
+
+    // Gate an existing Smithers tool via a pluginConfig-ONLY patch. Smithers is a
+    // personal agent — the route blocks `allowedTools` changes on personal agents,
+    // but a pluginConfig change is allowed. pinchy_save_user_context is already in
+    // Smithers' default tools (the pinchy-context probe above proves it dispatches),
+    // so no allowedTools change and no agent creation is needed. Restored in the
+    // finally block below.
+    const patchRes = await page.request.patch(`/api/agents/${agentId}`, {
+      data: {
+        pluginConfig: {
+          ...(originalPluginConfig ?? {}),
+          "pinchy-approvals": { confirmTools: ["pinchy_save_user_context"] },
+        },
+      },
+    });
+    expect(patchRes.status(), await patchRes.text()).toBe(200);
+
+    try {
+      await waitForOpenClawConnected(page);
+      await page.goto(`/chat/${agentId}`);
+      await expect(page).toHaveURL(`/chat/${agentId}`, { timeout: 10000 });
+
+      const input = page.getByPlaceholder(/send a message/i);
+      await expect(input).toBeVisible({ timeout: 10000 });
+      await input.fill(`${FAKE_OLLAMA_CONTEXT_SAVE_USER_TOOL_TRIGGER}: save my context`);
+      await input.press("Enter");
+
+      // The gate blocks the call and records approval.requested for this agent.
+      const requested = await pollAuditForEvent(page, {
+        eventType: "approval.requested",
+        predicate: (e) => {
+          const detail = e.detail as { toolName?: string; request?: { id?: string } } | null;
+          return (
+            detail?.toolName === "pinchy_save_user_context" &&
+            typeof detail?.request?.id === "string"
+          );
+        },
+        deadlineMs: 30000,
+      });
+      const requestId = (requested.detail as { request: { id: string } }).request.id;
+
+      // The acting user grants their own pending confirmation — immediately,
+      // and deliberately so. `approval.requested` is written from inside
+      // gate-check, so this decision can reach the route before OpenClaw's
+      // approval broadcast reaches Pinchy. Do not "stabilise" this by waiting
+      // first: that window is the thing under test, and closing it is the
+      // route's job (`awaitApprovalLink`), not the test's.
+      const decision = await page.request.post(`/api/approvals/${requestId}/decision`, {
+        data: { decision: "approve" },
+      });
+      // Assert the ROUTE'S OWN ANSWER first, and compare it WHOLE.
+      //
+      // The route already knows why a decision did not reach the parked call —
+      // it puts `resumeError` in this body, one sentence per branch
+      // (nothing-waiting / refused / unreachable). This probe used to throw
+      // that response away and assert only the audit row's `outcome`, so its
+      // one live failure read
+      //
+      //     Expected: "success"   Received: "failure"
+      //
+      // and named none of the three. Diagnosing it took the CI gateway log,
+      // which is only dumped on failure — so even the comparison against a
+      // green run was worthless, because that run had captured nothing.
+      //
+      // The matcher is the load-bearing part, and `toMatchObject` is the wrong
+      // one: it prints the RECEIVED object pruned to the expected keys, so an
+      // unexpected `resumeError` never reaches the diff and the failure still
+      // reads `resumed: false` and stops there — the same silence, one level
+      // down. `toEqual` prints the body as it came, which is the whole point.
+      // The status is asserted off the raw text because a non-200 body is
+      // `{ error }` and need not be JSON at all.
+      const decisionBody = await decision.text();
+      expect(decision.status(), decisionBody).toBe(200);
+      expect(JSON.parse(decisionBody)).toEqual({ ok: true, status: "approved", resumed: true });
+
+      // The decision is recorded as approval.granted — and `resumed` says it
+      // reached the parked call. Asserting only that the row exists would pass
+      // just as happily over a run that stays parked until it times out, which
+      // is the failure #1132 is about.
+      const granted = await pollAuditForEvent(page, {
+        eventType: "approval.granted",
+        predicate: (e) => e.resource === `approval:${requestId}`,
+        deadlineMs: 15000,
+      });
+      // Same reasoning, same matcher. Named fields rather than the whole detail
+      // here, because that object also carries the request, agent, requester,
+      // approver, tool name and args digest — values this probe has no business
+      // pinning. The three below are the ones the route writes when a resume
+      // did not happen, and `toEqual` ignores a key whose value is undefined,
+      // so the happy path matches the two-field expectation while a red run
+      // prints the reason.
+      const grantedDetail = granted.detail as {
+        resumed?: boolean;
+        resumeReason?: string;
+        resumeDetail?: string;
+      };
+      expect({
+        outcome: granted.outcome,
+        resumed: grantedDetail.resumed,
+        resumeReason: grantedDetail.resumeReason,
+        resumeDetail: grantedDetail.resumeDetail,
+      }).toEqual({ outcome: "success", resumed: true });
+
+      // The runtime reports back that it let the call through…
+      await pollAuditForEvent(page, {
+        eventType: "approval.consumed",
+        predicate: (e) => e.resource === `approval:${requestId}`,
+        deadlineMs: 20000,
+      });
+
+      // …and the tool actually runs, in the same turn, with nobody prompting
+      // the agent again. This is the whole feature: everything above is
+      // bookkeeping about a call that either resumes or does not.
+      await pollAuditForTool(page, {
+        toolName: "pinchy_save_user_context",
+        agentId,
+        deadlineMs: 30000,
+      });
+    } finally {
+      await page.request.patch(`/api/agents/${agentId}`, {
+        data: { pluginConfig: originalPluginConfig },
       });
     }
   });

@@ -1,8 +1,11 @@
-import { NextResponse, after } from "next/server";
+import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { getSetting } from "@/lib/settings";
 import { setDomainAndRefreshCache, deleteDomainAndRefreshCache } from "@/lib/domain";
-import { appendAuditLog } from "@/lib/audit";
+import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
+import { recordAuditFailure } from "@/lib/audit-deferred";
+import { readRequestHostFromHeaders } from "@/server/forwarded-host";
+import { normalizeLockableHost } from "@/lib/domain-validation";
 
 export async function POST(req: Request) {
   const session = await requireAdmin();
@@ -16,11 +19,35 @@ export async function POST(req: Request) {
     );
   }
 
-  const domain = req.headers.get("x-forwarded-host") || req.headers.get("host");
+  // Public hop only: behind chained proxies `X-Forwarded-Host` arrives as
+  // "public.example.com, internal:7777", and storing that verbatim locks the
+  // instance to a name no browser can send — the exact lockout this flow
+  // exists to make impossible.
+  const requestedHost = readRequestHostFromHeaders(req.headers);
 
-  if (!domain) {
+  if (!requestedHost) {
     return NextResponse.json(
       { error: "Could not determine hostname from request." },
+      { status: 400 }
+    );
+  }
+
+  // The resolved host is client-influenced (X-Forwarded-Host, unless a
+  // trusted proxy strips it before we see it) and gets stored as the locked
+  // domain — then rendered into the Access Denied page every unauthenticated
+  // visitor with a mismatched Host header is served. Reject anything that
+  // isn't a plausible Host value before it is ever persisted, and store the
+  // canonical parse rather than the header as typed, so that what is stored
+  // is what `isHostAllowed` will later compare a request against.
+  const domain = normalizeLockableHost(requestedHost);
+  if (!domain) {
+    // Bounded: `X-Forwarded-Host` is caller-sized, and the whole of it ends up
+    // in a toast. Enough to recognise what was sent, not enough to flood it.
+    const shown = requestedHost.length > 80 ? `${requestedHost.slice(0, 80)}…` : requestedHost;
+    return NextResponse.json(
+      {
+        error: `Cannot lock the domain to "${shown}" — that is not a hostname a browser can send as a Host header.`,
+      },
       { status: 400 }
     );
   }
@@ -28,18 +55,23 @@ export async function POST(req: Request) {
   const previousDomain = await getSetting("domain");
   await setDomainAndRefreshCache(domain);
 
-  after(() =>
-    appendAuditLog({
-      actorType: "user",
-      actorId: session.user.id!,
-      eventType: "settings.updated",
-      resource: "settings:domain",
-      detail: {
-        changes: { domain: { from: previousDomain, to: domain } },
-      },
-      outcome: "success",
-    })
-  );
+  // Not deferAuditLog: after() would race the restart armed below. Written
+  // before it, a failure is counted instead of skipping the restart.
+  const entry: AuditLogEntry = {
+    actorType: "user",
+    actorId: session.user.id!,
+    eventType: "settings.updated",
+    resource: "settings:domain",
+    detail: {
+      changes: { domain: { from: previousDomain, to: domain } },
+    },
+    outcome: "success",
+  };
+  try {
+    await appendAuditLog(entry);
+  } catch (err) {
+    recordAuditFailure(err, entry);
+  }
 
   if (process.env.PINCHY_E2E_DISABLE_DOMAIN_RESTART !== "1") {
     // Schedule a restart so useSecureCookies picks up the new domain.
@@ -63,18 +95,23 @@ export async function DELETE(_req: Request) {
 
   await deleteDomainAndRefreshCache();
 
-  after(() =>
-    appendAuditLog({
-      actorType: "user",
-      actorId: session.user.id!,
-      eventType: "settings.updated",
-      resource: "settings:domain",
-      detail: {
-        changes: { domain: { from: previousDomain, to: null } },
-      },
-      outcome: "success",
-    })
-  );
+  // Not deferAuditLog: after() would race the restart armed below. Written
+  // before it, a failure is counted instead of skipping the restart.
+  const entry: AuditLogEntry = {
+    actorType: "user",
+    actorId: session.user.id!,
+    eventType: "settings.updated",
+    resource: "settings:domain",
+    detail: {
+      changes: { domain: { from: previousDomain, to: null } },
+    },
+    outcome: "success",
+  };
+  try {
+    await appendAuditLog(entry);
+  } catch (err) {
+    recordAuditFailure(err, entry);
+  }
 
   if (process.env.PINCHY_E2E_DISABLE_DOMAIN_RESTART !== "1") {
     // Schedule a restart so useSecureCookies picks up the removed domain.
@@ -92,7 +129,7 @@ export async function GET(req: Request) {
   if (session instanceof NextResponse) return session;
 
   const domain = await getSetting("domain");
-  const currentHost = req.headers.get("x-forwarded-host") || req.headers.get("host");
+  const currentHost = readRequestHostFromHeaders(req.headers) ?? null;
   const isHttps = req.headers.get("x-forwarded-proto") === "https";
 
   return NextResponse.json({ domain, currentHost, isHttps });

@@ -42,3 +42,41 @@ export async function parseRequestBody<T>(
 
   return { data: parsed.data };
 }
+
+/**
+ * `parseRequestBody` for a route whose body is optional: no body (or only
+ * whitespace) validates as `{}`. For endpoints that existed body-less and
+ * grew an optional field later — `POST /api/users/[userId]/reset` gained
+ * `sendEmail` in #1309 — so an existing client that sends nothing keeps
+ * working. Anything that IS sent is validated exactly like `parseRequestBody`.
+ */
+export async function parseOptionalRequestBody<T>(
+  schema: ZodType<T>,
+  request: NextRequest
+): Promise<ParseResult<T>> {
+  let text: string;
+  try {
+    text = await request.text();
+  } catch {
+    return {
+      error: NextResponse.json({ error: "Invalid request body" }, { status: 400 }),
+    };
+  }
+
+  let body: unknown = {};
+  if (text.trim() !== "") {
+    try {
+      body = JSON.parse(text);
+    } catch {
+      return {
+        error: NextResponse.json({ error: "Invalid JSON body" }, { status: 400 }),
+      };
+    }
+  }
+
+  const parsed = schema.safeParse(body);
+  if (!parsed.success) {
+    return { error: formatValidationError(parsed.error) };
+  }
+  return { data: parsed.data };
+}

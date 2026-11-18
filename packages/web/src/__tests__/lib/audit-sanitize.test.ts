@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { sanitizeDetail } from "@/lib/audit-sanitize";
+import { boundIdForAudit, sanitizeDetail } from "@/lib/audit-sanitize";
 
 describe("sanitizeDetail", () => {
   describe("Date serialization", () => {
@@ -176,8 +176,21 @@ describe("sanitizeDetail", () => {
       expect(result).toEqual({ count: 42, active: true, password: "[REDACTED]" });
     });
 
-    it("stops recursion at max depth", () => {
+    it("stops recursion at max depth without throwing", () => {
       // Build a 12-level deep object: depth 0 is outermost, password lives at depth 12
+      let obj: any = { password: "deep-secret" };
+      for (let i = 0; i < 12; i++) {
+        obj = { nested: obj };
+      }
+
+      expect(() => sanitizeDetail(obj)).not.toThrow();
+    });
+
+    it("truncates values beyond max depth instead of leaking them unredacted", () => {
+      // The depth cap is a cycle/stack-depth guard, not a redaction bypass.
+      // A real Odoo command tuple nests to depth ~6, well within reach of a
+      // secret this cap must not pass through verbatim into an append-only,
+      // HMAC-chained audit row.
       let obj: any = { password: "deep-secret" };
       for (let i = 0; i < 12; i++) {
         obj = { nested: obj };
@@ -185,13 +198,44 @@ describe("sanitizeDetail", () => {
 
       const result = sanitizeDetail(obj) as any;
 
-      // Should not throw. The password key at depth 12 is beyond the limit
-      // of 10, so it must NOT be redacted.
+      // The MAX_DEPTH (10) check fires 10 hops in, at the object whose own
+      // subtree still holds the secret two levels further down.
       let level = result;
-      for (let i = 0; i < 12; i++) {
+      for (let i = 0; i < 10; i++) {
         level = level.nested;
       }
-      expect(level.password).toBe("deep-secret");
+      expect(level).toBe("[TRUNCATED]");
+      expect(JSON.stringify(result)).not.toContain("deep-secret");
+    });
+
+    it("truncates only the containers it could not inspect, keeping leaves at the cap", () => {
+      // A container past the cap is replaced because we never get to look
+      // inside it. A leaf has no inside: its key was checked by the object one
+      // level up, and pattern redaction is depth-independent — so it is exactly
+      // as sanitized at depth 10 as at depth 1, and keeping it is what leaves a
+      // diagnostics bundle's deepest tool arguments readable.
+      let obj: any = {
+        opcode: 6,
+        password: "boundary-secret",
+        note: "the model echoed sk-abcdefghijklmnopqrstuvwx back",
+        child: { deep: "unreachable" },
+      };
+      // 9 wrappers put this object at depth 9, so its own values land on the
+      // depth-10 boundary the cap governs.
+      for (let i = 0; i < 9; i++) {
+        obj = { nested: obj };
+      }
+
+      const result = sanitizeDetail(obj) as any;
+
+      let level = result;
+      for (let i = 0; i < 9; i++) {
+        level = level.nested;
+      }
+      expect(level.opcode).toBe(6);
+      expect(level.password).toBe("[REDACTED]");
+      expect(level.note).toBe("the model echoed [REDACTED] back");
+      expect(level.child).toBe("[TRUNCATED]");
     });
   });
 
@@ -334,5 +378,25 @@ describe("sanitizeDetail", () => {
       const result = sanitizeDetail(input) as any;
       expect(result.result).toBe("APP_NAME=pinchy\nDEBUG=true\nPORT=3000");
     });
+  });
+});
+
+describe("boundIdForAudit", () => {
+  it("leaves legitimate ids untouched, including OpenClaw's own", () => {
+    for (const id of ["main", "unknown-agent", "agent_1", "3f2b8c1e-aaaa-4bbb-8ccc-0123456789ab"]) {
+      expect(boundIdForAudit(id)).toBe(id);
+    }
+  });
+
+  it("caps the length at 128 characters", () => {
+    expect(boundIdForAudit("a".repeat(5000))).toHaveLength(128);
+  });
+
+  it("replaces characters outside [A-Za-z0-9_-]", () => {
+    expect(boundIdForAudit("a b:c\nd/../é<script>")).toBe("a_b_c_d______script_");
+  });
+
+  it("never throws or returns an empty string", () => {
+    expect(boundIdForAudit("")).toBe("unknown");
   });
 });

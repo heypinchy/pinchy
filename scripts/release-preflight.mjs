@@ -10,7 +10,10 @@
  *      CI status) — the same hard gates `pnpm release` enforces, surfaced early.
  *   2. The MANUAL gates that the release script CANNOT enforce — and that get
  *      silently skipped if they live only as prose. Each is printed as an
- *      unchecked `[ ]` item to be verified on staging (:next) before releasing:
+ *      unchecked `[ ]` item to be verified, before releasing, on staging pinned
+ *      to THIS branch's candidate image — `:next` for `main`, `:rc-X.Y` for a
+ *      `release/X.Y` branch (`:next` tracks main, so it is the wrong image by
+ *      hundreds of commits for a release-branch cut):
  *        - a release-specific checklist DERIVED FROM THIS RELEASE'S UPGRADE NOTES
  *          (the bespoke part — different every release),
  *        - the standard regression smoke,
@@ -24,7 +27,7 @@
  *   pnpm release <version> --verified=$(git rev-parse HEAD)
  */
 
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,14 +37,44 @@ import {
   assertUpgradingSectionExists,
   deriveStagingChecklist,
   checkReleaseVerification,
+  parseVerifiedSha,
+  findSkippedReleases,
+  isReleasableBranch,
+  nextDevVersion,
+  stagingPinAdvice,
 } from "./lib/release-logic.mjs";
+import { newestFrozenRelease } from "./lib/version-identity.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
 
 function tryExec(cmd) {
   try {
-    return { ok: true, out: execSync(cmd, { cwd: ROOT, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).trim() };
+    return {
+      ok: true,
+      out: execSync(cmd, {
+        cwd: ROOT,
+        encoding: "utf8",
+        stdio: ["pipe", "pipe", "pipe"],
+      }).trim(),
+    };
+  } catch (e) {
+    return { ok: false, out: (e.stdout || e.message || "").toString().trim() };
+  }
+}
+
+// argv-array variant of tryExec — keeps a value (e.g. the branch name) out of
+// the shell, since git refnames can legally contain shell metacharacters.
+function tryExecFile(file, args) {
+  try {
+    return {
+      ok: true,
+      out: execFileSync(file, args, {
+        cwd: ROOT,
+        encoding: "utf8",
+        stdio: ["pipe", "pipe", "pipe"],
+      }).trim(),
+    };
   } catch (e) {
     return { ok: false, out: (e.stdout || e.message || "").toString().trim() };
   }
@@ -53,9 +86,13 @@ const mark = (ok) => (ok === true ? "✓" : ok === false ? "✗" : "❓");
 // ─── Argument ────────────────────────────────────────────────────────────────
 
 const input = process.argv[2];
-const verifiedArg = (process.argv.find((a) => a.startsWith("--verified=")) || "").split("=")[1];
+// Same parser the release script uses, so the flag the preflight echoes is
+// read exactly the way the gate that enforces it will read it.
+const verifiedArg = parseVerifiedSha(process.argv);
 if (!input) {
-  process.stderr.write("Usage: pnpm release:preflight <version> [--verified=<sha>]\n");
+  process.stderr.write(
+    "Usage: pnpm release:preflight <version> [--verified=<sha>]\n",
+  );
   process.exit(1);
 }
 
@@ -68,68 +105,151 @@ try {
 }
 const tag = buildTagName(version);
 
-const prevTag = tryExec("git describe --tags --abbrev=0");
-const prevVersion = prevTag.ok ? prevTag.out.replace(/^v/, "") : null;
+// Read the notes once, here: they are both the source of the previous version
+// and the thing the gate below checks. `git describe` is deliberately NOT used
+// — it answers the newest tag REACHABLE from HEAD, and a release cut from
+// release/X.Y never merges back, so on main it names a release two minors old.
+// See scripts/lib/release-prev-version.mjs.
+const upgradingMdxPath = resolve(
+  ROOT,
+  "docs/src/content/docs/guides/upgrading.mdx",
+);
+let upgradingMdx = null;
+let mdxReadError = "";
+try {
+  upgradingMdx = readFileSync(upgradingMdxPath, "utf8");
+} catch (e) {
+  mdxReadError = `cannot read upgrading.mdx (${e.message})`;
+}
+const prevVersion = upgradingMdx ? newestFrozenRelease(upgradingMdx) : null;
 
-out(`\nRelease preflight — ${tag}${prevVersion ? ` (from v${prevVersion})` : ""}\n`);
+out(
+  `\nRelease preflight — ${tag}${prevVersion ? ` (from v${prevVersion})` : ""}\n`,
+);
 
 // ─── Auto-checked gates ───────────────────────────────────────────────────────
 
 const branch = tryExec("git branch --show-current");
 const status = tryExec("git status --porcelain");
 const tags = tryExec("git tag --list");
+const head = tryExec("git rev-parse HEAD");
 
 let upgradeNotesOk = false;
 let upgradeNotesMsg = "";
 if (prevVersion) {
   try {
-    const mdx = readFileSync(
-      resolve(ROOT, "docs/src/content/docs/guides/upgrading.mdx"),
-      "utf8",
-    );
-    assertUpgradingSectionExists(mdx, prevVersion, version);
+    assertUpgradingSectionExists(upgradingMdx, prevVersion, version);
     upgradeNotesOk = true;
   } catch (e) {
     upgradeNotesMsg = e.message.split("\n")[0];
   }
 } else {
-  upgradeNotesMsg = "no previous tag found (cannot resolve the 'from' version)";
+  upgradeNotesMsg =
+    mdxReadError ||
+    "upgrading.mdx records no frozen release section (cannot resolve the 'from' version)";
 }
 
-const ci = tryExec(
-  'gh run list --branch main --workflow CI --limit 1 --json conclusion --jq ".[0].conclusion"',
-);
+const onReleasableBranch = isReleasableBranch(branch.out);
+// Same derivation `pnpm release` runs before it writes anything: it refuses a
+// version that does not belong on this branch (0.11.0 from release/0.10), and
+// otherwise names the -dev version the post-release commit will open.
+let devVersion = null;
+let devVersionError = null;
+if (onReleasableBranch) {
+  try {
+    devVersion = nextDevVersion(version, branch.out);
+  } catch (e) {
+    devVersionError = e.message;
+  }
+}
+
+const ci = tryExecFile("gh", [
+  "run",
+  "list",
+  "--branch",
+  branch.out,
+  "--workflow",
+  "CI",
+  "--limit",
+  "1",
+  "--json",
+  "conclusion",
+  "--jq",
+  ".[0].conclusion",
+]);
 const ciState = !ci.ok ? null : ci.out === "success" ? true : false;
 
 out("Auto-checked (also enforced by `pnpm release`):");
-out(`  ${mark(branch.out === "main")} on main branch${branch.out === "main" ? "" : ` (on: ${branch.out || "?"})`}`);
+out(
+  `  ${mark(onReleasableBranch)} on main or release/X.Y branch${onReleasableBranch ? ` (${branch.out})` : ` (on: ${branch.out || "?"})`}`,
+);
+if (onReleasableBranch) {
+  out(
+    `  ${mark(devVersion !== null)} ${tag} belongs on ${branch.out}` +
+      (devVersion
+        ? ` (the branch opens ${devVersion} after the cut)`
+        : ` — ${devVersionError}`),
+  );
+}
 out(`  ${mark(status.ok && status.out === "")} working tree clean`);
-out(`  ${mark(tags.ok && !tags.out.split("\n").includes(tag))} tag ${tag} is free`);
-out(`  ${mark(upgradeNotesOk)} upgrade-notes section present${upgradeNotesOk ? "" : ` — ${upgradeNotesMsg}`}`);
-out(`  ${mark(ciState)} CI green on main${ciState === null ? " (could not query gh — check manually)" : ci.out ? ` (${ci.out})` : ""}`);
+out(
+  `  ${mark(tags.ok && !tags.out.split("\n").includes(tag))} tag ${tag} is free`,
+);
+out(
+  `  ${mark(upgradeNotesOk)} upgrade-notes section present${upgradeNotesOk ? "" : ` — ${upgradeNotesMsg}`}`,
+);
+// A cut from a branch that never learned about an earlier release would
+// relabel that release's upgrade notes as this one's delta. `git describe`
+// can't see it (the tag isn't an ancestor of this branch) and package.json
+// can't either (the bump lives on the release branch) — only the full tag
+// list can.
+const skipped = prevVersion
+  ? findSkippedReleases(
+      prevVersion,
+      version,
+      tags.ok ? tags.out.split("\n") : [],
+    )
+  : [];
+out(
+  `  ${mark(tags.ok ? skipped.length === 0 : null)} no release skipped between v${prevVersion ?? "?"} and ${tag}` +
+    (skipped.length
+      ? ` — ${skipped.join(", ")} exists but this branch doesn't know about it. Bump the version pins and open a fresh upgrade-notes section first, or those notes get relabelled as ${tag}'s.`
+      : ""),
+);
+out(
+  `  ${mark(ciState)} CI green on ${branch.out || "?"}${ciState === null ? " (could not query gh — check manually)" : ci.out ? ` (${ci.out})` : ""}`,
+);
 
 // ─── Manual gates — verify on staging, then check each off ────────────────────
 
+// Which image staging must run to make this verification mean anything. `:next`
+// tracks main, so printing it unconditionally sent a release-branch cut off to
+// verify a build hundreds of commits from the one it was about to tag.
+const pin = stagingPinAdvice(branch.out, head.ok ? head.out : null);
+
 out("");
-out("Manual gates — verify on staging (:next) and CHECK EACH OFF before `pnpm release`:");
-out("(the skill turns each `[ ]` into a blocking task that `pnpm release` waits on)");
+out(
+  `Manual gates — verify on staging${pin.tag ? ` (:${pin.tag})` : ""} and CHECK EACH OFF before \`pnpm release\`:`,
+);
+if (pin.note) out(pin.note);
+out(
+  "(the skill turns each `[ ]` into a blocking task that `pnpm release` waits on)",
+);
 
 out("");
 out("  Release-specific (from this release's upgrade notes):");
 let checklist = [];
 if (prevVersion) {
   try {
-    const mdx = readFileSync(
-      resolve(ROOT, "docs/src/content/docs/guides/upgrading.mdx"),
-      "utf8",
-    );
-    checklist = deriveStagingChecklist(mdx, prevVersion, version);
+    checklist = deriveStagingChecklist(upgradingMdx, prevVersion, version);
   } catch {
     // handled below by the empty-list branch
   }
 }
 if (checklist.length === 0) {
-  out("    (!) no upgrade-notes section resolved — write it first; nothing to verify yet");
+  out(
+    "    (!) no upgrade-notes section resolved — write it first; nothing to verify yet",
+  );
 } else {
   for (const item of checklist) {
     out(`    [ ] ${item.breaking ? "[BREAKING] " : ""}${item.title}`);
@@ -145,16 +265,22 @@ out("    [ ] One custom agent with existing chat history");
 out("");
 out("  PWA install check (manifest fields are already CI-gated):");
 out("    [ ] Chrome desktop: install icon appears, opens a standalone window");
-out("    [ ] iOS Safari: Share → Add to Home Screen opens full-screen with splash");
+out(
+  "    [ ] iOS Safari: Share → Add to Home Screen opens full-screen with splash",
+);
 
 // ─── Attestation echo ─────────────────────────────────────────────────────────
 
 out("");
-const head = tryExec("git rev-parse HEAD");
 if (verifiedArg !== undefined) {
-  const v = checkReleaseVerification({ verifiedSha: verifiedArg, headSha: head.out });
+  const v = checkReleaseVerification({
+    verifiedSha: verifiedArg,
+    headSha: head.out,
+  });
   out(`Attestation: ${mark(v.ok)} ${v.message}`);
 } else if (head.ok) {
-  out(`After verifying on staging, cut with:\n  pnpm release ${version} --verified=${head.out.slice(0, 12)}`);
+  out(
+    `After verifying on staging, cut with:\n  pnpm release ${version} --verified=${head.out.slice(0, 12)}`,
+  );
 }
 out("");

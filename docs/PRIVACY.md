@@ -19,45 +19,45 @@ Pinchy does **not** collect telemetry, does **not** phone home, and does **not**
 
 ### 2.1 User Account Data
 
-| Data Field | Purpose | Storage |
-|---|---|---|
-| Email address | Authentication, user identification | PostgreSQL (customer's server) |
-| Hashed password | Authentication | PostgreSQL (scrypt hash) |
-| Display name | UI display | PostgreSQL |
-| Role (admin/user) | Authorization | PostgreSQL |
+| Data Field        | Purpose                             | Storage                        |
+| ----------------- | ----------------------------------- | ------------------------------ |
+| Email address     | Authentication, user identification | PostgreSQL (customer's server) |
+| Hashed password   | Authentication                      | PostgreSQL (scrypt hash)       |
+| Display name      | UI display                          | PostgreSQL                     |
+| Role (admin/user) | Authorization                       | PostgreSQL                     |
 
 ### 2.2 Chat & Session Data
 
-| Data Field | Purpose | Storage |
-|---|---|---|
-| Chat messages (user input) | AI agent interaction | PostgreSQL |
-| AI agent responses | Conversation history | PostgreSQL |
-| Session metadata | Conversation grouping | PostgreSQL |
+| Data Field                 | Purpose               | Storage    |
+| -------------------------- | --------------------- | ---------- |
+| Chat messages (user input) | AI agent interaction  | PostgreSQL |
+| AI agent responses         | Conversation history  | PostgreSQL |
+| Session metadata           | Conversation grouping | PostgreSQL |
 
 ### 2.3 Agent Configuration Data
 
-| Data Field | Purpose | Storage |
-|---|---|---|
-| Agent names & settings | Agent management | PostgreSQL |
-| System prompts | Agent behavior configuration | PostgreSQL |
-| LLM provider API keys | External LLM access | PostgreSQL (AES-256-GCM encrypted) |
+| Data Field             | Purpose                      | Storage                            |
+| ---------------------- | ---------------------------- | ---------------------------------- |
+| Agent names & settings | Agent management             | PostgreSQL                         |
+| System prompts         | Agent behavior configuration | PostgreSQL                         |
+| LLM provider API keys  | External LLM access          | PostgreSQL (AES-256-GCM encrypted) |
 
 ### 2.4 File Access Data
 
-| Data Field | Purpose | Storage |
-|---|---|---|
-| Configured mount points | File plugin configuration | PostgreSQL |
-| File paths accessed | Agent file reading | Processed in memory; not persisted beyond session |
+| Data Field              | Purpose                   | Storage                                           |
+| ----------------------- | ------------------------- | ------------------------------------------------- |
+| Configured mount points | File plugin configuration | PostgreSQL                                        |
+| File paths accessed     | Agent file reading        | Processed in memory; not persisted beyond session |
 
 ### 2.5 Audit Log Data
 
-| Data Field | Purpose | Storage |
-|---|---|---|
-| Event type | Categorization of the logged action | PostgreSQL (append-only, HMAC-signed) |
-| Actor ID and email | Identifying who performed the action | PostgreSQL (append-only, HMAC-signed) |
-| Timestamp | When the action occurred | PostgreSQL (append-only, HMAC-signed) |
+| Data Field                | Purpose                                                     | Storage                               |
+| ------------------------- | ----------------------------------------------------------- | ------------------------------------- |
+| Event type                | Categorization of the logged action                         | PostgreSQL (append-only, HMAC-signed) |
+| Actor ID and email        | Identifying who performed the action                        | PostgreSQL (append-only, HMAC-signed) |
+| Timestamp                 | When the action occurred                                    | PostgreSQL (append-only, HMAC-signed) |
 | Metadata (action details) | Context about the action (e.g., agent ID, changed settings) | PostgreSQL (append-only, HMAC-signed) |
-| HMAC signature | Cryptographic integrity verification | PostgreSQL |
+| HMAC signature            | Cryptographic integrity verification                        | PostgreSQL                            |
 
 Audit log entries are **immutable** — PostgreSQL triggers prevent modification or deletion. Chat message content is **not** stored in the audit log. The audit log records actions and events only (logins, agent changes, tool executions, etc.).
 
@@ -87,6 +87,7 @@ When a user interacts with an AI agent, the **chat message content** is sent to 
 ### 4.2 No Other Third-Party Sharing
 
 Pinchy does **not**:
+
 - Send analytics or telemetry to Helmcraft GmbH or any third party
 - Include tracking pixels, advertising SDKs, or similar technologies
 - Make any network requests other than to the customer-configured LLM provider
@@ -112,14 +113,14 @@ Since Pinchy is self-hosted, data retention is **entirely under the customer's c
 
 As the data controller, the customer is responsible for fulfilling data subject requests. Pinchy supports the following rights through its administrative features:
 
-| Right | How to Fulfill |
-|---|---|
-| **Access** (Art. 15) | Export user data from the PostgreSQL database. Audit log entries referencing the user can be exported via CSV. |
-| **Rectification** (Art. 16) | Update user profile via admin interface |
-| **Erasure** (Art. 17) | Delete user account and associated data via admin interface or database |
-| **Restriction** (Art. 18) | Disable user account |
-| **Data Portability** (Art. 20) | Export data from PostgreSQL in standard format |
-| **Objection** (Art. 21) | Delete user account or cease processing |
+| Right                          | How to Fulfill                                                                                                 |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| **Access** (Art. 15)           | Export user data from the PostgreSQL database. Audit log entries referencing the user can be exported via CSV. |
+| **Rectification** (Art. 16)    | Update user profile via admin interface                                                                        |
+| **Erasure** (Art. 17)          | Delete user account and associated data via admin interface or database                                        |
+| **Restriction** (Art. 18)      | Disable user account                                                                                           |
+| **Data Portability** (Art. 20) | Export data from PostgreSQL in standard format                                                                 |
+| **Objection** (Art. 21)        | Delete user account or cease processing                                                                        |
 
 ---
 
@@ -165,4 +166,4 @@ Web: https://heypinchy.com
 
 ---
 
-*This document describes the data processing characteristics of the Pinchy software. As Pinchy is self-hosted, the customer (data controller) is responsible for their own privacy policy toward their end users.*
+_This document describes the data processing characteristics of the Pinchy software. As Pinchy is self-hosted, the customer (data controller) is responsible for their own privacy policy toward their end users._

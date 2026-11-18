@@ -32,6 +32,14 @@ vi.mock("fs", async (importOriginal) => {
   };
 });
 
+// OpenAI-compatible custom providers (#894) are DB-backed and now queried
+// during config regeneration. The shared @/db mock here returns agent rows
+// for every table, so stub this module to an empty list to keep the test hermetic.
+vi.mock("@/lib/openai-compatible-providers", () => ({
+  listOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
+  listProvidersWithApiKeys: vi.fn().mockResolvedValue([]),
+}));
+
 vi.mock("@/db", () => ({
   db: {
     select: vi.fn().mockImplementation(() => ({
@@ -87,6 +95,7 @@ vi.mock("@/lib/provider-models", () => ({
 }));
 
 import { writeFileSync, readFileSync, existsSync } from "fs";
+import { writtenOpenClawConfig } from "../helpers/openclaw-config-write";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
 import {
@@ -145,9 +154,9 @@ function mockFsReads(agentsMdByAgent: Record<string, string>) {
 }
 
 function getAgentEntry(agentId: string) {
-  const written = mockedWriteFileSync.mock.calls[0][1] as string;
+  const written = writtenOpenClawConfig(mockedWriteFileSync);
   const config = JSON.parse(written);
-  return config.agents.list.find((a: { id: string }) => a.id === agentId);
+  return config.agents.entries[agentId];
 }
 
 describe("regenerateOpenClawConfig bootstrap caps (Issue #373)", () => {

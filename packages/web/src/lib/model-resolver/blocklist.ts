@@ -1,9 +1,28 @@
+import { getModelCatalogForProvider } from "@/lib/openclaw-builtin-models";
 import type { ModelCapability } from "./types";
 
 interface BlockRule {
   modelPattern: RegExp;
   forbiddenWhen: ModelCapability[];
   reason: string;
+  /**
+   * The rule is in force only while this returns true. For a block that exists
+   * because of something Pinchy itself emits, so the block comes back on its
+   * own when the emission changes. Omitted: always in force.
+   */
+  inForce?: () => boolean;
+}
+
+/**
+ * True when Pinchy's Anthropic catalog declares `modelId` with
+ * `reasoning: false`. OpenClaw 2026.7.1's Anthropic transport then sends no
+ * `thinking` field for it at all (the whole thinking block of the request
+ * builder is gated on `model.reasoning`), whatever thinking level a session
+ * resolves to. An undeclared model does not count: Pinchy asserts nothing
+ * about it.
+ */
+function catalogWithholdsThinking(modelId: string): boolean {
+  return getModelCatalogForProvider("anthropic").find((m) => m.id === modelId)?.reasoning === false;
 }
 
 const RULES: BlockRule[] = [
@@ -25,6 +44,137 @@ const RULES: BlockRule[] = [
     reason:
       "Preview models (e.g. gemini-3-flash-preview) are unstable for tools+vision: silent hangs and schema-rejection errors observed in production (pinchy#344, pinchy#338)",
   },
+  // TEMPORARY — lift together with the OpenClaw update that knows these models
+  // (2026.9.33 or later), tracked in #1225. Unlike the other rules this is
+  // about the runtime, not the model: OpenClaw 2026.7.1 predates the request
+  // contract of the newest Claude models. Its adaptive-thinking regex
+  // (`supportsClaudeAdaptiveThinking`: fable-5, mythos-5, opus-4-6/7/8,
+  // sonnet-5, sonnet-4-6) does not recognise Opus 5 or Opus 5.5, so it treats
+  // them as legacy Claude and sends `thinking: {type: "disabled"}` or a
+  // `budget_tokens` budget. Opus 5.5 rejects both with HTTP 400 at every effort
+  // level; Opus 5 rejects the budget. Sonnet 5.5 and Fable 5.1 it mistakes for
+  // Sonnet 5 and Fable 5, which misses the "preserved thinking" check those
+  // models run for Anthropic accounts created on or after 2026-08-31: a
+  // thinking block whose conversation prefix changed is a 400, and only the
+  // newer runtime keeps that prefix append-only. Evidence: OpenClaw's dist
+  // (src-*.js, the regex above) and model contracts
+  // (packages/llm-core/src/model-contracts/anthropic.ts) at 2026.7.1 vs
+  // 2026.9.33, and Anthropic's API docs for each model.
+  //
+  // `claude-opus-5` is anchored (a date snapshot allowed) so it names that one
+  // model, not every id that starts with it.
+  //
+  // The models reach the picker anyway, because it lists the provider's live
+  // catalog; this rule is what disables them there.
+  {
+    modelPattern: /claude-(?:opus|sonnet)-5-5|claude-fable-5-1|claude-opus-5(?=$|-\d{8}$)/i,
+    forbiddenWhen: ["tools"],
+    reason:
+      "Claude Opus 5, Opus 5.5, Sonnet 5.5 and Fable 5.1 need a newer agent runtime than this Pinchy release ships — their requests are rejected. Claude Sonnet 5 works today.",
+  },
+  // Claude Haiku 5.5 is the one model of that family the pinned runtime can
+  // drive, and only because of how Pinchy declares it. OpenClaw 2026.7.1
+  // reaches a thinking setting for it in exactly one way: a catalog entry with
+  // `reasoning: true`. Then the default thinking level resolves to "medium"
+  // (thinking-*.js `resolveThinkingDefaultForModel`) and the transport sends
+  // `{type: "enabled", budget_tokens}` (provider-stream-*.js), which Haiku 5.5
+  // rejects with HTTP 400. With `reasoning: false` the transport skips the
+  // whole thinking block — no budget, no `disabled` — so the model runs on
+  // Anthropic's default, adaptive thinking at effort `medium`. Its thinking
+  // blocks are replayed only for the tool round in progress
+  // (`findActiveAnthropicToolTurnAssistantIndex`); earlier ones are dropped
+  // from the front of the history, which the preserved-thinking check allows.
+  // Pinchy v0.9.x ran Haiku 5.5 with tools on this same runtime (2026-10-27),
+  // in exactly this shape — v0.9.x did not declare it, and OpenClaw resolves an
+  // undeclared model as `reasoning: false`.
+  //
+  // What this does NOT cover: preserved thinking still applies to the blocks
+  // the model produces. If the runtime compacts in the middle of a tool round
+  // (its mid-turn context guard, near the context ceiling), the replayed block's
+  // prefix changes, and on an Anthropic account created on or after 2026-08-31
+  // that request is a 400. The same held on v0.9.x; it goes away with the
+  // runtime update in #1225, not here.
+  //
+  // Nor does it cover sampling. Haiku 5.5 answers a non-default temperature,
+  // top_p or top_k with a 400, and the runtime's default-sampling guard
+  // (`requiresClaudeDefaultSampling`) doesn't know the model, so a temperature
+  // a caller passes goes out whenever thinking is off. Pinchy sets none (pinned
+  // in openclaw-config.test.ts), so agent turns are unaffected. The runtime's
+  // own internal callers do pass one: the Telegram DM-topic auto-label
+  // (temperature 0.3, via the agent's model when no utilityModel is set) fails
+  // and the topic keeps its default name — the error is caught and logged; the
+  // exec auto-reviewer (temperature 0) never runs, because no Pinchy agent is
+  // granted `exec`; `openclaw models scan` is a CLI command Pinchy doesn't run.
+  //
+  // The rule therefore reads the catalog instead of trusting a comment: flip
+  // that entry to `reasoning: true`, or drop it, and Haiku 5.5 is blocked again.
+  {
+    modelPattern: /claude-haiku-5-5(?=$|-\d{8}$)/i,
+    forbiddenWhen: ["tools"],
+    inForce: () => !catalogWithholdsThinking("claude-haiku-5-5"),
+    reason:
+      "Claude Haiku 5.5 needs a newer agent runtime than this Pinchy release ships — its requests are rejected. Claude Sonnet 5 works today.",
+  },
+  // Observed in production 2026-07-15 (agent "Penny", ollama-cloud stack). The
+  // model emits structurally broken tool arguments: every NESTED array collapses
+  // into an {"item": ...} object, and some arrays arrive stringified ("[10, 20]").
+  // That destroys exactly the payloads bookkeeping needs — Odoo domain filters
+  // ("unhashable type: 'dict'") and account.move invoice_line_ids/tax_ids command
+  // triplets. It also emits positional instead of named arguments, so every field
+  // lands in the schema's first property. Measured over one session: 20 of 60
+  // minimax-m3 tool calls mangled, versus 0 of 112 on kimi-k2.6 and 0 of 68 on
+  // deepseek-v4-pro — model behavior, not a Pinchy serialization bug. Like the
+  // preview rule it is seeded tools:true, so it would otherwise win same-provider
+  // vision fallback for a text-only agent. Lifting this block requires a fresh
+  // multi-round tool probe with NESTED-array arguments against the live endpoint.
+  //
+  // CORROBORATED by the eval-v1 model sweep (pinchy#669), which predates the
+  // Penny incident by four days — the signal was already in the repo when
+  // production hit it; nothing wires eval results to this list. Per model per
+  // scenario, 12 runs (eval/data/hetzner-invoice-*-models.json, 2026-07-11):
+  //
+  //   scenario      minimax-m3   kimi-k2.6   gemma4:31b
+  //   lineitems       0 / 12      10 / 12     11 / 12
+  //   conflict        5 / 12      12 / 12     12 / 12
+  //   distractor     10 / 12      12 / 12     10 / 12
+  //   rejected       12 / 12      12 / 12     12 / 12
+  //
+  // `lineitems` is the scenario needing account.move invoice_line_ids command
+  // triplets — nested arrays — and minimax-m3 scores a clean zero there while
+  // passing `rejected` 12/12 and `distractor` 10/12, where nothing nests.
+  //
+  // Read that as OUTCOME evidence, NOT mechanism proof. The sweep scores end
+  // state and never inspects tool-call payloads; it tags these runs
+  // `wrong-field-extraction`, which is arguably a mis-tag. Its failure notes say
+  // "amount_total: expected 47.6, got 0" and "No in_invoice move found" — a move
+  // that landed with no lines, or was rejected outright, which is exactly what a
+  // mangled invoice_line_ids produces. It agrees with the session payloads
+  // above; those payloads remain the evidence for WHY.
+  //
+  // The sweep cannot gate: CI runs eval-selftest only, and `eval:models` needs a
+  // docker stack plus live API keys at ~72s/run. A cheap nested-array probe in
+  // scripts/lib/ollama-cloud-tool-probe.mjs is what would fail fast in CI, and
+  // is tracked separately — the two are complements, not substitutes.
+  //
+  // The pattern has NO trailing boundary on purpose, so it also covers point
+  // releases of the same line: the catalog named them `minimax-m2.1`, `m2.5`,
+  // `m2.7`, so a future `minimax-m3.5` is the expected shape, and a substring
+  // match blocks it too. That is the fail-safe direction and it is not silent —
+  // the catalog is hand-curated, so adding `minimax-m3.5` means editing
+  // ollama-cloud-models.ts and meeting this rule. A release claiming the fix
+  // still has to earn the unblock with a nested-array probe, which the current
+  // flat probe cannot give (scripts/lib/ollama-cloud-tool-probe.mjs).
+  //
+  // A new major line (`minimax-m4`) deliberately does NOT match. There is no
+  // evidence about it, and this blocklist is an evidence-based denylist — every
+  // model not named here is allowed. Blocking an unseen model by guessing at its
+  // name would be a different policy than the other rules follow.
+  {
+    modelPattern: /minimax-m3/i,
+    forbiddenWhen: ["tools"],
+    reason:
+      'minimax-m3 mangles nested tool-call arguments (arrays collapse to {"item": ...}), breaking Odoo domain filters and invoice line commands (observed in production 2026-07-15)',
+  },
 ];
 
 export function isBlocked(modelId: string, requiredCapabilities: ModelCapability[]): boolean {
@@ -45,7 +195,9 @@ export function getBlockReason(
 ): string | null {
   const rule = RULES.find(
     (r) =>
-      r.modelPattern.test(modelId) && r.forbiddenWhen.some((c) => requiredCapabilities.includes(c))
+      r.modelPattern.test(modelId) &&
+      r.forbiddenWhen.some((c) => requiredCapabilities.includes(c)) &&
+      (r.inForce?.() ?? true)
   );
   return rule?.reason ?? null;
 }

@@ -1,0 +1,59 @@
+import { readFileSync, readdirSync } from "node:fs";
+import path from "node:path";
+import { describe, expect, it } from "vitest";
+import { EVAL_CANARY_GUID, EVAL_CANARY_JSONL_LINE, isCanaryLine } from "../canary";
+
+/**
+ * Read-side drift guard for the contamination canary (#794), a sibling of the
+ * no-untracked-skips / no-test-deletion guards. It fails the moment a scenario
+ * source or a published data file ships WITHOUT the canary — the exact hole
+ * that lets a fresh scenario or a new sweep's dataset leak into a training
+ * crawl unmarked, which is impossible to retrofit once crawled.
+ */
+const EVAL_DIR = path.join(__dirname, "..");
+const SCENARIO_DIR = path.join(EVAL_DIR, "scenarios");
+const DATA_DIR = path.join(EVAL_DIR, "data");
+
+// Every `.ts` under scenarios/ must carry the GUID — not only today's scenario
+// files but any helper added here later: a helper still encodes task definitions
+// that leak just the same, so the guard covers the whole directory on purpose
+// rather than a name pattern. A new file here needs the canary comment; that is
+// intended, not a surprise.
+const scenarioFiles = readdirSync(SCENARIO_DIR).filter((f) => f.endsWith(".ts"));
+const dataFiles = readdirSync(DATA_DIR).filter((f) => f.endsWith(".jsonl"));
+
+describe("canary coverage over scenario sources", () => {
+  it("has scenario files to guard", () => {
+    expect(scenarioFiles.length).toBeGreaterThan(0);
+  });
+
+  it("covers the crm-lead scenario module (Eval-v2, #803)", () => {
+    // Named explicitly (on top of the directory glob) so the Eval-v2 CRM
+    // domain can't ship without its scenario source passing through the
+    // canary guard above.
+    expect(scenarioFiles).toContain("crm-lead.ts");
+  });
+
+  it.each(scenarioFiles)("%s carries the canary GUID", (file) => {
+    const text = readFileSync(path.join(SCENARIO_DIR, file), "utf8");
+    expect(text).toContain(EVAL_CANARY_GUID);
+  });
+});
+
+describe("canary coverage over published data files", () => {
+  it("has data files to guard", () => {
+    expect(dataFiles.length).toBeGreaterThan(0);
+  });
+
+  it.each(dataFiles)("%s begins with the canary header line", (file) => {
+    const text = readFileSync(path.join(DATA_DIR, file), "utf8");
+    const firstLine = text.split("\n").find((l) => l.trim().length > 0) ?? "";
+    expect(isCanaryLine(firstLine)).toBe(true);
+    // BYTE-identical to the constant, not merely canary-SHAPED. The published
+    // files are already in the wild, so the marker in a scraped copy can never
+    // be edited again — an innocuous reword of the text (or of the builder it
+    // now comes from) would leave the repo claiming a marker that differs from
+    // the one anybody actually holds. `isCanaryLine` alone waves that through.
+    expect(firstLine).toBe(EVAL_CANARY_JSONL_LINE);
+  });
+});

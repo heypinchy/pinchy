@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Canonical test suite for useWsRuntime.
  *
@@ -36,6 +37,14 @@ vi.mock("@/lib/image-compression", () => ({
     file,
     skipped: true,
   })),
+}));
+
+// A deactivated account leaves for /login (full page load). jsdom cannot
+// navigate, so the one function that does is replaced and observed.
+const mockLeaveDeactivatedAccount = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/account-deactivated", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/account-deactivated")>()),
+  leaveDeactivatedAccount: mockLeaveDeactivatedAccount,
 }));
 
 // Track all created WebSocket instances
@@ -947,6 +956,84 @@ describe("useWsRuntime", () => {
     expect(messages[1].content[0].text).toBe("Hi!");
   });
 
+  // #1195: the retry affordance outlives a reload — ChatErrorBanner re-surfaces
+  // the session's last un-resolved agent error on mount and offers Retry for
+  // it. The client's `attachmentIds` do NOT outlive a reload (nothing persists
+  // the message list), so without the ids on the history frame that Retry sends
+  // the text alone: exactly the production symptom, one layer further out than
+  // the in-tab path the rest of this fix covers.
+  it("re-sends the attachments of a user turn rebuilt from history", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.simulateOpen();
+    });
+
+    act(() => {
+      ws.simulateMessage({
+        type: "history",
+        messages: [
+          {
+            role: "user",
+            content: "here are the invoices",
+            timestamp: "2026-01-01T00:00:00Z",
+            files: [
+              { filename: "a.pdf", mimeType: "application/pdf", uploadId: "upload-a" },
+              { filename: "b.pdf", mimeType: "application/pdf", uploadId: "upload-b" },
+            ],
+          },
+          { role: "assistant", content: "…", timestamp: "2026-01-01T00:00:01Z" },
+        ],
+      });
+    });
+
+    act(() => {
+      result.current.onRetryContinue("partial_stream_failure");
+    });
+
+    const retry = JSON.parse(ws.send.mock.calls.at(-1)![0]);
+    expect(retry.isRetry).toBe(true);
+    expect(retry.attachmentIds).toEqual(["upload-a", "upload-b"]);
+  });
+
+  it("sends no attachment ids when the server could resolve only some of them", () => {
+    // All-or-nothing: a partial manifest would have the agent answer about
+    // three of five invoices with nothing naming the missing two.
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.simulateOpen();
+    });
+
+    act(() => {
+      ws.simulateMessage({
+        type: "history",
+        messages: [
+          {
+            role: "user",
+            content: "here are the invoices",
+            timestamp: "2026-01-01T00:00:00Z",
+            files: [
+              { filename: "a.pdf", mimeType: "application/pdf", uploadId: "upload-a" },
+              { filename: "gone.pdf", mimeType: "application/pdf" },
+            ],
+          },
+          { role: "assistant", content: "…", timestamp: "2026-01-01T00:00:01Z" },
+        ],
+      });
+    });
+
+    act(() => {
+      result.current.onRetryContinue("partial_stream_failure");
+    });
+
+    const retry = JSON.parse(ws.send.mock.calls.at(-1)![0]);
+    expect(retry.isRetry).toBe(true);
+    expect("attachmentIds" in retry).toBe(false);
+  });
+
   it("should map system role to assistant in history messages", () => {
     const { result } = renderHook(() => useWsRuntime("agent-1"));
     const ws = wsInstances[0];
@@ -1492,8 +1579,10 @@ describe("useWsRuntime", () => {
           isHistoryLoaded: ws.isHistoryLoaded,
           hasInitialContent: ws.hasInitialContent,
           isRunning: ws.isRunning,
-          reconnectExhausted: ws.reconnectExhausted,
+          isOffline: ws.isOffline,
+          connectionRejection: ws.connectionRejection,
           payloadRejected: ws.payloadRejected,
+          historyTimedOut: ws.historyTimedOut,
           configuring: false,
         });
         return { ws, status };
@@ -1545,6 +1634,273 @@ describe("useWsRuntime", () => {
       });
 
       expect(result.current.hasInitialContent).toBe(false);
+    });
+  });
+
+  describe("initial history deadline (#956)", () => {
+    // The client used to wait for the `history` frame with no deadline at all:
+    // every timer in the hook covers SENDING. So a frame lost for any reason
+    // parked the chat on the loading indicator forever — no error, no retry,
+    // no way out but a manual reload. These tests pin the deadline, the
+    // self-heal, and the escape hatch.
+    //
+    // The literal is deliberately NOT imported from the hook: it pins the
+    // agreed contract (20s, sized off the server's own worst case) instead of
+    // tracking whatever the implementation currently says. A change to
+    // HISTORY_TIMEOUT_MS is supposed to fail here and be argued for.
+    const DEADLINE_MS = 20_000;
+
+    function openWithoutHistory(agentId = "agent-1") {
+      const rendered = renderHook(({ id }) => useWsRuntime(id), {
+        initialProps: { id: agentId },
+      });
+      const ws = wsInstances[0];
+      act(() => {
+        ws.simulateOpen();
+        ws.simulateMessage({ type: "openclaw_status", connected: true });
+      });
+      return { ...rendered, ws };
+    }
+
+    it("stays quiet while the server is still within the deadline", () => {
+      const { result } = openWithoutHistory();
+
+      act(() => {
+        vi.advanceTimersByTime(DEADLINE_MS - 1000);
+      });
+
+      expect(result.current.historyTimedOut).toBe(false);
+    });
+
+    it("reports a timeout when the history frame never arrives", () => {
+      const { result } = openWithoutHistory();
+
+      act(() => {
+        vi.advanceTimersByTime(DEADLINE_MS);
+      });
+
+      expect(result.current.historyTimedOut).toBe(true);
+    });
+
+    it("forces a reconnect on expiry so a silently dead socket self-heals", () => {
+      // The leading candidate cause: a backgrounded PWA socket torn down by the
+      // OS without a `close` event reaching the page. The client believes it is
+      // connected and sends the request into a void — only closing the socket
+      // ourselves gets a live one back.
+      const { ws } = openWithoutHistory();
+
+      act(() => {
+        vi.advanceTimersByTime(DEADLINE_MS);
+      });
+
+      expect(ws.close).toHaveBeenCalled();
+
+      act(() => {
+        ws.simulateClose();
+      });
+      act(() => {
+        vi.advanceTimersByTime(1000);
+      });
+      expect(wsInstances).toHaveLength(2);
+    });
+
+    it("re-arms the deadline for the reconnected socket's own request", () => {
+      const { result, ws } = openWithoutHistory();
+
+      act(() => {
+        vi.advanceTimersByTime(DEADLINE_MS);
+      });
+      act(() => {
+        ws.simulateClose();
+      });
+      act(() => {
+        vi.advanceTimersByTime(1000);
+      });
+
+      // Second socket answers → the dead end is over, without user action.
+      const ws2 = latestWs();
+      act(() => {
+        ws2.simulateOpen();
+        ws2.simulateMessage({
+          type: "history",
+          messages: [{ role: "assistant", content: "Hello!" }],
+        });
+      });
+
+      expect(result.current.historyTimedOut).toBe(false);
+      expect(result.current.hasInitialContent).toBe(true);
+    });
+
+    it("clears the timeout when a late history frame lands on the same socket", () => {
+      const { result, ws } = openWithoutHistory();
+
+      act(() => {
+        vi.advanceTimersByTime(DEADLINE_MS);
+      });
+      expect(result.current.historyTimedOut).toBe(true);
+
+      act(() => {
+        ws.simulateMessage({ type: "history", messages: [], sessionKnown: true });
+      });
+
+      expect(result.current.historyTimedOut).toBe(false);
+    });
+
+    it("stops self-healing after a bounded number of attempts", () => {
+      // A permanently unanswering server must not turn into an endless
+      // reconnect loop. The retry button stays as the way forward.
+      const { result } = openWithoutHistory();
+
+      for (let attempt = 0; attempt < 6; attempt++) {
+        act(() => {
+          vi.advanceTimersByTime(DEADLINE_MS);
+        });
+        const ws = latestWs();
+        if (!ws.close.mock.calls.length) break;
+        act(() => {
+          ws.simulateClose();
+        });
+        act(() => {
+          vi.advanceTimersByTime(5000);
+        });
+        act(() => {
+          latestWs().simulateOpen();
+        });
+      }
+
+      expect(result.current.historyTimedOut).toBe(true);
+      expect(wsInstances.length).toBeLessThanOrEqual(3);
+    });
+
+    it("retryHistory reconnects and re-arms a fresh self-heal budget", () => {
+      const { result } = openWithoutHistory();
+
+      act(() => {
+        vi.advanceTimersByTime(DEADLINE_MS);
+      });
+      const timedOutWs = latestWs();
+      act(() => {
+        timedOutWs.simulateClose();
+      });
+      act(() => {
+        vi.advanceTimersByTime(1000);
+      });
+      const socketsBeforeRetry = wsInstances.length;
+
+      act(() => {
+        result.current.retryHistory();
+      });
+
+      expect(result.current.historyTimedOut).toBe(false);
+
+      act(() => {
+        latestWs().simulateClose();
+      });
+      act(() => {
+        vi.advanceTimersByTime(1000);
+      });
+      expect(wsInstances.length).toBeGreaterThan(socketsBeforeRetry);
+
+      const fresh = latestWs();
+      act(() => {
+        fresh.simulateOpen();
+        fresh.simulateMessage({ type: "history", messages: [], sessionKnown: true });
+      });
+      expect(result.current.historyTimedOut).toBe(false);
+      expect(result.current.hasInitialContent).toBe(true);
+    });
+
+    it("does not fire while a turn is streaming", () => {
+      // A user send disarms the pre-history buffer; the deadline must go with
+      // it, or the watchdog would tear down a healthy mid-stream socket.
+      const { result, ws } = openWithoutHistory();
+      act(() => {
+        ws.simulateMessage({ type: "history", messages: [], sessionKnown: true });
+      });
+
+      act(() => {
+        void store(result.current.runtime).onNew(makeUserMessage("hi"));
+      });
+      act(() => {
+        vi.advanceTimersByTime(DEADLINE_MS * 2);
+      });
+
+      expect(result.current.historyTimedOut).toBe(false);
+      expect(ws.close).not.toHaveBeenCalled();
+    });
+
+    it("does not let one chat's pending deadline fire into the next", () => {
+      // Switch away while the first chat's deadline is STILL RUNNING, and let
+      // the new chat's socket never open — so it never sends a request of its
+      // own and never arms a deadline of its own. Anything that fires now is
+      // the abandoned timer, and it would pin a stall on a chat that has not
+      // yet asked the server anything (whose honest state is "connecting").
+      const { result, rerender } = openWithoutHistory();
+      act(() => {
+        vi.advanceTimersByTime(DEADLINE_MS / 4);
+      });
+      expect(result.current.historyTimedOut).toBe(false);
+
+      act(() => {
+        rerender({ id: "agent-2" });
+      });
+      act(() => {
+        vi.advanceTimersByTime(DEADLINE_MS * 2);
+      });
+
+      expect(result.current.historyTimedOut).toBe(false);
+    });
+
+    it("does not carry a stall into the next chat", () => {
+      const { result, rerender } = openWithoutHistory();
+      act(() => {
+        vi.advanceTimersByTime(DEADLINE_MS);
+      });
+      expect(result.current.historyTimedOut).toBe(true);
+
+      act(() => {
+        rerender({ id: "agent-2" });
+      });
+
+      expect(result.current.historyTimedOut).toBe(false);
+    });
+
+    it("disarms the deadline on unmount", () => {
+      // Asserted on the timer itself rather than on an observable side effect:
+      // an unmounted hook has no socket and no connect() left to call, so a
+      // leaked watchdog produces no visible damage — it just holds the whole
+      // closure alive for another 20 seconds per chat the user opens.
+      const { unmount } = openWithoutHistory();
+      expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+      unmount();
+
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("does not fire while the page is backgrounded", () => {
+      // The tab is suspended: the socket was closed on purpose and no history
+      // is pending. A watchdog firing here would reconnect a hidden tab.
+      const { result, ws } = openWithoutHistory();
+
+      act(() => {
+        Object.defineProperty(document, "visibilityState", {
+          value: "hidden",
+          configurable: true,
+        });
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      act(() => {
+        vi.advanceTimersByTime(DEADLINE_MS * 2);
+      });
+
+      expect(result.current.historyTimedOut).toBe(false);
+
+      Object.defineProperty(document, "visibilityState", {
+        value: "visible",
+        configurable: true,
+      });
+      expect(ws).toBeDefined();
     });
   });
 
@@ -1636,10 +1992,12 @@ describe("useWsRuntime", () => {
       });
       expect(wsInstances).toHaveLength(2);
 
-      // Successful reconnect resets counter
+      // Successful reconnect resets counter. The server's first frame, not the
+      // open, is what makes it successful (#1422).
       const ws2 = wsInstances[1];
       act(() => {
         ws2.simulateOpen();
+        ws2.simulateMessage({ type: "openclaw_status", connected: true });
       });
 
       // Disconnect again - should use 1s delay (not 2s)
@@ -1652,7 +2010,8 @@ describe("useWsRuntime", () => {
       expect(wsInstances).toHaveLength(3);
     });
 
-    it("should cap backoff at 5 seconds", () => {
+    it("should cap backoff at 15 seconds", () => {
+      vi.spyOn(Math, "random").mockReturnValue(1); // top of the jitter range: exact delays
       renderHook(() => useWsRuntime("agent-1"));
       const ws1 = wsInstances[0];
 
@@ -1660,59 +2019,60 @@ describe("useWsRuntime", () => {
         ws1.simulateOpen();
       });
 
-      // Disconnect 4 times: delays are 1s, 2s, 4s, 5s (capped)
+      // Disconnect 4 times: delays are 1s, 2s, 4s, 8s
       for (let i = 0; i < 4; i++) {
         const ws = wsInstances[wsInstances.length - 1];
         act(() => {
           ws.simulateClose();
         });
         act(() => {
-          vi.advanceTimersByTime(5000);
+          vi.advanceTimersByTime(8000);
         });
       }
 
-      // 5th disconnect: should still reconnect after 5s (not 16s or 32s)
+      // 5th disconnect: 16s is capped to 15s
       const ws5 = wsInstances[wsInstances.length - 1];
       act(() => {
         ws5.simulateClose();
       });
-
-      // After 5s the next reconnect should happen (capped, not 16s)
       act(() => {
-        vi.advanceTimersByTime(5000);
+        vi.advanceTimersByTime(14_999);
+      });
+      expect(wsInstances).toHaveLength(5);
+      act(() => {
+        vi.advanceTimersByTime(1);
       });
       expect(wsInstances).toHaveLength(6); // original + 5 reconnects
     });
 
-    it("should stop reconnecting after max attempts", () => {
+    it("should keep reconnecting past the old ten-attempt limit", () => {
       renderHook(() => useWsRuntime("agent-1"));
       const ws1 = wsInstances[0];
       act(() => {
         ws1.simulateOpen();
       });
 
-      // Simulate 10 disconnects without successful reconnect
       for (let i = 0; i < 10; i++) {
         const ws = wsInstances[wsInstances.length - 1];
         act(() => {
           ws.simulateClose();
         });
         act(() => {
-          vi.advanceTimersByTime(5000);
-        }); // Max delay (capped at 5s)
+          vi.advanceTimersByTime(15_000);
+        });
       }
 
       expect(wsInstances).toHaveLength(11); // original + 10 reconnects
 
-      // 11th disconnect should NOT reconnect
+      // The 11th disconnect still reconnects: a visible tab never gives up.
       const lastWs = wsInstances[wsInstances.length - 1];
       act(() => {
         lastWs.simulateClose();
       });
       act(() => {
-        vi.advanceTimersByTime(60000);
+        vi.advanceTimersByTime(15_000);
       });
-      expect(wsInstances).toHaveLength(11); // No new connection
+      expect(wsInstances).toHaveLength(12);
     });
   });
 
@@ -1831,10 +2191,12 @@ describe("useWsRuntime", () => {
       expect(messages[0].content[0].text).toBe("Hello while connecting");
       expect(messages[1].role).toBe("assistant");
 
-      // Now the connection opens
+      // Now the connection opens and the server answers on it (#1422: an open
+      // the server then refuses must not swallow the queued message).
       ws.readyState = 1;
       act(() => {
         ws.simulateOpen();
+        ws.simulateMessage({ type: "openclaw_status", connected: true });
       });
 
       // The queued message should now be sent
@@ -1878,6 +2240,7 @@ describe("useWsRuntime", () => {
       ws2.readyState = 1;
       act(() => {
         ws2.simulateOpen();
+        ws2.simulateMessage({ type: "openclaw_status", connected: true });
       });
 
       // The queued message should be sent on the new connection
@@ -1886,6 +2249,46 @@ describe("useWsRuntime", () => {
       );
       expect(sentMessages).toHaveLength(1);
       expect(JSON.parse(sentMessages[0][0]).content).toBe("Sent while offline");
+    });
+
+    it("reports a queued message until it is flushed, across failed reconnects", () => {
+      // The queued payload lives only in this instance. A chat holding one must
+      // say so, because a failed reconnect attempt drops isRunning and would
+      // otherwise make the chat look idle enough to unmount (#957).
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws1 = wsInstances[0];
+      ws1.readyState = 1;
+      act(() => ws1.simulateOpen());
+      expect(result.current.hasQueuedMessage).toBe(false);
+
+      ws1.readyState = 3;
+      act(() => ws1.simulateClose());
+      act(() => {
+        store(result.current.runtime).onNew({
+          content: [{ type: "text", text: "Sent while offline" }],
+          parentId: "root",
+        });
+      });
+      expect(result.current.hasQueuedMessage).toBe(true);
+
+      // The next attempt fails too: the turn no longer counts as running, but
+      // the message is still waiting.
+      act(() => vi.advanceTimersByTime(1000));
+      const ws2 = wsInstances[1];
+      ws2.readyState = 3;
+      act(() => ws2.simulateClose());
+      expect(result.current.isRunning).toBe(false);
+      expect(result.current.hasQueuedMessage).toBe(true);
+
+      act(() => vi.advanceTimersByTime(30_000));
+      const ws3 = wsInstances[wsInstances.length - 1];
+      ws3.readyState = 1;
+      act(() => ws3.simulateOpen());
+      // Open is not enough: the message waits for the server's first frame
+      // (#1422), and the chat keeps saying so until then.
+      expect(result.current.hasQueuedMessage).toBe(true);
+      act(() => ws3.simulateMessage({ type: "openclaw_status", connected: true }));
+      expect(result.current.hasQueuedMessage).toBe(false);
     });
 
     it("queues while the WebSocket is closing without opening an overlapping connection", () => {
@@ -1916,6 +2319,7 @@ describe("useWsRuntime", () => {
       ws2.readyState = MockWebSocket.OPEN;
       act(() => {
         ws2.simulateOpen();
+        ws2.simulateMessage({ type: "openclaw_status", connected: true });
       });
 
       const sentMessages = ws2.send.mock.calls.filter(
@@ -2283,8 +2687,10 @@ describe("useWsRuntime", () => {
           isHistoryLoaded: ws.isHistoryLoaded,
           hasInitialContent: ws.hasInitialContent,
           isRunning: ws.isRunning,
-          reconnectExhausted: ws.reconnectExhausted,
+          isOffline: ws.isOffline,
+          connectionRejection: ws.connectionRejection,
           payloadRejected: ws.payloadRejected,
+          historyTimedOut: ws.historyTimedOut,
           configuring: false,
         });
         return { ws, status };
@@ -2353,6 +2759,7 @@ describe("useWsRuntime", () => {
       const nextWs = wsInstances[1];
       act(() => {
         nextWs.simulateOpen();
+        nextWs.simulateMessage({ type: "openclaw_status", connected: true });
       });
 
       expect(nextWs.send).toHaveBeenCalledWith(
@@ -2392,66 +2799,51 @@ describe("useWsRuntime", () => {
     });
   });
 
-  describe("reconnectExhausted", () => {
-    it("should return reconnectExhausted as false initially", () => {
+  // The ten-attempt "exhausted" dead end is gone (#1422): the connection state is
+  // reported as offline / refused, and the hook keeps dialing.
+  describe("no exhausted dead end", () => {
+    it("starts online and not refused", () => {
       const { result } = renderHook(() => useWsRuntime("agent-1"));
-      expect(result.current.reconnectExhausted).toBe(false);
+      expect(result.current.isOffline).toBe(false);
+      expect(result.current.connectionRejection).toBeNull();
     });
 
-    it("should set reconnectExhausted to true after all reconnect attempts fail", () => {
-      const { result } = renderHook(() => useWsRuntime("agent-1"));
-      const ws1 = wsInstances[0];
-
+    it("keeps dialing after more failures than the old ten-attempt budget", () => {
+      renderHook(() => useWsRuntime("agent-1"));
       act(() => {
-        ws1.simulateOpen();
+        wsInstances[0].simulateOpen();
       });
-
-      // Exhaust all MAX_RECONNECT_ATTEMPTS (10) + the original connection
-      for (let i = 0; i < 10; i++) {
+      for (let i = 0; i < 12; i++) {
         const ws = wsInstances[wsInstances.length - 1];
         act(() => {
           ws.simulateClose();
         });
         act(() => {
-          vi.advanceTimersByTime(5000);
+          vi.advanceTimersByTime(15_000);
         });
       }
-
-      // 11th disconnect — no more reconnect attempts
-      const lastWs = wsInstances[wsInstances.length - 1];
-      act(() => {
-        lastWs.simulateClose();
-      });
-
-      expect(result.current.reconnectExhausted).toBe(true);
+      expect(wsInstances).toHaveLength(13);
     });
 
-    it("should reset reconnectExhausted to false when reconnect succeeds", () => {
+    it("is still connected and not refused after a few failures and a successful reconnect", () => {
       const { result } = renderHook(() => useWsRuntime("agent-1"));
-      const ws1 = wsInstances[0];
-
       act(() => {
-        ws1.simulateOpen();
+        wsInstances[0].simulateOpen();
       });
-
-      // Fail a few times (but not all)
       for (let i = 0; i < 3; i++) {
         const ws = wsInstances[wsInstances.length - 1];
         act(() => {
           ws.simulateClose();
         });
         act(() => {
-          vi.advanceTimersByTime(5000);
+          vi.advanceTimersByTime(15_000);
         });
       }
-
-      // Successful reconnect
-      const ws4 = wsInstances[wsInstances.length - 1];
       act(() => {
-        ws4.simulateOpen();
+        wsInstances[wsInstances.length - 1].simulateOpen();
       });
-
-      expect(result.current.reconnectExhausted).toBe(false);
+      expect(result.current.isConnected).toBe(true);
+      expect(result.current.connectionRejection).toBeNull();
     });
   });
 
@@ -2673,6 +3065,286 @@ describe("useWsRuntime", () => {
       expect(errorMsg!.metadata!.custom.error!.message).toBe(message);
     }
   );
+
+  it.each([
+    [
+      "policy_personal_agent_disabled",
+      "Personal agents are turned off on this instance. Ask your admin if you need yours back.",
+    ],
+    ["policy_budget_exhausted", "This agent has used its monthly budget."],
+  ])(
+    "shows a %s refusal without a Retry button — retrying cannot succeed until an admin acts",
+    (code, message) => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.simulateOpen();
+      });
+      act(() => {
+        store(result.current.runtime).onNew({
+          content: [{ type: "text", text: "Hello" }],
+          parentId: "root",
+        });
+      });
+      act(() => {
+        ws.simulateMessage({ type: "error", code, message });
+      });
+
+      const messages = store(result.current.runtime).messages;
+      const errorMsg = messages.find(
+        (m: any) => m.role === "assistant" && m.metadata?.custom?.error
+      );
+      expect(errorMsg).toBeDefined();
+      expect(errorMsg!.metadata!.custom.error).toEqual({ message });
+      expect(errorMsg!.metadata!.custom.retryable).toBeUndefined();
+      expect(result.current.isRunning).toBe(false);
+    }
+  );
+
+  it("ends the history wait when the history request itself is refused by a policy", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.simulateOpen();
+    });
+    expect(result.current.isHistoryLoaded).toBe(false);
+
+    // An open tab reconnects after the admin switched personal agents off: the
+    // server answers the history request with the refusal, not with history.
+    act(() => {
+      ws.simulateMessage({
+        type: "error",
+        code: "policy_personal_agent_disabled",
+        message: "Personal agents are turned off on this instance.",
+      });
+    });
+
+    // Waiting on would end in the history timeout, which reads as a network
+    // fault instead of the explanation the bubble carries.
+    expect(result.current.isHistoryLoaded).toBe(true);
+  });
+
+  it("treats the deactivation refusal as final: no Retry, and the history wait ends", () => {
+    // A tab that reconnects in the moment the account is deactivated gets the
+    // refusal instead of history — the upgrade passed, then the registry
+    // closed the socket on registration (server/user-sockets.ts).
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.simulateOpen();
+    });
+    act(() => {
+      ws.simulateMessage({
+        type: "error",
+        code: "policy_account_deactivated",
+        message: "Your account has been deactivated.",
+      });
+    });
+
+    expect(result.current.isHistoryLoaded).toBe(true);
+    const errorMsg = store(result.current.runtime).messages.find(
+      (m: any) => m.role === "assistant" && m.metadata?.custom?.error
+    );
+    expect(errorMsg!.metadata!.custom.error).toEqual({
+      message: "Your account has been deactivated.",
+    });
+    expect(errorMsg!.metadata!.custom.retryable).toBeUndefined();
+  });
+
+  it("does not reconnect after close code 4403 and leaves for the login page", () => {
+    // The account is deactivated and its sessions are gone: every reconnect
+    // would fail the upgrade, ten times over, behind a "reconnecting" status.
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.simulateOpen();
+      ws.simulateMessage({ type: "history", messages: [] });
+    });
+    act(() => {
+      store(result.current.runtime).onNew({
+        content: [{ type: "text", text: "Send the invoices" }],
+        parentId: "root",
+      });
+    });
+    act(() => {
+      ws.simulateMessage({
+        type: "error",
+        code: "policy_account_deactivated",
+        message: "Your account has been deactivated.",
+      });
+      ws.simulateClose(4403);
+    });
+    act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+
+    expect(wsInstances).toHaveLength(1);
+    expect(mockLeaveDeactivatedAccount).toHaveBeenCalledTimes(1);
+    expect(result.current.isRunning).toBe(false);
+  });
+
+  it("still reconnects after an ordinary close and stays on the page", () => {
+    renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.simulateOpen();
+      ws.simulateMessage({ type: "history", messages: [] });
+      ws.simulateClose(1006);
+    });
+    act(() => {
+      vi.advanceTimersByTime(1_000);
+    });
+
+    expect(wsInstances.length).toBeGreaterThan(1);
+    expect(mockLeaveDeactivatedAccount).not.toHaveBeenCalled();
+  });
+
+  describe("a tab that missed the 4403 because its socket was already closed", () => {
+    // Hidden past the grace period, or mid-reconnect when the account was
+    // deactivated: no socket was open to receive 4403. Every reconnect then
+    // fails the upgrade's session lookup (HTTP 401, seen as 1006), and the tab
+    // would sit through ten "reconnecting" attempts. After two failed
+    // reconnects in a row it asks whether it still has a session.
+    const realFetch = globalThis.fetch;
+    let mockFetch: ReturnType<typeof vi.fn>;
+
+    function answerSession(body: unknown) {
+      mockFetch.mockResolvedValue({ ok: true, status: 200, json: async () => body });
+    }
+
+    beforeEach(() => {
+      mockFetch = vi.fn();
+      globalThis.fetch = mockFetch as unknown as typeof fetch;
+    });
+    afterEach(() => {
+      globalThis.fetch = realFetch;
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        value: "visible",
+      });
+    });
+
+    /** Fail the newest socket's dial and let its backoff produce the next one. */
+    async function failLatestDial(backoffMs: number) {
+      await act(async () => {
+        latestWs().simulateClose(1006);
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(backoffMs);
+      });
+    }
+
+    it("leaves for the login page after two failed reconnects when the session is gone", async () => {
+      answerSession(null); // Better Auth's get-session answers `null` without a session
+      renderHook(() => useWsRuntime("agent-1"));
+      act(() => {
+        latestWs().simulateOpen();
+        latestWs().simulateMessage({ type: "history", messages: [] });
+      });
+
+      await failLatestDial(1_000); // the drop itself → reconnect #1
+      await failLatestDial(2_000); // reconnect #1 fails → reconnect #2
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(mockLeaveDeactivatedAccount).not.toHaveBeenCalled();
+
+      await failLatestDial(0); // reconnect #2 fails → ask
+      expect(mockFetch).toHaveBeenCalledWith(
+        "/api/auth/get-session",
+        expect.objectContaining({ cache: "no-store" })
+      );
+      expect(mockLeaveDeactivatedAccount).toHaveBeenCalledTimes(1);
+
+      const socketsWhenLeaving = wsInstances.length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+      expect(wsInstances).toHaveLength(socketsWhenLeaving);
+    });
+
+    it("leaves too when the socket was closed while the tab was hidden", async () => {
+      answerSession(null);
+      renderHook(() => useWsRuntime("agent-1"));
+      act(() => {
+        latestWs().simulateOpen();
+        latestWs().simulateMessage({ type: "history", messages: [] });
+      });
+
+      // Hidden past the grace period: the tab closes its own socket, so the
+      // deactivation that happens meanwhile has nothing to send 4403 to.
+      act(() => {
+        Object.defineProperty(document, "visibilityState", {
+          configurable: true,
+          value: "hidden",
+        });
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+        latestWs().simulateClose(1000);
+      });
+      const before = wsInstances.length;
+      act(() => {
+        Object.defineProperty(document, "visibilityState", {
+          configurable: true,
+          value: "visible",
+        });
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      expect(wsInstances.length).toBe(before + 1);
+
+      await failLatestDial(1_000);
+      await failLatestDial(2_000);
+      await failLatestDial(0);
+
+      expect(mockLeaveDeactivatedAccount).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps reconnecting when the session is still valid", async () => {
+      answerSession({ session: { id: "s-1" }, user: { id: "u-1" } });
+      renderHook(() => useWsRuntime("agent-1"));
+      act(() => {
+        latestWs().simulateOpen();
+        latestWs().simulateMessage({ type: "history", messages: [] });
+      });
+
+      await failLatestDial(1_000);
+      await failLatestDial(2_000);
+      await failLatestDial(4_000);
+      const afterThird = wsInstances.length;
+      await failLatestDial(8_000);
+
+      expect(mockFetch).toHaveBeenCalled();
+      expect(mockLeaveDeactivatedAccount).not.toHaveBeenCalled();
+      expect(wsInstances.length).toBe(afterThird + 1);
+    });
+
+    it("keeps reconnecting when the session check itself fails", async () => {
+      // A Pinchy that is restarting answers neither the socket nor the check.
+      // That is not evidence of a lost session.
+      mockFetch.mockRejectedValue(new TypeError("Failed to fetch"));
+      renderHook(() => useWsRuntime("agent-1"));
+      act(() => {
+        latestWs().simulateOpen();
+        latestWs().simulateMessage({ type: "history", messages: [] });
+      });
+
+      await failLatestDial(1_000);
+      await failLatestDial(2_000);
+      await failLatestDial(4_000);
+      const afterThird = wsInstances.length;
+      await failLatestDial(8_000);
+
+      expect(mockFetch).toHaveBeenCalled();
+      expect(mockLeaveDeactivatedAccount).not.toHaveBeenCalled();
+      expect(wsInstances.length).toBe(afterThird + 1);
+    });
+  });
 
   // ── status reducer ───────────────────────────────────────────────────────────
   describe("status reducer", () => {
@@ -3375,6 +4047,9 @@ describe("useWsRuntime", () => {
       expect(messageFrames[1].retryReason).toBe("send_failure");
     });
 
+    // Attachment round-trip on this path is covered in the "Two-phase upload"
+    // describe below, which already has the upload-endpoint harness (#1195).
+
     it("retrying a 'partial_stream_failure' resends the original user message with retryReason", async () => {
       const { result } = renderHook(() => useWsRuntime("agent-42"));
 
@@ -3618,11 +4293,21 @@ describe("useWsRuntime", () => {
       expect(result.current.isRunning).toBe(true);
     });
 
-    // "preserves image attachments when retrying" was removed together with
-    // the legacy base64-over-WS flow. The two-phase upload pipeline doesn't
-    // round-trip attachmentIds on retry (they materialize at send time and
-    // the row is already in `attached` state). Retry just re-sends text.
-    // See src/__tests__/hooks/use-pending-uploads.test.ts for the new shape.
+    // Retry DOES round-trip attachmentIds (#1195).
+    //
+    // It used not to, on the reasoning recorded here when the legacy
+    // base64-over-WS flow was removed: "they materialize at send time and the
+    // row is already in `attached` state". That holds only when the first
+    // attempt reached the server. A `send_failure` retry is the case where it
+    // did not — the rows are still `staged`, nothing was materialized, and
+    // re-sending text alone hands the agent a message about files it has never
+    // been given. Production hit exactly that: a message with five invoices
+    // arrived a second time with the attachment block gone.
+    //
+    // The server tells the two states apart (`isRetry` in
+    // attachment-pipeline.ts): staged rows are attached, already-attached rows
+    // are re-referenced rather than refused. Both retry paths are covered in
+    // the "Two-phase upload" describe below, which has the upload harness.
 
     it("restarts the 10s ack timer after retry", async () => {
       const { result } = renderHook(() => useWsRuntime("agent-1"));
@@ -4165,6 +4850,82 @@ describe("Two-phase upload: attachmentIds in WS payload", () => {
     const sentMessage = JSON.parse(ws.send.mock.calls[1][0]);
     expect(sentMessage.type).toBe("message");
     expect(sentMessage.attachmentIds).toEqual(["upload-id-1"]);
+  });
+
+  // #1195: a retry re-sends the message it retries, attachments included.
+  //
+  // Both retry paths used to send `content` alone. That was reasoned from "the
+  // row is already in `attached` state" — true only when the first attempt
+  // reached the server, which is precisely not the case a `send_failure` retry
+  // covers. Production hit it: a message carrying five invoices arrived a
+  // second time with the attachment block gone, and the agent was left
+  // answering about files it had never been handed.
+  async function sendWithOneAttachment(agentId: string) {
+    vi.mocked(uploadModule.uploadAttachment).mockResolvedValue({
+      id: "upload-id-retry",
+      filename: "invoice.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 4,
+    });
+
+    const { result } = renderHook(() => useWsRuntime(agentId));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.simulateOpen();
+    });
+
+    await act(async () => {
+      result.current.addPendingUpload(
+        new File(["data"], "invoice.pdf", { type: "application/pdf" })
+      );
+    });
+    expect(result.current.pendingUploads[0]?.state).toBe("ready");
+
+    act(() => {
+      store(result.current.runtime).onNew({
+        content: [{ type: "text", text: "here are the invoices" }],
+        parentId: "root",
+      });
+    });
+
+    const firstSend = JSON.parse(ws.send.mock.calls.at(-1)![0]);
+    expect(firstSend.attachmentIds).toEqual(["upload-id-retry"]);
+    return { result, ws, firstSend };
+  }
+
+  it("onRetryContinue re-sends the original message's attachment ids", async () => {
+    const { result, ws, firstSend } = await sendWithOneAttachment("agent-retry-1");
+
+    act(() => {
+      ws.simulateMessage({ type: "error", message: "Agent runtime not available" });
+    });
+
+    act(() => {
+      result.current.onRetryContinue("send_failure");
+    });
+
+    const retry = JSON.parse(ws.send.mock.calls.at(-1)![0]);
+    expect(retry.isRetry).toBe(true);
+    expect(retry.attachmentIds).toEqual(firstSend.attachmentIds);
+  });
+
+  it("onRetryResend re-sends the original message's attachment ids", async () => {
+    const { result, ws, firstSend } = await sendWithOneAttachment("agent-retry-2");
+
+    // Let the 10s ack timer fire so the message is in `failed` state, which is
+    // the only state onRetryResend acts on.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+
+    act(() => {
+      result.current.onRetryResend(firstSend.clientMessageId);
+    });
+
+    const retry = JSON.parse(ws.send.mock.calls.at(-1)![0]);
+    expect(retry.isRetry).toBe(true);
+    expect(retry.attachmentIds).toEqual(firstSend.attachmentIds);
   });
 
   it("clears ready pendingUploads after send", async () => {

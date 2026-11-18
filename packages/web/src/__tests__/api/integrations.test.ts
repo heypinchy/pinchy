@@ -34,18 +34,25 @@ vi.mock("@/lib/audit", () => ({
   scrubEmails: (text: string) => text.replace(/[^\s@]+@[^\s@]+\.[^\s@]+/g, "<email-redacted>"),
 }));
 
-const { mockAuthenticate, mockVersion, mockModels, mockFields, mockCheckAccessRights } = vi.hoisted(
-  () => ({
-    mockAuthenticate: vi.fn(),
-    mockVersion: vi.fn(),
-    mockModels: vi.fn(),
-    mockFields: vi.fn(),
-    mockCheckAccessRights: vi.fn().mockResolvedValue(true),
-  })
-);
+const {
+  mockAuthenticate,
+  mockOdooClient,
+  mockVersion,
+  mockModels,
+  mockFields,
+  mockCheckAccessRights,
+} = vi.hoisted(() => ({
+  mockAuthenticate: vi.fn(),
+  mockOdooClient: vi.fn(),
+  mockVersion: vi.fn(),
+  mockModels: vi.fn(),
+  mockFields: vi.fn(),
+  mockCheckAccessRights: vi.fn().mockResolvedValue(true),
+}));
 
 vi.mock("odoo-node", () => {
-  function OdooClient() {
+  function OdooClient(config: unknown) {
+    mockOdooClient(config);
     return {
       version: mockVersion,
       models: mockModels,
@@ -137,8 +144,43 @@ vi.mock("@/lib/openclaw-config", () => ({
   regenerateOpenClawConfig: (...args: unknown[]) => mockRegenerateOpenClawConfig(...args),
 }));
 
+// The SSRF guard resolves the Odoo host. No test here may depend on real DNS:
+// every name answers with one public address unless a test says otherwise.
+const { mockDnsLookup } = vi.hoisted(() => ({ mockDnsLookup: vi.fn() }));
+vi.mock("node:dns/promises", () => ({
+  lookup: mockDnsLookup,
+  default: { lookup: mockDnsLookup },
+}));
+
+// A request Pinchy makes after the guard goes to the address the guard
+// classified (`pinnedFetch`, real sockets in pinned-connection.test.ts). Here
+// it hands over to the mocked global fetch and records that address.
+const { mockPinnedFetch } = vi.hoisted(() => ({ mockPinnedFetch: vi.fn() }));
+vi.mock("@/lib/pinned-connection", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/pinned-connection")>()),
+  pinnedFetch: mockPinnedFetch,
+}));
+
+beforeEach(() => {
+  mockDnsLookup.mockReset();
+  mockDnsLookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+  mockPinnedFetch.mockReset();
+  mockPinnedFetch.mockImplementation((url: string, init: RequestInit) => fetch(url, init));
+});
+
 import { NextRequest } from "next/server";
 import { routeContext } from "@/test-helpers/route";
+
+/** One `db.select().from()` result, awaitable directly or through `.where()`. */
+function selectOnce(rows: unknown[]) {
+  mockSelectFrom.mockImplementationOnce(() => {
+    const result = Promise.resolve(rows) as Promise<unknown[]> & {
+      where: ReturnType<typeof vi.fn>;
+    };
+    result.where = vi.fn().mockResolvedValue(rows);
+    return result;
+  });
+}
 
 function makeRequest(path: string, options?: ConstructorParameters<typeof NextRequest>[1]) {
   return new NextRequest(`http://localhost:7777${path}`, options);
@@ -394,6 +436,78 @@ describe("POST /api/integrations", () => {
       db: "prod",
       login: "admin",
     });
+  });
+
+  // #1297: web agents load pinchy-web without a connectionId while no
+  // provider exists. Adding the key must rewrite openclaw.json, or search
+  // keeps answering "not configured" until some unrelated save.
+  it("regenerates the OpenClaw config after creating a web-search connection", async () => {
+    selectOnce([]); // no existing web-search connection
+    const { POST } = await import("@/app/api/integrations/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations", {
+        method: "POST",
+        body: JSON.stringify({
+          type: "web-search",
+          name: "Brave Search",
+          credentials: { apiKey: "BSA-test-key" },
+        }),
+      }),
+      routeContext()
+    );
+
+    expect(response.status).toBe(201);
+    expect(mockRegenerateOpenClawConfig).toHaveBeenCalledTimes(1);
+    // After the insert, or it reads the state without the new connection.
+    expect(mockInsertValues.mock.invocationCallOrder[0]).toBeLessThan(
+      mockRegenerateOpenClawConfig.mock.invocationCallOrder[0]
+    );
+  });
+
+  it("still creates the web-search connection when the config regenerate fails", async () => {
+    selectOnce([]);
+    mockRegenerateOpenClawConfig.mockRejectedValueOnce(new Error("gateway down"));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { POST } = await import("@/app/api/integrations/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations", {
+        method: "POST",
+        body: JSON.stringify({
+          type: "web-search",
+          name: "Brave Search",
+          credentials: { apiKey: "BSA-test-key" },
+        }),
+      }),
+      routeContext()
+    );
+
+    expect(response.status).toBe(201);
+    expect(mockRegenerateOpenClawConfig).toHaveBeenCalledTimes(1);
+    consoleError.mockRestore();
+  });
+
+  // Every integration type feeds a plugin config (pinchy-odoo, pinchy-email,
+  // pinchy-web), so a create regenerates whatever the type. For an Odoo
+  // connection no agent holds a grant yet, so the push is a no-op — but the
+  // route need not know which types matter.
+  it("regenerates the OpenClaw config after creating an Odoo connection", async () => {
+    const { POST } = await import("@/app/api/integrations/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations", {
+        method: "POST",
+        body: JSON.stringify({ type: "odoo", name: "Prod Odoo", credentials: validCredentials }),
+      }),
+      routeContext()
+    );
+
+    expect(response.status).toBe(201);
+    expect(mockRegenerateOpenClawConfig).toHaveBeenCalledTimes(1);
+    expect(mockInsertValues.mock.invocationCallOrder[0]).toBeLessThan(
+      mockRegenerateOpenClawConfig.mock.invocationCallOrder[0]
+    );
   });
 
   it("should return 409 when creating a duplicate web-search connection", async () => {
@@ -730,6 +844,82 @@ describe("DELETE /api/integrations/[connectionId]", () => {
     mockGetSession.mockResolvedValue(adminSession);
   });
 
+  // #1297: the plugin keeps a removed connection's id until the config is
+  // rewritten, so search would fail with a stale id instead of "not configured".
+  it("regenerates the OpenClaw config after deleting a web-search connection", async () => {
+    selectOnce([{ ...mockConnection, id: "ws-1", type: "web-search", name: "Brave Search" }]);
+    const { DELETE } = await import("@/app/api/integrations/[connectionId]/route");
+
+    const response = await DELETE(makeRequest("/api/integrations/ws-1", { method: "DELETE" }), {
+      params: Promise.resolve({ connectionId: "ws-1" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(mockRegenerateOpenClawConfig).toHaveBeenCalledTimes(1);
+    // After the delete, or it reads the state that still has the old id.
+    expect(mockDeleteWhere.mock.invocationCallOrder[0]).toBeLessThan(
+      mockRegenerateOpenClawConfig.mock.invocationCallOrder[0]
+    );
+  });
+
+  // Deleting a connection cascades its agent grants away, so pinchy-odoo and
+  // pinchy-email must drop the agents that held it. Without a regenerate they
+  // keep the deleted connectionId until some unrelated save rewrites the config.
+  it.each(["odoo", "imap", "google", "microsoft"])(
+    "regenerates the OpenClaw config after deleting a %s connection",
+    async (type) => {
+      selectOnce([{ ...mockConnection, id: "conn-1", type }]);
+      const { DELETE } = await import("@/app/api/integrations/[connectionId]/route");
+
+      const response = await DELETE(makeRequest("/api/integrations/conn-1", { method: "DELETE" }), {
+        params: Promise.resolve({ connectionId: "conn-1" }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(mockRegenerateOpenClawConfig).toHaveBeenCalledTimes(1);
+      expect(mockDeleteWhere.mock.invocationCallOrder[0]).toBeLessThan(
+        mockRegenerateOpenClawConfig.mock.invocationCallOrder[0]
+      );
+    }
+  );
+
+  it("still deletes and audits an Odoo connection when the config regenerate fails", async () => {
+    selectOnce([{ ...mockConnection, id: "conn-1", type: "odoo" }]);
+    mockRegenerateOpenClawConfig.mockRejectedValueOnce(new Error("gateway down"));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { DELETE } = await import("@/app/api/integrations/[connectionId]/route");
+
+    const response = await DELETE(makeRequest("/api/integrations/conn-1", { method: "DELETE" }), {
+      params: Promise.resolve({ connectionId: "conn-1" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(mockRegenerateOpenClawConfig).toHaveBeenCalledTimes(1);
+    expect(consoleError).toHaveBeenCalled();
+    expect(mockAppendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "integration.deleted", outcome: "success" })
+    );
+    consoleError.mockRestore();
+  });
+
+  it("still deletes and audits the web-search connection when the config regenerate fails", async () => {
+    selectOnce([{ ...mockConnection, id: "ws-1", type: "web-search", name: "Brave Search" }]);
+    mockRegenerateOpenClawConfig.mockRejectedValueOnce(new Error("gateway down"));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { DELETE } = await import("@/app/api/integrations/[connectionId]/route");
+
+    const response = await DELETE(makeRequest("/api/integrations/ws-1", { method: "DELETE" }), {
+      params: Promise.resolve({ connectionId: "ws-1" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(mockRegenerateOpenClawConfig).toHaveBeenCalledTimes(1);
+    expect(mockAppendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "integration.deleted", outcome: "success" })
+    );
+    consoleError.mockRestore();
+  });
+
   it("should return 401 when not authenticated", async () => {
     mockGetSession.mockResolvedValueOnce(null);
     const { DELETE } = await import("@/app/api/integrations/[connectionId]/route");
@@ -788,10 +978,9 @@ describe("DELETE /api/integrations/[connectionId]", () => {
         }),
       })
     );
-    // Odoo's runtime gating is a plugin-side checkPermission, never baked
-    // into openclaw.json — deleting the connection doesn't need a regenerate
-    // (unlike MCP below, whose gating lives in the config itself).
-    expect(mockRegenerateOpenClawConfig).not.toHaveBeenCalled();
+    // Every type refreshes the config on delete (#1297): pinchy-odoo carries a
+    // per-agent connectionId that would otherwise point at the deleted row.
+    expect(mockRegenerateOpenClawConfig).toHaveBeenCalledTimes(1);
   });
 
   it("records the MCP server identity in the delete audit — the deleted row is the only other copy", async () => {
@@ -992,7 +1181,9 @@ describe("POST /api/integrations/[connectionId]/test", () => {
       db: "prod",
       login: "admin",
       apiKey: "secret-key",
+      fetch: expect.any(Function),
     });
+    expect(mockAuthenticate.mock.calls[0][0].fetch).not.toBe(globalThis.fetch);
     // Probe is delegated — version/uid are no longer in the response
     expect(body.version).toBeUndefined();
     expect(body.uid).toBeUndefined();
@@ -1086,7 +1277,7 @@ describe("POST /api/integrations/[connectionId]/test (web-search)", () => {
       {
         apiKey: "BSA-valid-key",
       },
-      null
+      { data: null }
     );
   });
 
@@ -1245,7 +1436,12 @@ describe("POST /api/integrations/test-credentials", () => {
       db: "prod",
       login: "admin",
       apiKey: "key",
+      fetch: expect.any(Function),
     });
+    // Login and version go through the same pinned fetch, never the global one.
+    const pinned = mockAuthenticate.mock.calls[0][0].fetch;
+    expect(pinned).not.toBe(globalThis.fetch);
+    expect(mockOdooClient).toHaveBeenCalledWith(expect.objectContaining({ fetch: pinned }));
     expect(mockVersion).toHaveBeenCalled();
   });
 
@@ -1690,7 +1886,57 @@ describe("POST /api/integrations/list-databases", () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "call", params: {} }),
+      redirect: "manual",
+      signal: expect.any(AbortSignal),
     });
+  });
+
+  it("sends the request to the address the guard classified, not to a second lookup", async () => {
+    // DNS rebinding: checked against a public answer, then fetched by name —
+    // and the second lookup is free to say 127.0.0.1.
+    mockDnsLookup
+      .mockResolvedValueOnce([{ address: "93.184.216.34", family: 4 }])
+      .mockResolvedValue([{ address: "127.0.0.1", family: 4 }]);
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ jsonrpc: "2.0", id: 1, result: ["production"] }),
+    });
+    const { POST } = await import("@/app/api/integrations/list-databases/route");
+
+    await POST(
+      makeRequest("/api/integrations/list-databases", {
+        method: "POST",
+        body: JSON.stringify({ url: "https://odoo.example.com" }),
+      }),
+      routeContext()
+    );
+
+    expect(mockPinnedFetch).toHaveBeenCalledWith(
+      "https://odoo.example.com/web/database/list",
+      expect.objectContaining({ redirect: "manual" }),
+      [{ address: "93.184.216.34", family: 4 }]
+    );
+    expect(mockDnsLookup).toHaveBeenCalledTimes(1);
+  });
+
+  it("requests nothing when the host does not resolve", async () => {
+    mockDnsLookup.mockRejectedValue(
+      Object.assign(new Error("getaddrinfo ENOTFOUND"), { code: "ENOTFOUND" })
+    );
+    const { POST } = await import("@/app/api/integrations/list-databases/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/list-databases", {
+        method: "POST",
+        body: JSON.stringify({ url: "https://odoo.example.com" }),
+      }),
+      routeContext()
+    );
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toMatch(/resolve/);
+    expect(mockPinnedFetch).not.toHaveBeenCalled();
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   it("should return error when fetch throws", async () => {

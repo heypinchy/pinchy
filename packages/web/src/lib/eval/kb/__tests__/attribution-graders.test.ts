@@ -1,0 +1,1355 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  citedSourcePaths,
+  sourcesListCandidates,
+  composeKbGraderResults,
+  gradeAttribution,
+  gradeCitationResolution,
+  gradeNoDuplicateCorroboration,
+  gradePathCitation,
+  gradeSourcesFormat,
+} from "../attribution-graders";
+import type { AttributionInput, RetrievedSource } from "../attribution-graders";
+import type { KbGraderResult } from "../types";
+
+function src(n: number, sourcePath: string, page: number | null = 1): RetrievedSource {
+  return { n, sourcePath, page };
+}
+
+describe("gradeCitationResolution", () => {
+  it("flags a cited number with no Sources entry (Block-E shape: [1][4] inline, Sources holds only [1],[2],[5],[8])", () => {
+    // All of [1], [2], [5], [8] are cited inline elsewhere in the body (so
+    // none of THOSE trip source-uncited) — the sole defect under test is the
+    // extra "[4]" inline citation that has no matching Sources entry at all.
+    const input: AttributionInput = {
+      answer: `Fact one [1]. Fact two [4]. Fact three [2]. Fact four [5]. Fact five [8].
+
+**Sources:**
+
+- [1] /data/handbook/policy.md — p. 1
+- [2] /data/handbook/policy.md — p. 2
+- [5] /data/handbook/policy.md — p. 5
+- [8] /data/handbook/policy.md — p. 8`,
+      retrieved: [
+        src(1, "/data/handbook/policy.md"),
+        src(2, "/data/handbook/policy.md"),
+        src(5, "/data/handbook/policy.md"),
+        src(8, "/data/handbook/policy.md"),
+      ],
+    };
+
+    const result = gradeCitationResolution(input);
+
+    expect(result.passed).toBe(false);
+    expect(result.tags).toEqual(["citation-unresolved"]);
+    expect(result.notes[0]).toMatch(/\[4\]/);
+  });
+
+  it("flags a Sources entry never cited inline (Block-A shape: answer cites only [1], Sources also lists [2])", () => {
+    const input: AttributionInput = {
+      answer: `The quality manual requires annual review [1].
+
+**Sources:**
+
+- [1] /data/quality/Quality Handbook 2012.pdf — p. 12
+- [2] /data/quality/Quality Handbook 2012.pdf — p. 169`,
+      retrieved: [
+        src(1, "/data/quality/Quality Handbook 2012.pdf"),
+        src(2, "/data/quality/Quality Handbook 2012.pdf"),
+      ],
+    };
+
+    const result = gradeCitationResolution(input);
+
+    expect(result.passed).toBe(false);
+    expect(result.tags).toEqual(["source-uncited"]);
+    expect(result.notes[0]).toMatch(/\[2\]/);
+  });
+
+  it("passes a bidirectionally-matched single-source answer", () => {
+    const input: AttributionInput = {
+      answer: `The answer is X [1].
+
+**Sources:**
+
+- [1] /data/a.md — p. 1`,
+      retrieved: [src(1, "/data/a.md")],
+    };
+
+    expect(gradeCitationResolution(input)).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+
+  it("does not double-count a repeated inline citation ([1][1]) as anything other than one resolved number", () => {
+    const input: AttributionInput = {
+      answer: `First claim [1]. Second claim also [1].
+
+**Sources:**
+
+- [1] /data/a.md — p. 1`,
+      retrieved: [src(1, "/data/a.md")],
+    };
+
+    expect(gradeCitationResolution(input).passed).toBe(true);
+  });
+
+  it("resolves multi-digit citation numbers ([12])", () => {
+    const input: AttributionInput = {
+      answer: `A claim backed by a later source [12].
+
+**Sources:**
+
+- [12] /data/big-corpus/appendix.md — p. 40`,
+      retrieved: [src(12, "/data/big-corpus/appendix.md")],
+    };
+
+    expect(gradeCitationResolution(input)).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+
+  it("flags both directions at once when both an unresolved citation and an uncited source are present", () => {
+    const input: AttributionInput = {
+      answer: `Claim one [1]. Claim two [3].
+
+**Sources:**
+
+- [1] /data/a.md — p. 1
+- [2] /data/b.md — p. 2`,
+      retrieved: [src(1, "/data/a.md"), src(2, "/data/b.md"), src(3, "/data/c.md")],
+    };
+
+    const result = gradeCitationResolution(input);
+
+    expect(result.passed).toBe(false);
+    expect(result.tags).toEqual(["citation-unresolved", "source-uncited"]);
+  });
+});
+
+describe("gradePathCitation", () => {
+  it("flags a bare filename instead of a full path", () => {
+    const input: AttributionInput = {
+      answer: `The manual requires review [1].
+
+**Sources:**
+
+- [1] Quality Handbook 2012.pdf — p. 12`,
+      retrieved: [src(1, "/data/quality/Quality Handbook 2012.pdf")],
+    };
+
+    const result = gradePathCitation(input);
+
+    expect(result.passed).toBe(false);
+    expect(result.tags).toEqual(["path-not-cited"]);
+    expect(result.notes[0]).toMatch(/bare filename/);
+  });
+
+  it("flags a path that does not match any retrieved source", () => {
+    const input: AttributionInput = {
+      answer: `The manual requires review [1].
+
+**Sources:**
+
+- [1] /data/other-folder/unrelated.md — p. 3`,
+      retrieved: [src(1, "/data/quality/Quality Handbook 2012.pdf")],
+    };
+
+    const result = gradePathCitation(input);
+
+    expect(result.passed).toBe(false);
+    expect(result.tags).toEqual(["path-not-cited"]);
+    expect(result.notes[0]).toMatch(/does not match/);
+  });
+
+  it("passes when the Sources entry reproduces the exact full path knowledge_search returned", () => {
+    const input: AttributionInput = {
+      answer: `X [1].
+
+**Sources:**
+
+- [1] /data/handbook-2012/policy.md — p. 12`,
+      retrieved: [src(1, "/data/handbook-2012/policy.md")],
+    };
+
+    expect(gradePathCitation(input)).toEqual<KbGraderResult>({ passed: true, tags: [], notes: [] });
+  });
+
+  it("passes when the answer cites the data-root-relative path the tool actually showed it", () => {
+    // The two sides arrive in different forms and always have: `retrieved`
+    // comes from the audit row, which records the ABSOLUTE sourcePath because
+    // that is a document's identity, while the answer reproduces what
+    // `knowledge_search` printed — data-root-relative since #933. Comparing
+    // them raw would fail every correctly-cited answer, which is the worst
+    // possible grader bug: it makes the metric that guards citation integrity
+    // read zero precisely when citation integrity is fine.
+    const input: AttributionInput = {
+      answer: `X [1].
+
+**Sources:**
+
+- [1] handbook-2012/policy.md — p. 12`,
+      retrieved: [src(1, "/data/handbook-2012/policy.md")],
+    };
+
+    expect(gradePathCitation(input)).toEqual<KbGraderResult>({ passed: true, tags: [], notes: [] });
+  });
+
+  it("does not choke on a hyphen inside the path itself when parsing the trailing page suffix", () => {
+    // "/data/handbook-2012/policy.md" has a hyphen in the folder name; the
+    // page-suffix parser must land on the LAST "— p. N" and not mistake the
+    // "-2012" for the dash separator.
+    const input: AttributionInput = {
+      answer: `X [1].
+
+**Sources:**
+
+- [1] /data/handbook-2012/policy.md — p. 12`,
+      retrieved: [src(1, "/data/handbook-2012/policy.md")],
+    };
+
+    expect(gradePathCitation(input).passed).toBe(true);
+  });
+
+  it("tolerates a Sources entry with a missing page suffix without false-flagging the path", () => {
+    const input: AttributionInput = {
+      answer: `X [1].
+
+**Sources:**
+
+- [1] /data/a.md`,
+      retrieved: [src(1, "/data/a.md")],
+    };
+
+    expect(gradePathCitation(input)).toEqual<KbGraderResult>({ passed: true, tags: [], notes: [] });
+  });
+});
+
+/**
+ * The first real Layer-3 sweep (#869) charged 19 of 43 runs with
+ * `path-not-cited`, and reading the 19 answers showed that NOT ONE of them
+ * named a document retrieval had not returned. Two rules were wrong, and both
+ * were wrong in the direction that makes a citation-integrity metric read zero
+ * exactly when citation integrity is fine.
+ */
+describe("gradePathCitation against the shapes the first real sweep produced", () => {
+  // 12 of this corpus's 15 documents sit at the data root, so their FULL
+  // citation path is the bare filename. "contains a slash" therefore charged
+  // the correct citation of four documents out of five as a defect.
+  it("passes a document that lives at the data root, whose full path IS its filename", () => {
+    const input: AttributionInput = {
+      answer: `X [1].
+
+**Sources:**
+
+- [1] quality-file.md`,
+      retrieved: [src(1, "/data/quality-file.md")],
+    };
+
+    expect(gradePathCitation(input)).toEqual<KbGraderResult>({ passed: true, tags: [], notes: [] });
+  });
+
+  // The entry still has to name as much path as the document HAS: the
+  // ambiguity a bare filename creates is real wherever the corpus has folders,
+  // and that is the Block-A regression this axis was built for.
+  it("still flags the bare filename of a document that lives in a folder", () => {
+    const input: AttributionInput = {
+      answer: `X [1].
+
+**Sources:**
+
+- [1] afnor-certificate-2024.md`,
+      retrieved: [src(1, "/data/quality/afnor-certificate-2024.md")],
+    };
+
+    const result = gradePathCitation(input);
+
+    expect(result.passed).toBe(false);
+    expect(result.tags).toEqual(["path-not-cited"]);
+    expect(result.notes[0]).toMatch(/bare filename/);
+  });
+
+  // `PAGE_SUFFIX` only splits a trailing "— p. N". Every other trailing
+  // annotation a model writes stayed glued to the path and turned an exact
+  // match into a mismatch. All three shapes below are verbatim from the sweep.
+  it.each([
+    [
+      "a quoted passage after an em dash",
+      'handbook-2012/policy.md — "the daily meal per diem was increased from $45 to $60."',
+    ],
+    [
+      "a prose gloss after an em dash",
+      "quality-file.md — manufacturing and field-performance notes for the Aqua-Filter 200 line",
+    ],
+    [
+      "a code span with a quoted passage",
+      '`handbook-2012/policy.md` (undefined): "Effective the 2012 revision, ..."',
+    ],
+  ])("passes an entry whose path carries %s", (_label, entry) => {
+    const input: AttributionInput = {
+      answer: `X [1].
+
+**Sources:**
+
+- [1] ${entry}`,
+      retrieved: [
+        src(
+          1,
+          entry.includes("handbook") ? "/data/handbook-2012/policy.md" : "/data/quality-file.md"
+        ),
+      ],
+    };
+
+    expect(gradePathCitation(input)).toEqual<KbGraderResult>({ passed: true, tags: [], notes: [] });
+  });
+
+  // The annotation must not become a way to pass, either: a fabricated path is
+  // still fabricated when a real passage is quoted beside it.
+  it("still flags a fabricated path that quotes a real passage beside it", () => {
+    const input: AttributionInput = {
+      answer: `X [1].
+
+**Sources:**
+
+- [1] old-handbook-2012/policy.md — "the daily meal per diem was increased from $45 to $60."`,
+      retrieved: [src(1, "/data/handbook-2012/policy.md")],
+    };
+
+    const result = gradePathCitation(input);
+
+    expect(result.passed).toBe(false);
+    expect(result.tags).toEqual(["path-not-cited"]);
+  });
+
+  // The mount-relative form is the third way to spell the same whole path, and
+  // it is the one an equality check between two normalized strings misses:
+  // `toCitationPath` strips a LEADING "/data/", so the absolute form folds onto
+  // the citation path and this one does not. It was charged as a "partial path"
+  // — the exact opposite of what it is, since it names the whole document and
+  // the mount besides.
+  it("passes an entry that spells the path out from the mount, without a leading slash", () => {
+    const input: AttributionInput = {
+      answer: `X [1].
+
+**Sources:**
+
+- [1] data/quality/afnor-certificate-2024.md`,
+      retrieved: [src(1, "/data/quality/afnor-certificate-2024.md")],
+    };
+
+    expect(gradePathCitation(input)).toEqual<KbGraderResult>({ passed: true, tags: [], notes: [] });
+  });
+
+  // A basename two retrieved documents share names neither of them. This is
+  // the ambiguity the axis exists to catch, and it must survive both fixes.
+  it("flags a filename that two retrieved documents share", () => {
+    const input: AttributionInput = {
+      answer: `X [1].
+
+**Sources:**
+
+- [1] policy.md`,
+      retrieved: [src(1, "/data/handbook-2011/policy.md"), src(2, "/data/handbook-2012/policy.md")],
+    };
+
+    expect(gradePathCitation(input).tags).toEqual(["path-not-cited"]);
+  });
+});
+
+describe("gradeSourcesFormat", () => {
+  it("flags a run-on (non-bullet) Sources list", () => {
+    const input: AttributionInput = {
+      answer: `Fact one [1]. Fact two [4].
+
+**Sources:** [1] /data/quality/2012_4.pdf — p. 169 [4] /data/quality/2012_4.pdf — p. 194`,
+      retrieved: [src(1, "/data/quality/2012_4.pdf"), src(4, "/data/quality/2012_4.pdf")],
+    };
+
+    const result = gradeSourcesFormat(input);
+
+    expect(result.passed).toBe(false);
+    expect(result.tags).toEqual(["sources-format"]);
+  });
+
+  it("still requires the bullet form when there is exactly one source", () => {
+    const input: AttributionInput = {
+      answer: `X [1].
+
+**Sources:** [1] /data/a.md — p. 1`,
+      retrieved: [src(1, "/data/a.md")],
+    };
+
+    const result = gradeSourcesFormat(input);
+
+    expect(result.passed).toBe(false);
+    expect(result.tags).toEqual(["sources-format"]);
+  });
+
+  it("passes a properly bulleted multi-source Sources list", () => {
+    const input: AttributionInput = {
+      answer: `X [1]. Y [2].
+
+**Sources:**
+
+- [1] /data/a.md — p. 1
+- [2] /data/b.md — p. 2`,
+      retrieved: [src(1, "/data/a.md"), src(2, "/data/b.md")],
+    };
+
+    expect(gradeSourcesFormat(input)).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+
+  it("passes an honest abstention answer with no Sources list at all", () => {
+    const input: AttributionInput = {
+      answer: "I couldn't find this in the knowledge base.",
+      retrieved: [],
+    };
+
+    expect(gradeSourcesFormat(input)).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+});
+
+describe("gradeNoDuplicateCorroboration", () => {
+  it("flags near-duplicate co-citation when the Sources list cites 2+ paths from the same group", () => {
+    const input: AttributionInput = {
+      answer: `The policy requires annual review [1][2].
+
+**Sources:**
+
+- [1] /data/handbook-2012-en/policy.md — p. 4
+- [2] /data/handbook-2012-de/policy.md — p. 4`,
+      retrieved: [
+        src(1, "/data/handbook-2012-en/policy.md"),
+        src(2, "/data/handbook-2012-de/policy.md"),
+      ],
+      nearDuplicateGroups: [
+        ["/data/handbook-2012-en/policy.md", "/data/handbook-2012-de/policy.md"],
+      ],
+    };
+
+    const result = gradeNoDuplicateCorroboration(input);
+
+    expect(result.passed).toBe(false);
+    expect(result.tags).toEqual(["dedup-inflation"]);
+  });
+
+  it("passes when nearDuplicateGroups is empty/undefined", () => {
+    const input: AttributionInput = {
+      answer: `X [1][2].
+
+**Sources:**
+
+- [1] /data/a.md — p. 1
+- [2] /data/b.md — p. 2`,
+      retrieved: [src(1, "/data/a.md"), src(2, "/data/b.md")],
+    };
+
+    expect(gradeNoDuplicateCorroboration(input)).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+
+  it("passes when only ONE member of a near-duplicate group is cited", () => {
+    const input: AttributionInput = {
+      answer: `X [1].
+
+**Sources:**
+
+- [1] /data/handbook-2012-en/policy.md — p. 4`,
+      retrieved: [src(1, "/data/handbook-2012-en/policy.md")],
+      nearDuplicateGroups: [
+        ["/data/handbook-2012-en/policy.md", "/data/handbook-2012-de/policy.md"],
+      ],
+    };
+
+    expect(gradeNoDuplicateCorroboration(input).passed).toBe(true);
+  });
+
+  // Every test above spells the Sources entry as the absolute path the corpus
+  // stores. Real models do not: all 48 answers in the published sweep cite the
+  // data-root-relative form knowledge_search prints, most of them inside a code
+  // span and followed by a quoted passage — `` `it-equipment-policy.md`: "…" ``.
+  // Against those, a raw string comparison of entry paths to group paths matches
+  // NOTHING, so wiring the corpus's groups through would have produced a
+  // dedup-inflation of 0 that was still structural, one layer further down.
+  // `gradePathCitation` and the groundedness lookup already resolve this exact
+  // question through `matchRetrievedDocument`; this grader is the third caller
+  // and must not answer it differently.
+  it("resolves the citation path against the retrieved set, as models really write it", () => {
+    const input: AttributionInput = {
+      answer: `Aerobic plates are incubated at 32 degrees Celsius for 48 hours [1][2].
+
+### Sources
+
+- [1] \`petrifilm-datasheet.md\`: "Incubate Petrifilm Aerobic Count Plates at 32 degrees Celsius for 48 hours."
+- [2] \`quality-binder.md\`: "these are incubated at 32 degrees Celsius for 48 hours."`,
+      retrieved: [src(1, "/data/petrifilm-datasheet.md"), src(2, "/data/quality-binder.md")],
+      nearDuplicateGroups: [["/data/petrifilm-datasheet.md", "/data/quality-binder.md"]],
+    };
+
+    const result = gradeNoDuplicateCorroboration(input);
+
+    expect(result.passed).toBe(false);
+    expect(result.tags).toEqual(["dedup-inflation"]);
+    // The note names the documents, so a reader can check the charge without
+    // re-deriving which two entries collided.
+    expect(result.notes[0]).toMatch(/petrifilm-datasheet\.md/);
+    expect(result.notes[0]).toMatch(/quality-binder\.md/);
+  });
+
+  it("does not charge an entry whose path names no retrieved document", () => {
+    // A fabricated path cannot be a near-duplicate of anything: it names no
+    // document, so there is nothing it could be inflating. That failure belongs
+    // to `path-not-cited`, and charging it twice under two tags would double-count
+    // one defect in a table where every tag is meant to be its own question.
+    const input: AttributionInput = {
+      answer: `X [1][2].
+
+**Sources:**
+
+- [1] petrifilm-datasheet.md — p. 1
+- [2] invented-binder.md — p. 1`,
+      retrieved: [src(1, "/data/petrifilm-datasheet.md"), src(2, "/data/quality-binder.md")],
+      nearDuplicateGroups: [["/data/petrifilm-datasheet.md", "/data/quality-binder.md"]],
+    };
+
+    expect(gradeNoDuplicateCorroboration(input).passed).toBe(true);
+  });
+
+  it("does not charge one document cited twice under two numbers", () => {
+    // Two entries, one document: an answer that lists the same source twice is
+    // sloppy, but it is not presenting two near-duplicates as independent
+    // corroboration — which is the only thing this tag claims.
+    const input: AttributionInput = {
+      answer: `X [1][2].
+
+**Sources:**
+
+- [1] petrifilm-datasheet.md — p. 1
+- [2] \`petrifilm-datasheet.md\`: "Incubate Petrifilm Aerobic Count Plates."`,
+      retrieved: [src(1, "/data/petrifilm-datasheet.md"), src(2, "/data/quality-binder.md")],
+      nearDuplicateGroups: [["/data/petrifilm-datasheet.md", "/data/quality-binder.md"]],
+    };
+
+    expect(gradeNoDuplicateCorroboration(input).passed).toBe(true);
+  });
+});
+
+describe("composeKbGraderResults", () => {
+  it("passes only when every result passes, dedups tags preserving first-seen order, and concats notes", () => {
+    const results: KbGraderResult[] = [
+      { passed: true, tags: [], notes: ["note-a"] },
+      { passed: false, tags: ["path-not-cited"], notes: ["note-b"] },
+      {
+        passed: false,
+        tags: ["citation-unresolved", "path-not-cited"],
+        notes: ["note-c", "note-d"],
+      },
+    ];
+
+    expect(composeKbGraderResults(results)).toEqual<KbGraderResult>({
+      passed: false,
+      tags: ["path-not-cited", "citation-unresolved"],
+      notes: ["note-a", "note-b", "note-c", "note-d"],
+    });
+  });
+
+  it("passes with empty tags/notes when all inputs pass", () => {
+    expect(
+      composeKbGraderResults([
+        { passed: true, tags: [], notes: [] },
+        { passed: true, tags: [], notes: [] },
+      ])
+    ).toEqual<KbGraderResult>({ passed: true, tags: [], notes: [] });
+  });
+
+  it("de-duplicates byte-identical notes so a grader reused twice (gradePathCitation via both gradeAttribution and gradeCitationCorrectness) emits its note once", () => {
+    // gradeKbRun runs gradePathCitation twice against the SAME retrieved set
+    // (once inside gradeAttribution, once as gradeCitationCorrectness), so on a
+    // real fabricated citation both emit the identical note. The tag is already
+    // Set-deduped; this keeps the human-readable notes array from carrying the
+    // same line twice.
+    const results: KbGraderResult[] = [
+      { passed: false, tags: ["path-not-cited"], notes: ["same note", "unique-1"] },
+      { passed: false, tags: ["path-not-cited"], notes: ["same note"] },
+    ];
+
+    expect(composeKbGraderResults(results)).toEqual<KbGraderResult>({
+      passed: false,
+      tags: ["path-not-cited"],
+      notes: ["same note", "unique-1"],
+    });
+  });
+});
+
+describe("gradeAttribution", () => {
+  it("passes a well-formed, bidirectionally-matched, full-path, bulleted, single-source answer", () => {
+    const input: AttributionInput = {
+      answer: `The retention policy requires records be kept for seven years [1].
+
+**Sources:**
+
+- [1] /data/handbook-2012/records-policy.md — p. 12`,
+      retrieved: [src(1, "/data/handbook-2012/records-policy.md")],
+    };
+
+    expect(gradeAttribution(input)).toEqual<KbGraderResult>({ passed: true, tags: [], notes: [] });
+  });
+
+  it("passes an honest abstention answer with no Sources list", () => {
+    const input: AttributionInput = {
+      answer: "I couldn't find this in the knowledge base.",
+      retrieved: [],
+    };
+
+    expect(gradeAttribution(input)).toEqual<KbGraderResult>({ passed: true, tags: [], notes: [] });
+  });
+
+  it("composes multiple simultaneous defects (Block-A + bare filename) into one failing verdict", () => {
+    const input: AttributionInput = {
+      answer: `The manual requires annual review [1].
+
+**Sources:**
+
+- [1] Quality Handbook 2012.pdf — p. 12
+- [2] Quality Handbook 2012.pdf — p. 169`,
+      retrieved: [
+        src(1, "/data/quality/Quality Handbook 2012.pdf"),
+        src(2, "/data/quality/Quality Handbook 2012.pdf"),
+      ],
+    };
+
+    const result = gradeAttribution(input);
+
+    expect(result.passed).toBe(false);
+    // [1] and [2] both cite bare filenames (path-not-cited), and [2] is
+    // never cited inline (source-uncited) — both fire from one answer.
+    expect(result.tags).toContain("path-not-cited");
+    expect(result.tags).toContain("source-uncited");
+  });
+
+  it("does not mis-split on a capitalized 'Sources:' appearing mid-prose before the real trailing list", () => {
+    // Regression: the answer body legitimately contains the word "Sources:"
+    // mid-sentence, and the REAL Sources heading is the trailing markdown
+    // block. A first-match split would truncate the body at "Based on my "
+    // and swallow the real inline [1] into the Sources region, emitting FALSE
+    // source-uncited + sources-format failures on a well-formed answer. The
+    // heading must be located by its TRAILING line-anchored form, not the
+    // first substring hit.
+    const input: AttributionInput = {
+      answer: `Based on my Sources: the policy requires annual review [1].
+
+**Sources:**
+
+- [1] /data/a.md — p. 1`,
+      retrieved: [src(1, "/data/a.md")],
+    };
+
+    expect(gradeAttribution(input)).toEqual<KbGraderResult>({ passed: true, tags: [], notes: [] });
+  });
+
+  it("does not treat a genuinely mid-line 'Sources:' (prose continues on the same line) as the heading", () => {
+    // A "Sources:" with more text after it on the SAME line is prose, not a
+    // heading. With no real trailing heading, this answer has no Sources list
+    // at all — an honest inline-only answer must not manufacture a phantom
+    // Sources region (which would then false-flag sources-format on prose).
+    const input: AttributionInput = {
+      answer: "See Sources: the internal wiki and the handbook for details [1].",
+      retrieved: [src(1, "/data/a.md")],
+    };
+
+    const result = gradeAttribution(input);
+
+    // No trailing heading ⟹ no Sources list ⟹ sources-format has nothing to
+    // check. The only real signal here is the inline [1] with no list entry.
+    expect(result.tags).not.toContain("sources-format");
+  });
+});
+
+describe("Sources heading shape robustness", () => {
+  // Each variant is a plausible way a real Layer-3 model formats the heading.
+  // If a variant is not recognized, hasSourcesList goes false, entries is
+  // empty, and every inline [N] becomes a spurious citation-unresolved — a
+  // scorecard-corrupting false positive. Each test asserts the trailing list
+  // parses (a well-formed answer PASSES with no tags).
+  const wellFormed = (heading: string): AttributionInput => ({
+    answer: `The retention policy requires seven years [1].
+
+${heading}
+
+- [1] /data/handbook-2012/records-policy.md — p. 12`,
+    retrieved: [src(1, "/data/handbook-2012/records-policy.md")],
+  });
+
+  it("recognizes `**Sources:**` (colon inside the bold)", () => {
+    expect(gradeAttribution(wellFormed("**Sources:**"))).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+
+  it("recognizes `**Sources**:` (colon OUTSIDE the bold — a plausible model formatting)", () => {
+    // Verified false negative before the widening: the colon-inside-only regex
+    // did not match "**Sources**:", so the whole answer was treated as body,
+    // entries was empty, and inline [1] fired a spurious citation-unresolved.
+    expect(gradeAttribution(wellFormed("**Sources**:"))).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+
+  it("recognizes a plain `Sources:` heading (no bold)", () => {
+    expect(gradeAttribution(wellFormed("Sources:"))).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+
+  it("recognizes a `### Sources:` hash heading", () => {
+    expect(gradeAttribution(wellFormed("### Sources:"))).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+
+  it("recognizes `**Sources**` with no colon at all — the shape 22 of 33 sweep answers used", () => {
+    // The dominant finding of the first real Layer-3 sweep (#869). The colon
+    // was required so that prose like "according to our sources:" could not be
+    // read as a heading — a good reason that says nothing about a BOLD line
+    // carrying the single word. Every model wrote it: kimi-k2.6 in 10 of 12
+    // answers, gpt-oss:120b in 10 of 12. Each one lost its whole Sources list,
+    // and each one was then charged with `citation-unresolved` AND
+    // `ungrounded-claim` on an answer quoting the retrieved passage verbatim.
+    //
+    // A colon renders no differently from no colon. The requirement measured
+    // the parser, not the model.
+    expect(gradeAttribution(wellFormed("**Sources**"))).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+
+  it("recognizes `### Sources` with no colon — the one shape the bold widening still missed", () => {
+    // Measured, not guessed. Replaying the sweep's 33 stored answers through
+    // the bold widening leaves 6 unrecognized: 5 wrote no Sources heading at
+    // all (they abstained or answered without a list), and exactly 1 wrote
+    // `### Sources`. A `###` prefix cannot open a sentence, so it carries the
+    // colon's whole job — the argument for the bold line, only stronger.
+    expect(gradeAttribution(wellFormed("### Sources"))).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+
+  it("still does NOT treat a mid-prose `Sources:` as a heading after the widening", () => {
+    const input: AttributionInput = {
+      answer: "See Sources: the internal wiki and the handbook for details [1].",
+      retrieved: [src(1, "/data/a.md")],
+    };
+    expect(gradeAttribution(input).tags).not.toContain("sources-format");
+  });
+
+  it("still does NOT treat an unemphasised mid-prose `Sources` as a heading", () => {
+    // The widening accepts a bold or hash heading without a colon, never a
+    // bare word: "Sources of funding" opens an ordinary sentence, and reading
+    // it as a heading would swallow the rest of the answer into `sourcesText`.
+    const input: AttributionInput = {
+      answer: `Sources of funding are listed in the handbook [1].
+
+**Sources:**
+
+- [1] /data/a.md — p. 1`,
+      retrieved: [src(1, "/data/a.md")],
+    };
+
+    expect(gradeAttribution(input)).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+});
+
+describe("gradePathCitation page-suffix robustness", () => {
+  it("cleanly separates the path from a page-RANGE suffix (— p. 12-14)", () => {
+    // A page range left pageMatch null in the single-page regex, folding
+    // "— p. 12-14" into entry.path, which then spuriously failed the exact
+    // path-match. The path must be extracted cleanly.
+    const input: AttributionInput = {
+      answer: `X [1].
+
+**Sources:**
+
+- [1] /data/a.md — p. 12-14`,
+      retrieved: [src(1, "/data/a.md")],
+    };
+
+    expect(gradePathCitation(input)).toEqual<KbGraderResult>({ passed: true, tags: [], notes: [] });
+  });
+
+  it("cleanly separates the path from a `pp.` page-range suffix (— pp. 12-14)", () => {
+    const input: AttributionInput = {
+      answer: `X [1].
+
+**Sources:**
+
+- [1] /data/a.md — pp. 12-14`,
+      retrieved: [src(1, "/data/a.md")],
+    };
+
+    expect(gradePathCitation(input)).toEqual<KbGraderResult>({ passed: true, tags: [], notes: [] });
+  });
+});
+
+describe("citedSourcePaths", () => {
+  it("returns the deduplicated, resolved (inline-cited AND listed) source paths, in Sources-list order", () => {
+    const answer = `Fact one [1]. Fact two [2]. Fact one again [1].
+
+**Sources:**
+
+- [1] /data/a.md — p. 1
+- [2] /data/b.md — p. 2`;
+
+    expect(citedSourcePaths(answer)).toEqual(["/data/a.md", "/data/b.md"]);
+  });
+
+  it("excludes a Sources entry that was never cited inline (source-uncited)", () => {
+    const answer = `Fact one [1].
+
+**Sources:**
+
+- [1] /data/a.md — p. 1
+- [2] /data/b.md — p. 2`;
+
+    expect(citedSourcePaths(answer)).toEqual(["/data/a.md"]);
+  });
+
+  it("excludes an inline citation with no matching Sources entry (citation-unresolved)", () => {
+    const answer = `Fact one [1]. Fact two [4].
+
+**Sources:**
+
+- [1] /data/a.md — p. 1`;
+
+    expect(citedSourcePaths(answer)).toEqual(["/data/a.md"]);
+  });
+
+  it("returns an empty array for an answer with no Sources list (e.g. an abstention)", () => {
+    expect(citedSourcePaths("I couldn't find this in the knowledge base.")).toEqual([]);
+  });
+});
+
+/**
+ * The line the 2026-08-04 sweep forced: normalise typography in what identifies
+ * STRUCTURE, never in what identifies a DOCUMENT.
+ *
+ * `gpt-oss:120b` does not write ASCII punctuation. Across its 12 runs it
+ * substituted U+3010/U+3011 for `[`/`]`, U+2011 for `-`, U+2013 for `–` and
+ * U+201C for `"`. Eight of its runs therefore carried no inline citation this
+ * parser could see, so `citedNumbers` was empty: every Sources entry read as
+ * listed-but-uncited, the premise set came back empty, and `ungrounded-claim`
+ * followed. Its 0/12 measured Unicode, not grounding.
+ *
+ * The heading half is the same shape in another language: asked in German, all
+ * four models answer in German and title the list `Quellen`.
+ *
+ * Where the line does NOT move: a PATH. `retention‑correct.md` with U+2011 is
+ * not the path the tool showed, `source-links.ts` will not linkify it, and a
+ * reader who clicks gets nothing — so the citation axis is right to charge it.
+ * The product already draws this line itself: `TRAILING_PAGE` in
+ * `source-links.ts` accepts `—`, `–` and `-` alike for the page suffix while
+ * requiring the path to match exactly.
+ */
+describe("typography in structure, exactness in paths", () => {
+  it("reads a fullwidth citation marker as the citation it is", () => {
+    // Verbatim shape from gpt-oss:120b: 【1】 inline, [1] in the list.
+    const input: AttributionInput = {
+      answer: `Laptops are replaced on a 3-year cycle【1】.
+
+**Sources:**
+
+- [1] it-equipment-policy.md — p. 1`,
+      retrieved: [src(1, "/data/it-equipment-policy.md")],
+    };
+
+    expect(gradeAttribution(input)).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+
+  it.each([
+    ["bold with a colon", "**Quellen:**"],
+    ["a hash heading", "### Quellen"],
+    ["bold, singular, no colon", "**Quelle**"],
+  ])("recognises a German Sources heading (%s)", (_label, heading) => {
+    const input: AttributionInput = {
+      answer: `Vollzeitbeschäftigte sammeln 2,5 Urlaubstage pro Monat [1].
+
+${heading}
+
+- [1] urlaub-policy-de.md — p. 1`,
+      retrieved: [src(1, "/data/urlaub-policy-de.md")],
+    };
+
+    expect(gradeAttribution(input)).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+
+  it("still charges a path written with a non-breaking hyphen", () => {
+    // U+2011 inside the filename. The document is obvious to a human and the
+    // citation is still unusable — this is the half that must NOT be
+    // normalised, and normalising the markers must not drag it along.
+    const input: AttributionInput = {
+      answer: `Tickets are retained for 24 months【1】.
+
+**Sources:**
+
+- [1] retention‑correct.md — p. 1`,
+      retrieved: [src(1, "/data/retention-correct.md")],
+    };
+
+    expect(gradePathCitation(input).tags).toEqual(["path-not-cited"]);
+  });
+
+  it("does not read ordinary German prose as a heading", () => {
+    // Every German noun is capitalised, so `Quellen` appears in prose in a way
+    // `sources` does not. The line-start + delimiter rules are what tell them
+    // apart, and they have to keep doing so.
+    const answer = `Laut unseren Quellen: die Richtlinie verlangt eine Prüfung [1].
+
+**Sources:**
+
+- [1] urlaub-policy-de.md — p. 1`;
+
+    // Assert the property, not the fragment shape: the real list is the one
+    // that got split off, so no candidate carries the prose. (Candidates split
+    // before each `[N]`, so the bullet arrives as `-` plus `[1] …` — an
+    // incidental detail this test must not pin, or it fails on a change that
+    // breaks nothing.)
+    const candidates = sourcesListCandidates(answer);
+
+    expect(candidates.join(" ")).not.toMatch(/Richtlinie verlangt/);
+    expect(candidates.join(" ")).toContain("urlaub-policy-de.md");
+  });
+
+  it("does not read a German sentence that OPENS with the noun as a heading", () => {
+    // The discriminating case, and the one the `Quellen?` widening actually
+    // creates: German puts the noun first far more readily than English, so a
+    // sentence really can begin the line with `Quellen `. It sits AFTER the
+    // real list on purpose — `parseAnswer` takes the LAST heading match, so a
+    // prose line before the list is saved by that rule rather than by the
+    // delimiter rule under test here. Were it read as a heading, the split
+    // would move to it, the real bullet would fall into the body, and [1] would
+    // be charged `citation-unresolved`.
+    const input: AttributionInput = {
+      answer: `Die Regelung gilt ab 2024 [1].
+
+**Quellen:**
+
+- [1] urlaub-policy-de.md — p. 1
+
+Quellen für weitere Angaben nennt der Anhang.`,
+      retrieved: [src(1, "/data/urlaub-policy-de.md")],
+    };
+
+    expect(gradeAttribution(input)).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+
+  it("lets the real list win over an earlier German caption line", () => {
+    // `Quelle: <Herausgeber>` under a figure is standard German, and accepting
+    // the singular heading means it matches. The last-match rule is what keeps
+    // that harmless, and this pins the pairing. The bound is worth stating: a
+    // caption written AFTER the Sources list would win the split. Nothing in
+    // the sweep writes one there, and the alternative — dropping the singular —
+    // would refuse a single-source list titled `Quelle`.
+    const input: AttributionInput = {
+      answer: `Die Regelung gilt ab 2024 [1].
+
+Quelle: Statistisches Bundesamt
+
+**Quellen:**
+
+- [1] urlaub-policy-de.md — p. 1`,
+      retrieved: [src(1, "/data/urlaub-policy-de.md")],
+    };
+
+    expect(gradeAttribution(input)).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+
+  it("reads the fullwidth-form brackets too, not only the lenticular ones", () => {
+    // U+FF3B/U+FF3D. `MARKER_BRACKETS` carries them beside the U+3010/U+3011
+    // the sweep produced, so the branch that admits them needs a case of its
+    // own — an untested member of a character class is a claim, not a check.
+    const input: AttributionInput = {
+      answer: `Laptops are replaced on a 3-year cycle［1］.
+
+**Sources:**
+
+- [1] it-equipment-policy.md — p. 1`,
+      retrieved: [src(1, "/data/it-equipment-policy.md")],
+    };
+
+    expect(gradeAttribution(input)).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+
+  it("splits an en-dash page suffix off the path instead of gluing it on", () => {
+    // Same model, same habit: U+2013 where the template writes `—`. The
+    // separator delimits rather than identifies, so it is normalised like the
+    // markers. `gradePathCitation` would survive gluing it on (the matcher
+    // scans the whole entry), which is exactly why this asserts the parsed path
+    // — `gradeNoDuplicateCorroboration` compares that string by equality and
+    // would silently stop matching.
+    const answer = `Laptops are replaced on a 3-year cycle [1].
+
+**Sources:**
+
+- [1] handbook-2012/it-equipment-policy.md – p. 1`;
+
+    expect(citedSourcePaths(answer)).toEqual(["handbook-2012/it-equipment-policy.md"]);
+  });
+
+  it("charges a run-on Sources list written entirely in fullwidth markers", () => {
+    // The half of this change that moves numbers the OTHER way, so it is pinned
+    // rather than left as a surprise in the next sweep: `gradeSourcesFormat`
+    // returns early on zero markers, so before normalisation this run-on had
+    // none it could see and passed. The same typography that emptied the
+    // premise set was excusing the formatting defect.
+    const input: AttributionInput = {
+      answer: `Laptops are replaced on a 3-year cycle【1】 and monitors every four【2】.
+
+**Sources:** 【1】 it-equipment-policy.md — p. 1 【2】 display-policy.md — p. 2`,
+      retrieved: [src(1, "/data/it-equipment-policy.md"), src(2, "/data/display-policy.md")],
+    };
+
+    expect(gradeSourcesFormat(input).tags).toEqual(["sources-format"]);
+  });
+});
+
+/**
+ * Every answer quoted in this block is a verbatim Sources region from the
+ * 2026-08-05 groundedness sweep, named by the model and gold item that wrote
+ * it. They are here because the graders charged all of them, and the charge was
+ * the parser's rather than the model's: `BULLET_LINE` requires a `-`/`*` bullet,
+ * so a list written any other way parsed to ZERO entries — and an empty entry
+ * set makes every inline `[N]` read as a dead end (`citation-unresolved`) on a
+ * list that names the right documents on its own lines.
+ */
+describe("Sources-entry shapes the first real sweep produced", () => {
+  it("reads `[N] path` lines that carry no bullet (gpt-oss:120b, gqa-distractor-1)", () => {
+    const input: AttributionInput = {
+      answer: `Tickets are kept for 24 months【1】【2】.
+
+**Sources**
+
+[1] retention-correct.md (undefined)  
+[2] retention-correct.md (undefined)`,
+      retrieved: [src(1, "/data/retention-correct.md"), src(2, "/data/retention-correct.md")],
+    };
+
+    expect(gradeCitationResolution(input)).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+
+  it("reads an ordered list's own number as the citation number (glm-5.2, gqa-pathcite-1)", () => {
+    // The model renumbered the list to its own 1..3 rather than reusing the
+    // numbers knowledge_search handed it — which is fine, because the reader
+    // pairs the inline [3] with the third entry, not with the tool's ordering.
+    const input: AttributionInput = {
+      answer: `The 2012 per diem is $60 [1]. Receipts are not required [2]. The 2011 rate was $45 [3].
+
+Sources:
+1. handbook-2012/policy.md
+2. handbook-2012/policy.md
+3. handbook-2011/policy.md`,
+      retrieved: [src(1, "/data/handbook-2012/policy.md"), src(2, "/data/handbook-2011/policy.md")],
+    };
+
+    expect(gradeCitationResolution(input)).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+    expect(citedSourcePaths(input.answer)).toEqual([
+      "handbook-2012/policy.md",
+      "handbook-2011/policy.md",
+    ]);
+  });
+
+  it("takes the marker, not the list position, when a line carries both (glm-5.2, gqa-multihop-1)", () => {
+    const input: AttributionInput = {
+      answer: `Training happens in week one [2]. The module code is SEC-100 [1].
+
+### Sources
+1. [1] onboarding-part2.md — module code SEC-100
+2. [2] onboarding-part1.md — first-week completion requirement`,
+      retrieved: [src(1, "/data/onboarding-part2.md"), src(2, "/data/onboarding-part1.md")],
+    };
+
+    expect(gradeCitationResolution(input).passed).toBe(true);
+    // Returned with the trailing gloss still attached — `PAGE_SUFFIX` strips
+    // "— p. N" and nothing else, and `matchRetrievedDocument` resolves the rest
+    // at segment boundaries downstream. The discriminating case (marker and
+    // ordinal DISAGREEING) is the test below; here they agree.
+    expect(citedSourcePaths(input.answer)).toEqual([
+      "onboarding-part2.md — module code SEC-100",
+      "onboarding-part1.md — first-week completion requirement",
+    ]);
+  });
+
+  it("disagreeing marker and list position: the marker wins", () => {
+    const answer = `Only the third source is cited [3].
+
+**Sources:**
+1. [3] c.md`;
+
+    expect(citedSourcePaths(answer)).toEqual(["c.md"]);
+  });
+
+  it("does not invent an entry from a line carrying neither a marker nor a number", () => {
+    const input: AttributionInput = {
+      answer: `A claim [1].
+
+**Sources:**
+
+- [1] a.md
+All of the above were retrieved on 2026-08-05.`,
+      retrieved: [src(1, "/data/a.md")],
+    };
+
+    // The trailing prose names no source; treating it as one would charge a
+    // spurious `source-uncited` (an entry nothing cites) and hand the
+    // groundedness premise lookup a document that does not exist.
+    expect(gradeCitationResolution(input)).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+});
+
+/**
+ * `sources-format` exists because a Sources list that renders as one paragraph
+ * is unreadable. That is a claim about RENDERING, and markdown separates lines
+ * in exactly three ways: a list item, a blank line, or a hard break (two
+ * trailing spaces). Counting bullet characters answered a narrower question,
+ * and charged the two separators that are not bullets.
+ */
+describe("gradeSourcesFormat measures what renders, not which character was typed", () => {
+  it("passes plain `[N]` entries separated by hard breaks (gpt-oss:120b, gqa-abstention-1)", () => {
+    const input: AttributionInput = {
+      answer: `The index lists the section but holds no policy text [3][5].
+
+**Sources**
+
+[3] absent-topic-pointer.md — lists "parental leave" among HR policy sections.  
+[5] absent-topic-pointer.md — notes the index gives section titles only.`,
+      retrieved: [src(3, "/data/absent-topic-pointer.md"), src(5, "/data/absent-topic-pointer.md")],
+    };
+
+    expect(gradeSourcesFormat(input)).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+
+  it("passes entries separated by blank lines (gpt-oss:120b, gqa-crosslingual-2)", () => {
+    const input: AttributionInput = {
+      answer: `Up to 10 days carry over [1][2].
+
+**Sources**
+
+[1] vacation-policy-en.md — "up to a maximum carryover cap of 10 days"
+
+[2] urlaub-policy-de.md — "bis zu einer maximalen Übertragungsgrenze von 10 Tagen"`,
+      retrieved: [src(1, "/data/vacation-policy-en.md"), src(2, "/data/urlaub-policy-de.md")],
+    };
+
+    expect(gradeSourcesFormat(input).passed).toBe(true);
+  });
+
+  it("passes an ordered list (gpt-oss:120b, gqa-multihop-1)", () => {
+    const input: AttributionInput = {
+      answer: `Week one, module SEC-100 [1][2].
+
+**Sources**
+
+1. onboarding-part1.md — "must complete mandatory IT security awareness training"
+2. onboarding-part2.md — "catalogued as module code SEC-100"`,
+      retrieved: [src(1, "/data/onboarding-part1.md"), src(2, "/data/onboarding-part2.md")],
+    };
+
+    expect(gradeSourcesFormat(input).passed).toBe(true);
+  });
+
+  it("fails consecutive plain lines, which really do collapse into one paragraph (qwen3.5:397b, gqa-abstention-1)", () => {
+    const input: AttributionInput = {
+      answer: `The index lists it but holds no text [1][2].
+
+**Sources:**
+[1] absent-topic-pointer.md
+[2] absent-topic-pointer.md`,
+      retrieved: [src(1, "/data/absent-topic-pointer.md"), src(2, "/data/absent-topic-pointer.md")],
+    };
+
+    expect(gradeSourcesFormat(input).tags).toEqual(["sources-format"]);
+  });
+
+  it("still fails a list whose first entry runs into the heading", () => {
+    // Unchanged from the bullet-counting rule, and deliberately so: this entry
+    // does not begin a rendered line of its own, it continues the heading's.
+    const input: AttributionInput = {
+      answer: `X [1].
+
+**Sources:** [1] /data/a.md — p. 1`,
+      retrieved: [src(1, "/data/a.md")],
+    };
+
+    expect(gradeSourcesFormat(input).tags).toEqual(["sources-format"]);
+  });
+});
+
+/**
+ * The inline half of the same lesson. Widening the Sources parser alone would
+ * have traded one artefact for another: with the list parsing and the body not,
+ * every entry reads as listed-but-never-cited (`source-uncited`) — a charge of
+ * dressing up a single source as corroborated, laid against an answer that
+ * cited every one of them.
+ *
+ * Both spellings below are from the 2026-08-05 sweep, and neither is a
+ * near-miss of the taught form: they are what two model families emit by
+ * default. As with the fullwidth brackets, only the MARKER is normalised — a
+ * marker delimits, it does not identify a document.
+ */
+describe("inline citation-marker spellings the sweep produced", () => {
+  it("reads a labelled marker `【N†file】` (gpt-oss:120b, gqa-dedup-1)", () => {
+    const input: AttributionInput = {
+      answer: `Replace every 6 months【1†quality-file.md (undefined)】【2†product-insert.md (undefined)】.
+
+**Sources**
+
+1. quality-file.md — "replaced every 6 months, or after filtering approximately 1,200 gallons"
+2. product-insert.md — "replaced every 6 months or after filtering 1,200 gallons"`,
+      retrieved: [src(1, "/data/quality-file.md"), src(2, "/data/product-insert.md")],
+    };
+
+    expect(gradeCitationResolution(input)).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+
+  it("reads a comma-grouped marker `[3, 4]` (glm-5.2, gqa-abstention-2)", () => {
+    const input: AttributionInput = {
+      answer: `Both handbook revisions cover travel expense [3, 4].
+
+**Sources:**
+1. handbook-2011/policy.md — 2011 travel policy
+2. handbook-2012/policy.md — 2012 travel policy`,
+      // The list is renumbered by the model, so [3] and [4] resolve to nothing
+      // — but they ARE read as two citations, which is what this pins.
+      retrieved: [src(3, "/data/handbook-2011/policy.md"), src(4, "/data/handbook-2012/policy.md")],
+    };
+
+    const result = gradeCitationResolution(input);
+    expect(result.tags).toContain("citation-unresolved");
+    expect(result.notes[0]).toContain("[3], [4]");
+  });
+
+  it("leaves a path that merely contains a comma or a dagger alone", () => {
+    // The normalisation must not reach into the text that identifies a
+    // document: a renamed file keeps its name, and `path-not-cited` is right to
+    // charge a citation that mangles one.
+    const input: AttributionInput = {
+      answer: `A claim [1].
+
+**Sources:**
+
+- [1] reports/q1, q2 summary†draft.md`,
+      retrieved: [src(1, "/data/reports/q1, q2 summary†draft.md")],
+    };
+
+    expect(gradePathCitation(input)).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+});
+
+describe("horizontal whitespace models actually type", () => {
+  it("reads an entry whose marker is followed by a narrow no-break space (gpt-oss:120b, gqa-distractor-2)", () => {
+    // U+202F, not U+0020. `gpt-oss:120b` types it between the marker and the
+    // path, and JS counts it as `\s` — so a `[ \t]`-separated parser skipped
+    // the marker and then refused the line for starting with whitespace. The
+    // entry vanished and its inline citation read as a dead end.
+    const input: AttributionInput = {
+      answer: `Marketing records are kept for 12 months [1].
+
+**Sources**  
+[1] retention-distractor.md – statement on 12-month retention.`,
+      retrieved: [src(1, "/data/retention-distractor.md")],
+    };
+
+    expect(gradeAttribution(input)).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+
+  it("reads a list marker followed by a no-break space", () => {
+    const input: AttributionInput = {
+      answer: `A claim [1].
+
+**Sources**
+
+- [1] a.md`,
+      retrieved: [src(1, "/data/a.md")],
+    };
+
+    expect(gradeAttribution(input).passed).toBe(true);
+  });
+});

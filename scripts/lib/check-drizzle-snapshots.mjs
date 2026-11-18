@@ -31,7 +31,7 @@ export function findSnapshotIssues({
 }) {
   const issues = [];
   const presentSnapshots = new Set(
-    existingSnapshotFilenames.filter((f) => /^\d{4}_snapshot\.json$/.test(f))
+    existingSnapshotFilenames.filter((f) => /^\d{4}_snapshot\.json$/.test(f)),
   );
   const stagedSnapshots = new Set(stagedSnapshotBasenames);
 
@@ -40,7 +40,7 @@ export function findSnapshotIssues({
     const expected = `${String(entry.idx).padStart(4, "0")}_snapshot.json`;
     if (!presentSnapshots.has(expected)) {
       issues.push(
-        `Journal references migration "${entry.tag}" (idx=${entry.idx}) but ${expected} is missing from drizzle/meta/. Run \`pnpm -C packages/web db:generate\` and commit the resulting snapshot.`
+        `Journal references migration "${entry.tag}" (idx=${entry.idx}) but ${expected} is missing from drizzle/meta/. Run \`pnpm -C packages/web db:generate\` and commit the resulting snapshot.`,
       );
     }
   }
@@ -55,7 +55,7 @@ export function findSnapshotIssues({
     const expectedSnapshot = `${idx}_snapshot.json`;
     if (!stagedSnapshots.has(expectedSnapshot)) {
       issues.push(
-        `Staged migration ${sql} but its companion ${expectedSnapshot} is not staged for this commit. Did you forget \`git add packages/web/drizzle/meta/${expectedSnapshot}\` after running \`pnpm db:generate\`?`
+        `Staged migration ${sql} but its companion ${expectedSnapshot} is not staged for this commit. Did you forget \`git add packages/web/drizzle/meta/${expectedSnapshot}\` after running \`pnpm db:generate\`?`,
       );
     }
   }

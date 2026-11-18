@@ -1,10 +1,48 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
-import { auditLog, users, agents } from "@/db/schema";
-import { desc, eq, and, or, inArray, gte, lte, count, sql } from "drizzle-orm";
-import { alias } from "drizzle-orm/pg-core";
-import { resolveActorIdMatchSet } from "@/lib/audit";
+import { auditLog } from "@/db/schema";
+import { desc, and, count, sql, type SQL } from "drizzle-orm";
+import { resolveActorDisplay } from "@/lib/audit-actor-display";
+import { buildAuditFilters, auditSelectWithJoins } from "@/lib/audit-query";
+
+/**
+ * Total is only ever (re)computed on page 1 — deep-page navigation (Previous
+ * / Next) would otherwise pay for a count/estimate query on every click even
+ * though the number can't have changed since the page-1 fetch that started
+ * the session. The client (`audit-log-table.tsx`) keeps the page-1 total in
+ * state and doesn't overwrite it when a later response omits the field.
+ *
+ * Returns the RAW total/estimate, without the entries.length floor applied
+ * below — that keeps this query independent of the entries query so both can
+ * still run concurrently via Promise.all.
+ */
+async function rawTotalForPage1(where: SQL | undefined): Promise<number> {
+  if (where) {
+    // Filtered: an exact count is the honest answer, and filters typically
+    // narrow the row set enough that the scan is cheap.
+    const result = await db.select({ count: count() }).from(auditLog).where(where);
+    return result[0]?.count ?? 0;
+  }
+
+  // Unfiltered: audit_log is append-only and can grow unbounded, so an exact
+  // count(*) here means a full-table scan on every page-1 view. Read
+  // Postgres's own planner statistic instead — a single index lookup
+  // regardless of table size.
+  //
+  // This is an ESTIMATE, not an exact count: pg_class.reltuples is only
+  // refreshed by ANALYZE/VACUUM, so a table that has never been analyzed yet
+  // (a brand-new install, before autovacuum's first pass) reports 0, and a
+  // recent burst of inserts can leave the number stale for up to one
+  // autovacuum cycle. The caller floors this against the page's own entry
+  // count, so the total can never read as less than what the admin is
+  // already looking at.
+  const estimateRows = await db.execute<{ estimate: string | number | null }>(
+    sql`SELECT reltuples::bigint AS estimate FROM pg_class WHERE oid = 'audit_log'::regclass`
+  );
+  const raw = estimateRows[0]?.estimate;
+  return raw === null || raw === undefined ? 0 : Number(raw);
+}
 
 export async function GET(request: NextRequest) {
   const sessionOrError = await requireAdmin();
@@ -17,100 +55,34 @@ export async function GET(request: NextRequest) {
   const page = Number.isNaN(pageRaw) ? 1 : Math.max(1, pageRaw);
   const limitRaw = parseInt(url.searchParams.get("limit") || "50", 10);
   const limit = Number.isNaN(limitRaw) ? 50 : Math.min(100, Math.max(1, limitRaw));
-  const eventType = url.searchParams.get("eventType");
-  const actorId = url.searchParams.get("actorId");
-  const from = url.searchParams.get("from");
-  const to = url.searchParams.get("to");
-  const status = url.searchParams.get("status");
 
-  const conditions = [];
-  if (eventType) conditions.push(eq(auditLog.eventType, eventType));
-  if (actorId) {
-    // appendAuditLog substitutes the user's auditPseudonym for actorId (GDPR
-    // crypto-erasure, see lib/audit.ts). A caller filtering by a known user id
-    // must match BOTH the raw id (rows written before pseudonymization, or
-    // rows for a since-erased user) and the current pseudonym (rows written
-    // after) — matching only the bare id would silently drop half that
-    // user's history from the filtered view.
-    const actorIdMatchSet = await resolveActorIdMatchSet(actorId);
-    conditions.push(inArray(auditLog.actorId, actorIdMatchSet));
-  }
-  if (status === "success" || status === "failure") {
-    // Note: this implicitly excludes v1 (legacy) rows, which have outcome=NULL.
-    // v1 rows predate status tracking — there's no honest "success" for them.
-    conditions.push(eq(auditLog.outcome, status));
-  }
-  // A non-date string (e.g. ?from=notadate) becomes an Invalid Date which
-  // drizzle throws a RangeError on at serialization — an unhandled 500 for a
-  // mistyped filter. Reject it with a structured 400 instead.
-  if (from) {
-    const fromDate = new Date(from);
-    if (Number.isNaN(fromDate.getTime())) {
-      return NextResponse.json({ error: "Invalid 'from' date" }, { status: 400 });
-    }
-    conditions.push(gte(auditLog.timestamp, fromDate));
-  }
-  if (to) {
-    const toDate = new Date(to);
-    if (Number.isNaN(toDate.getTime())) {
-      return NextResponse.json({ error: "Invalid 'to' date" }, { status: 400 });
-    }
-    if (!to.includes("T") && !to.includes(" ")) toDate.setUTCHours(23, 59, 59, 999);
-    conditions.push(lte(auditLog.timestamp, toDate));
-  }
+  const filtersResult = await buildAuditFilters(url.searchParams);
+  if (!filtersResult.ok) return filtersResult.response;
+  const { conditions } = filtersResult;
 
   const where = conditions.length > 0 ? and(...conditions) : undefined;
 
-  const actorUser = alias(users, "actor_user");
-  const resourceAgent = alias(agents, "resource_agent");
-  const resourceUser = alias(users, "resource_user");
-
-  const [entries, totalResult] = await Promise.all([
-    db
-      .select({
-        id: auditLog.id,
-        timestamp: auditLog.timestamp,
-        actorType: auditLog.actorType,
-        actorId: auditLog.actorId,
-        eventType: auditLog.eventType,
-        resource: auditLog.resource,
-        detail: auditLog.detail,
-        rowHmac: auditLog.rowHmac,
-        version: auditLog.version,
-        outcome: auditLog.outcome,
-        error: auditLog.error,
-        actorName: actorUser.name,
-        actorBanned: actorUser.banned,
-        resourceAgentName: resourceAgent.name,
-        resourceAgentDeleted: resourceAgent.deletedAt,
-        resourceUserName: resourceUser.name,
-        resourceUserBanned: resourceUser.banned,
-      })
-      .from(auditLog)
-      // Dual-join (alt+neu): actorId may hold either the user's auditPseudonym
-      // (rows written after this feature shipped) or the raw users.id (rows
-      // written before, or before the substitution's own fallback path). A
-      // single-shape join would leave one generation of rows nameless.
-      .leftJoin(
-        actorUser,
-        or(eq(actorUser.auditPseudonym, auditLog.actorId), eq(actorUser.id, auditLog.actorId))
-      )
-      .leftJoin(resourceAgent, sql`${auditLog.resource} = 'agent:' || ${resourceAgent.id}`)
-      .leftJoin(resourceUser, sql`${auditLog.resource} = 'user:' || ${resourceUser.id}`)
+  const [entries, rawTotal] = await Promise.all([
+    auditSelectWithJoins()
       .where(where)
       .orderBy(desc(auditLog.timestamp))
       .limit(limit)
       .offset((page - 1) * limit),
-    db.select({ count: count() }).from(auditLog).where(where),
+    // Only computed on page 1 — see rawTotalForPage1's own comment.
+    page === 1 ? rawTotalForPage1(where) : Promise.resolve(undefined),
   ]);
+
+  // Floored against entries.length here (rather than inside rawTotalForPage1)
+  // so the count/estimate query above can still run concurrently with the
+  // entries query instead of waiting on it.
+  const responseTotal = rawTotal === undefined ? undefined : Math.max(rawTotal, entries.length);
 
   const processedEntries = entries.map((e) => ({
     id: e.id,
     timestamp: e.timestamp,
     actorType: e.actorType,
     actorId: e.actorId,
-    actorName: e.actorName ?? null,
-    actorDeleted: !!e.actorBanned,
+    ...resolveActorDisplay(e),
     eventType: e.eventType,
     resource: e.resource,
     resourceName: e.resourceAgentName ?? e.resourceUserName ?? null,
@@ -125,7 +97,10 @@ export async function GET(request: NextRequest) {
   return NextResponse.json(
     {
       entries: processedEntries,
-      total: totalResult[0]?.count ?? 0,
+      // Omitted (not null/0) on page > 1 — see rawTotalForPage1's comment.
+      // JSON.stringify drops an `undefined` property entirely, so the client
+      // sees no `total` key at all rather than a misleading value.
+      ...(responseTotal === undefined ? {} : { total: responseTotal }),
       page,
       limit,
     },

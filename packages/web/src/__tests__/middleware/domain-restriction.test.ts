@@ -36,6 +36,24 @@ describe("domain restriction host check", () => {
     expect(isHostAllowed("pinchy.example.com", "/dashboard")).toBe(true);
   });
 
+  // Pre-existing data, new code. An instance locked from behind two proxies
+  // before the setter folded the header has the whole chain stored as its
+  // domain. Nothing rewrites that row on upgrade, and the request host is now
+  // folded to its public hop — so comparing the stored value verbatim would
+  // match nothing and lock the operator out of their own instance on the very
+  // upgrade that was supposed to fix a lockout. Fold both sides.
+  it("still matches a domain stored as a whole proxy chain by an older version", () => {
+    vi.mocked(getCachedDomain).mockReturnValue("pinchy.example.com, internal:7777");
+    expect(isHostAllowed("pinchy.example.com", "/dashboard")).toBe(true);
+  });
+
+  it("does not let a stored chain admit one of its inner hops", () => {
+    // Folding must not turn the stored value into a set of accepted names:
+    // "internal:7777" is a hop, never the domain the lock stands for.
+    vi.mocked(getCachedDomain).mockReturnValue("pinchy.example.com, internal:7777");
+    expect(isHostAllowed("internal:7777", "/dashboard")).toBe(false);
+  });
+
   it("always allows /api/health regardless of host", () => {
     vi.mocked(getCachedDomain).mockReturnValue("pinchy.example.com");
     expect(isHostAllowed("evil.example.com", "/api/health")).toBe(true);
@@ -65,6 +83,25 @@ describe("domain restriction host check", () => {
     expect(
       isHostAllowed("pinchy:7777", "/api/internal/integrations/connection-123/credentials")
     ).toBe(true);
+  });
+
+  // #599: pinchy-transcript's capture POST was 403'd in production for eleven
+  // weeks — `channel_messages` stayed empty — because the exemption was a
+  // hand-maintained path list and this route was never added to it. The list is
+  // gone; every internal route is exempt by prefix. These three were all
+  // missing from it, and are here as the named regression.
+  it("allows internal plugin routes that the old hand-maintained list forgot", () => {
+    vi.mocked(getCachedDomain).mockReturnValue("pinchy.example.com");
+    expect(isHostAllowed("pinchy:7777", "/api/internal/channel-messages")).toBe(true);
+    expect(isHostAllowed("pinchy:7777", "/api/internal/knowledge/search")).toBe(true);
+    expect(
+      isHostAllowed("pinchy:7777", "/api/internal/integrations/connection-123/report-auth-failure")
+    ).toBe(true);
+  });
+
+  it("exempts an internal route nobody has written yet", () => {
+    vi.mocked(getCachedDomain).mockReturnValue("pinchy.example.com");
+    expect(isHostAllowed("pinchy:7777", "/api/internal/some/future/plugin/route")).toBe(true);
   });
 
   it("allows unauthenticated internal readiness only for loopback healthchecks", () => {

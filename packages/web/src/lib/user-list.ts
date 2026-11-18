@@ -1,3 +1,5 @@
+import type { UserRole, InviteRole } from "@/db/enums";
+
 export interface UserGroup {
   id: string;
   name: string;
@@ -9,33 +11,40 @@ export type UserListItem =
       id: string;
       name: string;
       email: string;
-      role: string;
+      role: UserRole;
       status: "active" | "deactivated";
       groups: UserGroup[];
+      /** Neither the setup wizard nor a claimed invite created this account. */
+      unknownOrigin: boolean;
     }
   | {
       kind: "invite";
       id: string;
       email: string | null;
-      role: string;
+      role: InviteRole;
       status: "pending" | "expired";
       createdAt: string;
       groups: UserGroup[];
     };
 
-interface ApiUser {
+// The role columns are constrained by a database CHECK derived from the same
+// consts (db/enums.ts), and schema-hardening.integration.test.ts reads that
+// constraint back from Postgres — so narrowing the response type here is a
+// guarantee the server actually holds, not an assumption.
+export interface ApiUser {
   id: string;
   name: string;
   email: string;
-  role: string;
+  role: UserRole;
   banned: boolean;
   groups?: UserGroup[];
+  unknownOrigin?: boolean;
 }
 
-interface ApiInvite {
+export interface ApiInvite {
   id: string;
   email: string | null;
-  role: string;
+  role: InviteRole;
   type: string;
   createdAt: string;
   expiresAt: string;
@@ -63,6 +72,7 @@ export function mergeUserList(
     role: u.role,
     status: u.banned ? "deactivated" : "active",
     groups: u.groups || [],
+    unknownOrigin: u.unknownOrigin ?? false,
   }));
 
   const inviteItems: UserListItem[] = invites

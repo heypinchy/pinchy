@@ -54,9 +54,11 @@ afterEach(() => {
 describe("install-plugin-deps.sh", () => {
   it("replaces an existing node_modules' contents WITHOUT removing the directory itself (mountpoint-safe)", () => {
     // Bundle baked into the image at build time.
-    mkdirSync(join(depsRoot, "pinchy-files-deps", "node_modules", "pdf-lib"), { recursive: true });
+    mkdirSync(join(depsRoot, "pinchy-files-deps", "node_modules", "pdfjs-dist"), {
+      recursive: true,
+    });
     writeFileSync(
-      join(depsRoot, "pinchy-files-deps", "node_modules", "pdf-lib", "index.js"),
+      join(depsRoot, "pinchy-files-deps", "node_modules", "pdfjs-dist", "index.js"),
       "bundle content\n"
     );
 
@@ -81,7 +83,7 @@ describe("install-plugin-deps.sh", () => {
     // Foreign/stale content is gone.
     expect(existsSync(join(targetNodeModules, "stale-package"))).toBe(false);
     // Bundle content replaced it.
-    expect(readFileSync(join(targetNodeModules, "pdf-lib", "index.js"), "utf8")).toBe(
+    expect(readFileSync(join(targetNodeModules, "pdfjs-dist", "index.js"), "utf8")).toBe(
       "bundle content\n"
     );
   });

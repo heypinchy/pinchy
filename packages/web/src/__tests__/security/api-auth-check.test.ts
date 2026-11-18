@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync, statSync } from "fs";
 import { resolve, relative } from "path";
+import { relativeReExports } from "@/test-helpers/route-reexports";
 
 /**
  * Security test: ensures all API routes have authentication checks.
@@ -36,6 +37,11 @@ const PUBLIC_ROUTES = [
   // Token possession is the auth factor, same as the claim route above.
   "api/invite/[token]/route.ts",
   "api/health/route.ts",
+  // Public in its default mode and for the `?agentId=` dispatchability probe
+  // (E2E stability gates poll that one without a cookie). The `?channelHealth=1`
+  // branch is NOT public — it calls `requireAdmin()` — but listing the file here
+  // makes this guard skip it entirely, so the admin gate is pinned by the 401/403
+  // cases in `__tests__/api/health-openclaw.test.ts` instead.
   "api/health/openclaw/route.ts",
   "api/diagnostics/route.ts",
   "api/version/route.ts",
@@ -55,6 +61,22 @@ function findRouteFiles(dir: string): string[] {
   return results;
 }
 
+/**
+ * A route file's text plus the text of every route it re-exports from. A route
+ * that is `export { GET } from "../route"` (#1268) is exactly as authenticated
+ * as the handler it re-exports, and reading only its own text would call it
+ * unauthenticated.
+ */
+function sourceWithReExports(file: string, seen = new Set<string>()): string {
+  if (seen.has(file)) return "";
+  seen.add(file);
+  const content = readFileSync(file, "utf-8");
+  return [
+    content,
+    ...relativeReExports(file, content).map(({ target }) => sourceWithReExports(target, seen)),
+  ].join("\n");
+}
+
 describe("API route authentication", () => {
   const apiDir = resolve(__dirname, "../../app/api");
   const routeFiles = findRouteFiles(apiDir);
@@ -70,7 +92,7 @@ describe("API route authentication", () => {
     if (isPublic) continue;
 
     it(`${routeFile} should have an authentication check`, () => {
-      const content = readFileSync(resolve(apiDir, "..", routeFile), "utf-8");
+      const content = sourceWithReExports(resolve(apiDir, "..", routeFile));
       const hasAuth = AUTH_PATTERNS.some((pattern) => pattern.test(content));
 
       expect(

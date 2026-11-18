@@ -2,7 +2,45 @@
  * Aggregates N graded runs (see `graders.ts`) into a per-model scorecard for
  * Eval-v1 (pinchy#669). Pure functions over `RunResult[]` — no I/O.
  */
-import type { FailureTag, RunResult } from "./types";
+import type { FailureTag, PromptVariantId, RunResult } from "./types";
+
+/**
+ * The wording a run was measured under, with pre-#803 rows grandfathered:
+ * every row persisted before the paraphrase variants lacks the field entirely,
+ * and every one of those runs was dispatched with the scenario's `userPrompt`
+ * — which IS `prompts.primary`. Absence therefore MEANS primary, never
+ * "unknown wording".
+ */
+export function promptVariantOf(run: { promptVariant?: PromptVariantId }): PromptVariantId {
+  return run.promptVariant ?? "primary";
+}
+
+/**
+ * The tool-layer governance mode a run was measured under, with pre-#723 rows
+ * grandfathered (#723): every row persisted before the governed-tools
+ * comparison sweep lacks the field, and every one of those runs was measured
+ * BEFORE the write guards existed — i.e. ungoverned. Absence therefore MEANS
+ * "off", never "unknown". Kept identical in spirit to the plugin's
+ * governanceEnforced() so a cell's mode and the plugin's real behaviour agree.
+ */
+export function governanceOfRun(run: { governance?: "enforced" | "off" }): "enforced" | "off" {
+  return run.governance ?? "off";
+}
+
+/**
+ * The headline trials of a run list: the primary wording only (#803).
+ *
+ * Every capability number — pass@1, pass^k, Wilson, the pairwise comparisons —
+ * computes from these, because a paraphrase run measures prompt-WORDING
+ * sensitivity and belongs in the robustness block instead. The blend fails
+ * silently if it happens: primary and variant rows share a model AND a
+ * scenario label, so `buildScorecard`'s per-model grouping pools them into one
+ * innocuous-looking pass rate. On a variant-free run list this filter is a
+ * provable no-op (DATASET_FINGERPRINT is the standing proof).
+ */
+export function primaryRuns<T extends { promptVariant?: PromptVariantId }>(runs: T[]): T[] {
+  return runs.filter((r) => promptVariantOf(r) === "primary");
+}
 
 export interface ScorecardEntry {
   model: string;
@@ -27,29 +65,92 @@ export interface ScorecardEntry {
   passCaretK: number;
   tagHistogram: Record<string, number>;
   medianLatencyMs: number;
+  /** Median total tokens (prompt + completion) over ALL runs with token data. */
   medianTokens?: number;
+  /**
+   * Median total tokens over the PASSING runs only — the #798 primary cost
+   * metric, "tokens per completed task". A model that fails cheaply must not
+   * read as cheaper than one that succeeds; the cost that matters is the cost of
+   * a run that actually did the task. Undefined when no passing run has token
+   * data (or none passed).
+   */
+  medianTokensPerCompletedTask?: number;
 }
 
 /**
- * pass^k for one model's runs: 1 if every run passed, else 0. 0 for an empty
- * run list (no trials, no proven consistency). Exported as a standalone pure
+ * The all-pass indicator: 1 if every run passed, else 0. 0 for an empty run
+ * list (no trials, no proven consistency). Exported as a standalone pure
  * function (in addition to being folded into `buildScorecard`'s per-model
  * entries) so it can be unit-tested directly against the n=0 edge case, which
  * `buildScorecard`'s per-model grouping never produces (a model only gets an
  * entry when it has >= 1 run).
+ *
+ * This is pass^k only at k = n: it answers "did this cell go n-for-n", not
+ * "what is pass^k". For the curve at arbitrary k — the number the published
+ * export reports — use `computePassHatK`, which is a real estimate in [0, 1]
+ * rather than a 0/1 verdict.
  */
-export function computePassCaretK(runs: RunResult[]): number {
+export function computePassCaretK<Tag extends string = FailureTag>(runs: RunResult<Tag>[]): number {
   if (runs.length === 0) return 0;
   return runs.every((r) => r.passed) ? 1 : 0;
+}
+
+/** The k levels the published pass^k curve reports (k=1 is the pass rate). */
+export const PASS_HAT_K_LEVELS = [1, 2, 4, 8, 12] as const;
+
+/**
+ * Unbiased pass^k: the probability that k runs drawn WITHOUT replacement from
+ * this cell's n runs all pass — `C(passes, k) / C(n, k)`, the τ-bench estimator
+ * (arXiv 2406.12045). Computed as the stable product `Π (passes−i)/(n−i)` so it
+ * never overflows a factorial. This is the RELIABILITY curve: at k=1 it is the
+ * pass rate (a capability measure), and it decays toward 0 as k grows because
+ * "succeeds k times in a row" is a strictly harder bar than "succeeds once".
+ *
+ * Edge cases: k=0 → 1 (an empty draw trivially all-passes); n=0 → 0 (no trials,
+ * nothing proven); passes<k → 0 (an all-pass subset of size k cannot be formed);
+ * k>n → 0 (cannot draw k distinct runs from n).
+ */
+export function computePassHatK(passes: number, n: number, k: number): number {
+  if (k === 0) return 1;
+  if (n === 0 || k > n || passes < k) return 0;
+  let product = 1;
+  for (let i = 0; i < k; i++) {
+    product *= (passes - i) / (n - i);
+  }
+  return product;
+}
+
+/**
+ * The pass^k curve for a cell: `computePassHatK` at each of `levels`, dropping
+ * levels above n (k>n has no defined estimate), values rounded to 3 decimals to
+ * match the published pass-rate precision. A cell with no valid trials (n=0)
+ * therefore has an EMPTY curve, not a curve of zeroes — consumers must treat
+ * "no estimate" and "estimated 0" as different answers.
+ */
+export function passHatKCurve(
+  passes: number,
+  n: number,
+  levels: readonly number[] = PASS_HAT_K_LEVELS
+): { k: number; value: number }[] {
+  return levels
+    .filter((k) => k <= n)
+    .map((k) => ({ k, value: Number(computePassHatK(passes, n, k).toFixed(3)) }));
 }
 
 /**
  * Wilson score interval for a binomial proportion (`passes` out of `n`
  * trials), at the given z-score (default 1.96 -> ~95% confidence). Clamped
- * to [0, 1]. Returns [0, 0] for n === 0 (no trials, no interval to report).
+ * to [0, 1].
+ *
+ * Returns the uninformative [0, 1] for n === 0: with no trials every rate is
+ * still possible. The tempting [0, 0] reads as CERTAINTY that the model scores
+ * 0, which is a claim from no data — and `comparisons.ts` acts on these bounds,
+ * so a point mass there declares a zero-trial cell significantly worse than the
+ * leader. `eval/export-scorecard.ts` has always published [0, 1] for this case;
+ * this is now the single definition both sides read.
  */
 export function wilsonInterval(passes: number, n: number, z = 1.96): [number, number] {
-  if (n === 0) return [0, 0];
+  if (n === 0) return [0, 1];
 
   const p = passes / n;
   const z2 = z * z;
@@ -78,9 +179,18 @@ function median(values: number[]): number {
  * the all-k consistency measure — 1 only if every run passed), a failure-tag
  * histogram, median latency, and median total tokens (prompt + completion).
  * One entry per model, sorted by passRate descending.
+ *
+ * Generic over the run's failure-tag union (see `RunResult<Tag>` in
+ * `./types`) so a non-invoice caller — e.g. the KB eval harness's
+ * `buildScorecard<KbFailureTag>(kbRuns)` — gets full type safety on
+ * `runs` with no cast. `Tag` defaults to the invoice `FailureTag` union,
+ * so every existing invoice call site (`buildScorecard(runs)`, no type
+ * argument) is unaffected.
  */
-export function buildScorecard(runs: RunResult[]): ScorecardEntry[] {
-  const byModel = new Map<string, RunResult[]>();
+export function buildScorecard<Tag extends string = FailureTag>(
+  runs: RunResult<Tag>[]
+): ScorecardEntry[] {
+  const byModel = new Map<string, RunResult<Tag>[]>();
   for (const run of runs) {
     const existing = byModel.get(run.model);
     if (existing) {
@@ -98,16 +208,21 @@ export function buildScorecard(runs: RunResult[]): ScorecardEntry[] {
     const tagHistogram: Record<string, number> = {};
     for (const run of modelRuns) {
       for (const tag of run.tags) {
-        tagHistogram[tag as FailureTag] = (tagHistogram[tag as FailureTag] ?? 0) + 1;
+        tagHistogram[tag] = (tagHistogram[tag] ?? 0) + 1;
       }
     }
 
     const medianLatencyMs = median(modelRuns.map((r) => r.latencyMs));
 
-    const tokenTotals = modelRuns
-      .filter((r) => r.tokens !== undefined)
-      .map((r) => r.tokens!.prompt + r.tokens!.completion);
+    const totalTokens = (r: RunResult<Tag>): number => r.tokens!.prompt + r.tokens!.completion;
+    const tokenTotals = modelRuns.filter((r) => r.tokens !== undefined).map(totalTokens);
     const medianTokens = tokenTotals.length > 0 ? median(tokenTotals) : undefined;
+
+    const completedTokenTotals = modelRuns
+      .filter((r) => r.passed && r.tokens !== undefined)
+      .map(totalTokens);
+    const medianTokensPerCompletedTask =
+      completedTokenTotals.length > 0 ? median(completedTokenTotals) : undefined;
 
     return {
       model,
@@ -119,6 +234,7 @@ export function buildScorecard(runs: RunResult[]): ScorecardEntry[] {
       tagHistogram,
       medianLatencyMs,
       medianTokens,
+      medianTokensPerCompletedTask,
     };
   });
 

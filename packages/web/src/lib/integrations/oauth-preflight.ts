@@ -4,6 +4,12 @@
 // pre-authorize error that never redirects back to our callback, so it can
 // only be PREVENTED here, not caught later. See docs/plans/2026-07-03-oauth-
 // lifecycle-hardening.md.
+//
+// The single import here is deliberate: insecure-mock-base-url.ts has no
+// imports of its own, so this module stays client-safe and oauth-providers.ts
+// (a Client Component dependency) can keep importing it.
+import { resolveInsecureMockBaseUrl } from "@/lib/integrations/insecure-mock-base-url";
+
 const WELL_KNOWN_TENANTS = new Set(["organizations", "common", "consumers"]);
 
 // Matches the timeout convention used by the other third-party probes in this
@@ -19,7 +25,10 @@ export type TenantValidation =
 export async function validateMicrosoftTenant(tenantId: string): Promise<TenantValidation> {
   const t = tenantId.trim();
   if (t.length === 0 || WELL_KNOWN_TENANTS.has(t.toLowerCase())) return { ok: true };
-  const host = process.env.MICROSOFT_OAUTH_BASE_URL || "https://login.microsoftonline.com";
+  // Honoured only alongside PINCHY_INSECURE_MAIL_MOCK=1, same as every other
+  // mock redirect on the web side — see insecure-mock-base-url.ts.
+  const host =
+    resolveInsecureMockBaseUrl("MICROSOFT_OAUTH_BASE_URL") || "https://login.microsoftonline.com";
   try {
     const res = await fetch(
       `${host}/${encodeURIComponent(t)}/v2.0/.well-known/openid-configuration`,

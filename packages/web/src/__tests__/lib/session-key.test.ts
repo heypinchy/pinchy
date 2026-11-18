@@ -1,6 +1,12 @@
 import { describe, it, expect } from "vitest";
 
-import { directSessionKey, inboxSessionKey } from "@/lib/session-key";
+import {
+  auditChatId,
+  directSessionChatId,
+  directSessionKey,
+  directSessionUserId,
+  inboxSessionKey,
+} from "@/lib/session-key";
 
 describe("directSessionKey", () => {
   it("builds the legacy per-user direct key", () => {
@@ -25,5 +31,51 @@ describe("inboxSessionKey", () => {
     // Never collides with the user-chat namespace: `:direct:` must not appear,
     // so chat listing (which keys on `:direct:`) can never surface an inbox run.
     expect(key).not.toContain(":direct:");
+  });
+});
+
+describe("directSessionUserId", () => {
+  it("reads the user from a direct key", () => {
+    expect(directSessionUserId("agent:a:direct:user-9")).toBe("user-9");
+  });
+
+  it("stops at the chat segment", () => {
+    expect(directSessionUserId("agent:a:direct:user-9:chat-7")).toBe("user-9");
+  });
+
+  it("names no user for a channel, inbox or missing key", () => {
+    expect(directSessionUserId("agent:a:telegram:direct:999")).toBeUndefined();
+    expect(directSessionUserId(inboxSessionKey("a", "l"))).toBeUndefined();
+    expect(directSessionUserId(undefined)).toBeUndefined();
+  });
+});
+
+describe("directSessionChatId", () => {
+  it("is null for the default chat", () => {
+    expect(directSessionChatId("agent:a:direct:user-9")).toBeNull();
+  });
+
+  it("names the chat of a per-chat session (#508)", () => {
+    expect(directSessionChatId(directSessionKey("a", "user-9", "chat-2"))).toBe("chat-2");
+  });
+
+  it("is undefined for a key that is not a direct session", () => {
+    expect(directSessionChatId("agent:a:inbox:ledger-1")).toBeUndefined();
+    expect(directSessionChatId(undefined)).toBeUndefined();
+  });
+});
+
+describe("auditChatId", () => {
+  it("is null for the default chat and the chat id for a per-chat session", () => {
+    expect(auditChatId("agent:a:direct:user-9")).toBeNull();
+    expect(auditChatId(directSessionKey("a", "user-9", "chat-2"))).toBe("chat-2");
+  });
+
+  it("is null for a key that is not a direct session", () => {
+    expect(auditChatId("agent:a:inbox:ledger-1")).toBeNull();
+  });
+
+  it("never carries the user segment", () => {
+    expect(String(auditChatId(directSessionKey("a", "user-9", "chat-2")))).not.toContain("user-9");
   });
 });

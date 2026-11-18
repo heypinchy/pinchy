@@ -10,6 +10,17 @@ const tester = new RuleTester({
 
 tester.run("require-audit-log", rule, {
   valid: [
+    // after() wrapping a try/catch that records the failure is what
+    // deferAuditLog itself does.
+    {
+      code: `after(async () => { try { await appendAuditLog({ eventType: "test" }); } catch (err) { recordAuditFailure(err, {}); } });`,
+      filename: "/lib/audit-deferred.ts",
+    },
+    // after() for work that is not an audit write.
+    {
+      code: `export async function POST(req) { deferAuditLog({ eventType: "test" }); after(() => deleteWorkspace("a")); }`,
+      filename: "/app/api/groups/route.ts",
+    },
     {
       code: `export async function POST(req) { appendAuditLog({ eventType: "test" }); }`,
       filename: "/app/api/groups/route.ts",
@@ -38,8 +49,41 @@ tester.run("require-audit-log", rule, {
       code: `export async function POST(req) { deferAuditLog({ eventType: "test" }); }`,
       filename: "/app/api/groups/route.ts",
     },
+    // A file-top exempt (before the first import) covers every handler in the file.
+    {
+      code: `// audit-exempt: nothing here mutates persisted state\nimport { NextResponse } from "next/server";\nexport async function POST(req) { return "ok"; }\nexport async function DELETE(req) { return "ok"; }`,
+      filename: "/app/api/groups/route.ts",
+    },
+    // A per-handler exempt covers only the handler it's directly attached to,
+    // and a sibling handler with a real audit call is independently fine.
+    {
+      code: `import { NextResponse } from "next/server";\n// audit-exempt: read-only forwarding, no persisted state change\nexport async function PUT(req) { return "ok"; }\nexport async function DELETE(req) { appendAuditLog({ eventType: "test" }); }`,
+      filename: "/app/api/groups/route.ts",
+    },
+    // A file with no imports has no header region, but a marker sitting
+    // directly above the handler still exempts that handler.
+    {
+      code: `// audit-exempt: dev-only endpoint\nexport async function POST(req) { return "ok"; }`,
+      filename: "/app/api/groups/route.ts",
+    },
   ],
   invalid: [
+    // A bare after() drops a failed audit write: no counter, no log line.
+    {
+      code: `export async function POST(req) { after(() => appendAuditLog({ eventType: "test" })); }`,
+      filename: "/app/api/groups/route.ts",
+      errors: [{ messageId: "noBareAfterAudit" }],
+    },
+    {
+      code: `export async function POST(req) { after(async () => { await appendAuditLog({ eventType: "test" }); }); }`,
+      filename: "/app/api/groups/route.ts",
+      errors: [{ messageId: "noBareAfterAudit" }],
+    },
+    {
+      code: `export async function POST(req) { after(function () { return appendAuditLog({ eventType: "test" }); }); }`,
+      filename: "/lib/helper.ts",
+      errors: [{ messageId: "noBareAfterAudit" }],
+    },
     {
       code: `export async function POST(req) { return "ok"; }`,
       filename: "/app/api/groups/route.ts",
@@ -84,6 +128,49 @@ tester.run("require-audit-log", rule, {
       code: `export const PATCH = async (req) => { appendAuditLog({ eventType: "test" }).catch(console.error); }`,
       filename: "/app/api/groups/route.ts",
       errors: [{ messageId: "noFireAndForgetAudit" }],
+    },
+    // An exempt comment attached to GET must not exempt a mutation handler
+    // elsewhere in the same file — the exemption is per-handler, not file-wide.
+    {
+      code: `import { NextResponse } from "next/server";\n// audit-exempt: read-only listing\nexport async function GET(req) { return "ok"; }\nexport async function POST(req) { return "ok"; }`,
+      filename: "/app/api/groups/route.ts",
+      errors: [{ messageId: "missingAuditLog" }],
+    },
+    // A comment that merely MENTIONS "audit-exempt:" inside a sentence is not
+    // a marker — only a comment that starts with it counts.
+    {
+      code: `import { NextResponse } from "next/server";\n// This route deliberately carries NO audit-exempt: marker, unlike its sibling.\nexport async function POST(req) { return "ok"; }`,
+      filename: "/app/api/groups/route.ts",
+      errors: [{ messageId: "missingAuditLog" }],
+    },
+    // A different word sharing the "audit-exempt" prefix must not match.
+    {
+      code: `import { NextResponse } from "next/server";\n// audit-exemptions: this is a different marker entirely\nexport async function POST(req) { return "ok"; }`,
+      filename: "/app/api/groups/route.ts",
+      errors: [{ messageId: "missingAuditLog" }],
+    },
+    // An exempt comment separated from its handler by an intervening
+    // declaration does not attach to that handler (it must sit directly above
+    // the export, with nothing in between).
+    {
+      code: `import { NextResponse } from "next/server";\n// audit-exempt: dev-only endpoint\nconst SOME_CONST = 1;\nexport async function POST(req) { return "ok"; }`,
+      filename: "/app/api/groups/route.ts",
+      errors: [{ messageId: "missingAuditLog" }],
+    },
+    // Same shape without imports: "before the file's first statement" is not a
+    // header region, it is just the comment on that statement. Treating it as
+    // file-wide would leave exactly the dead-switch this rule set out to close.
+    {
+      code: `// audit-exempt: dev-only endpoint\nconst SOME_CONST = 1;\nexport async function POST(req) { return "ok"; }`,
+      filename: "/app/api/groups/route.ts",
+      errors: [{ messageId: "missingAuditLog" }],
+    },
+    // A marker trailing another statement belongs to that statement, however
+    // close to the handler it lands.
+    {
+      code: `import { NextResponse } from "next/server";\nconst X = 1; // audit-exempt: reads as the handler's, belongs to the const\nexport async function POST(req) { return "ok"; }`,
+      filename: "/app/api/groups/route.ts",
+      errors: [{ messageId: "missingAuditLog" }],
     },
   ],
 });

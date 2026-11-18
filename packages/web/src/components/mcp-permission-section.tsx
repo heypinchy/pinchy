@@ -77,6 +77,9 @@ export function McpPermissionSection({
   // below (react-hooks/set-state-in-effect forbids a direct setState call in
   // an effect's synchronous body).
   const [loading, setLoading] = useState(() => connections.length > 0);
+  // A failed load means the agent's grants are unknown, not empty. The section
+  // then never reports, so the parent keeps them as they are (#1216).
+  const [loadFailed, setLoadFailed] = useState(false);
   // Per-connection search query (connectionId → query).
   const [searchByConn, setSearchByConn] = useState<Record<string, string>>({});
 
@@ -125,6 +128,7 @@ export function McpPermissionSection({
         setCheckedByConnection(new Map(Array.from(initial, ([id, tools]) => [id, new Set(tools)])));
       } catch (err) {
         if (!cancelled) {
+          setLoadFailed(true);
           toast.error(
             err instanceof ApiError ? err.message : "Couldn't load MCP tool permissions."
           );
@@ -181,7 +185,7 @@ export function McpPermissionSection({
   // OTHER connection's grants (unlike Odoo/Email's single-connection
   // dropdown, MCP supports several connections at once).
   useEffect(() => {
-    if (loading) return;
+    if (loading || loadFailed) return;
 
     const values: McpIntegrationValue[] = [];
     let anyDirty = false;
@@ -204,7 +208,7 @@ export function McpPermissionSection({
     }
 
     onChangeRef.current(values, anyDirty);
-  }, [connectionStates, loading]);
+  }, [connectionStates, loading, loadFailed]);
 
   const toggleTool = useCallback((connectionId: string, toolName: string) => {
     setCheckedByConnection((prev) => {

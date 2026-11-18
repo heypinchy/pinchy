@@ -1,0 +1,504 @@
+// @vitest-environment jsdom
+/**
+ * Chat WebSocket lifecycle following tab visibility (#895).
+ *
+ * Before this change, `use-ws-runtime.ts` had no notion of "the tab is
+ * hidden" for its own reconnect backoff: a scheduled reconnect timer dialed
+ * regardless of visibility, and after MAX_RECONNECT_ATTEMPTS the connection
+ * sat in `reconnectExhausted` forever — only a full reload recovered it, even
+ * once the tab was visible and looked-at again.
+ *
+ * This suite pins three behaviors:
+ *   1. Hidden tab: a pending reconnect timer must not dial; attempts are not
+ *      consumed while hidden.
+ *   2. Hidden longer than the grace period (~5 min) closes the WebSocket
+ *      cleanly with no reconnect scheduled from that close; shorter hidden
+ *      spells leave the connection open.
+ *   3. Visible tab: reset the reconnect counter and reconnect immediately,
+ *      including recovering out of `reconnectExhausted` — and once visible,
+ *      retries keep going at the capped 5s interval (tolerating a ~10-20s
+ *      server-unavailable window, e.g. a fleet-instance wake).
+ *
+ * Same mocking strategy as the canonical `use-ws-runtime.test.ts`: a real
+ * WebSocket stub via `vi.stubGlobal`, `@assistant-ui/react` mocked to the
+ * identity function.
+ */
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { renderHook, act } from "@testing-library/react";
+import { useWsRuntime } from "@/hooks/use-ws-runtime";
+
+vi.mock("@/lib/image-compression", () => ({
+  compressImageForChat: vi.fn(async (file: File) => ({ ok: true, file, skipped: true })),
+}));
+vi.mock("@/lib/upload-attachment", () => ({ uploadAttachment: vi.fn() }));
+vi.mock("sonner", () => ({ toast: vi.fn() }));
+vi.mock("@/components/restart-provider", () => ({
+  useRestart: () => ({ isRestarting: false, triggerRestart: vi.fn() }),
+}));
+vi.mock("@assistant-ui/react", () => ({
+  useExternalStoreRuntime: (config: unknown) => config,
+  SimpleImageAttachmentAdapter: class {
+    accept = "image/*";
+  },
+  SimpleTextAttachmentAdapter: class {
+    accept = "text/plain";
+  },
+  CompositeAttachmentAdapter: class {
+    accept: string;
+    constructor(adapters: { accept: string }[]) {
+      this.accept = adapters.map((a) => a.accept).join(",");
+    }
+  },
+}));
+
+let wsInstances: MockWebSocket[] = [];
+
+class MockWebSocket {
+  static CONNECTING = 0;
+  static OPEN = 1;
+  static CLOSING = 2;
+  static CLOSED = 3;
+
+  onopen: ((event: Event) => void) | null = null;
+  onmessage: ((event: MessageEvent) => void) | null = null;
+  onclose: ((event: CloseEvent) => void) | null = null;
+  onerror: ((event: Event) => void) | null = null;
+  readyState = 1;
+  send = vi.fn();
+  close = vi.fn();
+
+  constructor() {
+    wsInstances.push(this);
+  }
+
+  simulateOpen() {
+    this.readyState = MockWebSocket.OPEN;
+    this.onopen?.(new Event("open"));
+  }
+
+  simulateMessage(data: unknown) {
+    this.onmessage?.(new MessageEvent("message", { data: JSON.stringify(data) }));
+  }
+
+  simulateClose(code = 1006) {
+    this.readyState = MockWebSocket.CLOSED;
+    this.onclose?.(new CloseEvent("close", { code }));
+  }
+}
+
+vi.stubGlobal("WebSocket", MockWebSocket);
+
+function latestWs(): MockWebSocket {
+  const ws = wsInstances[wsInstances.length - 1];
+  if (!ws) throw new Error("No MockWebSocket instance created yet");
+  return ws;
+}
+
+function setVisibility(state: "visible" | "hidden") {
+  Object.defineProperty(document, "visibilityState", {
+    configurable: true,
+    value: state,
+  });
+  document.dispatchEvent(new Event("visibilitychange"));
+}
+
+const FIVE_MINUTES_MS = 5 * 60 * 1000;
+
+describe("useWsRuntime — visibility-driven reconnect lifecycle (#895)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    wsInstances = [];
+    setVisibility("visible");
+  });
+
+  afterEach(() => {
+    setVisibility("visible");
+    vi.useRealTimers();
+  });
+
+  it("does not dial a pending reconnect while hidden, and does not consume further attempts", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws1 = latestWs();
+
+    act(() => {
+      ws1.simulateOpen();
+    });
+
+    // Disconnect while visible — schedules the first backoff reconnect (1s).
+    act(() => {
+      ws1.simulateClose();
+    });
+
+    // Now the tab goes hidden before that backoff fires.
+    act(() => {
+      setVisibility("hidden");
+    });
+
+    // Advance well past what would be many exponential-backoff cycles
+    // (would normally exhaust all 10 attempts in under 45s). No dialing
+    // should happen at all while hidden.
+    act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+
+    expect(wsInstances).toHaveLength(1);
+    expect(result.current.connectionRejection).toBeNull();
+    expect(result.current.isConnected).toBe(false);
+  });
+
+  it("does not let the #956 history-answer watchdog fire while hidden, even past its deadline", () => {
+    // Nobody is watching a stalled load on a hidden tab: the watchdog must
+    // stand down exactly like the reconnect backoff does, not force its own
+    // reconnect (forceReconnect) or surface historyTimedOut independently of
+    // — and bypassing — the hidden-aware pause #895 provides. A real
+    // interaction bug this test guards: fixed alongside the E2E follow-up
+    // above, an earlier version of the grace-period change let this
+    // watchdog fire mid-hidden-period and force-reconnect regardless of
+    // visibility, which also cascaded into leaving jsdom's
+    // `document.visibilityState` stuck on "hidden" for later tests once the
+    // resulting assertion failure skipped this file's own cleanup line.
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws1 = latestWs();
+
+    act(() => {
+      ws1.simulateOpen();
+      // Deliberately do NOT deliver a history response — the request stays
+      // outstanding, arming the #956 watchdog.
+    });
+
+    act(() => {
+      setVisibility("hidden");
+    });
+
+    // Advance well past the 20s history-answer deadline while hidden.
+    act(() => {
+      vi.advanceTimersByTime(40_000);
+    });
+
+    expect(result.current.historyTimedOut).toBe(false);
+    expect(ws1.close).not.toHaveBeenCalled();
+    expect(wsInstances).toHaveLength(1);
+  });
+
+  it("keeps the WebSocket open when hidden for less than the grace period", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws1 = latestWs();
+
+    act(() => {
+      ws1.simulateOpen();
+    });
+    expect(result.current.isConnected).toBe(true);
+
+    act(() => {
+      setVisibility("hidden");
+    });
+
+    act(() => {
+      vi.advanceTimersByTime(FIVE_MINUTES_MS - 1000);
+    });
+
+    expect(ws1.close).not.toHaveBeenCalled();
+    expect(result.current.isConnected).toBe(true);
+    expect(wsInstances).toHaveLength(1);
+  });
+
+  it("re-requests history over an already-open socket on visible, even without an intervening close (#895 follow-up)", () => {
+    // e2e/18-tab-refocus-shrink.spec.ts pins the real-browser invariant this
+    // guards: a refocus must reconcile against canonical server history even
+    // when the grace period never elapsed and the socket never dropped —
+    // server-side state (e.g. an in-flight run whose history has since
+    // shrunk) can change while the tab wasn't listening. Before the grace
+    // period existed, EVERY hidden→visible cycle tore the socket down and
+    // reopened it, so a fresh history request was a side effect of the
+    // reconnect. The grace period made a short hide/show a no-op WS-wise —
+    // this test pins that the history re-request still happens even though
+    // the socket itself does not.
+    renderHook(() => useWsRuntime("agent-1"));
+    const ws1 = latestWs();
+
+    act(() => {
+      ws1.simulateOpen();
+    });
+
+    const historyRequestCount = () =>
+      ws1.send.mock.calls.filter((call: string[]) => JSON.parse(call[0]).type === "history").length;
+    expect(historyRequestCount()).toBe(1);
+
+    act(() => {
+      setVisibility("hidden");
+    });
+    act(() => {
+      setVisibility("visible");
+    });
+
+    // Same open socket — no reconnect, no new WS instance — but a second
+    // history request must have gone out over it.
+    expect(wsInstances).toHaveLength(1);
+    expect(ws1.close).not.toHaveBeenCalled();
+    expect(historyRequestCount()).toBe(2);
+  });
+
+  it("arms the #956 watchdog on the visible reconcile, so a stalled answer still self-heals", () => {
+    // The visible-with-OPEN-socket reconcile is a history request the UI
+    // waits on, so it must carry the same deadline as every other one
+    // (sendHistoryRequest's invariant). The socket that "survived" the
+    // hidden spell is exactly the one that may be half-dead — still
+    // reporting OPEN after a network change while the tab wasn't looking,
+    // with every send going nowhere (the forceReconnect scenario). Without
+    // the watchdog, pendingHistoryRef then sticks forever: focus- and
+    // poke-driven catch-ups both coalesce on it and skip, no timeout is
+    // surfaced, and the chat hangs until a full reload.
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws1 = latestWs();
+
+    act(() => {
+      ws1.simulateOpen();
+    });
+
+    act(() => {
+      setVisibility("hidden");
+    });
+    act(() => {
+      setVisibility("visible");
+    });
+    // Reconcile request went out over the still-open socket; nobody answers.
+    expect(ws1.close).not.toHaveBeenCalled();
+
+    // Advance past the 20s history-answer deadline while visible: the
+    // watchdog must surface the stall and self-heal via forceReconnect
+    // (deliberate close of the half-dead socket).
+    act(() => {
+      vi.advanceTimersByTime(20_000);
+    });
+
+    expect(result.current.historyTimedOut).toBe(true);
+    expect(ws1.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes the WebSocket cleanly after the hidden grace period elapses, with no reconnect scheduled", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws1 = latestWs();
+
+    act(() => {
+      ws1.simulateOpen();
+    });
+
+    act(() => {
+      setVisibility("hidden");
+    });
+
+    act(() => {
+      vi.advanceTimersByTime(FIVE_MINUTES_MS);
+    });
+
+    // Deliberate close: WS.close() invoked, no new connection dialed.
+    expect(ws1.close).toHaveBeenCalledTimes(1);
+    expect(result.current.isConnected).toBe(false);
+    expect(wsInstances).toHaveLength(1);
+
+    // The real browser follows close() with an onclose event. That close
+    // must not schedule a reconnect (still hidden, and it was deliberate).
+    act(() => {
+      ws1.simulateClose(1000);
+    });
+    act(() => {
+      vi.advanceTimersByTime(30_000);
+    });
+
+    expect(wsInstances).toHaveLength(1);
+    expect(result.current.connectionRejection).toBeNull();
+  });
+
+  it("reconnects immediately with a reset backoff when the tab becomes visible after a long outage", () => {
+    renderHook(() => useWsRuntime("agent-1"));
+    const ws1 = latestWs();
+
+    act(() => {
+      ws1.simulateOpen();
+    });
+
+    // A long outage while visible: the backoff has reached its cap.
+    for (let i = 0; i < 10; i++) {
+      const ws = latestWs();
+      act(() => {
+        ws.simulateClose();
+      });
+      act(() => {
+        vi.advanceTimersByTime(15_000);
+      });
+    }
+    const lastWs = latestWs();
+    act(() => {
+      lastWs.simulateClose();
+    });
+    const countAtOutage = wsInstances.length;
+
+    // Tab becomes visible (the user switches back) — must dial instantly
+    // instead of waiting out the pending backoff.
+    act(() => {
+      setVisibility("visible");
+    });
+
+    expect(wsInstances.length).toBeGreaterThan(countAtOutage);
+  });
+
+  it("keeps retrying at the capped 15s interval through a simulated ~60s outage after becoming visible", () => {
+    renderHook(() => useWsRuntime("agent-1"));
+    const ws1 = latestWs();
+
+    act(() => {
+      ws1.simulateOpen();
+    });
+
+    // Trigger a visible-driven reconnect (simulates recovering from a
+    // background/exhausted state) and then keep the "server" down for ~20s.
+    act(() => {
+      setVisibility("hidden");
+    });
+    act(() => {
+      ws1.simulateClose();
+    });
+    act(() => {
+      setVisibility("visible");
+    });
+
+    expect(wsInstances.length).toBeGreaterThan(1);
+
+    // Simulate a ~60s outage: every reconnect attempt immediately fails.
+    const countBeforeOutage = wsInstances.length;
+    let elapsed = 0;
+    while (elapsed < 60_000) {
+      const ws = latestWs();
+      act(() => {
+        ws.simulateClose();
+      });
+      // Capped backoff — never exceeds 15s regardless of attempt count.
+      act(() => {
+        vi.advanceTimersByTime(15_000);
+      });
+      elapsed += 15_000;
+    }
+
+    // Every failure was followed by another dial: there is no budget to spend.
+    expect(wsInstances.length).toBe(countBeforeOutage + 4);
+  });
+
+  it("restarts the backoff on return from a grace-period close, after a long outage", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws1 = latestWs();
+
+    act(() => {
+      ws1.simulateOpen();
+    });
+
+    // A long outage while visible: the backoff sits at its cap and the
+    // socket is gone.
+    for (let i = 0; i < 10; i++) {
+      const ws = latestWs();
+      act(() => {
+        ws.simulateClose();
+      });
+      act(() => {
+        vi.advanceTimersByTime(15_000);
+      });
+    }
+    act(() => {
+      latestWs().simulateClose();
+    });
+    const countBeforeHidden = wsInstances.length;
+
+    // Now the tab goes hidden past the grace period — suspendForPageLifecycle
+    // fires (there's no open socket to close, but it still marks the drop as
+    // lifecycle-suspended so a later `visible` reopens through
+    // recoverFromPageLifecycle instead of doing nothing).
+    act(() => {
+      setVisibility("hidden");
+    });
+    act(() => {
+      vi.advanceTimersByTime(FIVE_MINUTES_MS);
+    });
+
+    // Tab becomes visible again, but the server is STILL down. The backoff
+    // restarted: the first failure here waits ~1s, not the stale 15s.
+    act(() => {
+      setVisibility("visible");
+    });
+    expect(wsInstances.length).toBeGreaterThan(countBeforeHidden);
+    const countAfterReturn = wsInstances.length;
+    act(() => {
+      latestWs().simulateClose();
+    });
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(wsInstances.length).toBe(countAfterReturn + 1);
+
+    // A successful open fully recovers the connection.
+    act(() => {
+      latestWs().simulateOpen();
+    });
+    expect(result.current.isConnected).toBe(true);
+  });
+
+  it("visible just before the grace period elapses cancels the pending grace close", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws1 = latestWs();
+
+    act(() => {
+      ws1.simulateOpen();
+    });
+
+    act(() => {
+      setVisibility("hidden");
+    });
+
+    act(() => {
+      vi.advanceTimersByTime(FIVE_MINUTES_MS - 1000);
+    });
+    expect(ws1.close).not.toHaveBeenCalled();
+
+    act(() => {
+      setVisibility("visible");
+    });
+
+    // Answer the visible-reconcile history request so its (correctly armed)
+    // #956 watchdog disarms — this test pins only the grace-timer cancel,
+    // not a stalled reconcile.
+    act(() => {
+      ws1.simulateMessage({ type: "history", messages: [], sessionKnown: true });
+    });
+
+    // The grace timer must be cancelled — advancing well past where it would
+    // have fired must not close the (still open, never-suspended) socket.
+    act(() => {
+      vi.advanceTimersByTime(FIVE_MINUTES_MS);
+    });
+
+    expect(ws1.close).not.toHaveBeenCalled();
+    expect(result.current.isConnected).toBe(true);
+    expect(wsInstances).toHaveLength(1);
+  });
+
+  it("clears the hidden-grace timer on unmount, leaving no leaked timers", () => {
+    const { unmount } = renderHook(() => useWsRuntime("agent-1"));
+    const ws1 = latestWs();
+
+    act(() => {
+      ws1.simulateOpen();
+    });
+
+    act(() => {
+      setVisibility("hidden");
+    });
+
+    // Grace timer is now pending (armed for 5 minutes).
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+    act(() => {
+      unmount();
+    });
+
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});

@@ -1,5 +1,5 @@
 {
-  "id": "1c1a6b41-352c-43b0-b693-64541835e6d1",
+  "id": "e88a4cb1-1f60-44b9-9b82-766520a6f377",
   "prevId": "5f2fc04c-be8d-4166-b7d0-1d3be0794008",
   "version": "7",
   "dialect": "postgresql",
@@ -1497,7 +1497,7 @@
       "checkConstraints": {
         "integration_connections_type_check": {
           "name": "integration_connections_type_check",
-          "value": "\"integration_connections\".\"type\" IN ('odoo', 'web-search', 'google', 'microsoft', 'imap', 'mcp')"
+          "value": "\"integration_connections\".\"type\" IN ('odoo', 'web-search', 'google', 'microsoft', 'imap')"
         },
         "integration_connections_status_check": {
           "name": "integration_connections_status_check",
@@ -2511,6 +2511,12 @@
         },
         "seq": {
           "name": "seq",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "context_tokens": {
+          "name": "context_tokens",
           "type": "integer",
           "primaryKey": false,
           "notNull": false

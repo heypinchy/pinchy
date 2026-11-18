@@ -1,0 +1,107 @@
+/**
+ * Knowledge-base contracts shared across layers.
+ *
+ * A types-only module (no imports, no runtime): `IngestResult` is written by
+ * ingest.ts, persisted as a jsonb column by db/schema.ts, and read back by the
+ * job store and the reindex routes. ingest.ts imports db/schema, so the schema
+ * cannot import IngestResult from ingest.ts without a cycle — the same reason
+ * email-workflows/types exists.
+ */
+
+/**
+ * Where one heading's section begins, as an offset into the page text that
+ * opens it. Produced by the PDF extractor when a caller asks for the outline,
+ * consumed by the ingest to anchor a converted Word document's chunks (#938).
+ */
+export interface HeadingMark {
+  charStart: number;
+  /** The path from the outline's root, outermost first. */
+  headings: string[];
+}
+
+export interface IngestPage {
+  page: number;
+  text: string;
+  /**
+   * The heading sections that START on this page, ascending. Absent for a
+   * format whose citations are anchored on the page itself, and for a page
+   * that merely continues an earlier section.
+   */
+  headings?: HeadingMark[];
+  /**
+   * Set when this page is a scan the vision model was asked to read and did
+   * not answer — a provider error, a timeout, a render that threw. Absent when
+   * it answered, even with nothing: an empty answer is the page's text, a
+   * failed call is not.
+   *
+   * The ingest reads it to decide whether an unchanged document is owed
+   * another read (`incompleteReads` on kb_documents) — whether it came out
+   * empty or found text on its other pages. The text alone cannot say: both
+   * cases index as "".
+   */
+  ocrFailed?: true;
+}
+
+export interface IngestResult {
+  /** Documents newly indexed, replaced due to a content change, or recovered from a zero-chunk state — and searchable afterwards (at least one chunk). */
+  indexed: number;
+  /** Documents left untouched: unchanged content hash, and either chunks already present or an empty read on record that this run could not improve on — or a retry that found less than is stored (ingest.ts). */
+  skipped: number;
+  /** Documents deleted because their source file is no longer on disk. */
+  removed: number;
+  /**
+   * Files that parsed without error but yielded no chunks, so they are indexed
+   * yet can never be retrieved — an image-only scan with no text layer is the
+   * normal cause. Counted apart from `indexed` because the counts exist to
+   * answer "is the corpus findable?", and folding these into `indexed` reports
+   * a complete corpus while a slice of it silently answers nothing.
+   */
+  unsearchable: number;
+  /** Files skipped because reading or extracting THIS file threw (unreadable, corrupt). The run continues; see the per-file boundary in ingestDirectory. */
+  failed: number;
+  /**
+   * Documents in this run whose path falls under an archive folder
+   * (archive-paths.ts) and are therefore hidden from default retrieval.
+   * ORTHOGONAL to the outcome partition above — an archived document is
+   * also `indexed` or `skipped`, since archived files are fully ingested
+   * (the "search the archive too" opt-in needs their chunks). Reported for
+   * the same reason `unsearchable` is: the counts answer "is the corpus
+   * findable by default?", and 45% of a real corpus sitting in OLD/ trees
+   * is a fact the operator must see, not infer.
+   */
+  archived: number;
+  /**
+   * Documents under the run's folders whose type the indexer cannot read yet —
+   * an `.rtf`, a binary `.xlsb` (#1267). Files that are not
+   * documents at all are `ignored` instead (#1410). They are not documents in
+   * the index at all, so they sit OUTSIDE the outcome partition above: before
+   * this was counted, a folder of 13 files reported 11 and the other two
+   * appeared nowhere. The list behind the number is kb_unsupported_files
+   * (unsupported-files.ts). Hidden files and OS/temp artifacts are not counted.
+   *
+   * Optional because it is read back from `kb_index_jobs.counts`: a run that
+   * finished before it was counted has no such key, and "0" would claim it
+   * looked.
+   */
+  unsupported?: number;
+  /**
+   * Files under the run's folders that are not documents at all — programs,
+   * drivers, data exports, firmware images, any type we have no name for
+   * (#1410). Counted apart from `unsupported` because only a document is
+   * something an admin has to act on: a share of 400 `.dll` files reported as
+   * "not supported" buried the two Outlook mails that mattered. Same list
+   * behind it (kb_unsupported_files); unsupported-kind.ts draws the line.
+   *
+   * Optional for the same reason as `unsupported`. A run that recorded
+   * `unsupported` but not `ignored` predates the split, and its `unsupported`
+   * holds both kinds.
+   */
+  ignored?: number;
+}
+
+/** A fresh IngestResult with every counter at zero — the identity for summing per-root results. A function, not a shared const, so no caller can mutate the zero. */
+export function zeroIngestResult(): IngestResult {
+  // No `unsupported` or `ignored`: a run that never reached discovery did not
+  // look, and a zero would say it found none.
+  return { indexed: 0, skipped: 0, removed: 0, unsearchable: 0, failed: 0, archived: 0 };
+}

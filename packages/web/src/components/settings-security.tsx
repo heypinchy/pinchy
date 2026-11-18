@@ -7,6 +7,17 @@ import { Button } from "@/components/ui/button";
 import { ShieldCheck, ShieldAlert, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { docsUrl } from "@/components/docs-link";
+import { apiPost, apiDelete, errorMessage } from "@/lib/api-client";
+
+/**
+ * POST answers `{ domain, restart }`; DELETE answers `{ removed, restart }`.
+ * Only `restart` is common, so `domain` is optional here and the lock branch
+ * is the only one that reads it.
+ */
+interface DomainLockResult {
+  domain?: string;
+  restart?: boolean;
+}
 
 interface DomainStatus {
   domain: string | null;
@@ -69,21 +80,21 @@ export function SettingsSecurity() {
   const handleLock = async () => {
     setLocking(true);
     try {
-      const res = await fetch("/api/settings/domain", { method: "POST" });
-      if (res.ok) {
-        const data = await res.json();
-        setStatus((prev) => (prev ? { ...prev, domain: data.domain } : prev));
-        toast.success(`Domain locked to ${data.domain}.`);
-        if (data.restart) {
-          setShowRestarting(true);
-          waitForRestart();
-        }
-      } else {
-        const data = await res.json();
-        toast.error(data.error || "Failed to lock domain");
+      const data = await apiPost<DomainLockResult>("/api/settings/domain", undefined);
+      // Resolve the locked domain once. Reading `data.domain` again below would
+      // interpolate `undefined` into the toast on the very response the `??`
+      // here concedes is possible — "Domain locked to undefined."
+      const lockedDomain = data.domain ?? status?.domain ?? null;
+      setStatus((prev) => (prev ? { ...prev, domain: lockedDomain } : prev));
+      toast.success(
+        lockedDomain ? `Domain locked to ${lockedDomain}.` : "Domain locked to this host."
+      );
+      if (data.restart) {
+        setShowRestarting(true);
+        waitForRestart();
       }
-    } catch {
-      toast.error("Failed to lock domain");
+    } catch (e) {
+      toast.error(errorMessage(e, "Failed to lock domain"));
     } finally {
       setLocking(false);
     }
@@ -92,24 +103,18 @@ export function SettingsSecurity() {
   const handleRemove = async () => {
     setRemoving(true);
     try {
-      const res = await fetch("/api/settings/domain", { method: "DELETE" });
-      if (res.ok) {
-        const data = await res.json();
-        setStatus((prev) => (prev ? { ...prev, domain: null } : prev));
-        setShowRemoveConfirm(false);
-        toast.success("Domain lock removed");
-        if (data.restart) {
-          setShowRestarting(true);
-          waitForRestart();
-        } else {
-          router.refresh();
-        }
+      const data = await apiDelete<DomainLockResult>("/api/settings/domain");
+      setStatus((prev) => (prev ? { ...prev, domain: null } : prev));
+      setShowRemoveConfirm(false);
+      toast.success("Domain lock removed");
+      if (data.restart) {
+        setShowRestarting(true);
+        waitForRestart();
       } else {
-        const data = await res.json();
-        toast.error(data.error || "Failed to remove domain lock");
+        router.refresh();
       }
-    } catch {
-      toast.error("Failed to remove domain lock");
+    } catch (e) {
+      toast.error(errorMessage(e, "Failed to remove domain lock"));
     } finally {
       setRemoving(false);
     }

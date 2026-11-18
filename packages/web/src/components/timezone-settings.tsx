@@ -5,6 +5,8 @@ import { toast } from "sonner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
+import { apiPost, errorMessage } from "@/lib/api-client";
+import type { OrgSettingInput } from "@/lib/schemas/settings";
 import {
   Select,
   SelectContent,
@@ -26,7 +28,12 @@ export function getSupportedTimezones(): string[] {
 
 const TIMEZONES: string[] = getSupportedTimezones();
 
-export function TimezoneSettings() {
+interface TimezoneSettingsProps {
+  /** Called with the zone after a successful save, so cards that show times in it can re-read. */
+  onSaved?: (timezone: string) => void;
+}
+
+export function TimezoneSettings({ onSaved }: TimezoneSettingsProps = {}) {
   const [timezone, setTimezone] = useState("UTC");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -66,19 +73,14 @@ export function TimezoneSettings() {
     setSaving(true);
     setError(null);
     try {
-      const res = await fetch("/api/settings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: "org.timezone", value: timezone }),
+      await apiPost<unknown, OrgSettingInput>("/api/settings", {
+        key: "org.timezone",
+        value: timezone,
       });
-      if (!res.ok) {
-        const data = await res.json();
-        setError(data.error || "Failed to save timezone");
-        return;
-      }
       toast.success("Settings saved");
-    } catch {
-      setError("Failed to save timezone");
+      onSaved?.(timezone);
+    } catch (e) {
+      setError(errorMessage(e, "Failed to save timezone"));
     } finally {
       setSaving(false);
     }
@@ -93,7 +95,7 @@ export function TimezoneSettings() {
       </CardHeader>
       <CardContent className="space-y-4">
         <p className="text-sm text-muted-foreground">
-          Set the timezone used for scheduled jobs and briefing delivery times.
+          Set the timezone scheduled work runs in, such as the nightly knowledge-base reindex.
         </p>
 
         <div className="space-y-2">

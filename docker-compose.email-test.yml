@@ -11,9 +11,15 @@ services:
     build:
       context: config/gmail-mock
     ports:
-      - "9004:9004"
+      - "127.0.0.1:9004:9004"
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://localhost:9004/control/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://localhost:9004/control/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))",
+        ]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -22,9 +28,15 @@ services:
     build:
       context: config/graph-mock
     ports:
-      - "9005:9005"
+      - "127.0.0.1:9005:9005"
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://localhost:9005/control/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://localhost:9005/control/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))",
+        ]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -40,14 +52,22 @@ services:
       - MICROSOFT_OAUTH_BASE_URL=http://graph-mock:9005
       # The OAuth callback and connection probe fetch the user profile from Graph.
       - GRAPH_API_BASE_URL=http://graph-mock:9005
-    extra_hosts:
-      # Allows Pinchy (Docker) to fetch the Ollama model list from fake-Ollama on
-      # the host during regenerateOpenClawConfig(). OpenClaw already has this
-      # mapping via the base docker-compose.yml extra_hosts block.
-      - "ollama.local:host-gateway"
+      # All three overrides above only take effect alongside this explicit flag
+      # (insecure-mock-base-url.ts). Pinchy — not OpenClaw — holds the OAuth
+      # client secret and the refresh tokens, so an unflagged *_OAUTH_BASE_URL
+      # left over in production would redirect strictly more than the plugin
+      # side does. Same convention as docker-compose.imap-test.yml, which
+      # already sets this flag on both services.
+      - PINCHY_INSECURE_MAIL_MOCK=1
 
   openclaw:
     environment:
       # The pinchy-email plugin (running inside OpenClaw) calls the provider APIs.
       - GMAIL_API_BASE_URL=http://gmail-mock:9004
       - GRAPH_API_BASE_URL=http://graph-mock:9005
+      # Both *_API_BASE_URL overrides above only take effect alongside this
+      # explicit flag (gmail-adapter.ts / graph-adapter.ts), so a stray
+      # override left over in production can never silently redirect an
+      # OAuth-authenticated API call. Same convention as
+      # docker-compose.imap-test.yml's PINCHY_INSECURE_MAIL_MOCK.
+      - PINCHY_INSECURE_MAIL_MOCK=1

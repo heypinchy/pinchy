@@ -28,6 +28,11 @@ vi.mock("fs", async (importOriginal) => {
   };
 });
 
+vi.mock("@/lib/openai-compatible-providers", () => ({
+  listOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
+  listProvidersWithApiKeys: vi.fn().mockResolvedValue([]),
+}));
+
 vi.mock("@/db", () => ({
   db: {
     select: vi.fn().mockImplementation(() => ({
@@ -88,6 +93,7 @@ import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { mcpServerKey, nativeMcpToolName } from "@/lib/openclaw-config/native-mcp";
 import { computeAllowedTools } from "@/lib/tool-registry";
 import { db } from "@/db";
+import { mockJoinedPermissionsDb } from "@/test-helpers/db-mock";
 import { getSetting } from "@/lib/settings";
 
 const mockedWriteFileSync = vi.mocked(writeFileSync);
@@ -204,18 +210,7 @@ function mockDb(
   agentsData: ReturnType<typeof makeAgent>[],
   permissionsData: ReturnType<typeof makeMcpPermRow>[]
 ) {
-  mockedDb.select.mockReturnValue({
-    from: vi.fn().mockImplementation(() =>
-      Object.assign(Promise.resolve(agentsData), {
-        innerJoin: vi.fn().mockReturnValue(
-          Object.assign(Promise.resolve(permissionsData), {
-            where: vi.fn().mockResolvedValue(permissionsData),
-          })
-        ),
-        where: vi.fn().mockResolvedValue([]),
-      })
-    ),
-  } as never);
+  mockedDb.select.mockReturnValue(mockJoinedPermissionsDb(agentsData, permissionsData) as never);
 }
 
 // build.ts emits OpenClaw-NATIVE remote MCP: a top-level `mcp.servers` block
@@ -265,9 +260,10 @@ describe("MCP config generation (native + proxy)", () => {
     expect(server.headers.Authorization).not.toContain("ghp_secret_leaked");
     expect(Object.keys(server.headers)).toEqual(["Authorization"]);
 
-    const agentEntry = (
-      config.agents.list as Array<{ id: string; tools?: { allow?: string[] } }>
-    ).find((a) => a.id === "agent-xyz")!;
+    const agentEntry = config.agents.entries["agent-xyz"] as {
+      id: string;
+      tools?: { allow?: string[] };
+    };
     expect(agentEntry.tools?.allow).toEqual(
       expect.arrayContaining([
         nativeMcpToolName("conn-abc", "create_issue"),
@@ -287,11 +283,12 @@ describe("MCP config generation (native + proxy)", () => {
     await regenerateOpenClawConfig();
 
     const config = JSON.parse(getWrittenConfigString());
-    const agentEntry = (
-      config.agents.list as Array<{ id: string; tools?: { allow?: string[]; fs?: unknown } }>
-    ).find((a) => a.id === "agent-xyz")!;
+    const agentEntry = config.agents.entries["agent-xyz"] as {
+      id: string;
+      tools?: { allow?: string[]; fs?: unknown };
+    };
 
-    const base = computeAllowedTools();
+    const base = computeAllowedTools(agent.allowedTools);
     const allow = agentEntry.tools!.allow!;
     // Base entries are all present, in their original relative order, with
     // the MCP name(s) appended after — not substituted or reordered.
@@ -362,9 +359,10 @@ describe("MCP config generation (native + proxy)", () => {
     await regenerateOpenClawConfig();
 
     const config = JSON.parse(getWrittenConfigString());
-    const agentEntry = (
-      config.agents.list as Array<{ id: string; tools?: { allow?: string[] } }>
-    ).find((a) => a.id === "agent-drift")!;
+    const agentEntry = config.agents.entries["agent-drift"] as {
+      id: string;
+      tools?: { allow?: string[] };
+    };
 
     expect(agentEntry.tools?.allow).toContain(nativeMcpToolName("conn-drift", "list_repos"));
     expect(agentEntry.tools?.allow).not.toContain(nativeMcpToolName("conn-drift", "create_issue"));
@@ -399,9 +397,10 @@ describe("MCP config generation (native + proxy)", () => {
 
     const config = JSON.parse(getWrittenConfigString());
     expect(config.mcp).toBeUndefined();
-    const agentEntry = (
-      config.agents.list as Array<{ id: string; tools?: { allow?: string[] } }>
-    ).find((a) => a.id === "agent-broken")!;
+    const agentEntry = config.agents.entries["agent-broken"] as {
+      id: string;
+      tools?: { allow?: string[] };
+    };
     expect(agentEntry.tools?.allow).not.toContain(nativeMcpToolName("conn-broken", "create_issue"));
   });
 
@@ -456,12 +455,13 @@ describe("MCP config generation (native + proxy)", () => {
     const config = JSON.parse(getWrittenConfigString());
     expect(config.mcp).toBeUndefined();
 
-    const agentEntry = (
-      config.agents.list as Array<{ id: string; tools?: { allow?: string[] } }>
-    ).find((a) => a.id === "agent-flagged")!;
+    const agentEntry = config.agents.entries["agent-flagged"] as {
+      id: string;
+      tools?: { allow?: string[] };
+    };
     expect(agentEntry.tools?.allow).not.toContain(
       nativeMcpToolName("conn-flagged", "create_issue")
     );
-    expect(agentEntry.tools?.allow).toEqual(computeAllowedTools());
+    expect(agentEntry.tools?.allow).toEqual(computeAllowedTools(agent.allowedTools));
   });
 });

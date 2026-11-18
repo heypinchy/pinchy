@@ -28,9 +28,9 @@ services:
   pinchy:
     # Override the default :7777 mapping so the eval stack (port 7781)
     # doesn't conflict with the integration suite (7779) or other E2E jobs
-    # (7777/7778).
+    # (7777/7778). Loopback-only: the harness reaches it via localhost.
     ports: !override
-      - "7781:7777"
+      - "127.0.0.1:7781:7777"
     environment:
       - AUDIT_HMAC_SECRET=deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef
       # Fixed test-only secrets (throwaway eval stack, mock data only — same
@@ -52,16 +52,31 @@ services:
       # endpoint.
       - MICROSOFT_OAUTH_BASE_URL=http://graph-mock:9005
       - GRAPH_API_BASE_URL=http://graph-mock:9005
+      # Both overrides above only take effect alongside this explicit flag
+      # (insecure-mock-base-url.ts). Pinchy holds the OAuth client secret and
+      # the refresh tokens, so an unflagged *_OAUTH_BASE_URL left over in
+      # production would redirect strictly more than the plugin side does.
+      - PINCHY_INSECURE_MAIL_MOCK=1
       # Passed through so `models` mode can seed settings.ollama_cloud_api_key
       # without baking a real key into the image or compose file.
       - OLLAMA_CLOUD_API_KEY=${OLLAMA_CLOUD_API_KEY:-}
+      # The run fingerprint (#799) reads `build` from /api/version, which is
+      # `process.env.PINCHY_BUILD_SHA` at request time. A locally-built eval
+      # image bakes the build-arg default "dev", so the fingerprint lands
+      # `comparable:false` and the sweep can't anchor a cross-version regression
+      # baseline. /api/version reads this at RUNTIME (not a NEXT_PUBLIC compile
+      # inline), so overriding it here is enough — no rebuild. Launch the sweep
+      # with `PINCHY_BUILD_SHA=$(git rev-parse HEAD)` to stamp the real commit;
+      # unset it defaults to "dev" (unchanged behavior). A dirty tree still lands
+      # comparable:false via the harness `harnessDirty` check, so a stamped-but-
+      # dirty run is never mistaken for a clean baseline.
+      - PINCHY_BUILD_SHA=${PINCHY_BUILD_SHA:-dev}
     extra_hosts:
       # Pinchy probes ollama_local_url from regenerateOpenClawConfig(); the
       # selftest's fake-ollama runs on the HOST (started by eval.spec.ts, same
       # pattern as the email/odoo dispatch-probe specs), reached via the
-      # `ollama.local` alias.
+      # `ollama.local` alias, which docker-compose.yml maps on both services.
       - "host.docker.internal:host-gateway"
-      - "ollama.local:host-gateway"
 
   openclaw:
     extra_hosts:
@@ -70,11 +85,24 @@ services:
       # The pinchy-email plugin (running inside OpenClaw) calls the Graph API
       # directly for attachment downloads.
       - GRAPH_API_BASE_URL=http://graph-mock:9005
+      # GRAPH_API_BASE_URL above only takes effect alongside this explicit
+      # flag (graph-adapter.ts), so a stray override left over in production
+      # can never silently redirect an OAuth-authenticated API call. Same
+      # convention as docker-compose.imap-test.yml's PINCHY_INSECURE_MAIL_MOCK.
+      - PINCHY_INSECURE_MAIL_MOCK=1
+      # #723 governed-tools comparison sweep: the pinchy-odoo write guards
+      # (duplicate guard #721 + read-back #720) are read from this env at guard
+      # time. Default "enforced" = governed arm; set PINCHY_ODOO_GOVERNANCE=off
+      # on the host to run the ungoverned arm. ONE host var drives both this
+      # container and the harness's RunResult.governance stamp, so the recorded
+      # arm can never disagree with what the plugin did. Eval-only — never off
+      # in production.
+      - PINCHY_ODOO_GOVERNANCE=${PINCHY_ODOO_GOVERNANCE:-enforced}
 
   db:
     ports:
       !override # Playwright/setup helpers read/seed the DB directly from the host.
-      - "5437:5432"
+      - "127.0.0.1:5437:5432"
     tmpfs:
       - /var/lib/postgresql/data
     volumes: !reset []
@@ -83,8 +111,8 @@ services:
     build:
       context: config/odoo-mock
     ports:
-      - "9502:9002"
-      - "8169:8069"
+      - "127.0.0.1:9502:9002"
+      - "127.0.0.1:8169:8069"
     healthcheck:
       test:
         [
@@ -101,7 +129,7 @@ services:
     build:
       context: config/graph-mock
     ports:
-      - "9505:9005"
+      - "127.0.0.1:9505:9005"
     healthcheck:
       test:
         [

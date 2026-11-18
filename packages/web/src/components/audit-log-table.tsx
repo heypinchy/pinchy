@@ -1,12 +1,13 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, type MouseEvent } from "react";
 import Prism from "prismjs";
 import "prismjs/components/prism-json";
 import "./json-highlight.css";
 import Link from "next/link";
 import { CircleCheck, CircleX, CopyIcon, CheckIcon } from "lucide-react";
 import { toast } from "sonner";
+import { apiGet, errorMessage } from "@/lib/api-client";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -77,7 +78,10 @@ function StatusCell({ outcome }: { outcome: "success" | "failure" | null }) {
 
 interface AuditResponse {
   entries: AuditEntry[];
-  total: number;
+  // Only present on page 1 — the server never recomputes it for a later page
+  // (see app/api/audit/route.ts), so a page > 1 response omits the field and
+  // the total already in state (from the page-1 fetch) is kept as-is.
+  total?: number;
   page: number;
   limit: number;
 }
@@ -86,6 +90,9 @@ interface VerifyResult {
   valid: boolean;
   totalChecked: number;
   invalidIds: number[];
+  // Rows that verify against a superseded AUDIT_HMAC_SECRET. Optional because
+  // this is a wire type: a response from an older server simply omits it.
+  previousKeyIds?: number[];
 }
 
 // Convert a date-only string (YYYY-MM-DD) to a UTC ISO string at local midnight / end of day,
@@ -108,10 +115,12 @@ function highlightJson(json: string): string {
 }
 
 function ActorCell({
+  actorType,
   actorId,
   actorName,
   actorDeleted,
 }: {
+  actorType: string;
   actorId: string;
   actorName: string | null;
   actorDeleted: boolean;
@@ -123,7 +132,8 @@ function ActorCell({
       <span>
         {actorName}{" "}
         <Badge variant="outline" className="text-xs ml-1">
-          deactivated
+          {/* Users are deactivated (banned) and can come back; agents are deleted. */}
+          {actorType === "agent" ? "deleted" : "deactivated"}
         </Badge>
       </span>
     );
@@ -165,12 +175,23 @@ function ResourceCell({
   return <span>{resourceName}</span>;
 }
 
+/**
+ * A background load that fails tells the user; one we cancelled ourselves does
+ * not. Classify on the signal alone — an abort's error is not reliably an
+ * `Error`, and matching on its name can only ever swallow a genuine failure.
+ */
+function reportLoadFailure(err: unknown, signal: AbortSignal, fallback: string): void {
+  if (signal.aborted) return;
+  toast.error(errorMessage(err, fallback));
+}
+
 export function AuditLogTable() {
   const [entries, setEntries] = useState<AuditEntry[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [limit] = useState(50);
   const [loading, setLoading] = useState(true);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [eventTypeFilter, setEventTypeFilter] = useState<string>("");
   const [statusFilter, setStatusFilter] = useState<"" | "success" | "failure">("");
   const [dateFrom, setDateFrom] = useState<string>("");
@@ -187,17 +208,30 @@ export function AuditLogTable() {
     [selectedEntry]
   );
 
-  async function handleCopyDetail() {
+  async function handleCopyDetail(event: MouseEvent<HTMLButtonElement>) {
     if (!selectedEntry) return;
-    const ok = await copy(detailJson);
+    // Anchor the fallback inside the sheet: its focus trap would otherwise
+    // pull focus off the hidden textarea and the copy would silently do nothing.
+    const ok = await copy(detailJson, { anchor: event.currentTarget.parentElement });
     if (!ok) toast.error("Failed to copy to clipboard");
   }
 
   useEffect(() => {
-    fetch("/api/audit/event-types")
-      .then((res) => res.json())
-      .then((data: { eventTypes: string[] }) => setAvailableEventTypes(data.eventTypes))
-      .catch(() => {});
+    const controller = new AbortController();
+    const { signal } = controller;
+    void (async () => {
+      try {
+        const data = await apiGet<{ eventTypes: string[] }>("/api/audit/event-types", { signal });
+        if (!signal.aborted) setAvailableEventTypes(data.eventTypes);
+      } catch (err) {
+        reportLoadFailure(
+          err,
+          signal,
+          "Couldn't load the event types for the filter. Try refreshing the page."
+        );
+      }
+    })();
+    return () => controller.abort();
   }, []);
 
   const totalPages = Math.max(1, Math.ceil(total / limit));
@@ -213,41 +247,42 @@ export function AuditLogTable() {
   }
 
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const params = new URLSearchParams();
-        params.set("page", String(page));
-        params.set("limit", String(limit));
-        if (eventTypeFilter) {
-          params.set("eventType", eventTypeFilter);
-        }
-        if (statusFilter) {
-          params.set("status", statusFilter);
-        }
-        if (dateFrom) {
-          params.set("from", localDateStart(dateFrom));
-        }
-        if (dateTo) {
-          params.set("to", localDateEnd(dateTo));
-        }
+    const controller = new AbortController();
+    const { signal } = controller;
+    const params = new URLSearchParams();
+    params.set("page", String(page));
+    params.set("limit", String(limit));
+    if (eventTypeFilter) params.set("eventType", eventTypeFilter);
+    if (statusFilter) params.set("status", statusFilter);
+    if (dateFrom) params.set("from", localDateStart(dateFrom));
+    if (dateTo) params.set("to", localDateEnd(dateTo));
 
-        const res = await fetch(`/api/audit?${params.toString()}`);
-        if (cancelled) return;
-        if (res.ok) {
-          const data: AuditResponse = await res.json();
-          if (!cancelled) {
-            setEntries(data.entries);
-            setTotal(data.total);
-          }
+    void (async () => {
+      try {
+        const data = await apiGet<AuditResponse>(`/api/audit?${params.toString()}`, { signal });
+        if (signal.aborted) return;
+        setLoadFailed(false);
+        setEntries(data.entries);
+        // Deep pages (page > 1) omit `total` entirely (see AuditResponse)
+        // — keep whatever the page-1 fetch already put in state instead
+        // of clobbering it with undefined.
+        if (data.total !== undefined) {
+          setTotal(data.total);
         }
+      } catch (err) {
+        if (signal.aborted) return;
+        // An empty table here would read as "nothing was logged" — the worst
+        // false negative a compliance view can give. And the previous query's
+        // rows belong to a different filter than the one now set, so they go
+        // too.
+        setEntries([]);
+        setLoadFailed(true);
+        reportLoadFailure(err, signal, "Couldn't load the audit log. Try refreshing the page.");
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!signal.aborted) setLoading(false);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [page, limit, eventTypeFilter, statusFilter, dateFrom, dateTo]);
 
   async function handleExport(format: "csv" | "pdf") {
@@ -259,6 +294,16 @@ export function AuditLogTable() {
     if (dateTo) params.set("to", localDateEnd(dateTo));
     const res = await fetch(`/api/audit/export?${params.toString()}`);
     if (res.ok) {
+      // The export is capped (see MAX_AUDIT_EXPORT_ROWS in lib/audit-query.ts)
+      // so `audit_log` growing unbounded can't OOM the server. A capped file
+      // still looks like a complete, valid CSV/PDF once downloaded, so the
+      // admin needs an explicit signal here — the response header alone is
+      // invisible in a plain file-download flow.
+      if (res.headers.get("X-Audit-Export-Truncated") === "true") {
+        toast.warning(
+          "Export was truncated: more entries match these filters than fit in one export. Narrow the filters (date range, event type, actor) and export again to see the rest."
+        );
+      }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
@@ -340,7 +385,7 @@ export function AuditLogTable() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-3">
           <Select value={eventTypeFilter || "all"} onValueChange={handleEventTypeChange}>
-            <SelectTrigger aria-label="Event Type" className="w-[200px]">
+            <SelectTrigger aria-label="Event Type" className="w-full sm:w-[200px]">
               <SelectValue placeholder="All Events" />
             </SelectTrigger>
             <SelectContent>
@@ -354,7 +399,7 @@ export function AuditLogTable() {
           </Select>
 
           <Select value={statusFilter || "all"} onValueChange={handleStatusChange}>
-            <SelectTrigger aria-label="Status" className="w-[160px]">
+            <SelectTrigger aria-label="Status" className="w-full sm:w-[160px]">
               <SelectValue placeholder="All Statuses" />
             </SelectTrigger>
             <SelectContent>
@@ -364,6 +409,8 @@ export function AuditLogTable() {
             </SelectContent>
           </Select>
 
+          {/* Each date keeps its label but wraps on its own: as one row the
+              pair was ~400px and ran past a 375px screen (#1300). */}
           <div className="flex items-center gap-2">
             <label htmlFor="date-from" className="text-sm text-muted-foreground whitespace-nowrap">
               From
@@ -375,6 +422,8 @@ export function AuditLogTable() {
               onChange={handleDateFromChange}
               className="w-[160px]"
             />
+          </div>
+          <div className="flex items-center gap-2">
             <label htmlFor="date-to" className="text-sm text-muted-foreground whitespace-nowrap">
               To
             </label>
@@ -407,15 +456,35 @@ export function AuditLogTable() {
               : "border-red-500 bg-red-50 text-red-800 dark:bg-red-950 dark:text-red-200"
           }`}
         >
-          {verifyResult.valid ? (
-            <span>All {verifyResult.totalChecked} entries verified. Integrity intact.</span>
-          ) : (
-            <span>
-              {verifyResult.invalidIds.length} tampered entries detected out of{" "}
-              {verifyResult.totalChecked} checked. Tampered entries are highlighted in the table
-              below.
-            </span>
-          )}
+          {/* Naming the rotation matters: without it these rows either read as
+              tampered (before previousKeyIds existed) or vanish into a green
+              "all clear" that hides a key change from an auditor. It belongs on
+              BOTH banners — a partly-rotated log with a real violation in it is
+              exactly when a reader needs to know which rows verify under which
+              key. */}
+          {(() => {
+            const rotated = verifyResult.previousKeyIds?.length ?? 0;
+            const rotationNote = rotated > 0 && (
+              <>
+                {" "}
+                {rotated} were signed with an earlier audit secret and verify against it —
+                that&apos;s a key change, not tampering.
+              </>
+            );
+            return verifyResult.valid ? (
+              <span>
+                All {verifyResult.totalChecked} entries verified. Integrity intact.
+                {rotationNote}
+              </span>
+            ) : (
+              <span>
+                {verifyResult.invalidIds.length} tampered entries detected out of{" "}
+                {verifyResult.totalChecked} checked. Tampered entries are highlighted in the table
+                below.
+                {rotationNote}
+              </span>
+            );
+          })()}
           <Button
             variant="ghost"
             size="sm"
@@ -429,31 +498,41 @@ export function AuditLogTable() {
       )}
 
       {entries.length === 0 ? (
-        <p>No entries found.</p>
+        <p>{loadFailed ? "The audit log could not be loaded." : "No entries found."}</p>
       ) : (
         <>
           {/* Mobile card-view */}
           <div className="block lg:hidden space-y-2">
             {entries.map((entry) => (
+              // The whole card stays a click target for the mouse, but it is
+              // not a button: it holds the actor/resource links, and a
+              // button-role wrapper around links is a nested interactive
+              // control (axe `nested-interactive`, #1300). Keyboard and
+              // screen-reader users open the detail through the badge button.
               <div
                 key={entry.id}
-                role="button"
-                tabIndex={0}
+                data-audit-card
                 className={`rounded border p-3 space-y-1 cursor-pointer hover:bg-muted/50 ${tamperedIds?.has(entry.id) ? "border-red-400 bg-red-50 dark:bg-red-950/20" : ""}`}
                 data-tampered={tamperedIds?.has(entry.id) ? "true" : undefined}
                 onClick={() => setSelectedEntry(entry)}
-                onKeyDown={(e) => {
-                  if (e.target !== e.currentTarget) return;
-                  if (e.key === " ") e.preventDefault();
-                }}
-                onKeyUp={(e) => {
-                  if (e.target !== e.currentTarget) return;
-                  if (e.key === "Enter" || e.key === " ") setSelectedEntry(entry);
-                }}
               >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Badge variant="secondary">{entry.eventType}</Badge>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <button
+                      type="button"
+                      aria-label={`${entry.eventType} details`}
+                      className="flex min-w-0 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedEntry(entry);
+                      }}
+                    >
+                      {/* `block`, not the badge's inline-flex: an ellipsis only applies
+                          to a block box. */}
+                      <Badge variant="secondary" className="block max-w-full truncate">
+                        {entry.eventType}
+                      </Badge>
+                    </button>
                     <StatusCell outcome={entry.outcome} />
                   </div>
                   <span className="text-xs text-muted-foreground">
@@ -463,6 +542,7 @@ export function AuditLogTable() {
                 <div className="text-sm">
                   <span className="text-muted-foreground">Actor: </span>
                   <ActorCell
+                    actorType={entry.actorType}
                     actorId={entry.actorId}
                     actorName={entry.actorName}
                     actorDeleted={entry.actorDeleted}
@@ -515,6 +595,7 @@ export function AuditLogTable() {
                       <TableCell>{new Date(entry.timestamp).toLocaleString()}</TableCell>
                       <TableCell>
                         <ActorCell
+                          actorType={entry.actorType}
                           actorId={entry.actorId}
                           actorName={entry.actorName}
                           actorDeleted={entry.actorDeleted}
@@ -577,6 +658,7 @@ export function AuditLogTable() {
                 <p>
                   {selectedEntry.actorType}:{" "}
                   <ActorCell
+                    actorType={selectedEntry.actorType}
                     actorId={selectedEntry.actorId}
                     actorName={selectedEntry.actorName}
                     actorDeleted={selectedEntry.actorDeleted}

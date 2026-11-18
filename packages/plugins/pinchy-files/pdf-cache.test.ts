@@ -31,13 +31,7 @@ describe("PdfCache", () => {
   });
 
   it("falls back to content hash when mtime changes", () => {
-    cache.set(
-      "/data/docs/report.pdf",
-      1024,
-      1700000000,
-      "abc123",
-      "cached content",
-    );
+    cache.set("/data/docs/report.pdf", 1024, 1700000000, "abc123", "cached content");
     // getFast misses because mtime differs
     expect(cache.getFast("/data/docs/report.pdf", 1024, 1800000000)).toBeNull();
     // getByHash succeeds because content hash matches
@@ -57,13 +51,7 @@ describe("PdfCache", () => {
 
   it("invalidates when format version changes", () => {
     const cacheV1 = new PdfCache(cacheDir, { formatVersion: 1 });
-    cacheV1.set(
-      "/data/docs/report.pdf",
-      1024,
-      1700000000,
-      "abc123",
-      "v1 format",
-    );
+    cacheV1.set("/data/docs/report.pdf", 1024, 1700000000, "abc123", "v1 format");
     cacheV1.close();
 
     const cacheV2 = new PdfCache(cacheDir, { formatVersion: 2 });
@@ -76,13 +64,7 @@ describe("PdfCache", () => {
     let now = 1700000000000;
     const cacheWithClock = new PdfCache(cacheDir, { now: () => now });
 
-    cacheWithClock.set(
-      "/data/docs/report.pdf",
-      1024,
-      1700000000,
-      "abc123",
-      "content",
-    );
+    cacheWithClock.set("/data/docs/report.pdf", 1024, 1700000000, "abc123", "content");
 
     // Advance clock past TTL (7 days = 604800000ms)
     now += 604800001;

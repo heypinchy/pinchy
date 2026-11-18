@@ -101,13 +101,9 @@ describe("getAccessBadgeProps", () => {
     // permission-transparency surface — it must never be blank for a
     // template that grants anything.
     const result = getAccessBadgeProps({
-      id: "github-pr-reviewer",
-      name: "GitHub PR Reviewer",
-      description: "Reviews pull requests",
       requiresDirectories: false,
       requiresMcpConnection: "github",
       mcpRecommendedTools: ["pull_request_read", "list_pull_requests", "pull_request_review_write"],
-      defaultTagline: null,
     });
     expect(result).toEqual({ label: "GitHub · 3 tools", variant: "amber" });
   });
@@ -116,32 +112,47 @@ describe("getAccessBadgeProps", () => {
     // "HighLevel" only spells that way in mcp-presets.ts — a hardcoded map
     // here would drift the moment a provider renames itself.
     const result = getAccessBadgeProps({
-      id: "some-highlevel-template",
-      name: "HighLevel Agent",
-      description: "Does HighLevel things",
       requiresDirectories: false,
       requiresMcpConnection: "highlevel",
       mcpRecommendedTools: ["contacts_get"],
-      defaultTagline: null,
     });
     expect(result).toEqual({ label: "HighLevel · 1 tool", variant: "amber" });
   });
 
   it("pluralizes the MCP tool count correctly for a single tool", () => {
     const result = getAccessBadgeProps({
-      id: "linear-triage",
-      name: "Linear Triage",
-      description: "Triages issues",
       requiresDirectories: false,
       requiresMcpConnection: "linear",
       mcpRecommendedTools: ["list_issues"],
-      defaultTagline: null,
     });
     expect(result?.label).toBe("Linear · 1 tool");
   });
 });
 
 describe("getPermissionPreviewItems", () => {
+  // #1297: fetch works without a provider; search does not.
+  it("marks web search as not set up when no search provider is configured", () => {
+    const result = getPermissionPreviewItems({
+      requiresDirectories: false,
+      requiresWeb: true,
+      webSearchConfigured: false,
+    });
+    expect(result).toEqual([
+      { icon: "warning", text: "Search the public web (not set up yet)" },
+      { icon: "check", text: "Fetch public web pages" },
+      { icon: "cross", text: "Cannot access your private data or internal systems" },
+    ]);
+  });
+
+  it("lists web search as available when a search provider is configured", () => {
+    const result = getPermissionPreviewItems({
+      requiresDirectories: false,
+      requiresWeb: true,
+      webSearchConfigured: true,
+    });
+    expect(result[0]).toEqual({ icon: "check", text: "Search the public web" });
+  });
+
   it("returns read-only capabilities for Odoo read-only template", () => {
     const result = getPermissionPreviewItems({
       requiresDirectories: false,
@@ -362,11 +373,83 @@ describe("groupTemplatesByCategory", () => {
     expect(result.categories[0].templates[1].id).toBe("odoo-sales-analyst");
   });
 
-  it("returns categories in stable order: Sales, Finance, HR, Operations, Marketing, Knowledge", () => {
-    // Provide templates from different categories in reverse order
-    const result = groupTemplatesByCategory([knowledgeBase, resumeScreener, salesTemplate]);
+  it("returns runnable categories in stable thematic order, Knowledge & Compliance first", () => {
+    // Provide templates from different categories in scrambled order.
+    // Knowledge & Compliance leads because its templates need no integration
+    // (#1270).
+    const result = groupTemplatesByCategory([resumeScreener, salesTemplate, knowledgeBase]);
     const labels = result.categories.map((c) => c.label);
-    expect(labels).toEqual(["Sales & Customers", "HR & Recruiting", "Knowledge & Compliance"]);
+    expect(labels).toEqual(["Knowledge & Compliance", "Sales & Customers", "HR & Recruiting"]);
+  });
+
+  it("moves categories with nothing runnable after every category that has something (#1270)", () => {
+    // An instance without Odoo: the whole Sales category is unavailable, so
+    // it must not sit above a category the admin can actually use.
+    const unavailableSales = { ...salesTemplate, available: false };
+    const unavailableCrm = { ...crmTemplate, available: false };
+    const unavailableHrAnalyst = { ...hrAnalyst, available: false };
+    const result = groupTemplatesByCategory([
+      unavailableSales,
+      unavailableCrm,
+      unavailableHrAnalyst,
+      resumeScreener,
+      knowledgeBase,
+    ]);
+    expect(result.categories.map((c) => c.label)).toEqual([
+      "Knowledge & Compliance",
+      "HR & Recruiting",
+      "Sales & Customers",
+    ]);
+  });
+
+  it("keeps thematic order among categories that have nothing runnable", () => {
+    const unavailableSales = { ...salesTemplate, available: false };
+    const unavailableKb = { ...knowledgeBase, available: false };
+    const result = groupTemplatesByCategory([unavailableSales, unavailableKb, resumeScreener]);
+    expect(result.categories.map((c) => c.label)).toEqual([
+      "HR & Recruiting",
+      "Knowledge & Compliance",
+      "Sales & Customers",
+    ]);
+  });
+
+  it("treats a disabled template (no model for its capabilities) as not runnable", () => {
+    // A disabled card renders but cannot be clicked, so a category made only
+    // of disabled cards is no more usable than one made of unavailable ones.
+    const disabledKb = { ...knowledgeBase, disabled: true, disabledReason: "Requires vision" };
+    const result = groupTemplatesByCategory([disabledKb, salesTemplate]);
+    expect(result.categories.map((c) => c.label)).toEqual([
+      "Sales & Customers",
+      "Knowledge & Compliance",
+    ]);
+  });
+
+  it("puts Knowledge Base in the first category on an instance with no integrations (#1270)", () => {
+    // The whole real catalogue, availability as /api/templates computes it
+    // with no Odoo and no email connection. A documents-only organisation
+    // must see Knowledge Base without scrolling past Odoo templates.
+    const items: TemplateItem[] = Object.entries(AGENT_TEMPLATES).map(([id, t]) => ({
+      id,
+      name: t.name,
+      description: t.description,
+      requiresDirectories: t.pluginId === "pinchy-files",
+      requiresOdooConnection: t.requiresOdooConnection ?? false,
+      requiresEmailConnection: t.requiresEmailConnection ?? false,
+      defaultTagline: t.defaultTagline,
+      available: !(t.requiresOdooConnection || t.requiresEmailConnection),
+    }));
+
+    const { categories } = groupTemplatesByCategory(items);
+    expect(categories[0].templates[0].id).toBe("knowledge-base");
+
+    const firstUnrunnable = categories.findIndex((c) =>
+      c.templates.every((t) => t.available === false)
+    );
+    const lastRunnable = categories.reduce(
+      (last, c, i) => (c.templates.some((t) => t.available !== false) ? i : last),
+      -1
+    );
+    expect(firstUnrunnable).toBeGreaterThan(lastRunnable);
   });
 
   it("omits categories with no matching templates in the input", () => {

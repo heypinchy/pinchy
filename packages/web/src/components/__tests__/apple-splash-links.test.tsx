@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, it, expect, beforeEach } from "vitest";
 import { render } from "@testing-library/react";
 import { AppleSplashLinks } from "@/components/apple-splash-links";

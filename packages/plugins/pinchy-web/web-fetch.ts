@@ -2,7 +2,8 @@ import { Readability } from "@mozilla/readability";
 import { parseHTML } from "linkedom";
 import dns from "node:dns/promises";
 import net from "node:net";
-import { Agent } from "undici";
+import { Agent, fetch as undiciFetch } from "undici";
+import { classifyIpAddress } from "./ip-address.js";
 
 export interface WebFetchConfig {
   allowedDomains?: string[];
@@ -10,37 +11,22 @@ export interface WebFetchConfig {
   maxChars?: number;
 }
 
-const PRIVATE_IP_PATTERNS = [
-  /^127\./, /^10\./, /^172\.(1[6-9]|2\d|3[01])\./, /^192\.168\./,
-  /^169\.254\./, /^0\./, /^::1$/, /^fc00:/i, /^fe80:/i,
-];
-
 // Allow up to 5 redirect hops beyond the initial request (6 HTTP calls total).
 const MAX_REDIRECT_HOPS = 5;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
-// Detect IPv4-mapped IPv6 addresses (::ffff:0:0/96) and return the embedded
-// IPv4 in dotted-quad form. A known SSRF-bypass vector if we only match
-// IPv4 patterns against IPv4-shaped strings.
+// One classifier for every address this file looks at, shared with the web
+// app's own SSRF guards (see ip-address.ts for why it lives here). It unwraps
+// IPv4-mapped, IPv4-compatible, NAT64 and 6to4 forms and knows the
+// special-purpose ranges (CGNAT, benchmarking, multicast, ...), so this file
+// no longer keeps a regex list of its own to fall behind.
 //
-// Two forms exist in the wild:
-//   * Mixed:  ::ffff:127.0.0.1            (RFC 4291 §2.5.5 alternate form)
-//   * Hex:    ::ffff:7f00:1               (Node's URL parser canonicalises to this)
-function unwrapIPv4Mapped(ip: string): string | null {
-  const mixed = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i.exec(ip);
-  if (mixed) return mixed[1];
-  const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(ip);
-  if (hex) {
-    const high = parseInt(hex[1], 16);
-    const low = parseInt(hex[2], 16);
-    return `${(high >> 8) & 0xff}.${high & 0xff}.${(low >> 8) & 0xff}.${low & 0xff}`;
-  }
-  return null;
-}
-
+// web_fetch has no opt-in for internal networks: anything that is not
+// "public" is refused. An address the classifier cannot parse is refused too:
+// every caller passes a DNS answer or a net.isIP-validated literal, so that
+// can only be input we do not understand, and a guard fails closed.
 function isPrivateIp(ip: string): boolean {
-  const target = unwrapIPv4Mapped(ip) ?? ip;
-  return PRIVATE_IP_PATTERNS.some((pattern) => pattern.test(target));
+  return classifyIpAddress(ip) !== "public";
 }
 
 type ResolvedHost =
@@ -70,41 +56,82 @@ async function resolveHost(hostname: string): Promise<ResolvedHost> {
     dns.resolve6(hostname).catch(() => [] as string[]),
   ]);
   const all = [...ipv4s, ...ipv6s];
-  if (all.length === 0) return { kind: "unresolvable" };
   // Reject if ANY returned record is private — DNS servers controlled by an
   // attacker could mix public and private addresses to slip past a "first
   // address only" check.
-  if (all.some(isPrivateIp)) return { kind: "private" };
-  if (ipv4s[0]) return { kind: "resolved", address: ipv4s[0], family: 4 };
-  if (ipv6s[0]) return { kind: "resolved", address: ipv6s[0], family: 6 };
+  if (all.length > 0) {
+    if (all.some(isPrivateIp)) return { kind: "private" };
+    if (ipv4s[0]) return { kind: "resolved", address: ipv4s[0], family: 4 };
+    if (ipv6s[0]) return { kind: "resolved", address: ipv6s[0], family: 6 };
+  }
+
+  // resolve4/resolve6 ask DNS servers and nothing else. The fetch below
+  // resolves through dns.lookup, which ALSO consults /etc/hosts — so a name
+  // that exists only there was reported "unresolvable" here and then
+  // connected perfectly well down there, unpinned and never classified.
+  // That is not hypothetical: this stack adds `ollama.local:host-gateway`
+  // to its own containers via compose `extra_hosts`, which makes the docker
+  // host reachable from a tool an agent invokes on model instruction.
+  //
+  // So ask the resolver the request will actually use before concluding
+  // anything.
+  const viaLookup = await dns.lookup(hostname, { all: true }).catch(() => []);
+  if (viaLookup.length > 0) {
+    if (viaLookup.some((entry) => isPrivateIp(entry.address))) return { kind: "private" };
+    const first = viaLookup[0];
+    return { kind: "resolved", address: first.address, family: first.family === 6 ? 6 : 4 };
+  }
+
   return { kind: "unresolvable" };
 }
 
 // Custom undici lookup hook that returns the pre-resolved address. This
 // closes the DNS-rebinding TOCTOU window between the SSRF guard's resolve
 // and fetch's own connect-time resolve — both now use the same IP.
+type LookupAddress = { address: string; family: number };
 type LookupCallback = (
   err: Error | null,
-  address: string,
-  family: number,
+  address: string | LookupAddress[],
+  family?: number
 ) => void;
-type LookupFunction = (
-  hostname: string,
-  options: object,
-  callback: LookupCallback,
-) => void;
+type LookupOptions = { all?: boolean };
+type LookupFunction = (hostname: string, options: LookupOptions, callback: LookupCallback) => void;
 
 export function pinnedLookup(address: string, family: 4 | 6): LookupFunction {
-  return (_hostname, _options, callback) => {
-    callback(null, address, family);
+  return (_hostname, options, callback) => {
+    // Honour both halves of Node's dns.lookup contract. With `all: true` the
+    // callback takes an array of {address, family}; otherwise the flat
+    // (address, family) form. undici's connector asks for `all`, and answering
+    // it in the flat form leaves it reading `undefined` as the address —
+    // ERR_INVALID_IP_ADDRESS, surfaced only as an opaque "fetch failed".
+    if (options?.all) callback(null, [{ address, family }]);
+    else callback(null, address, family);
   };
 }
 
-function buildPinnedAgent(address: string, family: 4 | 6): Agent {
+export function buildPinnedAgent(address: string, family: 4 | 6): Agent {
   return new Agent({
     connect: { lookup: pinnedLookup(address, family) },
   });
 }
+
+// MUST come from the same undici as `Agent` above. Node's global fetch is backed
+// by Node's own bundled undici, whose request handlers fail the npm package's
+// `assertRequestHandler` — handing it an Agent from here dies with
+// UND_ERR_INVALID_ARG on every dispatch, reported only as `TypeError: fetch
+// failed`. Do not "simplify" this back to the global fetch.
+//
+// The cast keeps this module on the DOM lib's fetch types: undici's fetch is the
+// same WHATWG implementation Node re-exports, and every member used here
+// (status, statusText, ok, headers.get, body.getReader, text) is identical on
+// both — only the nominal declarations differ.
+//
+// Exported so web-fetch-dispatcher.test.ts can drive this pair against a real
+// server; the mocked-fetch suite cannot see whether undici accepts the Agent.
+export const httpFetch = undiciFetch as unknown as (
+  url: string,
+  init: RequestInit
+) => Promise<Response>;
 
 // Normalize a hostname so our allow/deny comparison is case-insensitive and
 // tolerates the trailing dot that DNS uses for fully-qualified names. Node's
@@ -115,28 +142,47 @@ function normalizeHostname(hostname: string): string {
   return hostname.toLowerCase().replace(/\.$/, "");
 }
 
-function checkDomainAllowed(
+// Returns a human-readable reason when `hostname` is NOT allowed, and null when
+// it is — so the truthy branch is the *denial* branch, the opposite of how a
+// name like `checkDomainAllowed` reads. Named for what it returns now that
+// brave-search.ts shares it: an inverted read of a security gate is the
+// expensive kind of typo, and a second call site doubles the chance of one.
+//
+// brave-search.ts post-filters search results by hostname against the same
+// allowedDomains/excludedDomains config, because the `site:` operator
+// concatenated into the search query is only a best-effort hint to Brave, not
+// enforcement — see the comment in braveSearch().
+export function domainDenialReason(
   hostname: string,
-  config: Pick<WebFetchConfig, "allowedDomains" | "excludedDomains">,
+  config: Pick<WebFetchConfig, "allowedDomains" | "excludedDomains">
 ): string | null {
   const host = normalizeHostname(hostname);
   if (config.allowedDomains?.length) {
-    const allowed = config.allowedDomains.some(
-      (d) => host === d || host.endsWith(`.${d}`),
-    );
+    const allowed = config.allowedDomains.some((d) => host === d || host.endsWith(`.${d}`));
     if (!allowed) {
       return `This agent is not allowed to fetch content from ${host}. Allowed domains: ${config.allowedDomains.join(", ")}`;
     }
   }
   if (config.excludedDomains?.length) {
-    const excluded = config.excludedDomains.some(
-      (d) => host === d || host.endsWith(`.${d}`),
-    );
+    const excluded = config.excludedDomains.some((d) => host === d || host.endsWith(`.${d}`));
     if (excluded) {
       return `Domain ${host} is blocked for this agent.`;
     }
   }
   return null;
+}
+
+// undici collapses every transport-level failure into a bare `TypeError: fetch
+// failed` and hangs the actual reason off `.cause` — the DNS/TCP/TLS errno, or an
+// InvalidArgumentError when it rejects the dispatcher. Without the cause an agent
+// cannot tell "this site is unreachable" from "our HTTP client is broken", so
+// both reach the user as the same dead end.
+function describeFetchError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const cause = err.cause;
+  if (!(cause instanceof Error)) return err.message;
+  const code = (cause as NodeJS.ErrnoException).code;
+  return `${err.message} (${code ? `${code}: ${cause.message}` : cause.message})`;
 }
 
 // Read a response body but stop once `maxBytes` have been read, so a huge or
@@ -223,7 +269,7 @@ function capText(s: string, maxChars: number): string {
 export function extractReadableContent(
   text: string,
   contentType: string,
-  maxChars: number,
+  maxChars: number
 ): { content: string; isError?: boolean } {
   if (!contentType.includes("text/html")) {
     return { content: capText(text, maxChars) };
@@ -259,7 +305,7 @@ export function extractReadableContent(
 
 export async function webFetch(
   url: string,
-  config: WebFetchConfig = {},
+  config: WebFetchConfig = {}
 ): Promise<{ content: string; isError?: boolean }> {
   // Validate URL
   let parsed: URL;
@@ -275,7 +321,7 @@ export async function webFetch(
 
   // Domain filtering
   const hostname = parsed.hostname;
-  const domainError = checkDomainAllowed(hostname, config);
+  const domainError = domainDenialReason(hostname, config);
   if (domainError) {
     return { content: domainError, isError: true };
   }
@@ -291,18 +337,23 @@ export async function webFetch(
       isError: true,
     };
   }
+  if (resolved.kind === "unresolvable") {
+    // Refuse rather than continue with no pinned address. A name neither DNS
+    // nor dns.lookup can answer is one the fetch cannot reach either, so this
+    // forfeits nothing — while continuing meant handing resolution back to
+    // undici with the guard's conclusion thrown away.
+    return { content: `Could not resolve host: ${hostname}`, isError: true };
+  }
 
   const maxChars = config.maxChars ?? 50000;
   let dispatcher: Agent | undefined =
-    resolved.kind === "resolved"
-      ? buildPinnedAgent(resolved.address, resolved.family)
-      : undefined;
+    resolved.kind === "resolved" ? buildPinnedAgent(resolved.address, resolved.family) : undefined;
   try {
     let currentUrl = url;
     let res: Response | undefined;
 
     for (let i = 0; i <= MAX_REDIRECT_HOPS; i++) {
-      res = await fetch(currentUrl, {
+      res = await httpFetch(currentUrl, {
         headers: { "User-Agent": "PinchyBot/1.0" },
         signal: AbortSignal.timeout(30000),
         redirect: "manual",
@@ -322,7 +373,7 @@ export async function webFetch(
       }
 
       // Domain filtering on redirect target
-      const redirectDomainError = checkDomainAllowed(redirectUrl.hostname, config);
+      const redirectDomainError = domainDenialReason(redirectUrl.hostname, config);
       if (redirectDomainError) {
         return { content: redirectDomainError, isError: true };
       }
@@ -332,6 +383,17 @@ export async function webFetch(
       if (redirectResolved.kind === "private") {
         return {
           content: `Access to private network addresses is not allowed.`,
+          isError: true,
+        };
+      }
+      if (redirectResolved.kind === "unresolvable") {
+        // Same rule as the initial URL above, and the easier half to reach:
+        // that one can be domain-filtered, this Location is chosen by whoever
+        // answered. Continuing dropped the dispatcher and let undici resolve
+        // the hop itself — the guard's conclusion thrown away at exactly the
+        // point it was re-derived.
+        return {
+          content: `Could not resolve host: ${redirectUrl.hostname}`,
           isError: true,
         };
       }
@@ -378,8 +440,7 @@ export async function webFetch(
 
     return extractReadableContent(text, contentType, maxChars);
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { content: `Failed to fetch URL: ${message}`, isError: true };
+    return { content: `Failed to fetch URL: ${describeFetchError(err)}`, isError: true };
   } finally {
     dispatcher?.close().catch(() => {});
   }

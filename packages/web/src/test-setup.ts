@@ -1,5 +1,22 @@
 import "@testing-library/jest-dom";
-import { vi } from "vitest";
+import { afterEach, vi } from "vitest";
+import { _resetProcessWideCaches } from "@/lib/process-wide-cache";
+import { _resetRegenerateQueue } from "@/lib/openclaw-config/regenerate-queue";
+
+// The regenerate queue and the caches a regenerate reads live on globalThis,
+// because one Pinchy process loads `src/lib` twice and both instances must
+// share them (see process-wide-cache.ts, regenerate-queue.ts). The flip side in
+// tests: `vi.resetModules()` gives a file a fresh module instance, and that
+// instance finds the previous test's in-flight regenerate and stale model lists
+// waiting on globalThis. Reset both after every test, so no test inherits
+// either — a test that failed mid-regenerate would otherwise make every later
+// regenerate in the worker queue behind a run that never settles. Both resets
+// are a handful of property writes. The push generation is deliberately NOT
+// reset: it is a monotonic cancellation token (see push-state.ts).
+afterEach(() => {
+  _resetRegenerateQueue();
+  _resetProcessWideCaches();
+});
 
 // Ensure consistent date/time behavior across all test environments
 process.env.TZ = "UTC";
@@ -58,6 +75,11 @@ if (typeof EventTarget !== "undefined") {
 // Radix UI Checkbox uses ResizeObserver which is not available in jsdom
 if (typeof window !== "undefined") {
   global.ResizeObserver = class {
+    // Same signature as the real constructor, so callers that pass their
+    // callback (ui/table.tsx) match it.
+    constructor(callback: ResizeObserverCallback) {
+      void callback;
+    }
     observe() {}
     unobserve() {}
     disconnect() {}
@@ -65,7 +87,7 @@ if (typeof window !== "undefined") {
 
   // Radix UI Select uses pointer capture APIs not available in jsdom
   if (!HTMLElement.prototype.hasPointerCapture) {
-    HTMLElement.prototype.hasPointerCapture = vi.fn().mockReturnValue(false);
+    HTMLElement.prototype.hasPointerCapture = vi.fn(() => false);
   }
   if (!HTMLElement.prototype.setPointerCapture) {
     HTMLElement.prototype.setPointerCapture = vi.fn();
@@ -76,13 +98,29 @@ if (typeof window !== "undefined") {
   if (!HTMLElement.prototype.scrollIntoView) {
     HTMLElement.prototype.scrollIntoView = vi.fn();
   }
+  // jsdom implements scrollTo on Window but not on Element, while every real
+  // browser has it. assistant-ui's <ThreadPrimitive.Viewport> calls it from a
+  // requestAnimationFrame callback to keep the thread pinned to the bottom —
+  // and jsdom's rAF is a real ~16ms timer, so whether that frame fires before
+  // the test unmounts (which cancels it) depends on machine load. Without this
+  // stub the loser of that race is an uncaught TypeError inside a frame
+  // callback, i.e. a flake that no assertion can catch and that surfaces as a
+  // teardown crash in whichever test file happened to be running (#916).
+  //
+  // On Element, not HTMLElement, because that is where the platform defines it
+  // — a stub one level down does not satisfy an `Element.prototype` check, which
+  // is why audit-log-table/settings-users/user-detail-sheet each hand-roll their
+  // own Element-level copies of the four shims above.
+  if (!Element.prototype.scrollTo) {
+    Element.prototype.scrollTo = vi.fn();
+  }
 }
 
 // Only set up browser globals when running in jsdom environment
 if (typeof window !== "undefined") {
   Object.defineProperty(window, "matchMedia", {
     writable: true,
-    value: vi.fn().mockImplementation((query: string) => ({
+    value: vi.fn((query: string) => ({
       matches: false,
       media: query,
       onchange: null,

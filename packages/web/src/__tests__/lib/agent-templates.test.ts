@@ -13,6 +13,7 @@ import { PERSONALITY_PRESETS } from "@/lib/personality-presets";
 import { MAX_STARTER_PROMPT_LENGTH } from "@/lib/schemas/starter-prompts";
 import { TEMPLATE_ICON_COMPONENTS } from "@/lib/template-icons";
 import { getOdooToolsForAccessLevel } from "@/lib/tool-registry";
+import { getSkillBody } from "@/lib/skills";
 
 /**
  * Real (non-`custom`) templates always ship a non-null `defaultAgentsMd` —
@@ -45,7 +46,16 @@ describe("agent-templates", () => {
     expect(AGENT_TEMPLATES["knowledge-base"]).toBeDefined();
     expect(AGENT_TEMPLATES["knowledge-base"].name).toBe("Knowledge Base");
     expect(AGENT_TEMPLATES["knowledge-base"].pluginId).toBe("pinchy-files");
-    expect(AGENT_TEMPLATES["knowledge-base"].allowedTools).toEqual([]);
+    // knowledge_search (Task 11 of the KB plan) lets the agent retrieve
+    // citable passages via pinchy-knowledge; see knowledge-base.test.ts for
+    // the cite-then-answer/abstention prompt coverage.
+    // Plus the curated defaults every non-custom template carries — see
+    // "curated template default grants" below.
+    expect(AGENT_TEMPLATES["knowledge-base"].allowedTools).toEqual([
+      "knowledge_search",
+      "pinchy_memory",
+      "pinchy_write",
+    ]);
   });
 
   it("should have a custom template with no allowed tools", () => {
@@ -149,7 +159,12 @@ describe("agent-templates", () => {
     const kb = AGENT_TEMPLATES["knowledge-base"];
     expect(kb.defaultAgentsMd).not.toBeNull();
     expect(kb.defaultAgentsMd).toContain("knowledge base agent");
-    expect(kb.defaultAgentsMd).toContain("cite");
+    // The citation contract used to be asserted here as a literal "cite" in
+    // the template prose. Migration #544 moved it into the knowledge-search
+    // SKILL.md, so assert it at its new home rather than dropping it — the
+    // agent must still be told to cite, wherever that instruction now lives.
+    expect(kb.defaultSkills).toContain("knowledge-search");
+    expect(getSkillBody("knowledge-search")).toContain("Cite");
   });
 
   it("custom should have null defaultAgentsMd", () => {
@@ -312,12 +327,21 @@ describe("generateAgentsMd", () => {
     expect(content).toContain("/data/hr-docs/");
   });
 
-  it("should instruct the agent to use pinchy_ls before reading files", () => {
+  // This block used to prescribe "1. Always start with pinchy_ls / 2. Use
+  // pinchy_read", which contradicted the template's own "use knowledge_search
+  // for any question" two paragraphs above — and the numbered, more specific
+  // instruction won. The generated prompt now states only WHERE the documents
+  // are (a fact, identical for every template); WHICH tool to reach for is the
+  // tools' own descriptions to declare, which is where a model looks when
+  // choosing one and which also reaches agents created without a template.
+  it("states where the documents are without prescribing a file-tool workflow", () => {
     const template = AGENT_TEMPLATES["knowledge-base"];
     const content = generateAgentsMd(template, {
       "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
     });
-    expect(content).toContain("pinchy_ls");
+    expect(content).toContain("/data/hr-docs/");
+    expect(content).not.toContain("pinchy_ls");
+    expect(content).not.toContain("pinchy_read");
   });
 
   it("should preserve the base knowledge base instructions", () => {
@@ -325,8 +349,11 @@ describe("generateAgentsMd", () => {
     const content = generateAgentsMd(template, {
       "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
     });
+    // Appending the Document Access block must not truncate or replace the
+    // template's own persona prose — the whole body has to survive.
     expect(content).toContain("knowledge base agent");
-    expect(content).toContain("cite");
+    expect(content).toContain(template.defaultAgentsMd);
+    expect(content).toContain("## Output Formatting");
   });
 
   it("should include all provided paths when multiple paths given", () => {
@@ -407,7 +434,10 @@ describe("Document templates", () => {
     for (const id of DOCUMENT_TEMPLATE_IDS) {
       const t = getTemplate(id)!;
       expect(t.pluginId).toBe("pinchy-files");
-      expect(t.allowedTools).toEqual([]);
+      // Document templates declare no tools of their own; what they hold is
+      // exactly the curated defaults. Asserting that set rather than [] keeps
+      // the "declares nothing itself" claim checkable.
+      expect(t.allowedTools).toEqual(["pinchy_memory", "pinchy_write"]);
     }
   });
 
@@ -638,23 +668,29 @@ describe("Odoo templates", () => {
   // should call out the distinction explicitly so the model can disambiguate
   // from the human-given wording before issuing the search.
   //
-  // This test dynamically enumerates every `odoo-*` template from the
-  // registry rather than hardcoding IDs, so newly-added Odoo templates
-  // (e.g. bookkeeper, hr-analyst, fleet-manager, ...) cannot silently drift
-  // out of compliance.
-  it("every odoo template's AGENTS.md disambiguates id (DB primary key) from default_code (SKU/internal reference)", () => {
+  // This disambiguation now lives in the shared `odoo-read` skill body rather
+  // than being spliced into every template's AGENTS.md (#546). The invariant is
+  // preserved by (a) every odoo template carrying `odoo-read` in defaultSkills,
+  // enumerated dynamically so a new template cannot silently opt out, and
+  // (b) the skill body itself calling out id vs default_code.
+  it("every odoo template carries the odoo-read skill, which disambiguates id from default_code (SKU/internal reference)", () => {
     const odooTemplates = getTemplateList().filter((t) => t.id.startsWith("odoo-"));
     expect(odooTemplates.length).toBeGreaterThan(0);
 
     for (const t of odooTemplates) {
-      expect(t.defaultAgentsMd, `template ${t.id} is missing the default_code mention`).toContain(
-        "default_code"
-      );
       expect(
-        t.defaultAgentsMd,
-        `template ${t.id} is missing the SKU / internal-reference mention`
-      ).toMatch(/SKU|internal reference/i);
+        AGENT_TEMPLATES[t.id].defaultSkills ?? [],
+        `template ${t.id} is missing the odoo-read skill`
+      ).toContain("odoo-read");
     }
+
+    const readSkill = getSkillBody("odoo-read");
+    expect(readSkill, "odoo-read skill is missing the default_code mention").toContain(
+      "default_code"
+    );
+    expect(readSkill, "odoo-read skill is missing the SKU / internal-reference mention").toMatch(
+      /SKU|internal reference/i
+    );
   });
 });
 
@@ -973,6 +1009,34 @@ describe("createOdooTemplate", () => {
     expect(t.odooConfig?.requiredModels).toEqual(requiredModels);
   });
 
+  it("threads defaultSkills through when provided", () => {
+    const t = createOdooTemplate({
+      ...baseSpec,
+      defaultSkills: ["odoo-read", "odoo-write"],
+      requiredModels: [{ model: "crm.lead", operations: ["read", "write"] }],
+    });
+    expect(t.defaultSkills).toEqual(["odoo-read", "odoo-write"]);
+  });
+
+  it("omits defaultSkills when the spec does not provide it", () => {
+    const t = createOdooTemplate({
+      ...baseSpec,
+      requiredModels: [{ model: "sale.order", operations: ["read"] }],
+    });
+    expect(t.defaultSkills).toBeUndefined();
+  });
+
+  it("copies the defaultSkills array rather than sharing the spec reference", () => {
+    const skills = ["odoo-read"];
+    const t = createOdooTemplate({
+      ...baseSpec,
+      defaultSkills: skills,
+      requiredModels: [{ model: "sale.order", operations: ["read"] }],
+    });
+    expect(t.defaultSkills).not.toBe(skills);
+    expect(t.defaultSkills).toEqual(skills);
+  });
+
   it("preserves the caller-provided fields verbatim", () => {
     const t = createOdooTemplate({
       ...baseSpec,
@@ -1027,16 +1091,32 @@ describe("Odoo template drift invariants", () => {
   });
 
   it("every Odoo template's allowedTools matches getOdooToolsForAccessLevel(accessLevel)", () => {
+    // Scoped to the odoo_* tools on purpose. This guard is about the ACCESS
+    // LEVEL not drifting from the tool set it implies; every template also
+    // carries the curated defaults (pinchy_memory, pinchy_write), which say
+    // nothing about Odoo access and must not be able to satisfy or break it.
+    // Comparing the full list would make the guard fail on any unrelated
+    // platform grant added later — and tempt whoever hits it to loosen it.
     const drifted: Array<{ id: string }> = [];
     for (const [id, t] of odooEntries) {
       const expected = getOdooToolsForAccessLevel(t.odooConfig!.accessLevel);
-      const actual = [...t.allowedTools].sort();
+      const actual = t.allowedTools.filter((tool) => tool.startsWith("odoo_")).sort();
       const want = [...expected].sort();
       if (actual.length !== want.length || !actual.every((v, i) => v === want[i])) {
         drifted.push({ id });
       }
     }
     expect(drifted).toEqual([]);
+
+    // …and the access level really is the ONLY source of odoo_* tools: nothing
+    // outside getOdooToolsForAccessLevel may add one. Without this, scoping the
+    // comparison above to odoo_* would let a stray odoo grant in from elsewhere.
+    for (const [id, t] of odooEntries) {
+      const nonOdoo = t.allowedTools.filter((tool) => !tool.startsWith("odoo_"));
+      expect(new Set(nonOdoo), `${id} carries an unexpected non-odoo grant`).toEqual(
+        new Set(["pinchy_memory", "pinchy_write"])
+      );
+    }
   });
 });
 
@@ -1683,15 +1763,37 @@ describe("defaultStarterPrompts (per-agent starter prompts, #570)", () => {
   // chat (thread.tsx ThreadWelcome). Every role-specific template ships a
   // small, curated set so a brand-new user is never staring at an empty
   // composer — matching how Custom GPTs, Gemini Gems, and Copilot Studio all
-  // ship per-assistant conversation starters. `custom` is the deliberate
-  // exception: a blank agent has no role to suggest prompts for.
+  // ship per-assistant conversation starters. The deliberate exceptions, each
+  // with its reason, are listed in NO_STARTER_PROMPTS below.
   const MAX_PROMPTS = 4; // hard display ceiling; see research in PR #620
   const MAX_PROMPT_LENGTH = MAX_STARTER_PROMPT_LENGTH; // chips must stay on one or two short lines
 
-  it("every non-custom template ships 3-4 defaultStarterPrompts", () => {
+  // Templates that deliberately ship no starter prompts, with the reason.
+  const NO_STARTER_PROMPTS: Record<string, string> = {
+    custom: "blank agent, no role to suggest prompts for",
+    // A role template knows its domain; a knowledge base does not know its
+    // documents. Any default names a topic the corpus may not contain, in a
+    // language the organisation may not use (#1270). Admins add their own in
+    // the agent settings, General tab.
+    "knowledge-base": "content-agnostic: Pinchy cannot know what the documents cover",
+  };
+
+  it("every exemption from starter prompts names a registered template", () => {
+    const unknown = Object.keys(NO_STARTER_PROMPTS).filter((id) => !(id in AGENT_TEMPLATES));
+    expect(unknown).toEqual([]);
+  });
+
+  it("exempted templates ship no defaultStarterPrompts", () => {
+    const offenders = Object.keys(NO_STARTER_PROMPTS).filter(
+      (id) => AGENT_TEMPLATES[id]?.defaultStarterPrompts !== undefined
+    );
+    expect(offenders).toEqual([]);
+  });
+
+  it("every other template ships 3-4 defaultStarterPrompts", () => {
     const offenders: Array<{ id: string; count: number }> = [];
     for (const [id, tpl] of Object.entries(AGENT_TEMPLATES)) {
-      if (id === "custom") continue;
+      if (id in NO_STARTER_PROMPTS) continue;
       const prompts = tpl.defaultStarterPrompts;
       if (!prompts || prompts.length < 3 || prompts.length > MAX_PROMPTS) {
         offenders.push({ id, count: prompts?.length ?? 0 });
@@ -1758,5 +1860,43 @@ describe("defaultStarterPrompts (per-agent starter prompts, #570)", () => {
       requiredModels: [{ model: "sale.order", operations: ["read"] }],
     });
     expect(t.defaultStarterPrompts).toBeUndefined();
+  });
+});
+
+describe("curated template default grants", () => {
+  // Pinchy's default is that nothing is on. A curated template, though, IS a
+  // decision somebody already made — so templates are generous and a
+  // from-scratch agent starts empty. Applying the rule at the registry rather
+  // than in ~35 template definitions is what keeps it from drifting as
+  // templates are added.
+  it("grants memory and file creation to every curated template", () => {
+    for (const template of getTemplateList()) {
+      if (template.id === "custom") continue;
+      expect(template.allowedTools, `${template.id} is missing pinchy_memory`).toContain(
+        "pinchy_memory"
+      );
+      expect(template.allowedTools, `${template.id} is missing pinchy_write`).toContain(
+        "pinchy_write"
+      );
+    }
+  });
+
+  it("leaves the from-scratch template empty", () => {
+    // "Custom Agent — Start from scratch" is the absence of a decision. It used
+    // to receive pinchy_write anyway, because the New-Agent form injected it
+    // into every creation regardless of template.
+    expect(getTemplate("custom")!.allowedTools).toEqual([]);
+  });
+
+  it("keeps each template's own tools alongside the defaults", () => {
+    // The defaults are merged, not substituted — a regression here would strip
+    // the integration grants that make a template useful.
+    expect(getTemplate("knowledge-base")!.allowedTools).toContain("knowledge_search");
+  });
+
+  it("does not duplicate a grant a template already declares", () => {
+    for (const template of getTemplateList()) {
+      expect(new Set(template.allowedTools).size).toBe(template.allowedTools.length);
+    }
   });
 });

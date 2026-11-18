@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Tests for AddIntegrationDialog — MCP integration type cards (one card per
  * preset) and the resulting connect-step variants:

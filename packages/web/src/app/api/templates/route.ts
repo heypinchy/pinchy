@@ -7,9 +7,10 @@ import { AGENT_TEMPLATES } from "@/lib/agent-templates";
 import { validateOdooTemplate } from "@/lib/integrations/odoo-template-validation";
 import { getConnectionModels } from "@/lib/integrations/odoo-connection-models";
 import { getActiveMcpPresets } from "@/lib/integrations/mcp-connections";
-import { getSetting } from "@/lib/settings";
+import { getUsableDefaultProvider } from "@/lib/model-resolver/usable-default-provider";
 import { type ProviderName } from "@/lib/providers";
-import { resolveModelForTemplate, TemplateCapabilityUnavailableError } from "@/lib/model-resolver";
+import { TemplateCapabilityUnavailableError } from "@/lib/model-resolver";
+import { resolveAvailableModelForTemplate } from "@/lib/model-resolver/resolve-available";
 import { EMAIL_CONNECTION_TYPES } from "@/lib/integrations/oauth-providers";
 import { isMcpEnabled } from "@/lib/feature-flags";
 
@@ -30,11 +31,21 @@ export const GET = withAuth(async () => {
 
   const hasEmailConnection = emailConnections.length > 0;
 
+  // Web templates do not need this to be creatable — pinchy_web_fetch works
+  // without a key — but the form says when search is not set up (#1297).
+  const webSearchConnections = await db
+    .select({ id: integrationConnections.id })
+    .from(integrationConnections)
+    .where(eq(integrationConnections.type, "web-search"))
+    .limit(1);
+
+  const hasWebSearchConnection = webSearchConnections.length > 0;
+
   // Load connection models for Odoo availability check
   const connectionModels = hasOdooConnection ? await getConnectionModels() : null;
 
   // Determine active provider for capability-based template filtering
-  const defaultProvider = (await getSetting("default_provider")) as ProviderName | null;
+  const defaultProvider = (await getUsableDefaultProvider()) as ProviderName | null;
 
   // MCP templates are gated on the feature flag AND on a per-preset
   // connection check. When the flag is off, the entire MCP surface must be
@@ -82,7 +93,10 @@ export const GET = withAuth(async () => {
 
       if (template.modelHint && defaultProvider) {
         try {
-          await resolveModelForTemplate({ hint: template.modelHint, provider: defaultProvider });
+          await resolveAvailableModelForTemplate({
+            hint: template.modelHint,
+            provider: defaultProvider,
+          });
         } catch (err) {
           if (err instanceof TemplateCapabilityUnavailableError) {
             disabled = true;
@@ -107,6 +121,7 @@ export const GET = withAuth(async () => {
         // preview) instead of granting an external system silently.
         mcpRecommendedTools: (template.recommendedTools ?? []).map((rt) => rt.tool),
         requiresWeb: template.pluginId === "pinchy-web",
+        webSearchConfigured: hasWebSearchConnection,
         odooAccessLevel: template.odooConfig?.accessLevel,
         defaultTagline: template.defaultTagline,
         available,

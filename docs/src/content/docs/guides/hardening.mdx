@@ -52,6 +52,10 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
+
+        # Longer than nginx's 60 s default: an Odoo check or schema sync can
+        # take that long before Pinchy can say why it failed
+        proxy_read_timeout 300s;
     }
 }
 
@@ -65,6 +69,8 @@ server {
 :::caution
 WebSocket support is required. Without the `Upgrade` and `Connection` headers, agent communication will fail.
 :::
+
+nginx gives up on an answer after 60 seconds by default. Pinchy gives an Odoo connection that doesn't answer 60 seconds per request, and some actions make several in a row: **Test connection** logs in and then reads the models, and a schema sync retries a model before it gives up. With nginx's default, these end in a generic error from nginx instead of Pinchy's explanation. `proxy_read_timeout 300s` leaves room for them; chats are unaffected, since Pinchy keeps their connection alive on its own.
 
 ## Firewall rules
 
@@ -267,36 +273,58 @@ Rate limiting is **enabled in production only** (`NODE_ENV === "production"`). I
 
 ### Per-path thresholds (per IP)
 
-| Endpoint                      | Window | Max | Threat addressed                                     |
-| ----------------------------- | ------ | --- | ---------------------------------------------------- |
-| `/sign-in/*` (incl. `/email`) | 60s    | 5   | Credential stuffing, brute force                     |
-| `/sign-up/*` (incl. `/email`) | 5 min  | 3   | Account-creation spam                                |
-| `/forget-password[/*]`        | 10 min | 3   | Password-reset email spam (DOS against user inboxes) |
-| `/reset-password[/*]`         | 10 min | 5   | Reset-token brute force                              |
-| `/request-password-reset`     | 10 min | 3   | Reset email spam                                     |
-| `/send-verification-email`    | 10 min | 3   | Verification email spam                              |
-| `/change-password`            | 10 min | 5   | Post-auth abuse (stolen session)                     |
-| `/change-email`               | 10 min | 3   | Account takeover via email change (stolen session)   |
-| All other auth endpoints      | 10s    | 100 | Generic flood protection                             |
+| Endpoint                      | Window | Max | Threat addressed                                       |
+| ----------------------------- | ------ | --- | ------------------------------------------------------ |
+| `/sign-in/*` (incl. `/email`) | 60s    | 5   | Credential stuffing, brute force                       |
+| `/sign-up/*` (incl. `/email`) | 5 min  | 3   | Second layer only — endpoint closed to clients (below) |
+| `/forget-password[/*]`        | 10 min | 3   | Second layer only — reset-email spam                   |
+| `/reset-password[/*]`         | 10 min | 5   | Second layer only — reset-token brute force            |
+| `/request-password-reset`     | 10 min | 3   | Second layer only — reset-email spam                   |
+| `/send-verification-email`    | 10 min | 3   | Second layer only — verification-email spam            |
+| `/change-password`            | 10 min | 5   | Second layer only — post-auth abuse (stolen session)   |
+| `/change-email`               | 10 min | 3   | Second layer only — account takeover via email change  |
+| All other auth endpoints      | 10s    | 100 | Generic flood protection                               |
 
 The `/sign-in/*` and `/sign-up/*` wildcard entries cover any future sub-path (OAuth callbacks, magic-link, passkey) so a new sign-in mechanism added in a later release inherits the hardened threshold instead of falling back to Better Auth's weaker `/sign-in/*` default.
+
+Of the endpoints in this table, only `/sign-in/email` answers clients at all — the others are closed (see the next section). Their rules stay as a second layer, so a later release that opens one of them can't ship it unthrottled. These limits only see HTTP requests to `/api/auth/*`. Pinchy's own routes that call the library from the server bring their own limit where they need one: the password change at `/api/users/me/password` allows 5 attempts per 10 minutes per user.
+
+### Endpoints closed to clients
+
+The authentication library registers dozens of endpoints under `/api/auth/`. We answer clients on exactly three of them:
+
+- `POST /api/auth/sign-in/email` — the login form.
+- `POST /api/auth/sign-out` — signing out.
+- `GET /api/auth/get-session` — the browser checking who is signed in.
+
+Every other path under `/api/auth/` answers `404 Not Found`, with an empty body, to every client — admins included. It's an allowlist, so an endpoint a future library version adds is closed from the start. Among the endpoints it closes:
+
+- `/api/auth/sign-up/*` — self-registration. Accounts are created only server-side, by the setup wizard and by claiming an invite.
+- `/api/auth/admin/*` — the authentication library's user-administration endpoints (impersonate, set role, set password, remove, ban, create). Pinchy manages users through its own audited `/api/users/*` routes instead.
+- `/api/auth/update-user`, `/api/auth/change-password`, `/api/auth/change-email`, `/api/auth/delete-user` — profile and credential changes go through Pinchy's own routes: `/api/users/me` validates a name change, and `/api/users/me/password` validates, rate-limits and audits a password change.
+- `/api/auth/verify-password` — it answers "is this the password?" for whoever holds a session, outside the sign-in limit. Open, it would let someone with a stolen session test guesses at the account's password.
+- `/api/auth/api-key/*` — API keys are issued only from **Settings → API Keys**.
+
+A closed endpoint isn't indistinguishable from one that doesn't exist. The rate limits above and the library's origin check run first, so a closed path can answer `429` or `403` where a missing one would say `404`. Either way, the request never reaches the endpoint.
 
 ### What this protects against
 
 - **Credential stuffing.** 5 sign-in attempts per minute per IP (vs. Better Auth's default 18/min) makes leaked-password lists impractical to replay against a single IP.
 - **Targeted brute force.** Combined with the audit trail's `auth.failed` events, repeated failures are visible and rate-bounded.
-- **Reset-flow abuse.** Tight windows on `/forget-password` and `/send-verification-email` prevent a single IP from spamming a victim's inbox or burning through reset tokens.
-- **Post-auth account takeover.** If a session is stolen, `/change-email` and `/change-password` are throttled hard enough that an attacker cannot quickly pivot to permanent control.
+- **Reset-flow abuse.** The library's password-reset and verification-email endpoints are closed to clients, so nobody can use them to spam a victim's inbox or burn through reset tokens.
+- **Post-auth account takeover.** A stolen session can't change the account's password or email, or test password guesses, through the library — those endpoints are closed. Pinchy's own password change asks for the current password, allows 5 attempts per 10 minutes per user, and records successes and failures in the audit trail.
 
 ### Limits of IP-based rate limiting
 
 - **IP rotation defeats per-IP limits.** A residential-proxy pool can sidestep these thresholds. We don't ship per-account lockout yet — a planned brute-force lockout will trigger on N consecutive `auth.failed` audit events for the same email.
 - **Storage is in-memory.** Counters reset on container restart and are not shared across replicas. For single-replica self-hosted deployments this is acceptable; for multi-replica deployments switch to a shared store (Redis) — not currently exposed as a config option, file an issue if you need this.
-- **Trust the X-Forwarded-For header from your reverse proxy only.** Better Auth derives the client IP from headers. If your reverse proxy does not set `X-Forwarded-For` to the real client IP — or worse, blindly trusts the header from the client — rate limiting can be bypassed. The reverse-proxy snippets earlier in this guide are configured correctly.
+- **The limits are only as good as your proxy's `X-Forwarded-For`.** Pinchy reads the **last** hop in that header — the one your proxy appended, which the sender had no say in — so a visitor who sends their own `X-Forwarded-For` gains nothing. That holds as long as your proxy _appends_ the address it saw; a proxy that forwards the visitor's header untouched hands Pinchy an address the visitor chose, and the limit follows it. The reverse-proxy snippets earlier in this guide are configured correctly. If a second proxy sits in front of yours — Cloudflare, a load balancer — name its addresses in [`PINCHY_TRUSTED_PROXIES`](/reference/environment-variables/#pinchy_trusted_proxies), or every visitor arriving through it shares one bucket.
 
 ### Customizing the thresholds
 
 The values are intentional defaults. If your CISO requires stricter limits (e.g. 3 sign-ins per minute), edit `getAuthRateLimitConfig` in `packages/web/src/lib/auth.ts` and rebuild your image. The `auth-config-consistency.test.ts` and `auth.test.ts` test suites pin the expected values so accidental loosening will fail CI.
+
+This section covers Better Auth's own session-based rate limiting only. The key-authenticated `/api/v1/*` surface never passes through Better Auth's router — see [Agent Provisioning API › Rate limiting](/reference/agent-provisioning-api/#rate-limiting) for its separate, Pinchy-side limiter.
 
 ## Cross-Site Request Forgery (CSRF) protection
 
@@ -313,7 +341,19 @@ For each state-changing request:
 Two route prefixes are exempt:
 
 - `/api/auth/*` — Better Auth enforces its own `trustedOrigins` allow-list here.
-- `/api/internal/*` — OpenClaw plugins call these routes with `Authorization: Bearer <gateway-token>`. Bearer-token routes are not CSRF-able (browsers can't forge `Authorization` headers cross-origin), and the plugins are non-browser clients that don't send `Origin`/`Referer`.
+- `/api/internal/*` — OpenClaw plugins call these routes with `Authorization: Bearer <gateway-token>`. Bearer-token routes are not CSRF-able (browsers can't forge `Authorization` headers cross-origin), and the plugins are non-browser clients that don't send `Origin`/`Referer`. The same prefix is exempt from the domain-lock host check, for the same reason — plugins reach Pinchy on a Docker-internal hostname. A CI guard fails the build if any route under the prefix stops authenticating with the gateway token, so the exemption cannot outgrow its justification.
+
+### The WebSocket upgrade (`/api/ws`) is a separate entry point
+
+`server.on("upgrade", ...)` handles the WebSocket handshake Pinchy's chat UI uses, and it is a different code path from the `createServer` request handler the domain-lock and CSRF gates above are installed on — a plain HTTP request never reaches it. WebSocket handshakes also aren't subject to CORS/SOP the way `fetch` is, so a browser-level defense against a cross-site connection doesn't exist for free the way it does for a normal API call.
+
+The upgrade handler reapplies both checks itself before validating the session cookie: the same domain-lock host check, and the same Origin comparison the CSRF gate runs — literally the same function, scheme included, so an `http://` Origin on an instance your proxy reports as `https` is rejected here exactly as it is on an ordinary API call. A mismatch ends the handshake with `403` before any auth work happens. A client that sends no `Origin` header at all (a non-browser caller) is let through this specific check — a browser cannot suppress `Origin` on a WebSocket handshake, so requiring it would only turn away scripts and internal tools, which the session cookie judges anyway. A rejection is audited the same way an HTTP-path rejection is: `auth.host_blocked` for a domain mismatch, `auth.csrf_blocked` for an Origin mismatch.
+
+The session cookie is checked once, at the handshake; an open connection is not re-authenticated per message. Deactivating a user (`DELETE /api/users/:id`) therefore does more than delete their sessions: it closes every chat connection they have open, with close code `4403`, and the server refuses any frame that connection still delivers — including a message it accepted just before and was still preparing: the router checks again right before it registers the run, so a message is either refused or registered in time for the abort below. Closing a connection alone would not stop a reply already running — OpenClaw keeps executing a run it accepted, tools included, until the run ends — so the same request also aborts every chat run Pinchy has in flight for that user, as the stop button would (`chat.run_aborted`, `reason: "account_deactivated"`). The agent starts no further tool for them; a tool call already executing at that moment can still complete. A run OpenClaw was still preparing cannot be aborted yet — OpenClaw answers that it stopped nothing and can start it afterwards — so Pinchy keeps aborting it by its runId, every two seconds at most and for up to a minute, until OpenClaw confirms, reports it over, or turns it away; a tool it starts before the next attempt can still run. A tab with no open connection at that moment (hidden past its grace period, or mid-reconnect) never sees the `4403`; its reconnects fail the handshake, which the browser reports only as a dropped connection, so after the second failed reconnect in a row the tab asks `/api/auth/get-session` and goes to the login page when the answer is "no session". Reactivating the user lifts the refusal.
+
+What this does not reach: a Telegram reply already running (OpenClaw's Telegram channel starts it, not Pinchy; new Telegram messages are refused at once), an automation run already handling an email on one of their personal agents (no new one starts), automations they created on shared agents, which keep running with the agent's permissions, and API keys they created. [User management](/guides/user-management/#what-deactivation-doesnt-stop) covers each one. The refusal is held in the Pinchy process, which is enough — a restart drops every connection, and a new one has to pass the handshake, whose session lookup the deactivation already emptied.
+
+Each account can hold up to ten chat connections at once, across all its devices, and each client address can open at most sixty per minute. A handshake over either limit is refused with HTTP `429`, and the chat retries with a growing delay. Pinchy pings every open chat connection every 30 seconds and closes one that has not answered since the previous ping, so a browser that vanished without closing its connection gives its place back within a minute instead of whenever the operating system drops it. The pings also keep a quiet chat from running into an idle timeout on your reverse proxy, as long as that timeout is longer than 30 seconds.
 
 ### Reverse proxy configuration
 
@@ -332,24 +372,28 @@ pinchy.example.com {
 }
 ```
 
-If your deployment chains multiple reverse proxies, `X-Forwarded-Host` may arrive as a comma-separated list (`public.example.com, internal:7777`). The gate compares `Origin` against the **first** (outermost) hop — the public name the browser actually saw. Each proxy in the chain should append, not overwrite, the existing header.
+If your deployment chains multiple reverse proxies, `X-Forwarded-Host` may arrive as a comma-separated list (`public.example.com, internal:7777`). Both request gates read the **first** (outermost) hop — the public name the browser actually saw: the CSRF gate compares `Origin` against it, and the domain lock matches it against your configured domain. Each proxy in the chain should append, not overwrite, the existing header.
 
 ### Auditing CSRF probes
 
-Blocked requests appear in the audit log as `auth.csrf_blocked` with `outcome: failure`. The `detail` payload captures `method`, `pathname`, `origin`, `referer`, and the offending `remoteAddress`, so probes show up in the audit log alongside failed logins. Use the audit dashboard (or `GET /api/audit?eventType=auth.csrf_blocked`) to review them.
+Blocked requests appear in the audit log as `auth.csrf_blocked` with `outcome: failure`. The `detail` payload captures `method`, `pathname`, `origin`, `referer`, and two addresses — `remoteAddress`, the machine that opened the connection (your proxy), and `clientAddress`, who actually sent the request. See [the two address fields](/concepts/audit-trail/#the-two-address-fields). Probes show up in the audit log alongside failed logins. Use the audit dashboard (or `GET /api/audit?eventType=auth.csrf_blocked`) to review them.
+
+Like `auth.host_blocked`, this event is throttled to one row per minute: nobody needs a credential to trigger it, and every audit row is written under a single instance-wide lock, so an unbounded stream would stall genuine audit writes behind it and bury the one rejection worth reading. When a row stands in for others, `suppressedSinceLastEntry` reports how many.
 
 ### Defense in depth
 
 The CSRF gate is layered with two other request-source defenses:
 
-- **Domain lock** (`Settings → Security → Domain lock`) — rejects any request whose `Host` header doesn't match the configured domain. Closes off requests that come in via direct IP, an unconfigured hostname, or a host header injection.
-- **`SameSite=Lax` session cookie** — Better Auth's default. Prevents cookies from being attached to most third-party requests, but is not sufficient on its own (top-level form posts under Lax can still attach cookies in some browsers).
+- **Domain lock** (`Settings → Security → Domain lock`) — rejects any request whose `Host` header doesn't match the configured domain. Closes off requests that come in via direct IP, an unconfigured hostname, or a host header injection. A rejected `/api/` request is audited as `auth.host_blocked`.
+- **`SameSite=Lax` session cookie** — configured explicitly in `packages/web/src/lib/auth.ts` (matching Better Auth's own default). Prevents cookies from being attached to most third-party requests, but is not sufficient on its own (top-level form posts under Lax can still attach cookies in some browsers) — which is why the WebSocket upgrade path above carries its own Origin check rather than relying on this alone.
 
 Together they enforce: the request hit the right destination (domain lock), came from a legitimate source (CSRF gate), and the session cookie is unforgeable (Better Auth + SameSite).
 
 ## AUDIT_HMAC_SECRET configuration
 
-The audit trail uses HMAC-SHA256 to sign every log entry. By default, Pinchy auto-generates a secret at startup. For production, set a persistent secret.
+The audit trail uses HMAC-SHA256 to sign every log entry. By default, Pinchy generates a secret on first start and persists it in the `pinchy-secrets` volume, which is a real secret and fine to keep. Set your own when you want to hold the key yourself, or when several Pinchy instances share one database — there it is required, because instances that sign with different keys also derive different pseudonyms for the same person.
+
+Best done on a fresh install. Setting it later swaps the key mid-life, which is handled but changes what verification reports — see the caution below.
 
 ### Generate a secret
 
@@ -365,7 +409,7 @@ AUDIT_HMAC_SECRET=your-generated-hex-string
 ```
 
 :::caution
-If the HMAC secret changes, previously signed audit entries will fail integrity verification. Back up your HMAC secret securely and never rotate it unless you understand the consequences. See [Audit Trail](/concepts/audit-trail/) for details on integrity verification.
+Changing the secret on a running install is supported, but the order of the steps matters, on one instance or several and above all after a leak: follow [Switching the key](/concepts/audit-trail-verification/#switching-the-key).
 :::
 
 ## Gateway-auth bootstrap
@@ -374,7 +418,7 @@ OpenClaw 2026.5.12+ refuses to bind on a non-loopback interface without a `gatew
 
 **Pinchy handles this automatically.** Pinchy's boot-init step seeds `gateway.auth.{mode: "token", token}` into `openclaw.json` _before_ the OpenClaw container starts, even on a fresh install before the setup wizard runs. The seeded token lives in the `openclaw-config` volume; OpenClaw and Pinchy share the same path.
 
-**This is a Pattern C bootstrap credential** (see [Secret Handling](/security/secrets/)): the token is plaintext in `openclaw.json` by design. It is the trust root for the OpenClaw container and cannot itself be fetched through Pinchy's API. Rotate it by regenerating the config (any change in **Settings → Providers** that triggers a save) and restarting the OpenClaw container.
+**This is a Pattern C bootstrap credential** (see [Secret Handling](/security/secrets/)): the token is plaintext in `openclaw.json` by design. It is the trust root for the OpenClaw container and cannot itself be fetched through Pinchy's API. Pinchy keeps the token in its database and writes the same value into `openclaw.json` on every config regeneration, so neither saving a setting nor restarting a container changes it; Pinchy has no rotation control for it.
 
 **Failure mode to watch for.** If `boot-inits.ts` cannot reach the database at startup (DB outage, mis-configured `DATABASE_URL`), the seed step logs a FATAL line and Pinchy refuses to start — better to fail fast than to leave OpenClaw stuck. If you see `pinchy-openclaw` restart-looping with `Refusing to bind gateway to lan without auth` _and_ Pinchy itself is healthy, the seed wrote successfully but OpenClaw is reading from a different config path — verify the `openclaw-config` volume mount.
 
@@ -388,6 +432,15 @@ This is enforced in three places so no code path can re-enable it by omission: t
 
 We expect to bring workspace terminals back as a first-class, **RBAC-scoped and audited** feature — gated behind a role grant and writing an audit row per session — rather than the ungoverned admin shell OpenClaw ships upstream. Until then, it stays off. If you have a specific need for it, [open an issue](https://github.com/heypinchy/pinchy/issues) describing the use case.
 
+## Background memory rewriting and skill self-learning (disabled)
+
+OpenClaw 2026.8 switched on two background features by default. Pinchy keeps both off:
+
+- **Dreaming** (`plugins.entries.memory-core.config.dreaming.enabled: false`). A nightly job reads an agent's conversations and rewrites its `MEMORY.md` with the agent's model. For a shared agent that means reading every user's conversations, writing memory outside any chat turn, and spending model budget nobody asked for. Agents keep their memory through the Memory tool, inside a conversation.
+- **Skill self-learning** (`skills.workshop.autonomous.mode: "off"`). After a longer turn, OpenClaw would draft a new skill and install it without approval. In Pinchy, an admin chooses which skills an agent has.
+
+Both settings are written into every config Pinchy generates and into the image's baked-in `config/openclaw.json`. Any other dreaming setting in `openclaw.json` is left as it is.
+
 ## Backup & recovery
 
 :::note
@@ -396,20 +449,28 @@ The `openclaw-secrets` volume is a **tmpfs** — it lives in RAM, not on disk. I
 
 ### What to back up beyond `pgdata`
 
-PostgreSQL's `pgdata` volume holds the bulk of Pinchy's state — users, agents, settings, encrypted API keys, and the audit log — and is the backup most guides (including this one) lead with. A full cold restore on a new host also needs three things that don't live in `pgdata`:
+PostgreSQL's `pgdata` volume holds the bulk of Pinchy's state — users, agents, settings, encrypted API keys, and the audit log — and is the backup most guides (including this one) lead with. A full cold restore on a new host also needs these, none of which live in `pgdata`:
 
-| What                                                                                             | Why it matters if lost                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Your `.env` secrets (`DB_PASSWORD`, `BETTER_AUTH_SECRET`, `ENCRYPTION_KEY`, `AUDIT_HMAC_SECRET`) | If any of these were auto-generated rather than pinned, they're persisted as files in the `pinchy-secrets` volume, not in `.env` — back up that volume too (see below). Losing `ENCRYPTION_KEY` makes every stored LLM provider API key permanently unreadable. Losing `AUDIT_HMAC_SECRET` breaks integrity verification for every audit row signed under it. Losing `BETTER_AUTH_SECRET` invalidates every active session.                                                                                                                         |
-| The `pinchy-secrets` volume                                                                      | Where Pinchy persists any of the four secrets above that you didn't pin explicitly in `.env` (see [VPS Deployment → Pin your secrets](/guides/vps-deployment/#deploy-pinchy)). Same consequences as losing the `.env` values themselves.                                                                                                                                                                                                                                                                                                            |
-| The `openclaw-config` volume                                                                     | Holds `openclaw.json` — the gateway's bootstrap auth token and the regenerated agent/provider configuration. Pinchy rebuilds most of this from the database on every start, so a lost volume mostly self-heals; the exception is the `gateway.auth.token` bootstrap credential (see [Gateway-auth bootstrap](#gateway-auth-bootstrap)), which regenerates automatically but invalidates the old value — harmless on a full restore where both `pinchy` and `openclaw` come up together, worth knowing if you ever restore this volume in isolation. |
+| What                                                                                             | Why it matters if lost                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Your `.env` secrets (`DB_PASSWORD`, `BETTER_AUTH_SECRET`, `ENCRYPTION_KEY`, `AUDIT_HMAC_SECRET`) | If any of these were auto-generated rather than pinned, they're persisted as files in the `pinchy-secrets` volume, not in `.env` — back up that volume too (see below). Losing `ENCRYPTION_KEY` makes every stored LLM provider API key permanently unreadable. Losing `AUDIT_HMAC_SECRET` breaks integrity verification for every audit row signed under it. Losing `BETTER_AUTH_SECRET` invalidates every active session.                                                                                                                                                                                                                               |
+| The `pinchy-secrets` volume                                                                      | Where Pinchy persists any of the four secrets above that you didn't pin explicitly in `.env` (see [VPS Deployment → Pin your secrets](/guides/vps-deployment/#deploy-pinchy)). Same consequences as losing the `.env` values themselves.                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| The `openclaw-config` volume                                                                     | Holds the chat history of every web chat, and `openclaw.json` — the gateway's bootstrap auth token and the regenerated agent/provider configuration. Without it, every agent starts over with no chat history. `openclaw.json` itself mostly self-heals, because Pinchy rebuilds it from the database on every start; the exception is the `gateway.auth.token` bootstrap credential (see [Gateway-auth bootstrap](#gateway-auth-bootstrap)), which regenerates automatically but invalidates the old value — harmless on a full restore where both `pinchy` and `openclaw` come up together, worth knowing if you ever restore this volume in isolation. |
+| The `pinchy-workspaces` volume                                                                   | Each agent's workspace: its instructions and memory, the files people upload in chat, and what the agent writes. Pinchy can't rebuild any of it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| The `pinchy-kb-artifacts` volume                                                                 | The PDFs Pinchy converted Word and PowerPoint files to for knowledge-base citations. Without it, those citations show no preview, and a reindex doesn't bring them back: Pinchy converts a file again only when the file itself changes. The original file still downloads.                                                                                                                                                                                                                                                                                                                                                                               |
 
 <Aside type="tip">
   If you always pin `DB_PASSWORD`, `BETTER_AUTH_SECRET`, `ENCRYPTION_KEY`, and
   `AUDIT_HMAC_SECRET` explicitly in `.env` (recommended for production — see
   [VPS Deployment](/guides/vps-deployment/#deploy-pinchy)), your `.env` backup
-  already covers them and the `pinchy-secrets` volume backup becomes a
-  belt-and-suspenders step rather than the only copy.
+  already covers them. Back up the `pinchy-secrets` volume anyway: it can hold
+  keys `.env` doesn't. After a change of `AUDIT_HMAC_SECRET`, the key it
+  replaced lives only there (see [Switching the
+  key](/concepts/audit-trail-verification/#switching-the-key)), and a value you
+  pinned on v0.9.1 or earlier counts as a change: the compose file we shipped
+  didn't pass it to Pinchy then, so Pinchy signed with the key it generated. And
+  while a pinned value isn't a valid key, Pinchy ignores it and uses the key
+  file instead.
 </Aside>
 
 ### Cold-restore walkthrough (fresh host)
@@ -438,18 +499,36 @@ This is the sequence for restoring Pinchy onto a brand-new host — a full disas
    gunzip < pinchy-backup-20260222.sql.gz | docker compose exec -T db psql -U pinchy pinchy
    ```
 
-3. **Restore the `openclaw-config` and `pinchy-secrets` volumes**
+3. **Restore the volumes**
 
-   If you backed up these named volumes (rather than relying on `.env` alone), restore them before starting the rest of the stack. Docker volumes live under `/var/lib/docker/volumes/<project>_<volume-name>/_data` — restore your archive into that path, or use a throwaway container to copy the data in:
+   Restore them before starting the rest of the stack. Docker volumes live under `/var/lib/docker/volumes/<project>_<volume-name>/_data` — restore your archive into that path, or use a throwaway container to copy the data in:
 
    ```bash
    docker run --rm -v pinchy_pinchy-secrets:/target -v "$(pwd)/backup/pinchy-secrets:/source:ro" \
      alpine sh -c "cp -a /source/. /target/"
    docker run --rm -v pinchy_openclaw-config:/target -v "$(pwd)/backup/openclaw-config:/source:ro" \
      alpine sh -c "cp -a /source/. /target/"
+   docker run --rm -v pinchy_pinchy-workspaces:/target -v "$(pwd)/backup/pinchy-workspaces:/source:ro" \
+     alpine sh -c "cp -a /source/. /target/"
+   docker run --rm -v pinchy_pinchy-kb-artifacts:/target -v "$(pwd)/backup/pinchy-kb-artifacts:/source:ro" \
+     alpine sh -c "cp -a /source/. /target/"
    ```
 
-   If you always pin all four secrets in `.env` (see above), you can skip restoring `pinchy-secrets` — Pinchy reads the values from the environment instead. `openclaw-config` is safe to skip too; Pinchy regenerates it from the restored database on boot, at the cost of a fresh gateway bootstrap token.
+   If you have a `backups/openclaw-state-<stamp>.tgz` from the [pre-upgrade backup](/guides/upgrading/#standard-upgrade), restore it instead of the `openclaw-config` and `pinchy-workspaces` lines, in the directory that holds your `docker-compose.yml`:
+
+   ```bash
+   docker compose run --rm --no-deps -T --entrypoint tar openclaw -C /root/.openclaw -xzpf - < backups/openclaw-state-<stamp>.tgz
+   ```
+
+   If your key backup is a `pinchy-secrets-<stamp>.tar` from [`backup_pinchy_keys`](/concepts/audit-trail-verification/#backing-up-the-keys), restore it instead of the first `docker run` line, in the directory that holds your `docker-compose.yml`, and use its `env-<stamp>.backup` as the `.env` from step 1:
+
+   ```bash
+   docker compose run --rm --no-deps -T --entrypoint tar pinchy -C /app/secrets -xpf - < pinchy-secrets-<stamp>.tar
+   ```
+
+   Whichever way you restore them, the `.env` from step 1 and `pinchy-secrets` have to be in the state [Which backup to restore](/concepts/audit-trail-verification/#which-backup-to-restore) describes before the first `docker compose up -d`. A pair backed up after your last key change already is. That section says how to correct an older one, how to check the key files before that start without printing a key, and what the log shows afterwards. Do those checks before step 4: about 60 seconds after the start, the first background run verifies the audit log against the restored key file. The key check comes with Pinchy %%PINCHY_VERSION%%, so if the `.env` from step 1 pins an older `PINCHY_VERSION`, set it to %%PINCHY_VERSION%% first. On an older image the check prints `Command "check-keys" not found`, or nothing at all, and that isn't a pass.
+
+   Restore `pinchy-secrets` even if you pin all four secrets in `.env`. It can hold keys `.env` doesn't (see the tip above), and without it, whatever was signed or encrypted with one of them stays unverifiable or unreadable for good, and Pinchy can't warn you about a key it never saw. Skip `openclaw-config` only if you can do without the chat history: Pinchy regenerates `openclaw.json` from the restored database on boot, at the cost of a fresh gateway bootstrap token, but the chats it holds are gone.
 
 4. **Start the rest of the stack**
 
@@ -522,6 +601,60 @@ trivy image ghcr.io/heypinchy/pinchy:latest
 
 Consider integrating this into a CI pipeline or running it on a schedule. See the [SBOM reference](/reference/sbom/) for information about Pinchy's software bill of materials.
 
+## Disk space
+
+Pinchy needs disk space in two ways: a short spike every time you upgrade, and steady growth while your team uses it. Both land on the same disk on a default install, so plan for them together.
+
+### What an upgrade needs
+
+A release is about 10 GB of images: the Pinchy image is around 6.5 GB and the OpenClaw image around 3.3 GB. `docker compose pull` downloads the new images while the old ones are still on disk, so you need about 10 GB free **before** you pull, on top of what Pinchy uses day to day. Check first:
+
+```bash
+df -h /
+docker system df
+```
+
+On a small disk, clear out old images before pulling rather than after:
+
+```bash
+docker image prune -a -f
+docker compose pull
+docker compose up -d
+```
+
+`docker image prune -a -f` removes every image no running container uses, which includes older Pinchy versions you could have rolled back to. That is usually what you want right before an upgrade — you are about to pull the version you are moving to anyway. The `docker image prune -f` in the standard upgrade is narrower: it removes only layers no tag points to. The release you upgraded from keeps its version tag, so it stays on disk until a `docker image prune -a -f` — releases pile up one per upgrade until you run one.
+
+### What grows over time
+
+| What                 | Where it lives                 | Grows with                                                              |
+| -------------------- | ------------------------------ | ----------------------------------------------------------------------- |
+| Knowledge-base index | The database volume (`pgdata`) | Every document the knowledge base indexes                               |
+| Converted documents  | `pinchy-kb-artifacts`          | Office files the knowledge base converts to PDF to cite                 |
+| PDF text cache       | `pinchy-pdf-cache`             | Text read out of PDFs agents open; safe to delete, it is rebuilt on use |
+| Agent workspaces     | `pinchy-workspaces`            | Files agents write and files people upload in chat                      |
+| Docker images        | Docker's own storage           | Every release you pull, until `docker image prune -a -f`                |
+
+To see which of these is taking the space:
+
+```bash
+docker system df -v
+```
+
+### Warnings before the disk is full
+
+Pinchy measures the free space where it writes — its own filesystem (which sits on Docker's storage, where images land), the agent workspaces, the converted documents and `/data`. When any of them drops below **15 GB free**, admins see a banner in the app and [`/api/health`](/reference/api/#get-apihealth) reports `"disk": { "status": "warning" }`. Members never see the banner.
+
+The line is an absolute number rather than a percentage because the thing that fills a disk suddenly is a fixed size: pulling a release. 15 GB leaves room for one pull plus a few days of growth. A percentage gets both ends wrong — 10% of a 40 GB disk is too little to upgrade, and 10% of 2 TB would warn for months about nothing.
+
+The database volume isn't visible from inside the Pinchy container, so Pinchy can't measure it directly. On a default install it shares a disk with the volumes Pinchy does measure, so the warning covers it. If you moved `pgdata` to its own disk, watch that disk separately.
+
+The warning never marks Pinchy unhealthy: the health check keeps returning `200` and `status: "ok"`, so Docker won't restart a container just because the disk is getting full. Alert on the field directly:
+
+```bash
+curl -fs https://pinchy.example.com/api/health | jq -e '.disk.status != "warning"' > /dev/null \
+  || echo "Pinchy is running low on disk space"
+```
+
 ## Monitoring & alerting
 
 ### Health endpoint
@@ -531,6 +664,8 @@ Monitor the Pinchy Web service by polling its health endpoint:
 ```bash
 curl -f https://pinchy.example.com/api/health || echo "Pinchy is down"
 ```
+
+The same response reports free disk space as `disk.status`. See [Disk space](#disk-space) for what it measures and how to alert on it.
 
 ### Docker health checks
 
@@ -569,6 +704,7 @@ For production, forward logs to a centralized logging system (e.g., Loki, Elasti
 
 - Authentication failures (`auth.failed` audit events)
 - CSRF-blocked write attempts (`auth.csrf_blocked` audit events)
+- Domain-lock rejections on API paths (`auth.host_blocked` audit events — recurring rows naming one internal host usually mean a component of your own deployment is being turned away, not an attack. Throttled to one row per minute, so read `suppressedSinceLastEntry` for the actual volume)
 - Password resets (`auth.password_reset_completed` — a successful reset revokes the target user's existing sessions)
 - Denied tool executions (`tool.denied` audit events)
 - Chat-runtime errors (`chat.agent_error` — umbrella event for every failure shape, group by `detail->>'errorClass'` to see what's degrading)

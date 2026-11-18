@@ -4,9 +4,15 @@
  * Expects Pinchy running at BASE_URL (default: http://localhost:7777).
  * Run seed.sh first to populate demo data.
  */
-import { test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import * as fs from "fs";
 import * as path from "path";
+// Imported, not copy-pasted: the question below is typed into the composer and
+// has to be byte-identical to the string the fake model matches on, or the
+// agent answers something generic and the shot is worthless. Importing the
+// module is side-effect free — it only defines; `startFakeOllama()` is what
+// binds a port.
+import { FAKE_OLLAMA_KB_SCREENSHOT_TRIGGER } from "../packages/web/e2e/shared/fake-ollama/fake-ollama-server";
 
 const BASE_URL = process.env.BASE_URL ?? "http://localhost:7777";
 const ADMIN_EMAIL = "monty@snpp.com";
@@ -24,7 +30,8 @@ async function login(page: Page) {
     await page.context().addCookies(state.cookies || []);
     await page.goto(`${BASE_URL}/`);
     await page.waitForTimeout(2000);
-    if (!page.url().includes("/login") && !page.url().includes("/setup")) return;
+    if (!page.url().includes("/login") && !page.url().includes("/setup"))
+      return;
   }
 
   // Session invalid or not saved — perform fresh login
@@ -34,7 +41,8 @@ async function login(page: Page) {
   await page.getByLabel("Password", { exact: true }).fill(ADMIN_PASSWORD);
   await page.getByRole("button", { name: /sign in/i }).click();
   await page.waitForURL(
-    (url) => !url.pathname.includes("/login") && !url.pathname.includes("/setup"),
+    (url) =>
+      !url.pathname.includes("/login") && !url.pathname.includes("/setup"),
     { timeout: 30000 },
   );
   await page.context().storageState({ path: STORAGE_STATE });
@@ -49,8 +57,11 @@ async function login(page: Page) {
  * marketing site, which shrinks images hard (especially on 375px mobile). Both
  * variants are produced additively from the same loaded page — never replace
  * the full shots, other consumers depend on them.
+ *
+ * `target` also accepts an already-resolved Locator, for a subject that no
+ * CSS selector pins down on its own (a `<section>` identified by its heading).
  */
-async function screenshot(page: Page, name: string, target?: string) {
+async function screenshot(page: Page, name: string, target?: string | Locator) {
   const dir = path.dirname(path.join(OUTPUT_DIR, name));
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   // Hide the warning/promo banners so marketing screenshots show the app the
@@ -63,16 +74,40 @@ async function screenshot(page: Page, name: string, target?: string) {
   // Injected here, after the page has loaded (head exists) — an addInitScript
   // runs before document.documentElement exists and silently throws, leaving
   // the banners visible. There is no CSP to block the injected <style>.
+  //
+  // Matched by testid *suffix* rather than by the two names, so a banner added
+  // later is hidden by convention instead of quietly shipping in every
+  // marketing shot. Nothing else in the app carries a `*banner` testid.
   await page.addStyleTag({
-    content:
-      '[data-testid="insecure-banner"],[data-testid="enterprise-banner"]{display:none !important}',
+    content: '[data-testid$="banner"]{display:none !important}',
   });
+  // Then check it took. This one rule is all that stands between a marketing
+  // screenshot and a warning stripe across the top, and until now nothing
+  // verified it at all.
+  //
+  // What this catches, stated honestly: a banner that renders and is NOT
+  // hidden — a specificity fight, an inline `display`, a rule that failed to
+  // inject. What it does NOT catch is a testid renamed OUT of the `*banner`
+  // convention: the selector then matches nothing, the loop body never runs,
+  // and the assertion passes while the banner sits in the shot. Closing that
+  // would need a registry of "banners that must be hidden", which is the
+  // hard-coded pair this suffix rule replaced. The convention is the contract;
+  // this is the check that it is being honoured, not a proof that it exists.
+  const banners = page.locator('[data-testid$="banner"]');
+  const bannerCount = await banners.count();
+  for (let i = 0; i < bannerCount; i++) {
+    await expect(
+      banners.nth(i),
+      `a banner is visible in ${name} — check the testid convention`,
+    ).toBeHidden();
+  }
   const out = `${OUTPUT_DIR}/${name}`;
   if (target) {
     // .first() guards against nested matches; animations:"disabled" freezes
     // CSS/Web animations so the element's box settles (element screenshots
     // wait for a stable bounding box, unlike page.screenshot).
-    await page.locator(target).first().screenshot({ path: out, animations: "disabled" });
+    const locator = typeof target === "string" ? page.locator(target) : target;
+    await locator.first().screenshot({ path: out, animations: "disabled" });
   } else {
     await page.screenshot({ path: out, fullPage: false });
   }
@@ -118,7 +153,9 @@ test.describe("Feature screenshots", () => {
     // introspection, and config-change restarts (see #302). 30s wasn't
     // enough on the v0.5.2 release — failed twice with the indicator never
     // flipping to "Connected" within budget.
-    await page.getByRole("button", { name: "Connected" }).waitFor({ timeout: 90000 });
+    await page
+      .getByRole("button", { name: "Connected" })
+      .waitFor({ timeout: 90000 });
     await page
       .locator('[data-role="assistant"]')
       .first()
@@ -126,9 +163,13 @@ test.describe("Feature screenshots", () => {
       .catch(() => {});
 
     // Type something in the input field to make it look dynamic
-    const input = page.locator('textarea, input[placeholder*="message" i], [contenteditable]').first();
+    const input = page
+      .locator('textarea, input[placeholder*="message" i], [contenteditable]')
+      .first();
     if (await input.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await input.fill("It's Burns. Industrialist, bon vivant, amateur lepidopterist. Keep answers brief and never mention the word 'union.' Excellent.");
+      await input.fill(
+        "It's Burns. Industrialist, bon vivant, amateur lepidopterist. Keep answers brief and never mention the word 'union.' Excellent.",
+      );
     }
 
     await screenshot(page, "chat-interface.png");
@@ -187,13 +228,19 @@ test.describe("Feature screenshots", () => {
         await page.waitForTimeout(1500);
       }
       // Expand the Advanced options inside the Web Search section
-      const advancedTrigger = page.getByRole("button", { name: /advanced options/i });
-      if (await advancedTrigger.isVisible({ timeout: 2000 }).catch(() => false)) {
+      const advancedTrigger = page.getByRole("button", {
+        name: /advanced options/i,
+      });
+      if (
+        await advancedTrigger.isVisible({ timeout: 2000 }).catch(() => false)
+      ) {
         await advancedTrigger.click();
         await page.waitForTimeout(800);
       }
       // Bring the Web Search section into view
-      const webHeading = page.getByRole("heading", { name: /web search/i }).first();
+      const webHeading = page
+        .getByRole("heading", { name: /web search/i })
+        .first();
       if (await webHeading.isVisible({ timeout: 2000 }).catch(() => false)) {
         await webHeading.scrollIntoViewIfNeeded();
         await page.waitForTimeout(500);
@@ -225,7 +272,11 @@ test.describe("Feature screenshots", () => {
     if (await usersTab.isVisible({ timeout: 3000 }).catch(() => false)) {
       await usersTab.click();
     } else {
-      await page.locator("text=Users").first().click().catch(() => {});
+      await page
+        .locator("text=Users")
+        .first()
+        .click()
+        .catch(() => {});
     }
     await page.waitForTimeout(1500);
     await screenshot(page, "user-management.png");
@@ -240,7 +291,11 @@ test.describe("Feature screenshots", () => {
     if (await groupsTab.isVisible({ timeout: 3000 }).catch(() => false)) {
       await groupsTab.click();
     } else {
-      await page.locator("text=Groups").first().click().catch(() => {});
+      await page
+        .locator("text=Groups")
+        .first()
+        .click()
+        .catch(() => {});
     }
     await page.waitForTimeout(1500);
     await screenshot(page, "groups.png");
@@ -277,7 +332,11 @@ test.describe("Feature screenshots", () => {
     if (await telegramTab.isVisible({ timeout: 3000 }).catch(() => false)) {
       await telegramTab.click();
     } else {
-      await page.locator("text=Telegram").first().click().catch(() => {});
+      await page
+        .locator("text=Telegram")
+        .first()
+        .click()
+        .catch(() => {});
     }
     await page.waitForTimeout(1500);
     await screenshot(page, "settings-telegram.png");
@@ -290,7 +349,11 @@ test.describe("Feature screenshots", () => {
     if (await integrationsTab.isVisible({ timeout: 3000 }).catch(() => false)) {
       await integrationsTab.click();
     } else {
-      await page.locator("text=Integrations").first().click().catch(() => {});
+      await page
+        .locator("text=Integrations")
+        .first()
+        .click()
+        .catch(() => {});
     }
     await page.waitForTimeout(1500);
     const addButton = page.getByRole("button", { name: /add integration/i });
@@ -313,19 +376,196 @@ test.describe("Feature screenshots", () => {
     if (await integrationsTab.isVisible({ timeout: 3000 }).catch(() => false)) {
       await integrationsTab.click();
     } else {
-      await page.locator("text=Integrations").first().click().catch(() => {});
+      await page
+        .locator("text=Integrations")
+        .first()
+        .click()
+        .catch(() => {});
     }
     await page.waitForTimeout(1500);
     const addButton = page.getByRole("button", { name: /add integration/i });
     if (await addButton.isVisible({ timeout: 2000 }).catch(() => false)) {
       await addButton.click();
       await page.waitForTimeout(800);
-      const googleOption = page.getByRole("button", { name: /google/i }).first();
+      const googleOption = page
+        .getByRole("button", { name: /google/i })
+        .first();
       if (await googleOption.isVisible({ timeout: 2000 }).catch(() => false)) {
         await googleOption.click();
         await page.waitForTimeout(1000);
       }
     }
     await screenshot(page, "integrations-google-wizard.png");
+  });
+
+  // The three cases below are deliberately strict where the ones above are
+  // forgiving. Every older case wraps its navigation in `.catch(() => false)`
+  // and screenshots whatever is on screen either way, so a moved control
+  // yields a plausible-looking picture of the wrong thing and the run stays
+  // green — which is how `provider-settings.png` sat on heypinchy.com for two
+  // releases showing a settings tab bar that no longer exists. These assert
+  // that the subject is actually visible before the shutter fires, so drift
+  // fails the capture job instead of publishing a lie. They also navigate by
+  // `?tab=` rather than clicking, which survives the sidebar/tab-bar rework.
+  test("provider settings grid", async ({ page }) => {
+    await page.goto(`${BASE_URL}/settings?tab=provider`);
+    // The tab, not a heading: "AI Provider" is a <CardTitle>, which renders a
+    // plain <div> (ui/card.tsx) — `getByRole("heading")` matches nothing on
+    // this page but the <h1>Settings</h1>. Asserting the trigger is *selected*
+    // proves the deep link landed on the right tab, which is the thing that
+    // would silently drift; openai-compatible.spec.ts pins the same route the
+    // same way.
+    await expect(
+      page.getByRole("tab", { name: /AI Provider/ }),
+    ).toHaveAttribute("aria-selected", "true", { timeout: 15000 });
+    // The tile grid, not the old five-button row: assert a real tile and the
+    // default-marker the 0.9.0 redesign introduced.
+    await expect(
+      page.getByRole("button", { name: /anthropic/i }).first(),
+    ).toBeVisible();
+    await expect(
+      page.locator('[data-testid="tile-default"]').first(),
+    ).toBeVisible();
+    await screenshot(page, "provider-settings.png");
+    await screenshot(page, "focus/provider-settings.png", "main");
+  });
+
+  test("integrations imap wizard", async ({ page }) => {
+    await page.goto(`${BASE_URL}/settings?tab=integrations`);
+    const addButton = page.getByRole("button", { name: /add integration/i });
+    await expect(addButton).toBeVisible({ timeout: 15000 });
+    await addButton.click();
+    await page.getByRole("button", { name: /imap \/ other email/i }).click();
+    // The connect step, not the picker it was launched from.
+    await expect(
+      page.getByRole("heading", { name: /connect imap/i }),
+    ).toBeVisible({
+      timeout: 10000,
+    });
+    await screenshot(page, "integrations-imap-wizard.png");
+  });
+
+  test("agent settings - knowledge base", async ({ page }) => {
+    const agentId = await getAgentId(page, "Frink");
+    expect(agentId, "seed.sh must create the Frink agent").toBeTruthy();
+    await page.goto(`${BASE_URL}/chat/${agentId}/settings?tab=permissions`);
+    const kb = page
+      .locator("section")
+      .filter({ has: page.getByRole("heading", { name: "Knowledge Base" }) })
+      .first();
+    await expect(kb).toBeVisible({ timeout: 15000 });
+    // Frink is seeded with 3 of 6 directories granted — the scoping this
+    // section exists to show. An empty picker means the seed regressed.
+    await expect(kb.getByText("/data/Reactor Operations")).toBeVisible();
+    await screenshot(page, "focus/agent-settings-knowledge-base.png", kb);
+  });
+
+  test("tool confirmation card", async ({ page }) => {
+    // A pending confirmation needs an agent parked mid-turn on a gated tool,
+    // which no seeded agent does. The card draws only what /api/approvals
+    // hands it, so the shot serves it a stored summary in the shape the gate
+    // writes (plain strings and numbers need no summary node) — the picture is
+    // the card, not the gate. Nothing is decided: the shot never clicks
+    // Approve or Deny.
+    await page.route(/\/api\/approvals(\?.*)?$/, (route) =>
+      route.fulfill({
+        json: {
+          approvals: [
+            {
+              id: "screenshot-approval",
+              agentId: "screenshot-agent",
+              agentName: "Scout",
+              toolName: "pinchy_generate_file",
+              argsSummary: {
+                filename: "open-invoices",
+                format: "csv",
+                columns: ["Customer", "Invoice", "Amount"],
+                rows: [
+                  ["Acme GmbH", "INV-2026-118", 1240],
+                  ["Nordwind AG", "INV-2026-121", 860],
+                ],
+              },
+              sessionKey: "agent:screenshot-agent:direct:screenshot",
+              createdAt: new Date().toISOString(),
+              expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+            },
+          ],
+        },
+      }),
+    );
+    await page.goto(`${BASE_URL}/audit`);
+    const inbox = page.getByRole("region", { name: "Pending approvals" });
+    await inbox
+      .getByRole("button", { name: /review the request from Scout/i })
+      .click();
+    // Wait for Approve to arm, so the shot shows the card as it is decided on.
+    await expect(
+      inbox.getByRole("button", { name: "Approve" }),
+    ).not.toHaveAttribute("aria-disabled", "true", { timeout: 5000 });
+    await screenshot(page, "focus/tool-confirmation-card.png", inbox);
+  });
+
+  // The Knowledge Base answer — 0.9.0's headline feature, and the one shot
+  // that shows what it actually does: an answer synthesised from two documents
+  // with inline citations and a resolvable Sources list.
+  //
+  // Needs docker-compose.screenshots.yml (a model that answers) plus the
+  // fixtures and index seed.sh builds under it. Detected by Frink's model
+  // rather than an env var, so a plain `docker compose up` + seed still
+  // produces the other sixteen shots instead of failing the whole run.
+  test("knowledge base answer with citations", async ({ page }) => {
+    // The config-wide 60s budget is a cap, not a floor: it silently truncates
+    // the waits below, so the 120s this case asks for could never be spent.
+    // It pays a cold OpenClaw handshake (30s was already too little on the
+    // v0.5.2 run — see "02 chat interface") AND a full round trip through a
+    // real knowledge_search, which no other case here does.
+    test.setTimeout(240000);
+
+    const agentId = await getAgentId(page, "Frink");
+    expect(agentId, "seed.sh must create the Frink agent").toBeTruthy();
+
+    const agent = await (
+      await page.request.get(`${BASE_URL}/api/agents/${agentId}`)
+    ).json();
+    const deterministic = String(agent?.model ?? "").startsWith("ollama/");
+    if (process.env.CI) {
+      // CI always layers the overlay, so a non-ollama model there means the
+      // seed failed — and skipping would ship a release without its headline
+      // screenshot on a green run. Locally the skip is the point: a plain
+      // `docker compose up` still produces the other seventeen shots.
+      expect(
+        deterministic,
+        "seed.sh must point Frink at fake-ollama — see its step 4b and the reindex block",
+      ).toBe(true);
+    } else {
+      test.skip(
+        !deterministic,
+        "no deterministic model — run with docker-compose.screenshots.yml",
+      );
+    }
+
+    await page.goto(`${BASE_URL}/chat/${agentId}`);
+    await page
+      .getByRole("button", { name: "Connected" })
+      .waitFor({ timeout: 90000 });
+
+    const composer = page
+      .locator('textarea, input[placeholder*="message" i], [contenteditable]')
+      .first();
+    await composer.fill(FAKE_OLLAMA_KB_SCREENSHOT_TRIGGER);
+    await composer.press("Enter");
+
+    // Wait for the Sources list, not merely for an assistant bubble: the
+    // bubble appears the moment the first token streams, and a shot taken
+    // then shows half a sentence. The list is the last thing written.
+    const answer = page.locator('[data-role="assistant"]').last();
+    await expect(answer).toContainText("Sources", { timeout: 120000 });
+    // Both citations resolved, so the picture is of a working feature rather
+    // than a model that cited one document and invented the other.
+    await expect(answer).toContainText("emergency-shutdown-procedure.pdf");
+    await expect(answer).toContainText("coolant-system-overview.pdf");
+
+    await screenshot(page, "knowledge-base-answer.png");
+    await screenshot(page, "focus/knowledge-base-answer.png", "main");
   });
 });

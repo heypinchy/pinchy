@@ -5,6 +5,30 @@ vi.mock("@/lib/gateway-auth", () => ({
   validateGatewayToken: vi.fn().mockReturnValue(true),
 }));
 
+// The (agent, connection) grant rule is exercised for real in
+// `lib/integrations/authorize-agent-connection.test.ts` (pure branches) and
+// its `.integration.test.ts` sibling (the queries). Here it is mocked, so
+// these cases stay about the HTTP contract the plugins see: which status,
+// which body, and whether a denial leaves an audit row. The pure
+// `decideConnectionAccess` stays real, so a case can feed the route the
+// decision the rule actually makes for a given agent.
+vi.mock("@/lib/integrations/authorize-agent-connection", async (importActual) => {
+  const actual =
+    await importActual<typeof import("@/lib/integrations/authorize-agent-connection")>();
+  return { ...actual, authorizeAgentConnection: vi.fn() };
+});
+
+vi.mock("@/lib/audit-deferred", () => ({
+  deferAuditLog: vi.fn(),
+}));
+
+// The guard's own decisions (which address classes, which flags) are tested in
+// lib/integrations/__tests__/stored-destination.test.ts. Here it is a seam.
+vi.mock("@/lib/integrations/stored-destination", async (importActual) => {
+  const actual = await importActual<typeof import("@/lib/integrations/stored-destination")>();
+  return { ...actual, checkStoredDestination: vi.fn() };
+});
+
 vi.mock("@/db", () => ({
   db: {
     select: vi.fn().mockReturnValue({
@@ -73,10 +97,20 @@ import { refreshAccessToken } from "@/lib/integrations/google-oauth";
 import { refreshAccessToken as refreshMsAccessToken } from "@/lib/integrations/microsoft-oauth";
 import { isTokenExpired } from "@/lib/integrations/oauth-token";
 import { getOAuthSettings } from "@/lib/integrations/oauth-settings";
+import {
+  authorizeAgentConnection,
+  decideConnectionAccess,
+} from "@/lib/integrations/authorize-agent-connection";
+import { deferAuditLog } from "@/lib/audit-deferred";
+import { checkStoredDestination } from "@/lib/integrations/stored-destination";
 import { GET } from "@/app/api/internal/integrations/[connectionId]/credentials/route";
 
-function makeRequest(connectionId: string) {
-  return new NextRequest(`http://localhost/api/internal/integrations/${connectionId}/credentials`, {
+const CALLING_AGENT = { id: "agent-1", name: "Bookkeeper", allowedTools: [] as string[] };
+
+function makeRequest(connectionId: string, agentId: string | null = CALLING_AGENT.id) {
+  const url = new URL(`http://localhost/api/internal/integrations/${connectionId}/credentials`);
+  if (agentId !== null) url.searchParams.set("agentId", agentId);
+  return new NextRequest(url, {
     method: "GET",
     headers: {
       Authorization: "Bearer test-token",
@@ -102,6 +136,11 @@ describe("GET /api/internal/integrations/:connectionId/credentials", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(validateGatewayToken).mockReturnValue(true);
+    vi.mocked(authorizeAgentConnection).mockResolvedValue({
+      allowed: true,
+      agent: CALLING_AGENT,
+    });
+    vi.mocked(checkStoredDestination).mockResolvedValue({ allowed: true });
     vi.mocked(decrypt).mockReturnValue(
       '{"accessToken":"test-token","refreshToken":"test-refresh"}'
     );
@@ -122,6 +161,366 @@ describe("GET /api/internal/integrations/:connectionId/credentials", () => {
     expect(res.status).toBe(401);
     const data = await res.json();
     expect(data.error).toBe("Unauthorized");
+  });
+
+  describe("agent scoping (#987)", () => {
+    // Before this, the gateway token alone was the whole authorization. It is
+    // one shared secret written into every plugin's config, so any code in the
+    // OpenClaw container could name any connectionId and get back a decrypted
+    // Odoo password or mailbox token for an agent it had nothing to do with.
+
+    it.each([
+      ["oversized", "a".repeat(5000)],
+      ["just over the cap", "a".repeat(129)],
+      ["with a space", "agent 1"],
+      ["with a newline", "agent\n1"],
+      ["with a colon", "agent:1"],
+    ])("rejects a malformed agentId (%s) with 400 and writes no audit row", async (_label, bad) => {
+      const res = await GET(makeRequest("conn-1", bad), makeParams("conn-1"));
+
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toMatch(/agentId/);
+      expect(authorizeAgentConnection).not.toHaveBeenCalled();
+      expect(deferAuditLog).not.toHaveBeenCalled();
+      expect(decrypt).not.toHaveBeenCalled();
+    });
+
+    it("accepts a UUID agentId and a 128-char id into the grant check", async () => {
+      const uuid = "0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d";
+      await GET(makeRequest("conn-1", uuid), makeParams("conn-1"));
+      expect(authorizeAgentConnection).toHaveBeenCalledWith(uuid, "conn-1");
+      const max = "a".repeat(128);
+      await GET(makeRequest("conn-1", max), makeParams("conn-1"));
+      expect(authorizeAgentConnection).toHaveBeenCalledWith(max, "conn-1");
+    });
+
+    it("refuses to serve credentials when no agent identifies itself", async () => {
+      const res = await GET(makeRequest("conn-1", null), makeParams("conn-1"));
+
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toMatch(/agentId/);
+      // The authorization question was never even asked, so nothing was
+      // decrypted: an omitted agent id must not be a way back to the old
+      // token-only behaviour.
+      expect(authorizeAgentConnection).not.toHaveBeenCalled();
+      expect(decrypt).not.toHaveBeenCalled();
+    });
+
+    it("denies an agent that was never granted the connection, and leaks nothing", async () => {
+      vi.mocked(authorizeAgentConnection).mockResolvedValue({
+        allowed: false,
+        reason: "not-granted",
+        agent: CALLING_AGENT,
+      });
+
+      const res = await GET(makeRequest("conn-1", "agent-other"), makeParams("conn-1"));
+
+      expect(res.status).toBe(403);
+      const data = await res.json();
+      expect(data.credentials).toBeUndefined();
+      expect(JSON.stringify(data)).not.toContain("test-token");
+      // Decryption must not happen at all — not "happen and get discarded".
+      // An expired OAuth bundle would otherwise be refreshed and re-persisted
+      // on behalf of a caller with no claim to it.
+      expect(decrypt).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it("denies an agent id that does not resolve to a live agent", async () => {
+      vi.mocked(authorizeAgentConnection).mockResolvedValue({
+        allowed: false,
+        reason: "agent-unknown",
+        agent: null,
+      });
+
+      const res = await GET(makeRequest("conn-1", "agent-deleted"), makeParams("conn-1"));
+
+      expect(res.status).toBe(403);
+      expect(decrypt).not.toHaveBeenCalled();
+    });
+
+    it("writes an audit row naming the agent and the connection it was refused", async () => {
+      vi.mocked(authorizeAgentConnection).mockResolvedValue({
+        allowed: false,
+        reason: "not-granted",
+        agent: CALLING_AGENT,
+      });
+
+      await GET(makeRequest("conn-1", CALLING_AGENT.id), makeParams("conn-1"));
+
+      expect(deferAuditLog).toHaveBeenCalledTimes(1);
+      const entry = vi.mocked(deferAuditLog).mock.calls[0][0];
+      expect(entry).toMatchObject({
+        actorType: "agent",
+        actorId: CALLING_AGENT.id,
+        eventType: "integration.credentials_denied",
+        outcome: "failure",
+      });
+      // The whole point of the row is that an analyst can tell WHICH agent
+      // reached for WHICH connection, and why it was refused. A row saying
+      // only "a denial happened" would not have surfaced this bug either.
+      expect(entry.detail).toMatchObject({
+        agent: { id: CALLING_AGENT.id, name: CALLING_AGENT.name },
+        connection: { id: "conn-1" },
+        reason: "not-granted",
+      });
+    });
+
+    it("does not audit — or 403 — a connection that simply no longer exists", async () => {
+      // `connection-unknown` belongs to the actionable 404 below, not to the
+      // security trail: a removed integration is an admin's problem, and
+      // filling the audit log with it would bury the denials that matter.
+      vi.mocked(authorizeAgentConnection).mockResolvedValue({
+        allowed: false,
+        reason: "connection-unknown",
+        agent: CALLING_AGENT,
+      });
+      mockDbSelectResult([]);
+
+      const res = await GET(makeRequest("gone", CALLING_AGENT.id), makeParams("gone"));
+
+      expect(res.status).toBe(404);
+      expect(deferAuditLog).not.toHaveBeenCalled();
+    });
+
+    it("refuses the Brave key to an agent that may only fetch pages, and audits it", async () => {
+      // pinchy_web_fetch needs no key — the plugin never asks for one on the
+      // fetch path. Granting the instance-wide web-search connection on that
+      // tool handed the Brave API key to every fetch-only agent.
+      const fetchOnly = { id: "agent-reader", name: "Reader", allowedTools: ["pinchy_web_fetch"] };
+      const webConn = { id: "conn-web", type: "web-search" as const, name: "Brave Search" };
+      vi.mocked(authorizeAgentConnection).mockResolvedValue({
+        ...decideConnectionAccess(fetchOnly, webConn, 0),
+        agent: fetchOnly,
+      });
+      mockDbSelectResult([
+        { id: "conn-web", type: "web-search", status: "active", credentials: "encrypted-blob" },
+      ]);
+
+      const res = await GET(makeRequest("conn-web", fetchOnly.id), makeParams("conn-web"));
+
+      expect(res.status).toBe(403);
+      expect(decrypt).not.toHaveBeenCalled();
+      expect(deferAuditLog).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(deferAuditLog).mock.calls[0][0]).toMatchObject({
+        actorId: fetchOnly.id,
+        eventType: "integration.credentials_denied",
+        outcome: "failure",
+        detail: {
+          agent: { id: fetchOnly.id, name: fetchOnly.name },
+          connection: { id: "conn-web" },
+          reason: "not-granted",
+        },
+      });
+    });
+
+    it("passes the agent id from the query string through to the check", async () => {
+      await GET(makeRequest("conn-1", "agent-42"), makeParams("conn-1"));
+
+      expect(authorizeAgentConnection).toHaveBeenCalledWith("agent-42", "conn-1");
+    });
+
+    it("still rejects on a bad gateway token before it looks at the agent", async () => {
+      vi.mocked(validateGatewayToken).mockReturnValue(false);
+
+      const res = await GET(makeRequest("conn-1"), makeParams("conn-1"));
+
+      expect(res.status).toBe(401);
+      expect(authorizeAgentConnection).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("stored destination is re-checked before credentials leave (SSRF)", () => {
+    // The address was validated when the connection was saved — and never
+    // again. The plugin connects to whatever URL/host it is handed here, so a
+    // connection saved under older rules (100.x was public before), or before
+    // an operator removed ALLOW_PRIVATE_URLS, kept reaching it. This is the one
+    // place every plugin fetch passes through.
+    const odooCredentials = {
+      url: "http://100.64.0.7:8069",
+      db: "prod",
+      login: "admin",
+      apiKey: "odoo-api-key-secret",
+      uid: 2,
+    };
+    const refusal = {
+      allowed: false as const,
+      field: "url" as const,
+      message:
+        "Blocked: this URL targets a private network address. Set ALLOW_PRIVATE_URLS=1 to allow an Odoo server on your own network.",
+    };
+
+    beforeEach(() => {
+      vi.mocked(decrypt).mockReturnValue(JSON.stringify(odooCredentials));
+    });
+
+    it("checks the decrypted credentials of the connection's type", async () => {
+      await GET(makeRequest("conn-1"), makeParams("conn-1"));
+
+      expect(checkStoredDestination).toHaveBeenCalledWith("odoo", odooCredentials);
+    });
+
+    it("refuses to hand out credentials whose destination the guard refuses, and leaks none", async () => {
+      vi.mocked(checkStoredDestination).mockResolvedValue(refusal);
+
+      const res = await GET(makeRequest("conn-1"), makeParams("conn-1"));
+
+      expect(res.status).toBe(403);
+      const data = await res.json();
+      expect(data.credentials).toBeUndefined();
+      expect(JSON.stringify(data)).not.toContain("odoo-api-key-secret");
+      // The plugin puts this body into the agent's tool error — it has to
+      // name the cause and the fix, which the guard's message already does.
+      expect(data.error).toContain(refusal.message);
+    });
+
+    it("words the refusal so the plugins never read it as stale credentials", async () => {
+      // A message the plugins' isAuthError() matches would flip the connection
+      // to auth_failed and tell an admin to re-enter a perfectly good API key.
+      // These are the word patterns from credential-client.ts; the status
+      // (403, not 401) is the other half.
+      vi.mocked(checkStoredDestination).mockResolvedValue(refusal);
+
+      const res = await GET(makeRequest("conn-1"), makeParams("conn-1"));
+      const { error } = await res.json();
+
+      expect(res.status).not.toBe(401);
+      expect(String(error).toLowerCase()).not.toMatch(
+        /unauthori[sz]|access denied|authentication (failed|error|required|denied)|failed to authenticate|invalid[ _-]?(api[ _-]?(key|token)|credentials?|token|grant|authentication)|token (has |have )?(been )?expired|session (has )?expired/
+      );
+    });
+
+    it("answers 503, not 403, and writes no denial row when the lookup failed temporarily", async () => {
+      // A DNS blip says nothing about the destination: it must neither read as
+      // a security refusal nor leave a misleading "destination-blocked" row.
+      vi.mocked(checkStoredDestination).mockResolvedValue({
+        allowed: false,
+        transient: true,
+        field: "url",
+        message: 'DNS lookup for "odoo.example.com" failed temporarily. Try again in a moment.',
+      });
+
+      const res = await GET(makeRequest("conn-1", CALLING_AGENT.id), makeParams("conn-1"));
+
+      expect(res.status).toBe(503);
+      const data = await res.json();
+      expect(data.credentials).toBeUndefined();
+      expect(JSON.stringify(data)).not.toContain("odoo-api-key-secret");
+      expect(data.error).toMatch(/temporar/i);
+      expect(data.error).not.toMatch(/blocked|refuses/i);
+      expect(deferAuditLog).not.toHaveBeenCalled();
+    });
+
+    it("writes an integration.credentials_denied audit row naming agent, connection, field and reason", async () => {
+      vi.mocked(checkStoredDestination).mockResolvedValue(refusal);
+
+      await GET(makeRequest("conn-1", CALLING_AGENT.id), makeParams("conn-1"));
+
+      expect(deferAuditLog).toHaveBeenCalledTimes(1);
+      const entry = vi.mocked(deferAuditLog).mock.calls[0][0];
+      expect(entry).toMatchObject({
+        actorType: "agent",
+        actorId: CALLING_AGENT.id,
+        eventType: "integration.credentials_denied",
+        resource: "integration:conn-1",
+        outcome: "failure",
+      });
+      expect(entry.detail).toEqual({
+        agent: { id: CALLING_AGENT.id, name: CALLING_AGENT.name },
+        connection: { id: "conn-1" },
+        reason: "destination-blocked",
+        field: "url",
+      });
+      // The refused address itself stays out of the row: a mail host can be a
+      // person's own domain, and the field name is enough to find it.
+      expect(JSON.stringify(entry.detail)).not.toContain("100.64.0.7");
+    });
+
+    it("refuses an imap connection whose SMTP host the guard refuses", async () => {
+      mockDbSelectResult([
+        { id: "conn-imap", type: "imap", status: "active", credentials: "encrypted-blob" },
+      ]);
+      vi.mocked(decrypt).mockReturnValue(
+        JSON.stringify({ imapHost: "imap.example.com", smtpHost: "127.0.0.1", password: "pw" })
+      );
+      vi.mocked(checkStoredDestination).mockResolvedValue({
+        allowed: false,
+        field: "smtpHost",
+        message:
+          "Blocked: this host resolves to a loopback, link-local, cloud-metadata or otherwise reserved address.",
+      });
+
+      const res = await GET(makeRequest("conn-imap"), makeParams("conn-imap"));
+
+      expect(res.status).toBe(403);
+      expect(JSON.stringify(await res.json())).not.toContain('"pw"');
+      expect(vi.mocked(deferAuditLog).mock.calls[0][0].detail).toMatchObject({
+        reason: "destination-blocked",
+        field: "smtpHost",
+      });
+    });
+
+    it("hands the plugin the addresses the guard checked, per field, so it connects to those", async () => {
+      // The plugin pins its connection to these instead of resolving the
+      // stored name again (DNS rebinding) — pinned-target.ts in the plugins.
+      vi.mocked(checkStoredDestination).mockResolvedValue({
+        allowed: true,
+        checked: {
+          imapHost: [
+            { address: "203.0.113.10", family: 4 },
+            { address: "2001:db8::10", family: 6 },
+          ],
+          smtpHost: [{ address: "203.0.113.11", family: 4 }],
+        },
+      });
+
+      const res = await GET(makeRequest("conn-1"), makeParams("conn-1"));
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.checkedAddresses).toEqual({
+        imapHost: ["203.0.113.10", "2001:db8::10"],
+        smtpHost: ["203.0.113.11"],
+      });
+    });
+
+    it("answers an empty checkedAddresses and lookupFailures when the guard checked nothing", async () => {
+      const res = await GET(makeRequest("conn-1"), makeParams("conn-1"));
+
+      const data = await res.json();
+      expect(data.checkedAddresses).toEqual({});
+      expect(data.lookupFailures).toEqual({});
+    });
+
+    // A mail host whose lookup failed is not refused: it travels as a 200 with
+    // no checked addresses, plus why — so the plugin can say "try again" for a
+    // DNS hiccup instead of "the host does not resolve". Never a 503: the
+    // email plugin reads a 503 as "OAuth settings missing" and flags the
+    // connection auth_failed.
+    it("tells the plugin which mail hosts it could not look up, and why", async () => {
+      vi.mocked(checkStoredDestination).mockResolvedValue({
+        allowed: true,
+        checked: { imapHost: [{ address: "203.0.113.10", family: 4 }] },
+        lookupFailures: { smtpHost: "temporary" },
+      });
+
+      const res = await GET(makeRequest("conn-1"), makeParams("conn-1"));
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.checkedAddresses).toEqual({ imapHost: ["203.0.113.10"] });
+      expect(data.lookupFailures).toEqual({ smtpHost: "temporary" });
+      expect(deferAuditLog).not.toHaveBeenCalled();
+    });
+
+    it("does not audit an allowed fetch", async () => {
+      const res = await GET(makeRequest("conn-1"), makeParams("conn-1"));
+
+      expect(res.status).toBe(200);
+      expect(deferAuditLog).not.toHaveBeenCalled();
+    });
   });
 
   it("returns an actionable 404 message when the connection no longer exists", async () => {

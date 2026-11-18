@@ -1,25 +1,34 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { usePathname, useSearchParams } from "next/navigation";
+import { toast } from "sonner";
 import { authClient } from "@/lib/auth-client";
 import { useTabParam, SETTINGS_TABS, type SettingsTab } from "@/hooks/use-tab-param";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { cn } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ProviderKeyForm } from "@/components/provider-key-form";
 import { SettingsUsers } from "@/components/settings-users";
 import { SettingsContext } from "@/components/settings-context";
 import { SettingsProfile } from "@/components/settings-profile";
 import { SettingsGroups } from "@/components/settings-groups";
+import { SettingsApiKeys } from "@/components/settings-api-keys";
 import { SettingsIntegrations } from "@/components/settings-integrations";
 
 import { SettingsLicense } from "@/components/settings-license";
+import type { AgentRef } from "@/lib/schemas/agents";
 import { TelegramLinkSettings } from "@/components/telegram-link-settings";
 import { SettingsSecurity } from "@/components/settings-security";
 import { TimezoneSettings } from "@/components/timezone-settings";
+import { KnowledgeIndexScheduleSettings } from "@/components/knowledge-index-schedule-settings";
+import { MemberAccessSettings } from "@/components/member-access-settings";
+import { EmailDeliverySettings } from "@/components/email-delivery-settings";
 import { SecretsProvenanceCard } from "@/components/secrets-provenance-card";
 import { SettingsSupport } from "@/components/settings-support";
 import { useIntegrationHealth } from "@/hooks/use-integration-health";
 import type { LicenseInfo } from "@/lib/enterprise";
+import { apiGet } from "@/lib/api-client";
 
 interface ProviderStatus {
   defaultProvider: string | null;
@@ -44,16 +53,34 @@ function ErrorDot() {
   );
 }
 
+// Display labels for the mobile drill-down back header. Kept in sync with
+// the TabsTrigger labels below (the "AI Provider" label disambiguates the
+// LLM provider tab from OAuth "providers" like Google/Microsoft).
+const TAB_LABELS: Record<SettingsTab, string> = {
+  context: "Context",
+  profile: "Profile",
+  telegram: "Telegram",
+  support: "Support",
+  provider: "AI Provider",
+  users: "Users",
+  groups: "Groups",
+  apikeys: "API Keys",
+  integrations: "Integrations",
+  organization: "Organization",
+  license: "License",
+  security: "Security",
+};
+
 export function SettingsPageContent({
-  initialTab,
   isAdmin,
   initialLicense,
+  initialAdminOnlyAgents,
   oauthError,
   mcpEnabled = false,
 }: {
-  initialTab?: string;
   isAdmin: boolean;
   initialLicense?: LicenseInfo;
+  initialAdminOnlyAgents?: AgentRef[];
   oauthError?: string;
   /**
    * Runtime MCP feature flag, resolved per request by the server page and
@@ -64,18 +91,51 @@ export function SettingsPageContent({
   mcpEnabled?: boolean;
 }) {
   const { data: session } = authClient.useSession();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const visibleTabs: SettingsTab[] = isAdmin
     ? [...SETTINGS_TABS]
     : ["context", "profile", "telegram", "support"];
-  const [activeTab, setActiveTab] = useTabParam("context", visibleTabs, initialTab);
+  const [activeTab, setActiveTab, isTabExplicit] = useTabParam("context", visibleTabs, {
+    keepParamForDefault: true,
+  });
   // Mark the (admin-only) Integrations tab when a connection needs attention, so
   // the error trail continues from the sidebar badge down to the exact tab.
   const { needsAttentionCount } = useIntegrationHealth(isAdmin);
 
+  // On mobile, `isTabExplicit` drives a two-level drill-down: the sidebar list
+  // (level 1) vs. a selected tab's content with a back header (level 2).
+  // Desktop always shows the split layout regardless of this flag.
+  const goToMenu = useCallback(() => {
+    // `replace`, deliberately, even though every tab switch now pushes (#951):
+    // this control means "leave the tab I am in", so pushing would make the
+    // next Back walk straight back into it. Replacing drops the tab entry
+    // instead, which is what a back control should do.
+    //
+    // Only drop `tab`; keep any unrelated query params (e.g. an OAuth `?error=`)
+    // so the back control doesn't silently discard page state.
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("tab");
+    //
+    // Native replaceState rather than router.replace, for the same reason
+    // useTabParam pushes natively: a router navigation re-renders the page on
+    // the server and the tap waits for that round trip (#1271).
+    const query = params.toString();
+    window.history.replaceState(null, "", query ? `${pathname}?${query}` : pathname);
+  }, [pathname, searchParams]);
+
   const [status, setStatus] = useState<ProviderStatus | null>(null);
   const [loading, setLoading] = useState(true);
-  const [userContext, setUserContext] = useState("");
-  const [orgContext, setOrgContext] = useState("");
+  const [statusFailed, setStatusFailed] = useState(false);
+  // `null` until loaded: the context editors wait for their content (see
+  // settings-context.tsx for why an early editor is a data-loss risk).
+  const [userContext, setUserContext] = useState<string | null>(null);
+  const [userContextFailed, setUserContextFailed] = useState(false);
+  const [orgContext, setOrgContext] = useState<string | null>(null);
+  const [orgContextFailed, setOrgContextFailed] = useState(false);
+  // Bumped when the org timezone is saved, so the nightly-reindex card re-reads
+  // the times it shows in that zone.
+  const [timezoneVersion, setTimezoneVersion] = useState(0);
 
   const [providerDirty, setProviderDirty] = useState(false);
   const [contextDirty, setContextDirty] = useState(false);
@@ -86,47 +146,62 @@ export function SettingsPageContent({
     setEnterpriseRefreshKey((k) => k + 1);
   }, []);
 
-  const fetchStatus = useCallback(async () => {
+  // Each first load reports a failure inline, where its card would be, instead
+  // of a toast: a failed one replaces the form it backs (agent-rules/ui.md, one
+  // channel per error). `signal` comes from the mount effect, which aborts it
+  // on cleanup; the refresh after a provider save passes none, and its failure
+  // is a toast over the form that is already there.
+  const fetchStatus = useCallback(async (signal?: AbortSignal) => {
     try {
-      const res = await fetch("/api/settings/providers");
-      if (res.ok) {
-        const data = await res.json();
-        setStatus(data);
-      }
+      const data = await apiGet<ProviderStatus>("/api/settings/providers", { signal });
+      if (signal?.aborted) return;
+      setStatus(data);
+      setStatusFailed(false);
+    } catch {
+      // Classify on the signal alone: an abort's error is not reliably an
+      // AbortError (see audit-log-table.tsx).
+      if (signal?.aborted) return;
+      // The refresh after a save keeps the form the admin just used.
+      if (signal) setStatusFailed(true);
+      else
+        toast.error(
+          "We couldn't refresh your provider settings. Reload the page to see the latest."
+        );
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   }, []);
 
-  const fetchContext = useCallback(async () => {
-    const userRes = await fetch("/api/users/me/context");
-    if (userRes.ok) {
-      const data = await userRes.json();
-      setUserContext(data.content || "");
+  const fetchContext = useCallback(async (signal: AbortSignal) => {
+    try {
+      const data = await apiGet<{ content?: string }>("/api/users/me/context", { signal });
+      if (!signal.aborted) setUserContext(data.content || "");
+    } catch {
+      if (!signal.aborted) setUserContextFailed(true);
     }
   }, []);
 
-  const fetchOrgContext = useCallback(async () => {
-    const orgRes = await fetch("/api/settings/context");
-    if (orgRes.ok) {
-      const data = await orgRes.json();
-      setOrgContext(data.content || "");
+  const fetchOrgContext = useCallback(async (signal: AbortSignal) => {
+    try {
+      const data = await apiGet<{ content?: string }>("/api/settings/context", { signal });
+      if (!signal.aborted) setOrgContext(data.content || "");
+    } catch {
+      if (!signal.aborted) setOrgContextFailed(true);
     }
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
+    const { signal } = controller;
     void Promise.resolve().then(() => {
-      if (cancelled) return;
+      if (signal.aborted) return;
       if (isAdmin) {
-        void fetchStatus();
-        void fetchOrgContext();
+        void fetchStatus(signal);
+        void fetchOrgContext(signal);
       }
-      void fetchContext();
+      void fetchContext(signal);
     });
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [isAdmin, fetchStatus, fetchContext, fetchOrgContext]);
 
   const handleProviderDirtyChange = useCallback((isDirty: boolean) => {
@@ -141,8 +216,14 @@ export function SettingsPageContent({
     setProfileDirty(isDirty);
   }, []);
 
+  // No `overflow-y-auto` here: AppShell's wrapper (`flex-1 overflow-y-auto`)
+  // is already the real, height-bounded page scroller. A second nested
+  // `overflow-y-auto` on an auto-height div still counts as a CSS scroll
+  // container even though it never overflows itself, which makes it the
+  // (non-scrolling) containing block for `position: sticky` below and
+  // silently breaks the sticky sidebar. Keep this single-scroller structure.
   return (
-    <div className="overflow-y-auto">
+    <div>
       <div className="p-4 md:p-8 max-w-5xl">
         <h1 className="text-2xl font-bold mb-6">Settings</h1>
 
@@ -150,15 +231,32 @@ export function SettingsPageContent({
           value={activeTab}
           onValueChange={setActiveTab}
           orientation="vertical"
-          className="flex-col md:flex-row"
+          className="flex-col md:flex-row md:gap-10"
         >
+          {isTabExplicit && (
+            <div className="flex items-center gap-2 pb-2 md:hidden">
+              <button
+                type="button"
+                onClick={goToMenu}
+                aria-label="Back to settings"
+                className="text-muted-foreground hover:text-foreground -ml-1 rounded-md px-1 py-1 text-sm font-medium"
+              >
+                &lsaquo; Settings
+              </button>
+              <span className="text-sm font-medium">{TAB_LABELS[activeTab]}</span>
+            </div>
+          )}
+
           <TabsList
-            variant="line"
-            className="h-fit w-full shrink-0 flex-col items-stretch gap-0.5 md:w-56 md:border-r md:pr-2"
+            variant="sidebar"
+            className={cn(
+              "h-fit w-full shrink-0 flex-col items-stretch gap-0.5 md:sticky md:top-8 md:w-56 md:self-start md:overflow-y-auto md:max-h-[calc(100dvh-4rem)]",
+              isTabExplicit ? "hidden md:flex" : "flex md:flex"
+            )}
           >
             <div
               role="presentation"
-              className="px-2 pt-1 pb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+              className="text-muted-foreground px-2 pt-1 pb-1 text-[0.6875rem] font-semibold tracking-[0.08em] uppercase"
             >
               Personal
             </div>
@@ -170,7 +268,7 @@ export function SettingsPageContent({
               <>
                 <div
                   role="presentation"
-                  className="px-2 pt-3 pb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+                  className="text-muted-foreground px-2 pt-6 pb-1 text-[0.6875rem] font-semibold tracking-[0.08em] uppercase"
                 >
                   Administration
                 </div>
@@ -179,13 +277,14 @@ export function SettingsPageContent({
                 </TabsTrigger>
                 <TabsTrigger value="users">Users</TabsTrigger>
                 <TabsTrigger value="groups">Groups</TabsTrigger>
+                <TabsTrigger value="apikeys">API Keys</TabsTrigger>
                 <TabsTrigger value="integrations">
                   Integrations {needsAttentionCount > 0 && <ErrorDot />}
                 </TabsTrigger>
                 <TabsTrigger value="organization">Organization</TabsTrigger>
                 <div
                   role="presentation"
-                  className="px-2 pt-3 pb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+                  className="text-muted-foreground px-2 pt-6 pb-1 text-[0.6875rem] font-semibold tracking-[0.08em] uppercase"
                 >
                   Security &amp; Compliance
                 </div>
@@ -195,97 +294,123 @@ export function SettingsPageContent({
             )}
           </TabsList>
 
-          {isAdmin && (
-            <TabsContent value="security">
-              <div className="space-y-6">
-                <SettingsSecurity />
-                <SecretsProvenanceCard />
-              </div>
-            </TabsContent>
-          )}
+          <div className={cn("min-w-0 flex-1", isTabExplicit ? "block" : "hidden md:block")}>
+            {isAdmin && (
+              <TabsContent value="security">
+                <div className="space-y-6">
+                  <SettingsSecurity />
+                  <SecretsProvenanceCard />
+                </div>
+              </TabsContent>
+            )}
 
-          <TabsContent value="context" keepMounted>
-            <SettingsContext
-              userContext={userContext}
-              orgContext={orgContext}
-              isAdmin={isAdmin}
-              onDirtyChange={handleContextDirtyChange}
-            />
-          </TabsContent>
-
-          <TabsContent value="profile" keepMounted>
-            <SettingsProfile
-              userName={session?.user?.name ?? ""}
-              onDirtyChange={handleProfileDirtyChange}
-            />
-          </TabsContent>
-
-          <TabsContent value="telegram">
-            <TelegramLinkSettings isAdmin={isAdmin} />
-          </TabsContent>
-
-          <TabsContent value="support">
-            <SettingsSupport />
-          </TabsContent>
-
-          {isAdmin && (
-            <TabsContent value="provider" keepMounted>
-              <Card>
-                <CardHeader>
-                  <CardTitle>LLM Provider</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  {loading ? (
-                    <p>Loading...</p>
-                  ) : (
-                    <ProviderKeyForm
-                      onSuccess={fetchStatus}
-                      submitLabel="Save"
-                      configuredProviders={status?.providers}
-                      defaultProvider={status?.defaultProvider}
-                      onDirtyChange={handleProviderDirtyChange}
-                    />
-                  )}
-                </CardContent>
-              </Card>
-            </TabsContent>
-          )}
-
-          {isAdmin && (
-            <TabsContent value="users" keepMounted>
-              <SettingsUsers
-                currentUserId={session?.user?.id ?? ""}
-                refreshKey={enterpriseRefreshKey}
+            <TabsContent value="context" keepMounted>
+              <SettingsContext
+                userContext={userContext}
+                orgContext={orgContext}
+                userContextFailed={userContextFailed}
+                orgContextFailed={orgContextFailed}
+                isAdmin={isAdmin}
+                onDirtyChange={handleContextDirtyChange}
               />
             </TabsContent>
-          )}
 
-          {isAdmin && (
-            <TabsContent value="groups" keepMounted>
-              <SettingsGroups refreshKey={enterpriseRefreshKey} isAdmin={isAdmin} />
-            </TabsContent>
-          )}
-
-          {isAdmin && (
-            <TabsContent value="integrations" keepMounted>
-              <SettingsIntegrations oauthError={oauthError} mcpEnabled={mcpEnabled} />
-            </TabsContent>
-          )}
-
-          {isAdmin && (
-            <TabsContent value="organization" keepMounted>
-              <TimezoneSettings />
-            </TabsContent>
-          )}
-
-          {isAdmin && (
-            <TabsContent value="license" keepMounted>
-              <SettingsLicense
-                onEnterpriseActivated={handleEnterpriseActivated}
-                initialLicense={initialLicense}
+            <TabsContent value="profile" keepMounted>
+              <SettingsProfile
+                userName={session?.user?.name ?? ""}
+                onDirtyChange={handleProfileDirtyChange}
               />
             </TabsContent>
-          )}
+
+            <TabsContent value="telegram">
+              <TelegramLinkSettings isAdmin={isAdmin} />
+            </TabsContent>
+
+            <TabsContent value="support">
+              <SettingsSupport />
+            </TabsContent>
+
+            {isAdmin && (
+              <TabsContent value="provider" keepMounted>
+                <div className="space-y-6">
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>AI Provider</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      {loading ? (
+                        <p>Loading...</p>
+                      ) : statusFailed ? (
+                        // Without the status the form cannot say which
+                        // providers are set up or which one is the default.
+                        <p role="alert" className="text-sm text-red-600">
+                          We couldn&apos;t load your provider settings. Reload the page to try
+                          again.
+                        </p>
+                      ) : (
+                        <ProviderKeyForm
+                          onSuccess={() => void fetchStatus()}
+                          submitLabel="Save"
+                          configuredProviders={status?.providers}
+                          defaultProvider={status?.defaultProvider}
+                          onDirtyChange={handleProviderDirtyChange}
+                          manageCustomProviders
+                        />
+                      )}
+                    </CardContent>
+                  </Card>
+                </div>
+              </TabsContent>
+            )}
+
+            {isAdmin && (
+              <TabsContent value="users" keepMounted>
+                <SettingsUsers
+                  currentUserId={session?.user?.id ?? ""}
+                  refreshKey={enterpriseRefreshKey}
+                />
+              </TabsContent>
+            )}
+
+            {isAdmin && (
+              <TabsContent value="groups" keepMounted>
+                <SettingsGroups refreshKey={enterpriseRefreshKey} isAdmin={isAdmin} />
+              </TabsContent>
+            )}
+
+            {isAdmin && (
+              <TabsContent value="apikeys" keepMounted>
+                <SettingsApiKeys />
+              </TabsContent>
+            )}
+
+            {isAdmin && (
+              <TabsContent value="integrations" keepMounted>
+                <SettingsIntegrations oauthError={oauthError} mcpEnabled={mcpEnabled} />
+              </TabsContent>
+            )}
+
+            {isAdmin && (
+              <TabsContent value="organization" keepMounted>
+                <div className="space-y-6">
+                  <TimezoneSettings onSaved={() => setTimezoneVersion((v) => v + 1)} />
+                  <KnowledgeIndexScheduleSettings refreshKey={timezoneVersion} />
+                  <MemberAccessSettings />
+                  <EmailDeliverySettings />
+                </div>
+              </TabsContent>
+            )}
+
+            {isAdmin && (
+              <TabsContent value="license" keepMounted>
+                <SettingsLicense
+                  onEnterpriseActivated={handleEnterpriseActivated}
+                  initialLicense={initialLicense}
+                  initialAdminOnlyAgents={initialAdminOnlyAgents}
+                />
+              </TabsContent>
+            )}
+          </div>
         </Tabs>
       </div>
     </div>

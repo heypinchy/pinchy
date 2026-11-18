@@ -1,11 +1,11 @@
-// audit-exempt: initial setup runs before any users exist, no actor to audit
 import { NextRequest, NextResponse } from "next/server";
-import { z } from "zod";
 import { createAdmin } from "@/lib/setup";
 import { validatePassword } from "@/lib/validate-password";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { markOpenClawConfigReady, isOpenClawConfigReady } from "@/lib/openclaw-config-ready";
 import { parseRequestBody } from "@/lib/api-validation";
+import { setupSchema } from "@/lib/schemas/setup";
+import { deferAuditLog } from "@/lib/audit-deferred";
 
 // Coalesces concurrent config-recovery retries into a single regeneration.
 // The recovery path is reachable without auth (the admin already exists), so a
@@ -15,17 +15,6 @@ import { parseRequestBody } from "@/lib/api-validation";
 // requests await it instead of starting their own. Module-scoped because a
 // Next.js route module is a per-process singleton.
 let recoveryInFlight: Promise<void> | null = null;
-
-const setupSchema = z.object({
-  name: z
-    .string()
-    .min(1)
-    .transform((v) => v.trim())
-    .refine((v) => v.length > 0, "Name is required"),
-  email: z.string().email("A valid email address is required"),
-  password: z.string(),
-  browserTimezone: z.string().optional(),
-});
 
 export async function POST(request: NextRequest) {
   try {
@@ -39,6 +28,16 @@ export async function POST(request: NextRequest) {
     }
 
     const user = await createAdmin(name, email, password, browserTimezone);
+    // The account exists now and cannot be rolled back, so the row is
+    // deferred rather than allowed to fail the request. Actor is the new admin
+    // (pseudonymized on write); detail carries no email and no raw id (#824).
+    deferAuditLog({
+      actorType: "user",
+      actorId: user.id,
+      eventType: "user.created",
+      detail: { name, role: "admin", via: "setup" },
+      outcome: "success",
+    });
     // Write OpenClaw config with the newly created Smithers agent so OpenClaw
     // knows about it when the container restarts or the file watcher picks it up.
     // If this fails, surface the error: the admin record was created, but the

@@ -1,6 +1,8 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
-import { agents, emailWorkflows, emailWorkflowConnections } from "@/db/schema";
+import { agents, emailWorkflows, emailWorkflowConnections, users } from "@/db/schema";
+import { getInstancePolicy, arePersonalAutomationsPaused } from "@/lib/instance-policy";
+import { getBlockedByBudgets } from "@/lib/budgets";
 import type { WorkflowForDispatch } from "@/lib/email-workflows/dispatch";
 
 /**
@@ -13,6 +15,44 @@ export interface DispatchableWorkflow {
   workflow: WorkflowForDispatch;
   /** email_workflow_connections.since_ts — the per-connection listing floor. */
   sinceTs: Date;
+  /** email_workflows.sweep_window_days — how far back the sweep re-lists (design §5). */
+  sweepWindowDays: number;
+}
+
+/**
+ * Why an enabled workflow could not be turned into a unit of work. Three
+ * misconfigurations reach the same dead end and each needs a different fix —
+ * hand the workflow to someone else, give the agent an owner, or point it at a
+ * mailbox again — so they are reported apart rather than as one "cannot run".
+ */
+export type UnrunnableReason =
+  "shared-agent-has-no-creator" | "personal-agent-has-no-owner" | "watches-no-mailbox";
+
+/**
+ * An enabled workflow the loader emitted no unit of work for. One entry per
+ * *workflow*, not per (workflow × connection): every reason here is a property
+ * of the workflow alone, so all of its rows drop together.
+ */
+export interface UnrunnableWorkflow {
+  workflowId: string;
+  agentId: string;
+  /**
+   * Snapshotted beside the id (AGENTS.md), because this feeds an operator-facing
+   * log line that has to read sensibly for a workflow nobody is going to look up.
+   */
+  name: string;
+  reason: UnrunnableReason;
+}
+
+/**
+ * What one load produced: the dispatchable units, and the enabled workflows that
+ * yielded none. The second half exists because dropping a workflow that cannot
+ * run is correct but dropping it *silently* is not — see
+ * {@link loadDispatchableWorkflows}.
+ */
+export interface WorkflowLoadResult {
+  units: DispatchableWorkflow[];
+  unrunnable: UnrunnableWorkflow[];
 }
 
 /**
@@ -36,8 +76,41 @@ export interface DispatchableWorkflow {
  * recorded creator, or a personal agent with no owner) is dropped rather than
  * emitted — `dispatchEmails` rejects an empty recipient set, so an
  * undeliverable unit of work must never reach it.
+ *
+ * Every such workflow is **reported** as well as dropped, in `unrunnable`. The
+ * row stays `enabled: true` and the Automations UI keeps showing it that way, so
+ * a bare `continue` here is a workflow that has quietly stopped running with
+ * nothing anywhere saying so. The sweep turns this report into the workflow's
+ * `error` status, which is what an operator actually sees.
+ *
+ * Two of the three reasons are reachable through an ordinary admin action, and
+ * neither used to leave a trace (the third, a personal agent without an owner,
+ * is a shape the app never produces):
+ * - `email_workflows.created_by` is `ON DELETE SET NULL` (#1097), so erasing a
+ *   user orphans the workflows they created on shared agents. Before that FK
+ *   change the DELETE would have failed loudly instead.
+ * - `DELETE /api/integrations/:connectionId` hard-deletes a connection and
+ *   cascades `email_workflow_connections`, so disconnecting a mailbox can leave
+ *   an enabled workflow watching nothing.
+ *
+ * The second is why the connection join is a LEFT join. An inner join drops a
+ * workflow with no connections before this function can see it at all — not in
+ * `units`, not in `unrunnable`, and therefore not in the set of ids the sweep
+ * writes `status` for, so it went on displaying `active` while doing nothing.
+ *
+ * A workflow the instance policy pauses (Settings → Organization → Member
+ * access: a member's personal agent, with member automations or personal
+ * agents switched off) is skipped and NOT reported. Nothing is wrong with it —
+ * `unrunnable` would turn it into an `error` badge — and it resumes, `enabled`
+ * untouched, the moment the switch is turned back on. The Automations tab says
+ * why it is not running.
+ *
+ * The same goes for an agent a blocking cost budget (#36) has stopped this
+ * month — its own budget or the instance's. It resumes when the month rolls
+ * over or an admin raises the budget.
  */
-export async function loadDispatchableWorkflows(): Promise<DispatchableWorkflow[]> {
+export async function loadDispatchableWorkflows(): Promise<WorkflowLoadResult> {
+  const [policy, blocked] = await Promise.all([getInstancePolicy(), getBlockedByBudgets()]);
   const rows = await db
     .select({
       workflowId: emailWorkflows.id,
@@ -45,22 +118,54 @@ export async function loadDispatchableWorkflows(): Promise<DispatchableWorkflow[
       name: emailWorkflows.name,
       filter: emailWorkflows.filter,
       action: emailWorkflows.action,
+      sweepWindowDays: emailWorkflows.sweepWindowDays,
       createdBy: emailWorkflows.createdBy,
       isPersonal: agents.isPersonal,
       ownerId: agents.ownerId,
+      ownerRole: users.role,
       connectionId: emailWorkflowConnections.connectionId,
       sinceTs: emailWorkflowConnections.sinceTs,
     })
     .from(emailWorkflows)
     .innerJoin(agents, eq(agents.id, emailWorkflows.agentId))
-    .innerJoin(emailWorkflowConnections, eq(emailWorkflowConnections.workflowId, emailWorkflows.id))
+    .leftJoin(users, eq(users.id, agents.ownerId))
+    .leftJoin(emailWorkflowConnections, eq(emailWorkflowConnections.workflowId, emailWorkflows.id))
     .where(eq(emailWorkflows.enabled, true));
 
-  const result: DispatchableWorkflow[] = [];
+  const units: DispatchableWorkflow[] = [];
+  // Keyed by workflow id: every reason is a property of the workflow, so it
+  // holds on all of its connection rows, and the sweep writes one `status` per
+  // workflow — report it once rather than once per mailbox.
+  const unrunnable = new Map<string, UnrunnableWorkflow>();
+  const report = (row: (typeof rows)[number], reason: UnrunnableReason) => {
+    unrunnable.set(row.workflowId, {
+      workflowId: row.workflowId,
+      agentId: row.agentId,
+      name: row.name,
+      reason,
+    });
+  };
   for (const row of rows) {
+    // The LEFT join's unmatched row: an enabled workflow with no connections at
+    // all. Checked first because it is the row-shape question — the recipient
+    // is moot for a workflow with nothing to read. A workflow that has lost both
+    // its mailboxes and its recipient reports only this one; the operator hits
+    // the other on the next pass, once this is fixed.
+    if (row.connectionId === null || row.sinceTs === null) {
+      report(row, "watches-no-mailbox");
+      continue;
+    }
     const recipientUserIds = resolveRecipients(row);
-    if (recipientUserIds.length === 0) continue;
-    result.push({
+    if (recipientUserIds.length === 0) {
+      report(row, row.isPersonal ? "personal-agent-has-no-owner" : "shared-agent-has-no-creator");
+      continue;
+    }
+    // Paused by policy or budget — not broken, so neither a unit nor
+    // `unrunnable`. Checked after the faults above, so a pause never hides an
+    // automation that could not run anyway.
+    if (arePersonalAutomationsPaused(row, row.ownerRole, policy)) continue;
+    if (blocked.instance || blocked.agentIds.has(row.agentId)) continue;
+    units.push({
       workflow: {
         id: row.workflowId,
         agentId: row.agentId,
@@ -71,15 +176,16 @@ export async function loadDispatchableWorkflows(): Promise<DispatchableWorkflow[
         recipientUserIds,
       },
       sinceTs: row.sinceTs,
+      sweepWindowDays: row.sweepWindowDays,
     });
   }
-  return result;
+  return { units, unrunnable: [...unrunnable.values()] };
 }
 
 /**
  * Scope model (design §7): a personal agent's workflow notifies its owner; a
  * shared agent's workflow notifies its creator. Returns `[]` when no recipient
- * can be resolved, which the caller drops.
+ * can be resolved, which the caller drops and reports as unrunnable.
  */
 function resolveRecipients(row: {
   isPersonal: boolean;

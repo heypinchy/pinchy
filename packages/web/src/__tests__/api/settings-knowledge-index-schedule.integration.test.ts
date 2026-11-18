@@ -1,0 +1,281 @@
+// GET/PUT /api/settings/knowledge-index-schedule — the admin's control over
+// the nightly knowledge-base reindex.
+//
+// Against a real database, because the answer the route gives is computed from
+// three settings rows (the schedule, the org timezone, the scheduler's state)
+// and the point is that it reads the same rows the scheduler acts on.
+//
+// What stays mocked, and why:
+//   - @/lib/auth / next/headers — no browser session exists in a test process.
+//   - appendAuditLog — so the audit call is asserted as a call: its from/to
+//     detail is the contract here, and the audit chain itself is covered
+//     elsewhere.
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { NextRequest } from "next/server";
+
+import { mockSession } from "@/test-helpers/auth";
+import { setSetting } from "@/lib/settings";
+import {
+  getIndexSchedule,
+  saveIndexSchedule,
+  saveIndexScheduleState,
+} from "@/lib/knowledge/index-schedule-store";
+
+vi.mock("next/headers", () => ({
+  headers: vi.fn().mockResolvedValue(new Headers()),
+}));
+
+const mockGetSession = vi.fn();
+vi.mock("@/lib/auth", () => ({
+  getSession: (...args: unknown[]) => mockGetSession(...args),
+  auth: { api: { getSession: (...args: unknown[]) => mockGetSession(...args) } },
+}));
+
+const mockAppendAuditLog = vi.fn();
+vi.mock("@/lib/audit", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/audit")>()),
+  appendAuditLog: (...args: unknown[]) => mockAppendAuditLog(...args),
+}));
+
+const { GET, PUT } = await import("@/app/api/settings/knowledge-index-schedule/route");
+
+const URL = "http://localhost/api/settings/knowledge-index-schedule";
+const ctx = { params: Promise.resolve({}) };
+
+function putRequest(body: unknown) {
+  return new NextRequest(URL, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+const admin = mockSession({ user: { id: "admin-1", role: "admin" } });
+const member = mockSession({ user: { id: "member-1", role: "member" } });
+
+beforeEach(async () => {
+  mockGetSession.mockResolvedValue(admin);
+  mockAppendAuditLog.mockReset();
+  await setSetting("org.timezone", "Europe/Vienna");
+  // Only Date is faked: the database driver's own timers stay real.
+  vi.useFakeTimers({ toFake: ["Date"] });
+  // 22:00 in Vienna on 16 Oct (CEST, UTC+2).
+  vi.setSystemTime(new Date("2026-10-16T20:00:00Z"));
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+describe("GET /api/settings/knowledge-index-schedule", () => {
+  it("reports the default — on, nightly at 02:00 in the org timezone — before anything was saved", async () => {
+    const res = await GET(new NextRequest(URL), ctx as never);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      enabled: true,
+      time: "02:00",
+      timezone: "Europe/Vienna",
+      nextRun: {
+        date: "2026-10-17",
+        time: "02:00",
+        day: "tomorrow",
+        at: "2026-10-17T00:00:00.000Z",
+      },
+      currentSweep: null,
+      lastSweep: null,
+    });
+  });
+
+  // What the admin wants to know about the night: did it run, for how many
+  // agents, and is it still going.
+  it("reports the sweep in progress and the last one that finished queueing", async () => {
+    await saveIndexScheduleState({
+      lastSlot: "2026-10-16",
+      schedule: { enabled: true, time: "02:00" },
+      timezone: "Europe/Vienna",
+      sweep: {
+        id: "sweep-2",
+        slot: "2026-10-16",
+        startedAt: "2026-10-16T00:00:00.000Z",
+        agentCount: 3,
+        pending: ["agent-b", "agent-c"],
+      },
+      lastSweep: {
+        id: "sweep-1",
+        slot: "2026-10-15",
+        startedAt: "2026-10-15T00:00:00.000Z",
+        agentCount: 3,
+      },
+    });
+
+    const body = await (await GET(new NextRequest(URL), ctx as never)).json();
+
+    expect(body.currentSweep).toEqual({
+      slot: "2026-10-16",
+      startedAt: "2026-10-16T00:00:00.000Z",
+      agentCount: 3,
+      waiting: 2,
+    });
+    expect(body.lastSweep).toEqual({
+      slot: "2026-10-15",
+      startedAt: "2026-10-15T00:00:00.000Z",
+      agentCount: 3,
+    });
+  });
+
+  // The fall-back night in Vienna: the 02:30 slot ran at 02:30 CEST, then the
+  // clock went back. At 02:10 CET the local time is before 02:30 again, but
+  // tonight's run already happened — the screen must not promise it again.
+  it("reports tomorrow, not a run that already happened, after the clock went back", async () => {
+    await saveIndexSchedule({ enabled: true, time: "02:30" });
+    await saveIndexScheduleState({
+      lastSlot: "2026-10-25",
+      schedule: { enabled: true, time: "02:30" },
+      timezone: "Europe/Vienna",
+      sweep: null,
+      lastSweep: null,
+    });
+    vi.setSystemTime(new Date("2026-10-25T01:10:00Z"));
+
+    const body = await (await GET(new NextRequest(URL), ctx as never)).json();
+
+    expect(body.nextRun).toEqual({
+      date: "2026-10-26",
+      time: "02:30",
+      day: "tomorrow",
+      at: "2026-10-26T01:30:00.000Z",
+    });
+  });
+
+  // Tonight's 23:30 was taken in Tokyo; the org then moved to Vienna, where it
+  // is 17:00. The scheduler re-takes the slot on Vienna's clock and runs at
+  // 23:30 tonight, so the screen must not read Tokyo's slot as tonight's.
+  it("reports today after a timezone change, even though today's slot was taken in the old zone", async () => {
+    await saveIndexSchedule({ enabled: true, time: "23:30" });
+    await saveIndexScheduleState({
+      lastSlot: "2026-10-17",
+      schedule: { enabled: true, time: "23:30" },
+      timezone: "Asia/Tokyo",
+      sweep: null,
+      lastSweep: null,
+    });
+    vi.setSystemTime(new Date("2026-10-17T15:00:00Z"));
+
+    const body = await (await GET(new NextRequest(URL), ctx as never)).json();
+
+    expect(body.nextRun).toEqual({
+      date: "2026-10-17",
+      time: "23:30",
+      day: "today",
+      at: "2026-10-17T21:30:00.000Z",
+    });
+  });
+
+  it("is admin-only", async () => {
+    mockGetSession.mockResolvedValue(member);
+    const res = await GET(new NextRequest(URL), ctx as never);
+    expect(res.status).toBe(403);
+  });
+});
+
+describe("PUT /api/settings/knowledge-index-schedule", () => {
+  it("saves the schedule and answers with what will happen next", async () => {
+    const res = await PUT(putRequest({ enabled: true, time: "23:30" }), ctx as never);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      enabled: true,
+      time: "23:30",
+      timezone: "Europe/Vienna",
+      nextRun: {
+        date: "2026-10-16",
+        time: "23:30",
+        day: "today",
+        at: "2026-10-16T21:30:00.000Z",
+      },
+    });
+    expect(await getIndexSchedule()).toEqual({ enabled: true, time: "23:30" });
+  });
+
+  // Tonight's 02:00 already ran. Moving the time to 23:30 is a new schedule:
+  // the scheduler re-takes the slot against it, so 23:30 today still runs —
+  // and the answer must say so rather than read the old slot as tonight's.
+  it("answers today for a new time still ahead, even after today's slot under the old time ran", async () => {
+    await saveIndexScheduleState({
+      lastSlot: "2026-10-16",
+      schedule: { enabled: true, time: "02:00" },
+      timezone: "Europe/Vienna",
+      sweep: null,
+      lastSweep: null,
+    });
+
+    const res = await PUT(putRequest({ enabled: true, time: "23:30" }), ctx as never);
+
+    expect((await res.json()).nextRun).toEqual({
+      date: "2026-10-16",
+      time: "23:30",
+      day: "today",
+      at: "2026-10-16T21:30:00.000Z",
+    });
+  });
+
+  it("switches the nightly run off", async () => {
+    const res = await PUT(putRequest({ enabled: false, time: "02:00" }), ctx as never);
+
+    expect(await res.json()).toMatchObject({ enabled: false, nextRun: null });
+    expect(await getIndexSchedule()).toEqual({ enabled: false, time: "02:00" });
+  });
+
+  // Turning the nightly run off decides whether new documents ever become
+  // searchable on their own — the trail has to say who decided it, and what
+  // it was before.
+  it("audits the change with what it was and what it became", async () => {
+    await PUT(putRequest({ enabled: false, time: "02:00" }), ctx as never);
+
+    expect(mockAppendAuditLog).toHaveBeenCalledTimes(1);
+    expect(mockAppendAuditLog).toHaveBeenCalledWith({
+      actorType: "user",
+      actorId: "admin-1",
+      eventType: "settings.updated",
+      resource: "settings:knowledge_index_schedule",
+      detail: {
+        changes: {
+          knowledgeIndexSchedule: {
+            from: { enabled: true, time: "02:00" },
+            to: { enabled: false, time: "02:00" },
+          },
+        },
+      },
+      outcome: "success",
+    });
+  });
+
+  it("writes no audit row for a save that changed nothing", async () => {
+    await PUT(putRequest({ enabled: true, time: "02:00" }), ctx as never);
+    expect(mockAppendAuditLog).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["an hour past 23", { enabled: true, time: "24:00" }],
+    ["a time without its leading zero", { enabled: true, time: "2:00" }],
+    ["seconds", { enabled: true, time: "02:00:00" }],
+    ["no on/off", { time: "02:00" }],
+  ])("rejects %s with a 400 and saves nothing", async (_label, body) => {
+    const res = await PUT(putRequest(body), ctx as never);
+
+    expect(res.status).toBe(400);
+    expect(await getIndexSchedule()).toEqual({ enabled: true, time: "02:00" });
+    expect(mockAppendAuditLog).not.toHaveBeenCalled();
+  });
+
+  it("is admin-only, and a refused request saves nothing", async () => {
+    mockGetSession.mockResolvedValue(member);
+
+    const res = await PUT(putRequest({ enabled: false, time: "02:00" }), ctx as never);
+
+    expect(res.status).toBe(403);
+    expect(await getIndexSchedule()).toEqual({ enabled: true, time: "02:00" });
+  });
+});

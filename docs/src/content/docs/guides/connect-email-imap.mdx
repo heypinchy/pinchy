@@ -129,14 +129,14 @@ Open the agent's chat and try a few queries:
 
 When email permissions are granted, the agent gets access to these tools — the same set used for Gmail and Microsoft 365:
 
-| Tool                   | Permission required | Description                                                                                                                                                                               |
-| ---------------------- | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `email_list`           | Read                | List emails from a folder (INBOX, SENT, DRAFTS, TRASH, SPAM; defaults to INBOX). Supports filtering by read status.                                                                       |
-| `email_read`           | Read                | Read the full content of a specific email by ID. Lists any attachments with their IDs. Looks up the message in INBOX (see the limitation above).                                          |
-| `email_get_attachment` | Read                | Download an email attachment into the agent's workspace. Looks up the message in INBOX (see the limitation above).                                                                        |
-| `email_search`         | Read                | Search emails using structured fields: `from`, `to`, `subject`, `text`, `unread`, `sinceDays`, `folder`, `limit` (e.g. `{ from: "user@example.com", subject: "invoice", sinceDays: 7 }`). |
-| `email_draft`          | Draft               | Create a draft email. Saved directly to the mailbox's Drafts folder over IMAP.                                                                                                            |
-| `email_send`           | Send                | Send an email immediately over SMTP. Can also send replies with `replyTo`.                                                                                                                |
+| Tool                   | Permission required | Description                                                                                                                                                                                                                                                                                                    |
+| ---------------------- | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `email_list`           | Read                | List emails from a folder (INBOX, SENT, DRAFTS, TRASH, SPAM; defaults to INBOX). Supports filtering by read status.                                                                                                                                                                                            |
+| `email_read`           | Read                | Read the full content of a specific email by ID. Lists any attachments with their IDs. Opens the message's own folder automatically.                                                                                                                                                                           |
+| `email_get_attachment` | Read                | Download an email attachment into the agent's workspace. Opens the message's own folder automatically.                                                                                                                                                                                                         |
+| `email_search`         | Read                | Search emails using structured fields: `from`, `to`, `subject`, `text`, `unread`, `sinceDays`, `folder`, `limit` (e.g. `{ from: "user@example.com", subject: "invoice", sinceDays: 7 }`).                                                                                                                      |
+| `email_draft`          | Draft               | Create a draft email. Saved directly to the mailbox's Drafts folder over IMAP. One recipient per call: `to` takes a single address (a display name with a comma goes in double quotes, `"Müller, Hans" <hans@example.com>`), and a list is refused — to reach several people, the agent sends separate emails. |
+| `email_send`           | Send                | Send an email immediately over SMTP. Can also send replies with `replyTo`. One recipient per call: `to` takes a single address (a display name with a comma goes in double quotes, `"Müller, Hans" <hans@example.com>`), and a list is refused — to reach several people, the agent sends separate emails.     |
 
 ---
 
@@ -157,6 +157,92 @@ The **Security** setting doesn't match what the server expects. Try `TLS` for po
 **"Connection timed out — check the host and port"**
 
 The server didn't respond in time — usually a network issue or an incorrect host/port combination.
+
+**"Blocked: enter the mail server as a plain host name or IP address"**
+
+The IMAP or SMTP host contains something a host name can't — usually a stray space, brackets around an IPv6 address, or a port. Enter just the name or address; the port has its own field. See [Mail servers on your own network](#mail-servers-on-your-own-network) for the full rule.
+
+**"Blocked: this host resolves to a private network address"**
+
+See [Mail servers on your own network](#mail-servers-on-your-own-network) below.
+
+**"Message … is too large to fetch"**
+
+IMAP has no way to hand over a single attachment on its own — the whole message comes down in one piece, attachments included — so an agent reading a message loads all of it into memory at once. To keep one oversized message from taking the agent down with it, we check the size the server reports before downloading and refuse anything over 50 MB. That's the message as it travels, which is roughly a third larger than the files inside it, so a mail carrying an attachment at the 25 MB cap still comes through.
+
+The message itself is fine, and `email_list` and `email_search` still show its sender, subject and date. Only its body and attachments are out of reach. Gmail and Microsoft 365 have no equivalent limit — they can fetch one attachment at a time.
+
+---
+
+## Mail servers on your own network
+
+The connection test reports exactly why an attempt failed — refused, timed out, TLS error, wrong password. That's what makes it useful for fixing a mailbox, and it's also what would make it useful for mapping the network Pinchy runs in. So we only probe hosts that resolve to a public address.
+
+If your mail server genuinely lives on your own network — an on-premise Exchange or Dovecot box on `10.x`, `172.16–31.x`, `192.168.x`, a Tailscale address (`100.x`), an IPv6 unique-local address, or any other of the [private ranges](/reference/network-address-checks/#private-ranges) — add this line to your `.env`:
+
+```bash
+ALLOW_PRIVATE_MAIL_HOSTS=1
+```
+
+Then run `docker compose up -d` so the Pinchy container picks it up.
+
+Loopback, link-local, the cloud metadata endpoints and the reserved ranges stay blocked either way — `127.0.0.1`, `::1`, `0.0.0.0/8`, `169.254.169.254`, the documentation ranges, multicast and the rest of the [always-refused list](/reference/network-address-checks/#always-refused). No mail server lives there, so there's nothing to trade off.
+
+The host itself has to be a plain host name or IP address — `imap.example.com`, `mail.example.com.`, `93.184.216.34` or `2606:4700:4700::1111`. Spaces, brackets (`[2606:4700:4700::1111]`), a `%` or zone ID (`fe80::1%eth0`), a port (`mail.example.com:993`) and non-ASCII characters are refused, whatever is set. We check the host exactly as the mail client will use it, so it has to be a string every resolver reads the same way. For an internationalised domain, enter its `xn--` form: `mail.xn--bcher-kva.example` rather than `mail.bücher.example`.
+
+The same check runs when the connection is saved, and again every time the saved IMAP and SMTP hosts are used — before an agent's email tools receive the connection, before **Test connection**, and before each inbox sweep. So a mailbox saved under older rules, or before the flag was removed, can't quietly keep reaching a host that's refused now. The agent's email tools keep a connection they already fetched for up to 5 minutes, so after removing `ALLOW_PRIVATE_MAIL_HOSTS` run `docker compose up -d --force-recreate openclaw` if a stricter rule must apply at once. A refusal leaves the stored password alone: the agent's tool reports why, an automation on that mailbox shows an error, and the audit trail records it as `integration.credentials_denied` with the reason `destination-blocked`.
+
+**Test connection** connects to the address the check just looked up, with the hostname still used to verify the server's certificate. So a DNS answer that changes a moment later (DNS rebinding) can't send the test somewhere else, and a hostname that doesn't resolve isn't contacted at all — the test says it couldn't resolve the host.
+
+The agent's email tools work the same way: each time they fetch the connection, Pinchy hands them the addresses the check just looked up, and they connect only to those, again with the hostname for the certificate. One thing follows from that. The check runs in Pinchy's container while the mail tools connect from the agent runtime's (`openclaw`), so a name only `openclaw` can resolve has no checked address, and the email tools say they can't connect to it. Our `docker-compose.yml` gives both containers the same extra host names; if you add `extra_hosts` entries of your own to `openclaw`, add them to `pinchy` too.
+
+On OrbStack, `host.docker.internal` and `ollama.local` (which our `docker-compose.yml` maps to the same host gateway) resolve to `0.250.250.254` and are refused whatever you set; use the mail container's name or your machine's LAN address when developing.
+
+---
+
+## Ports, TLS & cloud firewalls
+
+Pinchy runs the connection test from the exact server that will send your mail — so if the SMTP leg times out or gets refused, that's real evidence about what this server can reach, not a guess. We use it: on a connection timeout or refusal, we also probe the standard SMTP ports (`465`, `587`, `25`) directly from the container, and if a different port is reachable, we show a banner with a one-click "Switch & retry" button for it. Click it and we update the SMTP port and security setting for you and re-run the test — nothing switches silently.
+
+<Aside type="note">
+  This only ever happens for connection-level failures (timeout or refused). An
+  authentication or TLS/certificate failure never triggers a port probe — those
+  aren't firewall problems, so a different port wouldn't fix them.
+</Aside>
+
+### Why cloud hosts block SMTP ports
+
+Cloud providers block outbound mail ports by default on new servers — it's an anti-spam measure, not a Pinchy limitation. The exact ports blocked vary by provider:
+
+| Provider          | Blocked outbound | Open            | Unblocking                                                                         |
+| ----------------- | ---------------- | --------------- | ---------------------------------------------------------------------------------- |
+| Hetzner           | 25, 465          | 587             | Usually opens automatically after ~1 month of account age, or via a support ticket |
+| DigitalOcean      | 25, 465, 587     | none by default | Open a support ticket requesting outbound mail ports be unblocked                  |
+| AWS / GCP / Azure | 25               | 465, 587        | Port 25 stays blocked by policy; use 465 or 587 instead                            |
+
+Port `587` (STARTTLS submission) is the safest default for a new cloud server — it's the one port most providers leave open. Port `465` (implicit TLS) is the next most likely to work. Port `25` (unencrypted SMTP relay) is blocked almost everywhere and isn't worth troubleshooting for outbound mail.
+
+### Testing reachability yourself
+
+You can check the same thing Pinchy's probe checks, directly from the server (or a shell on the same host):
+
+```bash
+# Raw TCP reachability (no TLS, no auth) — mirrors what Pinchy's probe does
+nc -vz smtp.example.com 587
+
+# Full TLS handshake against an implicit-TLS port (465)
+openssl s_client -connect smtp.example.com:465
+```
+
+`nc` reporting "succeeded" (or `openssl` reaching a certificate dump instead of hanging) means the port is reachable from this server. A hang followed by nothing means it's filtered — usually the host's outbound firewall, not your mail provider.
+
+### Requesting an unblock
+
+If every standard port is blocked (Pinchy's "all outbound SMTP ports appear blocked" banner), the fix has to happen at the host level:
+
+- **Hetzner**: open a support ticket asking to unblock outbound SMTP for your server/project. New accounts are usually auto-unblocked after roughly a month of account age.
+- **DigitalOcean**: open a support ticket from the control panel requesting outbound mail ports be enabled for your account.
+- **AWS / GCP / Azure**: port 25 is blocked by long-standing policy and generally isn't unblocked on request — use port 465 or 587 instead, which these providers leave open.
 
 ---
 

@@ -1,45 +1,37 @@
-import { NextResponse, after } from "next/server";
+import { NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
 import { eq, inArray } from "drizzle-orm";
-import { z } from "zod";
-import { updateAgent, deleteAgent, AGENT_NAME_MAX_LENGTH } from "@/lib/agents";
+import { updateAgent, deleteAgent, AgentRuntimeUpdateError } from "@/lib/agents";
 import { withAuth, withAdmin } from "@/lib/api-auth";
 import { getAgentWithAccess, requireAgentWriteAccess } from "@/lib/agent-access";
-import { appendAuditLog } from "@/lib/audit";
+import { safeProviderError } from "@/lib/audit";
 import type { UpdateDetail } from "@/lib/audit";
 import { isEnterprise } from "@/lib/enterprise";
 import { writeIdentityFile } from "@/lib/workspace";
 import { db } from "@/db";
 import { agentGroups, groups, type AgentPluginConfig } from "@/db/schema";
-import { AGENT_VISIBILITIES, type AgentVisibility } from "@/db/enums";
+import type { AgentVisibility } from "@/db/enums";
 import { getAgentGroupIds } from "@/lib/groups";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
-import { validatePinchyWebConfig, pluginConfigSchema } from "@/lib/domain-validation";
+import { validatePinchyWebConfig } from "@/lib/domain-validation";
 import { parseRequestBody } from "@/lib/api-validation";
 import { validateAgentModel } from "@/lib/agent-model-validation";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
-import { starterPromptsSchema } from "@/lib/schemas/starter-prompts";
-
-const updateAgentSchema = z.object({
-  name: z
-    .string()
-    .min(1)
-    .max(AGENT_NAME_MAX_LENGTH)
-    .refine((v) => v.trim().length > 0, "Name is required")
-    .optional(),
-  model: z.string().optional(),
-  allowedTools: z.array(z.string()).optional(),
-  pluginConfig: pluginConfigSchema.nullable().optional(),
-  greetingMessage: z.string().min(1, "Greeting message cannot be empty").optional(),
-  tagline: z.string().nullable().optional(),
-  starterPrompts: starterPromptsSchema.optional(),
-  avatarSeed: z.string().nullable().optional(),
-  personalityPresetId: z.string().nullable().optional(),
-  visibility: z.enum(AGENT_VISIBILITIES).optional(),
-  groupIds: z.array(z.string()).optional(),
-});
+import { queueFirstIndex } from "@/lib/knowledge/first-index";
+import { deferAuditLog } from "@/lib/audit-deferred";
+import { updateAgentSchema } from "@/lib/schemas/agents";
+import { pluginConfigAuditChange, type FolderAccessDiff } from "@/lib/agent-plugin-config-audit";
 
 type RouteContext = { params: Promise<{ agentId: string }> };
+
+/** What an `agent.updated` row carries, success or failure. */
+type AgentUpdateDetail = UpdateDetail & {
+  folderAccess?: FolderAccessDiff;
+  allowedGroups?: {
+    added: { id: string; name: string }[];
+    removed: { id: string; name: string }[];
+  };
+};
 
 export const GET = withAuth<RouteContext>(async (_req, { params }, session) => {
   const { agentId } = await params;
@@ -75,6 +67,21 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
   const pluginConfigError = validatePinchyWebConfig(body.pluginConfig);
   if (pluginConfigError) {
     return NextResponse.json({ error: pluginConfigError }, { status: 400 });
+  }
+
+  // pluginConfig is a permission, not a preference. `pinchy-files.
+  // allowed_paths` inside it is the allowlist that scopes the agent's file
+  // tools, its knowledge-base retrieval filter, and the browser-facing
+  // `GET /api/agents/[id]/workspace-file` route — which consults that list and
+  // nothing else, so a grant alone is a read, with no tool and no group
+  // membership needed. `pluginConfigSchema` confines the VALUE to /data, but
+  // /data is every corpus: a member who may still write `["/data/hr"]` onto
+  // their own seeded personal agent reads HR's documents. Same gate as
+  // allowedTools, and it costs the UI nothing — the Permissions tab that emits
+  // this field renders only for `isAdmin && !isPersonal`, and every request it
+  // sends carries allowedTools anyway.
+  if (body.pluginConfig !== undefined && session.user.role !== "admin") {
+    return NextResponse.json({ error: "Only admins can change permissions" }, { status: 403 });
   }
 
   // Only admins can change permissions on shared agents
@@ -151,9 +158,11 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
   if (body.personalityPresetId !== undefined) data.personalityPresetId = body.personalityPresetId;
   if (body.visibility !== undefined) data.visibility = body.visibility;
 
-  const agent = Object.keys(data).length > 0 ? await updateAgent(agentId, data) : existingAgent;
-
-  // Build from/to changes diff
+  // Build from/to changes diff.
+  //
+  // Derived from `data` and `existingAgent` alone, so it is built BEFORE the
+  // write — a regeneration failure still changed the row, and the audit entry
+  // for that change needs this diff (see the catch below).
   const changes: Record<string, { from: unknown; to: unknown }> = {};
   const diffFields = [
     "name",
@@ -183,88 +192,242 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
       changes.starterPrompts = { from: oldPrompts, to: data.starterPrompts };
     }
   }
+  // Never the raw config: folder grants can name a person, and this row is
+  // immutable. See pluginConfigAuditChange for the shape.
+  let folderAccess: FolderAccessDiff | undefined;
   if (data.pluginConfig !== undefined) {
-    const oldConfig = existingAgent.pluginConfig ?? null;
-    const newConfig = data.pluginConfig ?? null;
-    if (JSON.stringify(oldConfig) !== JSON.stringify(newConfig)) {
-      changes.pluginConfig = { from: oldConfig, to: newConfig };
+    const audited = pluginConfigAuditChange(
+      existingAgent.pluginConfig ?? null,
+      data.pluginConfig ?? null
+    );
+    if (audited.change) changes.pluginConfig = audited.change;
+    folderAccess = audited.folderAccess;
+  }
+  const baseDetail: AgentUpdateDetail = { changes, ...(folderAccess ? { folderAccess } : {}) };
+  const hasBaseChange = Object.keys(changes).length > 0 || folderAccess !== undefined;
+
+  // updateAgent writes the row and THEN calls regenerateOpenClawConfig(); the
+  // two are not in a transaction. Letting the throw escape hands Next.js a 500
+  // whose body carries no `error` field, and the client can only say "Failed to
+  // save some settings" — which is exactly how #1095 stayed invisible for two
+  // days: the cause (EACCES on a root-owned TOOLS.md) lived solely in the
+  // container log.
+  //
+  // The two failures need opposite answers, and only `updateAgent` knows which
+  // one happened — hence the error type rather than an errno guess here:
+  //
+  //   AgentRuntimeUpdateError → the row IS written, the runtime is stale. Say
+  //     so, and audit it: a state change with no audit entry is what AGENTS.md
+  //     forbids, and `outcome: "failure"` exists for precisely this shape.
+  //   anything else → the write itself failed, nothing persisted. Claiming it
+  //     was saved would stop the user retrying a change that never landed.
+  /**
+   * The answer a failed config push owes the caller.
+   *
+   * TWO sites in this handler push the runtime config — `updateAgent` for the
+   * fields it owns, and the tail of this handler for `allowedTools` /
+   * `pluginConfig`. They share this so they cannot drift into two different
+   * stories about the same failure, and so the second one cannot be forgotten
+   * the way it was: it went in unguarded, which left a permission change — the
+   * exact change #1095 broke — answering a blank Next.js 500.
+   *
+   * `detail` is null when there is nothing auditable to record.
+   */
+  function runtimeUpdateFailed(
+    err: unknown,
+    detail: AgentUpdateDetail | null,
+    followUp?: { err: unknown; groupsNotSaved: boolean }
+  ): NextResponse {
+    const cause = err instanceof Error ? err.message : String(err);
+    console.error(`[agents] config regeneration failed for agent ${agentId}:`, err);
+    let followUpNote = "";
+    if (followUp) {
+      const followUpCause =
+        followUp.err instanceof Error ? followUp.err.message : String(followUp.err);
+      console.error(`[agents] follow-up step failed for agent ${agentId}:`, followUp.err);
+      followUpNote = followUp.groupsNotSaved
+        ? `. The group assignment was not saved: ${followUpCause}`
+        : `. A follow-up step also failed: ${followUpCause}`;
     }
-  }
-
-  // Capture old group IDs for audit diff (BEFORE delete/insert)
-  const oldGroupIds =
-    body.groupIds !== undefined && session.user.role === "admin"
-      ? await getAgentGroupIds(agentId)
-      : [];
-
-  // Update group assignments if provided (zod already validated string[])
-  if (body.groupIds !== undefined && session.user.role === "admin") {
-    await db.delete(agentGroups).where(eq(agentGroups.agentId, agentId));
-    if (body.groupIds.length > 0) {
-      await db
-        .insert(agentGroups)
-        .values(body.groupIds.map((groupId: string) => ({ agentId, groupId })));
-    }
-  }
-
-  if (data.name !== undefined || data.tagline !== undefined) {
-    writeIdentityFile(agentId, {
-      name: agent.name,
-      tagline: agent.tagline,
-    });
-  }
-
-  // Build audit detail with group diffs
-  const auditDetail: UpdateDetail & {
-    allowedGroups?: {
-      added: { id: string; name: string }[];
-      removed: { id: string; name: string }[];
-    };
-  } = { changes };
-
-  if (body.groupIds !== undefined && session.user.role === "admin") {
-    const newIds = body.groupIds;
-    const addedIds = newIds.filter((id: string) => !oldGroupIds.includes(id));
-    const removedIds = oldGroupIds.filter((id: string) => !newIds.includes(id));
-    if (addedIds.length > 0 || removedIds.length > 0) {
-      const allGroupIds = [...new Set([...addedIds, ...removedIds])];
-      const groupRows =
-        allGroupIds.length > 0
-          ? await db
-              .select({ id: groups.id, name: groups.name })
-              .from(groups)
-              .where(inArray(groups.id, allGroupIds))
-          : [];
-      const nameMap = new Map(groupRows.map((g: { id: string; name: string }) => [g.id, g.name]));
-      auditDetail.allowedGroups = {
-        added: addedIds.map((id: string) => ({ id, name: nameMap.get(id) ?? id })),
-        removed: removedIds.map((id: string) => ({ id, name: nameMap.get(id) ?? id })),
-      };
-    }
-  }
-
-  if (Object.keys(changes).length > 0 || auditDetail.allowedGroups) {
-    after(() =>
-      appendAuditLog({
+    if (detail) {
+      deferAuditLog({
         actorType: "user",
         actorId: session.user.id!,
         eventType: "agent.updated",
         resource: `agent:${agentId}`,
-        detail: auditDetail,
-        outcome: "success",
-      })
+        // safeProviderError, not the raw string: an uncapped field would
+        // trip truncateDetail, which replaces the WHOLE detail with a
+        // summary blob rather than trimming the offender — taking
+        // `changes` with it, on the one row whose value is recording what
+        // changed. It also scrubs addresses, and this path exists because
+        // of the file carrying an agent's mailbox context (TOOLS.md then).
+        detail: { ...detail, runtimeUpdate: { applied: false, error: safeProviderError(cause) } },
+        outcome: "failure",
+      });
+    }
+    return NextResponse.json(
+      {
+        error: `Settings were saved, but the agent runtime was not updated: ${cause}${followUpNote}`,
+      },
+      { status: 500 }
     );
   }
 
-  // Recalculate Telegram allow-from stores when visibility or groups change
-  if (body.visibility !== undefined || body.groupIds !== undefined) {
-    await recalculateTelegramAllowStores();
+  // A runtime failure inside updateAgent is held, not answered on the spot.
+  // The row is committed at that point, and the rest of this request — the
+  // group replace, the Telegram allow-stores — does not depend on the runtime.
+  // Returning early skipped all of it while the response said "Settings were
+  // saved": the settings page sends the Access tab's `groupIds` in the same
+  // PATCH as the Permissions tab's `allowedTools`, so the admin was told a
+  // group change landed that never ran, and the failure audit row could not
+  // record it.
+  let agent: typeof existingAgent;
+  let runtimeError: AgentRuntimeUpdateError | null = null;
+  try {
+    agent = Object.keys(data).length > 0 ? await updateAgent(agentId, data) : existingAgent;
+  } catch (err) {
+    if (err instanceof AgentRuntimeUpdateError) {
+      runtimeError = err;
+      agent = err.agent;
+    } else {
+      const cause = err instanceof Error ? err.message : String(err);
+      console.error(`[agents] update failed for agent ${agentId}:`, err);
+      return NextResponse.json({ error: `Could not update the agent: ${cause}` }, { status: 500 });
+    }
   }
+
+  const auditDetail: AgentUpdateDetail = { ...baseDetail };
+  const groupsRequested = body.groupIds !== undefined && session.user.role === "admin";
+  let groupsWritten = false;
+
+  // Everything from here to the push may throw. With a runtime failure held,
+  // a throw must not escape: the caller is owed that answer and its audit row,
+  // and an escaping error becomes a blank Next.js 500 for a row that is
+  // already committed. Without one held, the throw escapes as before.
+  let followUpError: unknown = null;
+  try {
+    // Capture old group IDs for audit diff (BEFORE delete/insert)
+    const oldGroupIds = groupsRequested ? await getAgentGroupIds(agentId) : [];
+
+    // Update group assignments if provided (zod already validated string[]).
+    // Atomic replace: the wipe and the re-insert must commit or roll back
+    // together. As two standalone statements, an insert failure (I/O error, a
+    // group deleted in the validation→insert window) would leave a restricted
+    // agent stripped of every group with none re-added — silent access loss.
+    // Mirrors users/[userId]/groups and groups/[groupId]/members.
+    if (groupsRequested) {
+      await db.transaction(async (tx) => {
+        await tx.delete(agentGroups).where(eq(agentGroups.agentId, agentId));
+        if (body.groupIds!.length > 0) {
+          await tx
+            .insert(agentGroups)
+            .values(body.groupIds!.map((groupId: string) => ({ agentId, groupId })));
+        }
+      });
+      groupsWritten = true;
+    }
+
+    // Build audit detail with group diffs — only for groups that were written
+    if (groupsWritten && body.groupIds !== undefined) {
+      const newIds = body.groupIds;
+      const addedIds = newIds.filter((id: string) => !oldGroupIds.includes(id));
+      const removedIds = oldGroupIds.filter((id: string) => !newIds.includes(id));
+      if (addedIds.length > 0 || removedIds.length > 0) {
+        const allGroupIds = [...new Set([...addedIds, ...removedIds])];
+        const groupRows =
+          allGroupIds.length > 0
+            ? await db
+                .select({ id: groups.id, name: groups.name })
+                .from(groups)
+                .where(inArray(groups.id, allGroupIds))
+            : [];
+        const nameMap = new Map(groupRows.map((g: { id: string; name: string }) => [g.id, g.name]));
+        auditDetail.allowedGroups = {
+          added: addedIds.map((id: string) => ({ id, name: nameMap.get(id) ?? id })),
+          removed: removedIds.map((id: string) => ({ id, name: nameMap.get(id) ?? id })),
+        };
+      }
+    }
+
+    // Recalculate Telegram allow-from stores when visibility or groups change.
+    // Above the push, where it has always run: the rows it mirrors are already
+    // committed, so a failed push must not skip it and leave the store enforcing
+    // an access rule the database no longer has.
+    if (body.visibility !== undefined || body.groupIds !== undefined) {
+      await recalculateTelegramAllowStores();
+    }
+
+    // Last of the follow-up steps: a full or unwritable workspace is also what
+    // breaks the runtime push, so this is the step most likely to throw — and
+    // it must not take the committed group diff and the Telegram recalc with it.
+    if (data.name !== undefined || data.tagline !== undefined) {
+      writeIdentityFile(agentId, {
+        name: agent.name,
+        tagline: agent.tagline,
+      });
+    }
+  } catch (err) {
+    if (!runtimeError) throw err;
+    followUpError = err;
+  }
+
+  const hasAuditableChange = hasBaseChange || Boolean(auditDetail.allowedGroups);
 
   // Rebuild OpenClaw config when tool permissions or plugin config change — these
   // fields affect the generated openclaw.json (e.g. write_paths for pinchy_write).
+  //
+  // Guarded like the push inside updateAgent, and for the same reason: this is
+  // the one a PERMISSION change rides on, which is the change #1095 actually
+  // broke. Unguarded it escaped as a blank 500.
+  //
+  // Ordered BEFORE the audit registration, which is the other half of the bug.
+  // `after()` cannot be cancelled once queued, so a success row registered
+  // first would still be written after this fails — one request leaving two
+  // rows that disagree, with the wrong one claiming `outcome: "success"`.
+  if (runtimeError) {
+    // No second push: it could not make the first one's state current, and a
+    // second failure would only repeat the message.
+    return runtimeUpdateFailed(
+      runtimeError,
+      hasAuditableChange ? auditDetail : null,
+      followUpError === null
+        ? undefined
+        : { err: followUpError, groupsNotSaved: groupsRequested && !groupsWritten }
+    );
+  }
+
   if (data.allowedTools !== undefined || data.pluginConfig !== undefined) {
-    await regenerateOpenClawConfig();
+    try {
+      await regenerateOpenClawConfig();
+    } catch (err) {
+      return runtimeUpdateFailed(err, hasAuditableChange ? auditDetail : null);
+    }
+
+    // A folder granted now — or `knowledge_search` given to an agent that
+    // already had folders — is one nothing has indexed yet, and the agent
+    // finds nothing in it until something does (#1280). Queued as this
+    // admin's request; only folders no run has gone through, so saving the
+    // tab again queues nothing. A busy slot or a failure here is left to the
+    // index worker, which queues the run once it can — never a reason to fail
+    // a save that has already landed.
+    try {
+      await queueFirstIndex(agentId, { actorType: "user", actorId: session.user.id! }, (entry) =>
+        deferAuditLog(entry)
+      );
+    } catch (err) {
+      console.error(`[agents] could not queue the first index of agent ${agentId}:`, err);
+    }
+  }
+
+  if (hasAuditableChange) {
+    deferAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "agent.updated",
+      resource: `agent:${agentId}`,
+      detail: auditDetail,
+      outcome: "success",
+    });
   }
 
   return NextResponse.json(agent);
@@ -281,10 +444,12 @@ export const DELETE = withAdmin<RouteContext>(async (_req, { params }, session) 
     return NextResponse.json({ error: "Personal agents cannot be deleted" }, { status: 400 });
   }
 
-  await deleteAgent(agentId);
-
-  after(() =>
-    appendAuditLog({
+  // Registered the instant the soft-delete commits — NOT after deleteAgent
+  // returns. Its cleanup tail runs outside that transaction and can throw; see
+  // deleteAgent for why awaiting it first loses the record of a deletion that
+  // genuinely happened.
+  await deleteAgent(agentId, () =>
+    deferAuditLog({
       actorType: "user",
       actorId: session.user.id!,
       eventType: "agent.deleted",

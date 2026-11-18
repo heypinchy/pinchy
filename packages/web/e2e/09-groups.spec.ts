@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import {
   seedProviderConfig,
+  apiSignInAsAdmin,
   loginAsAdmin,
   createSecondUserViaInvite,
   SECOND_USER,
@@ -9,17 +10,23 @@ import {
 test.describe.serial("Groups CRUD", () => {
   test.beforeAll(async ({ browser }) => {
     await seedProviderConfig();
-    const page = await browser.newPage();
-    await loginAsAdmin(page);
+
+    // Pure data-setup hook — only uses the request context, never the page UI.
+    // Authenticate over the API (not the UI `loginAsAdmin`, which waits up to
+    // 15 s for hydration) so the hook — which also warms three cold routes
+    // below — stays inside its 30 s budget under CI load. See `apiSignIn`.
+    const context = await browser.newContext();
+    const request = context.request;
+    await apiSignInAsAdmin(request);
 
     // Enable enterprise mode so group routes are accessible (idempotent: only toggle if not already enabled)
-    const status = await page.request.get("/api/enterprise/status");
+    const status = await request.get("/api/enterprise/status");
     const statusJson = await status.json();
     if (!statusJson.enterprise) {
-      await page.request.post("/api/dev/enterprise-toggle");
+      await request.post("/api/dev/enterprise-toggle");
     }
 
-    await createSecondUserViaInvite(page.context().request).catch(() => {
+    await createSecondUserViaInvite(request).catch(() => {
       // Idempotent: ignore if already created by an earlier spec
     });
 
@@ -37,19 +44,19 @@ test.describe.serial("Groups CRUD", () => {
     // still warms it — and nothing is created, so no stray group leaks into the
     // table assertions below.
     const MISSING_GROUP_ID = "00000000-0000-0000-0000-000000000000";
-    await page.request.patch(`/api/groups/${MISSING_GROUP_ID}`, {
+    await request.patch(`/api/groups/${MISSING_GROUP_ID}`, {
       data: { name: "__warmup__", description: null },
     });
-    await page.request.delete(`/api/groups/${MISSING_GROUP_ID}`);
+    await request.delete(`/api/groups/${MISSING_GROUP_ID}`);
     // /api/groups/[groupId]/members is a SEPARATE route module that compiles
     // independently — creating a group with a member fires its first PUT (seen
     // at next.js: 4.8s / application-code: 53ms), blowing the same 5s
     // dialog-close assertion. Warm it too; the 404 creates no membership.
-    await page.request.put(`/api/groups/${MISSING_GROUP_ID}/members`, {
+    await request.put(`/api/groups/${MISSING_GROUP_ID}/members`, {
       data: { userIds: [] },
     });
 
-    await page.close();
+    await context.close();
   });
 
   test.beforeEach(async ({ page }) => {

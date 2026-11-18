@@ -9,16 +9,16 @@ The pinned version lives in `pinchy.yml` (the `$$cap_pinchy_version` variable)
 and is kept in lockstep with `.env.example` by `pnpm release` and the
 `scripts/lib/marketplace-version.test.mjs` drift guard.
 
-## Two deviations CapRover forces (and how we handle them)
+## Three deviations CapRover forces (and how we handle them)
 
-CapRover's one-click schema can't express two things Pinchy's production compose
-relies on. Both are documented here so the security trade-off is explicit, not
+CapRover's one-click schema can't express three things Pinchy's production compose
+relies on. All three are documented here so the security trade-off is explicit, not
 silent.
 
 1. **`openclaw-secrets` can't be a tmpfs.** In production it's a RAM-only volume
    (cleared on restart, rebuilt from the encrypted database). CapRover only
    supports regular named volumes, so here it's a shared on-disk volume
-   (`$$cap_appname-oc-secrets`). The bounded impact: a runtime SecretRef *cache*
+   (`$$cap_appname-oc-secrets`). The bounded impact: a runtime SecretRef _cache_
    lands on the host disk instead of RAM. It is **not** the source of truth —
    the actual provider keys stay AES-256-GCM-encrypted in PostgreSQL and the
    cache is rebuilt from them. For deployments where runtime secrets must never
@@ -35,9 +35,23 @@ silent.
    the rare case where an already-set-up instance restarts before its database
    is ready. Expect a few seconds of connection-retry logs on first boot.
 
+3. **No `office-converter` service.** In production, Word and PowerPoint files
+   are converted to PDF in a sidecar with `network_mode: none` and no volume
+   but a hand-over spool, so a crafted document cannot reach the network or
+   read a secret. CapRover runs Docker Swarm services, which cannot be denied
+   a network, and the template mounts no `/data` corpus for the knowledge base
+   to index in the first place. So the service is left out rather than shipped
+   with a network: the Pinchy image never falls back to converting in its own
+   container, and an Office file reports "office converter is not reachable"
+   instead. Use the DigitalOcean image or the raw docker-compose for a
+   knowledge base over Office documents.
+
 `extra_hosts` (the `ollama.local` host-gateway mapping for a local Ollama) is
 also unsupported by CapRover's parser and is omitted — use a cloud model
-provider or run Ollama as its own CapRover app.
+provider or run Ollama as its own CapRover app. It is omitted on both services,
+which is what matters: Pinchy checks a saved Odoo URL or mail host before
+OpenClaw connects to it, so the two must resolve names alike
+(`scripts/lib/compose-extra-hosts.test.mjs` reads this template too).
 
 ## Test before submitting (needs your own CapRover server)
 

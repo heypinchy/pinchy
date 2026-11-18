@@ -8,6 +8,9 @@ vi.mock("@/lib/api-auth", () => ({
 }));
 
 const mockResolveActorIdMatchSet = vi.fn();
+// Faked because they hit the DB. The api_key actor-name fallback deliberately
+// is NOT mocked — it lives in @/lib/api-key-identity precisely because it is
+// pure, so these tests exercise the real thing.
 vi.mock("@/lib/audit", () => ({
   appendAuditLog: vi.fn().mockResolvedValue(undefined),
   resolveActorIdMatchSet: (...args: unknown[]) => mockResolveActorIdMatchSet(...args),
@@ -30,10 +33,13 @@ vi.mock("@/lib/audit-pdf", async () => {
   };
 });
 
-// Build chainable mock for select().from().leftJoin().leftJoin().leftJoin().where().orderBy()
-const mockOrderBy = vi.fn();
+// Build chainable mock for
+// select().from().leftJoin() ×4 .where().orderBy().limit()
+const mockLimit = vi.fn();
+const mockOrderBy = vi.fn().mockReturnValue({ limit: mockLimit });
 const mockWhere = vi.fn().mockReturnValue({ orderBy: mockOrderBy });
-const mockLeftJoin3 = vi.fn().mockReturnValue({ where: mockWhere });
+const mockLeftJoin4 = vi.fn().mockReturnValue({ where: mockWhere });
+const mockLeftJoin3 = vi.fn().mockReturnValue({ leftJoin: mockLeftJoin4 });
 const mockLeftJoin2 = vi.fn().mockReturnValue({ leftJoin: mockLeftJoin3 });
 const mockLeftJoin1 = vi.fn().mockReturnValue({ leftJoin: mockLeftJoin2 });
 const mockFrom = vi.fn().mockReturnValue({ leftJoin: mockLeftJoin1 });
@@ -115,7 +121,7 @@ describe("GET /api/audit/export", () => {
   });
 
   it("returns CSV with correct headers including rowHmac, actorName, resourceName", async () => {
-    mockOrderBy.mockResolvedValue([
+    mockLimit.mockResolvedValue([
       {
         id: 1,
         timestamp: new Date("2026-02-21T10:00:00Z"),
@@ -153,11 +159,95 @@ describe("GET /api/audit/export", () => {
     expect(body).toContain("abc123");
   });
 
+  it("names an api_key actor in the CSV from its detail snapshot (#572)", async () => {
+    // The actor join is against `users`, which never matches an api_key row —
+    // so without the detail fallback this column would carry a bare opaque id.
+    // That matters more here than in the UI: the CSV is the artifact handed to
+    // an auditor, and a row nobody can attribute is a question Pinchy answers
+    // by hand later. The snapshot also survives the key's revocation, which
+    // hard-deletes its row.
+    mockLimit.mockResolvedValue([
+      {
+        id: 1,
+        timestamp: new Date("2026-02-21T10:00:00Z"),
+        actorType: "api_key",
+        actorId: "key-77",
+        eventType: "agent.deleted",
+        resource: "agent:a1",
+        detail: { name: "HR Bot", apiKey: { id: "key-77", name: "CI Deploy" } },
+        rowHmac: "abc123",
+        version: 2,
+        outcome: "success",
+        error: null,
+        actorName: null,
+        actorBanned: null,
+        resourceAgentName: null,
+        resourceAgentDeleted: null,
+        resourceUserName: null,
+        resourceUserBanned: null,
+      },
+    ]);
+
+    const { GET } = await import("@/app/api/audit/export/route");
+    const request = new Request("http://localhost/api/audit/export");
+    const response = await GET(request as unknown as Parameters<typeof GET>[0]);
+
+    const body = await response.text();
+    expect(body).toContain("api_key");
+    expect(body).toContain("CI Deploy");
+  });
+
+  it("names agent and system actors in the CSV (#1271)", async () => {
+    const base = {
+      timestamp: new Date("2026-02-21T10:00:00Z"),
+      resource: null,
+      detail: {},
+      rowHmac: "abc123",
+      version: 2,
+      outcome: "success",
+      error: null,
+      actorName: null,
+      actorBanned: null,
+      resourceAgentName: null,
+      resourceAgentDeleted: null,
+      resourceUserName: null,
+      resourceUserBanned: null,
+    };
+    mockLimit.mockResolvedValue([
+      {
+        ...base,
+        id: 1,
+        actorType: "agent",
+        actorId: "711ed709-agent",
+        eventType: "retrieval.query",
+        actorAgentName: "Musterbau Wissen",
+        actorAgentDeletedAt: null,
+      },
+      {
+        ...base,
+        id: 2,
+        actorType: "system",
+        actorId: "kb-index-scheduler",
+        eventType: "knowledge.reindex",
+        actorAgentName: null,
+        actorAgentDeletedAt: null,
+      },
+    ]);
+
+    const { GET } = await import("@/app/api/audit/export/route");
+    const request = new Request("http://localhost/api/audit/export");
+    const response = await GET(request as unknown as Parameters<typeof GET>[0]);
+
+    const body = await response.text();
+    expect(body).toContain('"Musterbau Wissen"');
+    expect(body).toContain('"Scheduled reindex"');
+  });
+
   it("neutralizes a formula-injection display name in the CSV output", async () => {
     // A low-priv user can set their own display name (PATCH /api/users/me); it
     // surfaces here as actorName in the admin-only export. A leading `=` must
     // not start a spreadsheet formula in the admin's Excel/Sheets.
-    mockOrderBy.mockResolvedValue([
+    mockLimit.mockResolvedValue([
       {
         id: 1,
         timestamp: new Date("2026-02-21T10:00:00Z"),
@@ -190,7 +280,7 @@ describe("GET /api/audit/export", () => {
   });
 
   it("returns empty CSV (header only) when no entries", async () => {
-    mockOrderBy.mockResolvedValue([]);
+    mockLimit.mockResolvedValue([]);
 
     const { GET } = await import("@/app/api/audit/export/route");
     const request = new Request("http://localhost/api/audit/export");
@@ -203,7 +293,7 @@ describe("GET /api/audit/export", () => {
   });
 
   it("includes resourceName resolved from agents table", async () => {
-    mockOrderBy.mockResolvedValue([
+    mockLimit.mockResolvedValue([
       {
         id: 1,
         timestamp: new Date("2026-03-01T10:00:00Z"),
@@ -237,7 +327,7 @@ describe("GET /api/audit/export", () => {
   });
 
   it("sanitizes sensitive data in detail field", async () => {
-    mockOrderBy.mockResolvedValue([
+    mockLimit.mockResolvedValue([
       {
         id: 1,
         timestamp: new Date("2026-03-01T10:00:00Z"),
@@ -272,7 +362,7 @@ describe("GET /api/audit/export", () => {
   });
 
   it("handles null resource/detail/actorName fields", async () => {
-    mockOrderBy.mockResolvedValue([
+    mockLimit.mockResolvedValue([
       {
         id: 1,
         timestamp: new Date("2026-02-21T10:00:00Z"),
@@ -308,7 +398,7 @@ describe("GET /api/audit/export", () => {
   });
 
   it("applies eventType filter when provided", async () => {
-    mockOrderBy.mockResolvedValue([]);
+    mockLimit.mockResolvedValue([]);
 
     const { GET } = await import("@/app/api/audit/export/route");
     const { eq } = await import("drizzle-orm");
@@ -320,7 +410,7 @@ describe("GET /api/audit/export", () => {
   });
 
   it("applies actorId filter (matches raw id when no pseudonym found)", async () => {
-    mockOrderBy.mockResolvedValue([]);
+    mockLimit.mockResolvedValue([]);
     mockResolveActorIdMatchSet.mockResolvedValueOnce(["user-1"]);
 
     const { GET } = await import("@/app/api/audit/export/route");
@@ -334,7 +424,7 @@ describe("GET /api/audit/export", () => {
   });
 
   it("actorId filter matches BOTH the raw id and the user's auditPseudonym", async () => {
-    mockOrderBy.mockResolvedValue([]);
+    mockLimit.mockResolvedValue([]);
     mockResolveActorIdMatchSet.mockResolvedValueOnce(["user-1", "pseudo-abc"]);
 
     const { GET } = await import("@/app/api/audit/export/route");
@@ -347,7 +437,7 @@ describe("GET /api/audit/export", () => {
   });
 
   it("joins the actor's user row on EITHER auditPseudonym OR the raw id (dual-join, alt+neu)", async () => {
-    mockOrderBy.mockResolvedValue([]);
+    mockLimit.mockResolvedValue([]);
 
     const { GET } = await import("@/app/api/audit/export/route");
     const { or } = await import("drizzle-orm");
@@ -362,7 +452,7 @@ describe("GET /api/audit/export", () => {
   });
 
   it("applies resource filter (filter by agent)", async () => {
-    mockOrderBy.mockResolvedValue([]);
+    mockLimit.mockResolvedValue([]);
 
     const { GET } = await import("@/app/api/audit/export/route");
     const { eq } = await import("drizzle-orm");
@@ -374,7 +464,7 @@ describe("GET /api/audit/export", () => {
   });
 
   it("includes version/outcome/error/rowHmac for v2 failure row", async () => {
-    mockOrderBy.mockResolvedValue([
+    mockLimit.mockResolvedValue([
       {
         id: 1,
         timestamp: new Date("2026-03-01T10:00:00Z"),
@@ -410,7 +500,7 @@ describe("GET /api/audit/export", () => {
   });
 
   it("leaves outcome/error empty for v1 rows in CSV but still includes rowHmac", async () => {
-    mockOrderBy.mockResolvedValue([
+    mockLimit.mockResolvedValue([
       {
         id: 2,
         timestamp: new Date("2026-03-01T10:00:00Z"),
@@ -444,7 +534,7 @@ describe("GET /api/audit/export", () => {
   });
 
   it("applies status=failure filter", async () => {
-    mockOrderBy.mockResolvedValue([]);
+    mockLimit.mockResolvedValue([]);
     const { GET } = await import("@/app/api/audit/export/route");
     const { eq } = await import("drizzle-orm");
     const response = await GET(
@@ -457,7 +547,7 @@ describe("GET /api/audit/export", () => {
   });
 
   it("applies date range filters when provided", async () => {
-    mockOrderBy.mockResolvedValue([]);
+    mockLimit.mockResolvedValue([]);
 
     const { GET } = await import("@/app/api/audit/export/route");
     const { gte, lte } = await import("drizzle-orm");
@@ -485,7 +575,7 @@ describe("GET /api/audit/export", () => {
   });
 
   it("returns PDF when format=pdf with correct Content-Type and Content-Disposition", async () => {
-    mockOrderBy.mockResolvedValue([
+    mockLimit.mockResolvedValue([
       {
         id: 1,
         timestamp: new Date("2026-02-21T10:00:00Z"),
@@ -523,7 +613,7 @@ describe("GET /api/audit/export", () => {
   });
 
   it("PDF format returns empty PDF (header-only) when no entries", async () => {
-    mockOrderBy.mockResolvedValue([]);
+    mockLimit.mockResolvedValue([]);
 
     const { GET } = await import("@/app/api/audit/export/route");
     const response = await GET(
@@ -537,7 +627,7 @@ describe("GET /api/audit/export", () => {
   });
 
   it("PDF format applies eventType filter", async () => {
-    mockOrderBy.mockResolvedValue([]);
+    mockLimit.mockResolvedValue([]);
     const { GET } = await import("@/app/api/audit/export/route");
     const { eq } = await import("drizzle-orm");
     const response = await GET(
@@ -560,7 +650,7 @@ describe("GET /api/audit/export", () => {
   });
 
   it("escapes embedded double-quotes in detail JSON", async () => {
-    mockOrderBy.mockResolvedValue([
+    mockLimit.mockResolvedValue([
       {
         id: 1,
         timestamp: new Date("2026-03-01T10:00:00Z"),
@@ -597,7 +687,7 @@ describe("GET /api/audit/export", () => {
   // ── Error message sanitization ───────────────────────────────────────
 
   it("redacts secrets in error.message in CSV", async () => {
-    mockOrderBy.mockResolvedValue([
+    mockLimit.mockResolvedValue([
       {
         id: 1,
         timestamp: new Date("2026-03-01T10:00:00Z"),
@@ -634,7 +724,7 @@ describe("GET /api/audit/export", () => {
   // ── CSV: all textual fields are quoted (RFC 4180 robustness) ─────────
 
   it("quotes every textual CSV field (defends against commas in resource/eventType)", async () => {
-    mockOrderBy.mockResolvedValue([
+    mockLimit.mockResolvedValue([
       {
         id: 1,
         timestamp: new Date("2026-03-01T10:00:00Z"),
@@ -710,7 +800,7 @@ describe("GET /api/audit/export", () => {
   // ── audit.exported event ─────────────────────────────────────────────
 
   it("logs audit.exported event after successful CSV export", async () => {
-    mockOrderBy.mockResolvedValue([
+    mockLimit.mockResolvedValue([
       {
         id: 1,
         timestamp: new Date("2026-03-01T10:00:00Z"),
@@ -756,7 +846,7 @@ describe("GET /api/audit/export", () => {
   });
 
   it("logs audit.exported event after successful PDF export", async () => {
-    mockOrderBy.mockResolvedValue([]);
+    mockLimit.mockResolvedValue([]);
 
     const { GET } = await import("@/app/api/audit/export/route");
     await GET(
@@ -779,7 +869,7 @@ describe("GET /api/audit/export", () => {
     // Audit logging is fire-and-forget: if it throws, the export must
     // still return the data. Otherwise the very compliance feature we
     // added would itself become a single point of failure for exports.
-    mockOrderBy.mockResolvedValue([]);
+    mockLimit.mockResolvedValue([]);
     vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("DB down"));
     // Suppress the console.error the route emits in this scenario.
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -804,7 +894,7 @@ describe("GET /api/audit/export", () => {
   // ── PDF-side: error.message reaches renderer already sanitized ───────
 
   it("passes already-sanitized error.message to the PDF renderer", async () => {
-    mockOrderBy.mockResolvedValue([
+    mockLimit.mockResolvedValue([
       {
         id: 1,
         timestamp: new Date("2026-03-01T10:00:00Z"),
@@ -844,7 +934,7 @@ describe("GET /api/audit/export", () => {
   // ── Empty-string status param is treated as no filter ────────────────
 
   it("treats empty ?status= as no filter (returns 200, not 400)", async () => {
-    mockOrderBy.mockResolvedValue([]);
+    mockLimit.mockResolvedValue([]);
     const { GET } = await import("@/app/api/audit/export/route");
     const response = await GET(
       new Request("http://localhost/api/audit/export?status=") as unknown as Parameters<
@@ -867,7 +957,7 @@ describe("GET /api/audit/export", () => {
   // ── Filename includes time so re-exports don't overwrite ─────────────
 
   it("filename includes hour-minute timestamp", async () => {
-    mockOrderBy.mockResolvedValue([]);
+    mockLimit.mockResolvedValue([]);
 
     const { GET } = await import("@/app/api/audit/export/route");
     const response = await GET(
@@ -884,7 +974,7 @@ describe("GET /api/audit/export", () => {
 
   it("invokes sanitizeDetail on detail (regression guard)", async () => {
     vi.mocked(sanitizeDetail).mockClear();
-    mockOrderBy.mockResolvedValue([
+    mockLimit.mockResolvedValue([
       {
         id: 1,
         timestamp: new Date("2026-03-01T10:00:00Z"),
@@ -906,19 +996,213 @@ describe("GET /api/audit/export", () => {
       },
     ]);
     const { GET } = await import("@/app/api/audit/export/route");
+    const response = await GET(
+      new Request("http://localhost/api/audit/export") as unknown as Parameters<
+        typeof import("@/app/api/audit/export/route").GET
+      >[0]
+    );
+    // The CSV body is streamed, so a row is sanitized when it is written, not
+    // when the handler returns — read the body the way a client does.
+    await response.text();
+    expect(sanitizeDetail).toHaveBeenCalled();
+  });
+
+  it("returns 400 for an invalid 'from' date instead of crashing the export", async () => {
+    mockLimit.mockResolvedValue([]);
+    const { GET } = await import("@/app/api/audit/export/route");
+    const request = new Request("http://localhost/api/audit/export?from=notadate");
+    const response = await GET(request as unknown as Parameters<typeof GET>[0]);
+    expect(response.status).toBe(400);
+  });
+
+  // ── Export row cap (audit_log grows unbounded; a filterless export must
+  // not OOM the 1 GB container by loading the whole table into heap) ───────
+
+  function makeMinimalRow(id: number) {
+    return {
+      id,
+      timestamp: new Date("2026-03-01T10:00:00Z"),
+      actorType: "user",
+      actorId: "user-1",
+      eventType: "auth.login",
+      resource: null,
+      detail: null,
+      rowHmac: `h${id}`,
+      version: 2,
+      outcome: "success",
+      error: null,
+      actorName: null,
+      actorBanned: null,
+      resourceAgentName: null,
+      resourceAgentDeleted: null,
+      resourceUserName: null,
+      resourceUserBanned: null,
+    };
+  }
+
+  it("queries one row past the cap (limit = MAX_AUDIT_EXPORT_ROWS + 1)", async () => {
+    const { MAX_AUDIT_EXPORT_ROWS } = await import("@/lib/audit-query");
+    mockLimit.mockResolvedValue([]);
+
+    const { GET } = await import("@/app/api/audit/export/route");
+    const response = await GET(
+      new Request("http://localhost/api/audit/export") as unknown as Parameters<
+        typeof import("@/app/api/audit/export/route").GET
+      >[0]
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockLimit).toHaveBeenCalledWith(MAX_AUDIT_EXPORT_ROWS + 1);
+  });
+
+  it("does NOT signal truncation when the row count is exactly at the cap", async () => {
+    const { MAX_AUDIT_EXPORT_ROWS } = await import("@/lib/audit-query");
+    mockLimit.mockResolvedValue(
+      Array.from({ length: MAX_AUDIT_EXPORT_ROWS }, (_, i) => makeMinimalRow(i))
+    );
+
+    const { GET } = await import("@/app/api/audit/export/route");
+    const response = await GET(
+      new Request("http://localhost/api/audit/export") as unknown as Parameters<
+        typeof import("@/app/api/audit/export/route").GET
+      >[0]
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("X-Audit-Export-Truncated")).toBeNull();
+    const body = await response.text();
+    expect(body).not.toContain("Export truncated");
+    const lines = body.split("\n");
+    // header + MAX_AUDIT_EXPORT_ROWS data rows, no trailing note
+    expect(lines).toHaveLength(MAX_AUDIT_EXPORT_ROWS + 1);
+  });
+
+  it("caps CSV export at MAX_AUDIT_EXPORT_ROWS and signals truncation (header + trailing note)", async () => {
+    const { MAX_AUDIT_EXPORT_ROWS } = await import("@/lib/audit-query");
+    mockLimit.mockResolvedValue(
+      Array.from({ length: MAX_AUDIT_EXPORT_ROWS + 1 }, (_, i) => makeMinimalRow(i))
+    );
+
+    const { GET } = await import("@/app/api/audit/export/route");
+    const response = await GET(
+      new Request("http://localhost/api/audit/export") as unknown as Parameters<
+        typeof import("@/app/api/audit/export/route").GET
+      >[0]
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("X-Audit-Export-Truncated")).toBe("true");
+
+    const body = await response.text();
+    const lines = body.split("\n");
+    // header + capped data rows + 1 trailing truncation-note line
+    expect(lines).toHaveLength(MAX_AUDIT_EXPORT_ROWS + 2);
+    expect(lines.at(-1)).toContain("Export truncated");
+    expect(lines.at(-1)).toContain(String(MAX_AUDIT_EXPORT_ROWS));
+  });
+
+  it("caps PDF export and signals truncation (header + rendered notice)", async () => {
+    const { MAX_AUDIT_EXPORT_ROWS } = await import("@/lib/audit-query");
+    mockLimit.mockResolvedValue(
+      Array.from({ length: MAX_AUDIT_EXPORT_ROWS + 1 }, (_, i) => makeMinimalRow(i))
+    );
+    // Rendering MAX_AUDIT_EXPORT_ROWS real PDF rows would be far too slow for
+    // a unit test — assert wiring (capped row count, truncated flag) against
+    // a stub instead of exercising pdfkit at that scale.
+    vi.mocked(renderAuditPdf).mockResolvedValueOnce(Buffer.from("%PDF-1.4 fake"));
+
+    const { GET } = await import("@/app/api/audit/export/route");
+    const response = await GET(
+      new Request("http://localhost/api/audit/export?format=pdf") as unknown as Parameters<
+        typeof import("@/app/api/audit/export/route").GET
+      >[0]
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("X-Audit-Export-Truncated")).toBe("true");
+    expect(renderAuditPdf).toHaveBeenCalledTimes(1);
+    const [passedRows, passedOptions] = vi.mocked(renderAuditPdf).mock.calls[0];
+    expect(passedRows).toHaveLength(MAX_AUDIT_EXPORT_ROWS);
+    expect(passedOptions).toMatchObject({ truncated: true });
+  });
+
+  it("logs audit.exported with truncated:true when the export was capped", async () => {
+    const { MAX_AUDIT_EXPORT_ROWS } = await import("@/lib/audit-query");
+    mockLimit.mockResolvedValue(
+      Array.from({ length: MAX_AUDIT_EXPORT_ROWS + 1 }, (_, i) => makeMinimalRow(i))
+    );
+
+    const { GET } = await import("@/app/api/audit/export/route");
     await GET(
       new Request("http://localhost/api/audit/export") as unknown as Parameters<
         typeof import("@/app/api/audit/export/route").GET
       >[0]
     );
-    expect(sanitizeDetail).toHaveBeenCalled();
+
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        detail: expect.objectContaining({
+          truncated: true,
+          rowCount: MAX_AUDIT_EXPORT_ROWS,
+        }),
+      })
+    );
   });
 
-  it("returns 400 for an invalid 'from' date instead of crashing the export", async () => {
-    mockOrderBy.mockResolvedValue([]);
+  // ── The CSV body must stay STREAMED ──────────────────────────────────────
+  // The row cap alone does not bound memory: measured against this route at
+  // the cap with `detail` at its 2048-byte budget (AGENTS.md), assembling
+  // `rows` + `csvRows` + the joined string and serializing the body peaked at
+  // 1215 MB RSS — past the 1 GB container the cap exists to protect. Streaming
+  // the rows peaks at 576 MB. A refactor back to `rows.map(...).join("\n")`
+  // would be invisible
+  // to every other test in this file (identical bytes, identical headers),
+  // so these two pin the laziness itself rather than the output.
+
+  function makeRowWithDetail(id: number) {
+    return { ...makeMinimalRow(id), detail: { note: `n${id}` } };
+  }
+
+  it("maps no row until the CSV body is read (body is lazy, not pre-assembled)", async () => {
+    vi.mocked(sanitizeDetail).mockClear();
+    mockLimit.mockResolvedValue(Array.from({ length: 600 }, (_, i) => makeRowWithDetail(i)));
+
     const { GET } = await import("@/app/api/audit/export/route");
-    const request = new Request("http://localhost/api/audit/export?from=notadate");
-    const response = await GET(request as unknown as Parameters<typeof GET>[0]);
-    expect(response.status).toBe(400);
+    const response = await GET(
+      new Request("http://localhost/api/audit/export") as unknown as Parameters<
+        typeof import("@/app/api/audit/export/route").GET
+      >[0]
+    );
+
+    // The handler has returned and the audit row is already written — but not
+    // one row has been serialized yet. `.join()`-based assembly cannot do this.
+    expect(sanitizeDetail).not.toHaveBeenCalled();
+
+    await response.text();
+    expect(vi.mocked(sanitizeDetail).mock.calls.length).toBe(600);
+  });
+
+  it("emits the CSV in multiple chunks rather than one buffered body", async () => {
+    mockLimit.mockResolvedValue(Array.from({ length: 600 }, (_, i) => makeRowWithDetail(i)));
+
+    const { GET } = await import("@/app/api/audit/export/route");
+    const response = await GET(
+      new Request("http://localhost/api/audit/export") as unknown as Parameters<
+        typeof import("@/app/api/audit/export/route").GET
+      >[0]
+    );
+
+    const reader = response.body!.getReader();
+    let chunks = 0;
+    let bytes = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks++;
+      bytes += value.length;
+    }
+    // header + ceil(600 / 250) row batches
+    expect(chunks).toBe(4);
+    expect(bytes).toBeGreaterThan(0);
   });
 });

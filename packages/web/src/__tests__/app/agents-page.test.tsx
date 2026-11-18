@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import "@testing-library/jest-dom";
@@ -32,6 +33,16 @@ import { makeAgent } from "@/test-helpers/fixtures";
 describe("AgentsPageContent", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("explains a missing Smithers when the admin has turned personal agents off", () => {
+    render(<AgentsPageContent agents={[]} personalAgentsOff />);
+    expect(screen.getByText(/turned off personal agents/i)).toBeInTheDocument();
+  });
+
+  it("says nothing about personal agents otherwise", () => {
+    render(<AgentsPageContent agents={[]} />);
+    expect(screen.queryByText(/turned off personal agents/i)).not.toBeInTheDocument();
   });
 
   it("renders the Agents heading", () => {

@@ -2,25 +2,37 @@
 /**
  * Pinchy release script
  *
- * Usage: pnpm release <version> [--skip-audit]
- *   e.g. pnpm release 0.5.0
- *        pnpm release 0.5.0 --skip-audit   # only after documenting the CVE acceptance
+ * Usage: pnpm release <version> --verified=<sha> [--skip-audit]
+ *   e.g. pnpm release 0.5.0 --verified=$(git rev-parse HEAD)
+ *        pnpm release 0.5.0 --verified=… --skip-audit   # only after documenting the CVE acceptance
+ *
+ * `--verified` is the staging attestation: the SHA you verified on staging, and
+ * it must equal HEAD. Run `pnpm release:preflight <version>` first — it prints
+ * the manual gates to clear and then the exact command to run.
  *
  * What it does:
  *   1. Validates the version (semver)
  *   2. Gates:
  *      - upgrading.mdx has a section for the target version
- *      - clean working tree, on main branch, CI green, tag not taken
+ *      - clean working tree, on main or a release/* branch, tag not taken
+ *      - CI green *for HEAD's own run* — not merely green somewhere on the branch
+ *      - the --verified staging attestation matches HEAD
  *      - pnpm audit --audit-level=high --prod passes (or --skip-audit)
  *   3. Bumps version in root package.json, packages/web/package.json, and .env.example
- *   4. Commits, tags, and pushes
+ *   4. Commits, tags, then opens the next cycle in a follow-up commit — the
+ *      next upgrade-notes section and the next `-dev` version in both
+ *      package.json files (X.Y.(Z+1)-dev on release/X.Y, X.(Y+1).0-dev on
+ *      main) — and pushes branch and tag in one atomic push
  *
  * What to do manually first (see CONTRIBUTING.md):
  *   - Update docs/src/content/docs/guides/upgrading.mdx (enforced)
- *   - Update packages/web/src/lib/smithers-soul.ts if user-facing features changed
+ *   - Check docs/ covers this release's user-facing features — Smithers reads them on
+ *     demand via the pinchy-docs plugin (docs_list / docs_read) and treats anything
+ *     not in the docs as non-existent. Do NOT hardcode feature descriptions into
+ *     smithers-soul.ts; it is deliberately docs-driven.
  */
 
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,20 +42,40 @@ import {
   bumpEnvExample,
   buildTagName,
   buildCommitMessage,
+  buildPushCommand,
   assertUpgradingSectionExists,
+  assertUpgradeNotesWritten,
   finalizeUpgradeSection,
-  bumpReadmeComposePin,
+  openNextUpgradeSection,
+  bumpReadmeQuickstartPins,
+  isReleasableBranch,
+  nextDevVersion,
+  checkCiGreenForHead,
+  checkReleaseVerification,
+  parseVerifiedSha,
 } from "./lib/release-logic.mjs";
 import {
   bumpMarketplaceVersion,
   bumpCaproverVersion,
 } from "./lib/marketplace-version.mjs";
+import { newestFrozenRelease } from "./lib/version-identity.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
 
 function exec(cmd, opts = {}) {
   return execSync(cmd, { cwd: ROOT, encoding: "utf8", ...opts }).trim();
+}
+
+// Like `exec`, but passes arguments as an argv array so a value (e.g. the
+// current branch name) is never re-parsed by a shell — git refnames can legally
+// contain shell metacharacters.
+function execFile(file, args, opts = {}) {
+  return execFileSync(file, args, {
+    cwd: ROOT,
+    encoding: "utf8",
+    ...opts,
+  }).trim();
 }
 
 function log(msg) {
@@ -59,8 +91,11 @@ function fail(msg) {
 
 const input = process.argv[2];
 const skipAudit = process.argv.includes("--skip-audit");
+const verifiedSha = parseVerifiedSha(process.argv);
 if (!input) {
-  fail("Usage: pnpm release <version>  (e.g. pnpm release 0.3.0)");
+  fail(
+    "Usage: pnpm release <version> --verified=<sha>  (e.g. pnpm release 0.3.0 --verified=$(git rev-parse HEAD))",
+  );
 }
 
 let version;
@@ -76,22 +111,30 @@ log(`\nReleasing Pinchy ${tag}\n`);
 // ─── Upgrade notes gate ───────────────────────────────────────────────────────
 
 log("Checking upgrading.mdx has section for target version...");
-let prevVersion;
-try {
-  prevVersion = exec("git describe --tags --abbrev=0").replace(/^v/, "");
-} catch {
-  fail(
-    "No previous git tag found — cannot determine the 'from' version for upgrade notes.\n" +
-      "If this is the first release, create the initial tag manually before running this script.",
-  );
-}
 const upgradingMdxPath = resolve(
   ROOT,
   "docs/src/content/docs/guides/upgrading.mdx",
 );
 const upgradingMdx = readFileSync(upgradingMdxPath, "utf8");
+// Which release came before this one is answered by upgrading.mdx's newest
+// frozen section, never by `git describe` — that reports the newest tag
+// REACHABLE from HEAD, and a release cut from release/X.Y never merges back.
+// On main after v0.9.1 it answers v0.8.0, so the gate below would look for a
+// section nobody wrote for this release and finalizeUpgradeSection would freeze
+// the wrong one. See scripts/lib/release-prev-version.mjs.
+const prevVersion = newestFrozenRelease(upgradingMdx);
+if (!prevVersion) {
+  fail(
+    "upgrading.mdx records no frozen release section — cannot determine the 'from' version for upgrade notes.\n" +
+      "If this is the first release, add its section to upgrading.mdx before running this script.",
+  );
+}
 try {
   assertUpgradingSectionExists(upgradingMdx, prevVersion, version);
+  // …and it must say something. The previous release opened this section from a
+  // template that already satisfies the check above, so "does it exist" stopped
+  // being the same question as "did anyone write it".
+  assertUpgradeNotesWritten(upgradingMdx, prevVersion, version);
 } catch (e) {
   fail(e.message);
 }
@@ -110,22 +153,77 @@ log("  ✔ Working tree clean");
 
 log("Checking branch...");
 const branch = exec("git branch --show-current");
-if (branch !== "main") {
-  fail(`Must release from main branch (currently on: ${branch})`);
-}
-log("  ✔ On main branch");
-
-log("Checking CI status on main...");
-const ciRun = exec(
-  'gh run list --branch main --workflow CI --limit 1 --json conclusion,headBranch --jq ".[0]"',
-);
-const ci = JSON.parse(ciRun);
-if (ci.conclusion !== "success") {
+if (!isReleasableBranch(branch)) {
   fail(
-    `CI is not green on main (conclusion: ${ci.conclusion}). Fix CI before releasing.`,
+    `Must release from main or a release/X.Y branch (currently on: ${branch || "detached HEAD"})`,
   );
 }
-log("  ✔ CI green");
+log(`  ✔ On ${branch} branch`);
+
+// What the branch declares after this release. Derived now, before anything is
+// written, so a version that does not belong on this branch (0.11.0 from
+// release/0.10) aborts here rather than after the tag is pushed.
+let devVersion;
+try {
+  devVersion = nextDevVersion(version, branch);
+} catch (e) {
+  fail(e.message);
+}
+
+// CI's verdict has to be about the commit being tagged. Asking only for the
+// newest run's conclusion answered "green" for a run that never saw this code
+// — including on a clean tree whose HEAD was never pushed (#1085). So fetch a
+// window of runs with their headSha and find HEAD's own.
+log(`Checking CI status for HEAD on ${branch}...`);
+const headSha = exec("git rev-parse HEAD");
+let ciRuns = null;
+try {
+  ciRuns = JSON.parse(
+    execFile("gh", [
+      "run",
+      "list",
+      "--branch",
+      branch,
+      "--workflow",
+      "CI",
+      "--limit",
+      "30",
+      "--json",
+      "conclusion,status,headSha,url,createdAt",
+    ]),
+  );
+} catch (e) {
+  fail(`Could not read CI runs from gh: ${e.message}`);
+}
+const ciCheck = checkCiGreenForHead({ runs: ciRuns, headSha, branch });
+if (!ciCheck.ok) {
+  fail(ciCheck.message);
+}
+log(`  ✔ ${ciCheck.message}`);
+
+// ─── Staging attestation ──────────────────────────────────────────────────────
+//
+// The manual staging gates are the ones that actually catch what CI cannot, and
+// they were held only by prose in the cut-release skill — which is how v0.6.0
+// shipped with the click-through never done. The preflight already printed
+// `--verified=$(git rev-parse HEAD)`, but this script parsed only argv[2] and
+// --skip-audit, so the flag was accepted and discarded: an operator who
+// attested got exactly the same result as one who did not (#1085).
+//
+// Like the docs-review hook, this is not a fraud boundary — anyone can type the
+// SHA without opening staging. It makes *forgetting* impossible, which is the
+// failure mode that actually happens, and it ties the attestation to the exact
+// commit rather than to the act of releasing.
+log("Checking staging attestation...");
+const attestation = checkReleaseVerification({ verifiedSha, headSha });
+if (!attestation.ok) {
+  fail(
+    `${attestation.message}\n` +
+      `Run \`pnpm release:preflight ${version}\` and verify each [ ] on staging first, then:\n` +
+      `  pnpm release ${version} --verified=$(git rev-parse HEAD)`,
+  );
+}
+log(`  ✔ ${attestation.message}`);
 
 log("Checking tag does not already exist...");
 const existingTags = exec("git tag --list");
@@ -148,9 +246,7 @@ try {
     log(
       "  ⚠ pnpm audit reported findings — continuing because --skip-audit was passed.",
     );
-    log(
-      "    Document the acceptance in the release notes (CONTRIBUTING.md).",
-    );
+    log("    Document the acceptance in the release notes (CONTRIBUTING.md).");
   } else {
     fail(
       "pnpm audit reported high or critical vulnerabilities (or failed to connect to the registry — check output above).\n" +
@@ -168,10 +264,16 @@ const webPkgPath = resolve(ROOT, "packages/web/package.json");
 const envExamplePath = resolve(ROOT, ".env.example");
 const readmePath = resolve(ROOT, "README.md");
 
-writeFileSync(rootPkgPath, bumpPackageJson(readFileSync(rootPkgPath, "utf8"), version));
+writeFileSync(
+  rootPkgPath,
+  bumpPackageJson(readFileSync(rootPkgPath, "utf8"), version),
+);
 log(`  ✔ package.json → ${version}`);
 
-writeFileSync(webPkgPath, bumpPackageJson(readFileSync(webPkgPath, "utf8"), version));
+writeFileSync(
+  webPkgPath,
+  bumpPackageJson(readFileSync(webPkgPath, "utf8"), version),
+);
 log(`  ✔ packages/web/package.json → ${version}`);
 
 writeFileSync(
@@ -180,14 +282,17 @@ writeFileSync(
 );
 log(`  ✔ .env.example → v${version}`);
 
-// Keep the README quick-start curl pin on the released tag so the
-// one-command install is reproducible and never drifts behind (it sat on
-// v0.5.7 through the v0.5.8 and v0.6.0 releases before this).
+// Keep BOTH README quick-start pins on the released tag — the curl'd
+// docker-compose.yml URL and the PINCHY_VERSION= line that compose file
+// resolves its image tags from. They only work as a pair: bumping the URL
+// alone starts cleanly and silently runs the previous release's images.
+// (The curl pin sat on v0.5.7 through the v0.5.8 and v0.6.0 releases before
+// this step existed.)
 writeFileSync(
   readmePath,
-  bumpReadmeComposePin(readFileSync(readmePath, "utf8"), version),
+  bumpReadmeQuickstartPins(readFileSync(readmePath, "utf8"), version),
 );
-log(`  ✔ README.md quick-start pin → v${version}`);
+log(`  ✔ README.md quick-start pins → v${version}`);
 
 // Keep the marketplace listing templates pinned to the released version, so a
 // fresh DigitalOcean install starts on the current release rather than drifting
@@ -214,7 +319,9 @@ log(`  ✔ marketplace/caprover/pinchy.yml → v${version}`);
 const finalizedMdx = finalizeUpgradeSection(upgradingMdx, prevVersion, version);
 if (finalizedMdx !== upgradingMdx) {
   writeFileSync(upgradingMdxPath, finalizedMdx);
-  log(`  ✔ upgrading.mdx → froze v${prevVersion}→%%PINCHY_VERSION%% section to v${version}`);
+  log(
+    `  ✔ upgrading.mdx → froze v${prevVersion}→%%PINCHY_VERSION%% section to v${version}`,
+  );
 } else {
   log(`  ✔ upgrading.mdx → section already concrete (nothing to freeze)`);
 }
@@ -232,10 +339,54 @@ log("Creating tag...");
 exec(`git tag ${tag}`);
 log(`  ✔ Tagged ${tag}`);
 
+// Open the NEXT cycle's section — AFTER the tag, deliberately.
+//
+// Freezing closed a section and nothing opened the next one, so the first
+// upgrade note after a release landed at the end of the file: inside the frozen
+// section of the release that already shipped. Seven released sections on main
+// had drifted that way. Opening it here removes the cause; the
+// upgrading-released-sections guard is the tripwire for what slips past.
+//
+// It is a SEPARATE commit, created after `git tag`, because the tagged tree is
+// what the docs deploy builds and inject-version.sh resolves every
+// `%%PINCHY_VERSION%%` to the build version — so a skeleton inside the release
+// commit would publish an empty "Upgrading from v<target> to v<target>" section
+// at the top of the live upgrade guide. The branch gets the open section; the
+// tag does not.
+const frozenMdx = readFileSync(upgradingMdxPath, "utf8");
+const openedMdx = openNextUpgradeSection(frozenMdx, prevVersion, version);
+if (openedMdx !== frozenMdx) {
+  writeFileSync(upgradingMdxPath, openedMdx);
+  log(`  ✔ upgrading.mdx → opened v${version}→%%PINCHY_VERSION%% section`);
+} else {
+  log(`  ✔ upgrading.mdx → next section already open (nothing to add)`);
+}
+
+// …and declare the next development version in the same commit (#1372). Since
+// #1044 only a release commit may carry a bare version; every other commit says
+// `<next>-dev`. Leaving both files at the release kept the branch non-dev, so
+// assert-package-version went red on its tip and on every backport after it.
+// The install pins (.env.example, README, marketplace) stay on the tag: they
+// answer "what should I pull?", and a -dev version is not pullable.
+writeFileSync(
+  rootPkgPath,
+  bumpPackageJson(readFileSync(rootPkgPath, "utf8"), devVersion),
+);
+writeFileSync(
+  webPkgPath,
+  bumpPackageJson(readFileSync(webPkgPath, "utf8"), devVersion),
+);
+log(`  ✔ package.json + packages/web/package.json → ${devVersion}`);
+
+exec(`git add package.json packages/web/package.json "${upgradingMdxPath}"`);
+exec(`git commit -m "chore(release): open ${devVersion} after v${version}"`);
+log(`  ✔ Committed ${devVersion}`);
+
 log("Pushing...");
-exec("git push origin main");
-exec(`git push origin ${tag}`);
+exec(buildPushCommand(tag));
 log(`  ✔ Pushed\n`);
 
-log(`✔ Released ${tag} — GitHub Actions will create the release and deploy docs.\n`);
+log(
+  `✔ Released ${tag} — GitHub Actions will create the release and deploy docs.\n`,
+);
 log(`  https://github.com/heypinchy/pinchy/releases/tag/${tag}\n`);

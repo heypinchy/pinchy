@@ -1,12 +1,29 @@
 import { PROVIDERS, resolveProviderBaseUrl, type ProviderName } from "@/lib/providers";
 import { getSetting } from "@/lib/settings";
 import { TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS } from "@/lib/ollama-cloud-models";
+import { getModelCatalogForProvider } from "@/lib/openclaw-builtin-models";
+import { getAgentModelBlockReason } from "@/lib/model-resolver/blocklist";
+import { listProvidersForModelFetch } from "@/lib/openai-compatible-providers";
+import {
+  resolveCustomProviderModels,
+  resetCustomModelCache,
+} from "@/lib/openai-compatible-discovery";
 
 export { isModelVisionCapable } from "@/lib/model-vision";
 import { setOllamaLocalVisionModels } from "@/lib/model-vision";
+import { hasFields, isMap, processWideCache } from "@/lib/process-wide-cache";
 
-let cachedResult: ProviderModels[] | null = null;
-let cachedAt: number = 0;
+// Every cache in this module is process-wide (see process-wide-cache.ts): a
+// regenerate reads them, and the instance that runs a regenerate is not always
+// the one that called resetCache().
+
+/** Cloud providers' catalogs, fetched together, kept for an hour. */
+const cloudCatalog = () =>
+  processWideCache<{ result: ProviderModels[] | null; at: number }>(
+    "__pinchyCloudModelCatalogCache",
+    () => ({ result: null, at: 0 }),
+    hasFields("result", "at")
+  );
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 
 // Per-URL cache for fetchOllamaLocalModelsFromUrl. regenerateOpenClawConfig()
@@ -17,12 +34,22 @@ const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 // The TTL is intentionally short: the model list is also displayed live in
 // the setup wizard, and a long TTL would leak stale data into that surface.
 const OLLAMA_LOCAL_CACHE_TTL_MS = 10_000;
-const ollamaLocalCache = new Map<string, { fetchedAt: number; result: OllamaLocalModelInfo[] }>();
+const ollamaLocalCache = () =>
+  processWideCache<Map<string, { fetchedAt: number; result: OllamaLocalModelInfo[] }>>(
+    "__pinchyOllamaLocalModelCache",
+    () => new Map(),
+    isMap
+  );
 
 export function resetCache() {
-  cachedResult = null;
-  cachedAt = 0;
-  ollamaLocalCache.clear();
+  const cloud = cloudCatalog();
+  cloud.result = null;
+  cloud.at = 0;
+  ollamaLocalCache().clear();
+  // Custom OpenAI-compatible providers' live-model cache lives in
+  // openai-compatible-discovery.ts (#894 backend redesign) — clear it too so
+  // resetCache() remains the single "forget everything cached" entry point.
+  resetCustomModelCache();
 }
 
 export interface ModelInfo {
@@ -51,28 +78,38 @@ export interface OllamaLocalModelInfo extends ModelInfo {
   contextLength?: number;
 }
 
+/**
+ * A provider identifier in the model list: a fixed built-in `ProviderName` OR
+ * a custom OpenAI-compatible instance's dynamic slug. It collapses to `string`
+ * in TS (the widening we want — every caller compares `id` against a string
+ * literal like `p.id === "ollama-cloud"` or a `ProviderName`, both assignable),
+ * but the named alias keeps the intent visible in the source.
+ */
+export type ProviderModelsId = ProviderName | string;
+
 export interface ProviderModels {
-  id: ProviderName;
+  id: ProviderModelsId;
   name: string;
   models: ModelInfo[];
 }
 
+/**
+ * The models a built-in API provider is known to serve, as qualified ids — i.e.
+ * the curated catalog build.ts hands to OpenClaw. Offline, this is what the
+ * model picker lists; online, it is what the balanced default prefers. Empty
+ * for the Ollama providers, which have no such catalog.
+ */
+function curatedModels(provider: ProviderName): ModelInfo[] {
+  return getModelCatalogForProvider(provider).map((m) => ({
+    id: `${provider}/${m.id}`,
+    name: m.name,
+  }));
+}
+
 const FALLBACK_MODELS: Record<ProviderName, ModelInfo[]> = {
-  anthropic: [
-    { id: "anthropic/claude-opus-4-7", name: "Claude Opus 4.7" },
-    { id: "anthropic/claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
-    { id: "anthropic/claude-haiku-4-5-20251001", name: "Claude Haiku 4.5" },
-  ],
-  openai: [
-    { id: "openai/gpt-5.5", name: "GPT-5.5" },
-    { id: "openai/gpt-5.4", name: "GPT-5.4" },
-    { id: "openai/gpt-5.4-mini", name: "GPT-5.4 Mini" },
-  ],
-  google: [
-    { id: "google/gemini-2.5-pro", name: "Gemini 2.5 Pro" },
-    { id: "google/gemini-2.5-flash", name: "Gemini 2.5 Flash" },
-    { id: "google/gemini-2.5-flash-lite", name: "Gemini 2.5 Flash Lite" },
-  ],
+  anthropic: curatedModels("anthropic"),
+  openai: curatedModels("openai"),
+  google: curatedModels("google"),
   "ollama-cloud": TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS.map((id) => ({
     id: `ollama-cloud/${id}`,
     name: id,
@@ -88,7 +125,11 @@ interface ProviderFetchConfig {
 
 const PROVIDER_FETCH_CONFIG: Record<ProviderName, ProviderFetchConfig> = {
   anthropic: {
-    url: () => `${resolveProviderBaseUrl("anthropic", "https://api.anthropic.com")}/v1/models`,
+    // The list is paged, 20 per page by default, newest first. The curated
+    // models are the oldest live ones, so the first page alone would lose them
+    // as Anthropic ships more models — and the balanced default with them.
+    url: () =>
+      `${resolveProviderBaseUrl("anthropic", "https://api.anthropic.com")}/v1/models?limit=1000`,
     headers: (apiKey) => ({
       "x-api-key": apiKey,
       "anthropic-version": "2023-06-01",
@@ -114,8 +155,9 @@ const PROVIDER_FETCH_CONFIG: Record<ProviderName, ProviderFetchConfig> = {
   },
   google: {
     url: (apiKey) =>
-      `${resolveProviderBaseUrl("google", "https://generativelanguage.googleapis.com")}/v1beta/models?key=${apiKey}`,
-    headers: () => ({}),
+      `${resolveProviderBaseUrl("google", "https://generativelanguage.googleapis.com")}/v1beta/models`,
+    // Header, not ?key=: query strings leak into proxy logs and error messages.
+    headers: (apiKey) => ({ "x-goog-api-key": apiKey }),
     transform: (data) =>
       (data.models as { name: string; displayName: string; supportedGenerationMethods: string[] }[])
         .filter((m) => m.supportedGenerationMethods?.includes("generateContent"))
@@ -149,25 +191,55 @@ const PROVIDER_FETCH_CONFIG: Record<ProviderName, ProviderFetchConfig> = {
   },
 };
 
+// The cloud catalog fetch runs in request context — `/api/templates` awaits it
+// before the agent-creation page can render — so it needs the same bound the
+// key-validation probe (`PROVIDER_PROBE_TIMEOUT_MS`) and Ollama discovery
+// (`OLLAMA_FETCH_TIMEOUT_MS`) already carry. It was the one provider call left
+// unbounded, and undici's own fallback is coarse enough (minutes) to read as a
+// page that simply never loads. Shorter than the 10s probe on purpose: the
+// probe reports a key as valid or not, where a slow answer is worth waiting
+// for, while here every miss has a good offline answer sitting in
+// FALLBACK_MODELS.
+//
+// It bounds one provider call, not one request: `fetchProviderModels` walks the
+// configured cloud providers sequentially, so a deployment with all four keys
+// stored can still spend 4 × this before the page renders. That is a ceiling
+// instead of undici's minutes, which is the point — but do not read it as a 5s
+// page budget.
+export const PROVIDER_CATALOG_FETCH_TIMEOUT_MS = 5_000;
+
 async function fetchModelsForProvider(
   provider: ProviderName,
   apiKey: string
 ): Promise<ModelInfo[]> {
   const config = PROVIDER_FETCH_CONFIG[provider];
-  const response = await fetch(config.url(apiKey), {
-    headers: config.headers(apiKey),
-  });
+  // AbortController + setTimeout rather than `AbortSignal.timeout`: the latter
+  // schedules on a libuv timer that vitest's fake clock cannot advance, so the
+  // timeout would be untestable except in real time (see the equivalent in
+  // `infrastructure.ts#checkOpenClaw`).
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), PROVIDER_CATALOG_FETCH_TIMEOUT_MS);
 
-  if (!response.ok) {
-    return FALLBACK_MODELS[provider];
+  try {
+    const response = await fetch(config.url(apiKey), {
+      headers: config.headers(apiKey),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      return FALLBACK_MODELS[provider];
+    }
+
+    const data = await response.json();
+    return config.transform(data);
+  } finally {
+    clearTimeout(timeout);
   }
-
-  const data = await response.json();
-  return config.transform(data);
 }
 
 export const BALANCED_PATTERNS: Record<ProviderName, RegExp> = {
-  anthropic: /^anthropic\/claude-sonnet-\d+-\d+(?:-\d{8})?$/,
+  // The minor version is optional: Sonnet 5 is plain `claude-sonnet-5`.
+  anthropic: /^anthropic\/claude-sonnet-\d+(?:-\d+)?(?:-\d{8})?$/,
   openai: /^openai\/gpt-([5-9]|\d{2,})(\.\d+)?(?:-\d{4}-\d{2}-\d{2})?$/,
   google: /^google\/gemini-[2-9](?:\.\d+)?-pro(?:-\d{3})?$/,
   "ollama-cloud": /^ollama-cloud\/kimi-k2\.6$/,
@@ -218,10 +290,16 @@ export function selectOllamaLocalDefault(models: OllamaLocalModelInfo[]): string
   return sorted[0].id;
 }
 
-let lastOllamaLocalModels: OllamaLocalModelInfo[] = [];
+/** The last local Ollama model list seen — what the ollama-local default is picked from. */
+const lastOllamaLocal = () =>
+  processWideCache<{ models: OllamaLocalModelInfo[] }>(
+    "__pinchyOllamaLocalModels",
+    () => ({ models: [] }),
+    hasFields("models")
+  );
 
 export function getOllamaLocalModels(): OllamaLocalModelInfo[] {
-  return lastOllamaLocalModels;
+  return lastOllamaLocal().models;
 }
 
 /**
@@ -241,7 +319,7 @@ export function getOllamaLocalModels(): OllamaLocalModelInfo[] {
  * ollama-local install.
  */
 export function setOllamaLocalModels(models: OllamaLocalModelInfo[]): void {
-  lastOllamaLocalModels = models;
+  lastOllamaLocal().models = models;
 }
 
 // Per-call timeout for Ollama discovery requests. Each `/api/show` call
@@ -286,7 +364,7 @@ export async function fetchOllamaLocalModelsFromUrl(
   const url = baseUrl.replace(/\/$/, "");
 
   // Cache lookup — see OLLAMA_LOCAL_CACHE_TTL_MS doc-comment for rationale.
-  const cached = ollamaLocalCache.get(url);
+  const cached = ollamaLocalCache().get(url);
   if (cached && Date.now() - cached.fetchedAt < OLLAMA_LOCAL_CACHE_TTL_MS) {
     return cached.result;
   }
@@ -351,7 +429,7 @@ export async function fetchOllamaLocalModelsFromUrl(
   // is already short-circuited above, but if /api/tags returned 200 with
   // an empty model list we cache that too — the user just hasn't pulled
   // anything yet, and we want to avoid hammering the endpoint.
-  ollamaLocalCache.set(url, { fetchedAt: Date.now(), result: models });
+  ollamaLocalCache().set(url, { fetchedAt: Date.now(), result: models });
 
   return models;
 }
@@ -378,9 +456,27 @@ export function extractModelDate(modelId: string): number {
 
 export function selectDefaultModel(provider: ProviderName, models: ModelInfo[]): string {
   const pattern = BALANCED_PATTERNS[provider];
-  const candidates = models.filter(
-    (m) => pattern.test(m.id) && !PREVIEW_PATTERN.test(m.id) && !isRejectedVariant(m.id)
+  // A tools-blocked model is never a default: every agent drives tools.
+  const matching = models.filter(
+    (m) =>
+      pattern.test(m.id) &&
+      !PREVIEW_PATTERN.test(m.id) &&
+      !isRejectedVariant(m.id) &&
+      !getAgentModelBlockReason(m.id)
   );
+
+  // Curated models first. This default feeds the pdf/image vision chain and
+  // the knowledge-base OCR, and both gate on the capability table — seeded from
+  // the curated catalog only. A live model newer than this release has no row,
+  // reads as "no vision", and silently takes its provider out of the chain. The
+  // date-first ordering below made that the normal case: a real Anthropic
+  // catalog lists the dated `claude-sonnet-4-5-20250929` next to the dateless
+  // 4.6+ ids, and the dated (older) one won. An uncurated model still wins when
+  // no curated one is live — the provider retired them all, and a model Pinchy
+  // cannot vouch for beats one the provider no longer serves.
+  const curated = new Set(curatedModels(provider).map((m) => m.id));
+  const curatedMatching = matching.filter((m) => curated.has(m.id));
+  const candidates = curatedMatching.length > 0 ? curatedMatching : matching;
 
   if (candidates.length > 0) {
     // Pick the most recent model by date suffix (YYYYMMDD), with lexicographic
@@ -398,20 +494,41 @@ export function selectDefaultModel(provider: ProviderName, models: ModelInfo[]):
   return BALANCED_ANCHORS[provider] || PROVIDERS[provider].defaultModel;
 }
 
-export async function getDefaultModel(provider: ProviderName): Promise<string> {
+export async function getDefaultModel(provider: ProviderModelsId): Promise<string> {
   const allProviders = await fetchProviderModels();
   const providerModels = allProviders.find((p) => p.id === provider);
 
+  // Custom OpenAI-compatible instance (#894): the slug is not one of the fixed
+  // built-in ProviderNames, so BALANCED_PATTERNS/PROVIDERS have no entry for it.
+  // fetchProviderModels() already namespaced its model ids `<slug>/<modelId>`,
+  // and — with no tier metadata to pattern-match — its default is the first
+  // persisted model, mirroring the delete-migration choice (providers DELETE).
+  // `Object.hasOwn`, not `provider in PROVIDERS`: `in` walks the prototype
+  // chain, so a slug equal to an Object.prototype key (`constructor`,
+  // `toString`, `hasOwnProperty`, …) — all creatable, since RESERVED_PROVIDER_SLUGS
+  // blocks only the real names + `ollama` — would be falsely read as a built-in
+  // and then raw-TypeError on the missing BALANCED_PATTERNS/PROVIDERS entry.
+  if (!Object.hasOwn(PROVIDERS, provider)) {
+    if (!providerModels || providerModels.models.length === 0) {
+      // Neither a built-in nor a live instance. Fail with a defined error
+      // instead of dereferencing `PROVIDERS[slug].defaultModel` (a TypeError).
+      throw new Error(`Unknown provider: ${provider}`);
+    }
+    return providerModels.models[0].id;
+  }
+
+  const builtIn = provider as ProviderName;
+
   if (!providerModels || providerModels.models.length === 0) {
-    return PROVIDERS[provider].defaultModel;
+    return PROVIDERS[builtIn].defaultModel;
   }
 
   // Local Ollama uses capability-based heuristic (largest model with tool support)
-  if (provider === "ollama-local") {
-    return selectOllamaLocalDefault(lastOllamaLocalModels) || PROVIDERS[provider].defaultModel;
+  if (builtIn === "ollama-local") {
+    return selectOllamaLocalDefault(getOllamaLocalModels()) || PROVIDERS[builtIn].defaultModel;
   }
 
-  return selectDefaultModel(provider, providerModels.models);
+  return selectDefaultModel(builtIn, providerModels.models);
 }
 
 export async function fetchProviderModels(): Promise<ProviderModels[]> {
@@ -420,8 +537,9 @@ export async function fetchProviderModels(): Promise<ProviderModels[]> {
   const now = Date.now();
   let cloudResults: ProviderModels[];
 
-  if (cachedResult && now - cachedAt < CACHE_TTL_MS) {
-    cloudResults = cachedResult;
+  const cloud = cloudCatalog();
+  if (cloud.result && now - cloud.at < CACHE_TTL_MS) {
+    cloudResults = cloud.result;
   } else {
     cloudResults = [];
 
@@ -448,8 +566,8 @@ export async function fetchProviderModels(): Promise<ProviderModels[]> {
       }
     }
 
-    cachedResult = cloudResults;
-    cachedAt = now;
+    cloud.result = cloudResults;
+    cloud.at = now;
   }
 
   const results = [...cloudResults];
@@ -458,7 +576,7 @@ export async function fetchProviderModels(): Promise<ProviderModels[]> {
   if (ollamaUrl) {
     try {
       const ollamaModels = await fetchOllamaLocalModelsFromUrl(ollamaUrl);
-      lastOllamaLocalModels = ollamaModels;
+      setOllamaLocalModels(ollamaModels);
 
       const visionModels = new Set(
         ollamaModels.filter((m) => m.capabilities.vision).map((m) => m.id.replace("ollama/", ""))
@@ -477,6 +595,25 @@ export async function fetchProviderModels(): Promise<ProviderModels[]> {
         models: [],
       });
     }
+  }
+
+  // Append one entry per custom OpenAI-compatible instance (#894). Identity +
+  // decrypted key + snapshot are fetched from the DB every call (not
+  // cloud-cached), and the model LIST itself is resolved live from the
+  // endpoint via `resolveCustomProviderModels` (short-TTL cache + snapshot
+  // fallback — mirrors ollama-local's `fetchOllamaLocalModelsFromUrl`, #894
+  // backend redesign) so a just-created/edited instance, or a newly added
+  // model on the endpoint, shows up without a manual re-discover step. Model
+  // ids are namespaced `<slug>/<modelId>`, matching how an agent's model is
+  // emitted into openclaw.json for these providers.
+  const customProviders = await listProvidersForModelFetch();
+  for (const p of customProviders) {
+    const models = await resolveCustomProviderModels(p);
+    results.push({
+      id: p.slug,
+      name: p.displayName,
+      models: models.map((m) => ({ id: `${p.slug}/${m.id}`, name: m.name })),
+    });
   }
 
   return results;

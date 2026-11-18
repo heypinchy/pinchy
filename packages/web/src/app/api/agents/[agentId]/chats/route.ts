@@ -4,6 +4,8 @@ import { getAgentWithAccess } from "@/lib/agent-access";
 import { getOpenClawClient } from "@/server/openclaw-client";
 import { listUserAgentChats } from "@/lib/chats/list-user-agent-chats";
 import { firstUserMessageTitle } from "@/lib/chats/first-user-message-title";
+import { getCachedChatTitle, setCachedChatTitle } from "@/lib/chats/title-cache";
+import { runWithConcurrency } from "@/lib/concurrency";
 import type { RawHistoryMessage } from "@/lib/chats/telegram-transcript";
 import type { ChatListItem } from "@/lib/schemas/sessions";
 
@@ -14,25 +16,20 @@ type RouteContext = { params: Promise<{ agentId: string }> };
 // pull a small window that reliably contains the opening turn of short chats.
 const TITLE_HISTORY_LIMIT = 30;
 
-/**
- * Short-lived, process-local cache of derived titles, keyed by sessionId. The
- * dropdown re-fetches on every open, and a chat's first user message never
- * changes, so a brief TTL spares us re-reading the same transcripts on rapid
- * re-opens. Best-effort: it's fine for entries to be evicted or for the process
- * to restart cold.
- */
-const TITLE_CACHE_TTL_MS = 60_000;
-const titleCache = new Map<string, { title: string | null; at: number }>();
+// Every unlabeled web chat needs one `sessions.history` RPC against OpenClaw
+// to derive its title. Bounding how many run at once keeps a dropdown open
+// on an agent with 100+ unlabeled chats from firing 100+ simultaneous RPCs.
+const TITLE_FETCH_CONCURRENCY = 5;
 
 /**
  * Derive a labelless web chat's title from its first user message, with a brief
- * cache. Returns `null` (the date-fallback signal) when the chat has no usable
- * user message or its history can't be read — a title is a convenience, never a
- * reason to fail the whole list.
+ * cache (see `@/lib/chats/title-cache`). Returns `null` (the date-fallback
+ * signal) when the chat has no usable user message or its history can't be
+ * read — a title is a convenience, never a reason to fail the whole list.
  */
 async function deriveWebChatTitle(sessionKey: string, sessionId: string): Promise<string | null> {
-  const cached = titleCache.get(sessionId);
-  if (cached && Date.now() - cached.at < TITLE_CACHE_TTL_MS) return cached.title;
+  const cached = getCachedChatTitle(sessionId);
+  if (cached !== undefined) return cached;
 
   let title: string | null = null;
   try {
@@ -45,7 +42,7 @@ async function deriveWebChatTitle(sessionKey: string, sessionId: string): Promis
     title = null;
   }
 
-  titleCache.set(sessionId, { title, at: Date.now() });
+  setCachedChatTitle(sessionId, title);
   return title;
 }
 
@@ -81,10 +78,12 @@ export const GET = withAuth<RouteContext>(async (_request, { params }, session) 
   // Title precedence: the saved session label wins; otherwise, for the user's
   // OWN web chats, derive it from the first user message. Telegram chats keep
   // their label/null (their transcript has a dedicated endpoint), and labelled
-  // chats never trigger a history read.
+  // chats never trigger a history read. Bounded fan-out (see
+  // TITLE_FETCH_CONCURRENCY above) — a plain Promise.all would fire one RPC
+  // per unlabeled chat all at once.
   const chats: ChatListItem[] = (
-    await Promise.all(
-      classified.map(async (c) => {
+    await runWithConcurrency(
+      classified.map((c) => async () => {
         const label = labelByKey.get(c.key) ?? null;
         let title = label;
         if (!title && c.origin === "web") {
@@ -98,7 +97,8 @@ export const GET = withAuth<RouteContext>(async (_request, { params }, session) 
           title,
           lastInteractionAt: c.lastInteractionAt,
         };
-      })
+      }),
+      TITLE_FETCH_CONCURRENCY
     )
   ).sort((a, b) => b.lastInteractionAt - a.lastInteractionAt);
 

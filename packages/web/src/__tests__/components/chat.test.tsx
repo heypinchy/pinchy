@@ -1,17 +1,45 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { Chat } from "@/components/chat";
 import { makeAgent } from "@/test-helpers/fixtures";
+import { clearChatConnection, publishChatConnection } from "@/lib/chat-connection-store";
 
-const { mockGetAgent, mockUseChatStatus, mockUseChatSession, mockRecordLastChat } = vi.hoisted(
-  () => ({
-    mockGetAgent: vi.fn() as ReturnType<typeof vi.fn>,
-    mockUseChatStatus: vi.fn(),
-    mockUseChatSession: vi.fn(),
-    mockRecordLastChat: vi.fn(),
-  })
-);
+const {
+  mockGetAgent,
+  mockUseChatStatus,
+  mockUseChatSession,
+  mockRecordLastChat,
+  mockUsePendingApprovals,
+  mockUseTouchChatSession,
+} = vi.hoisted(() => ({
+  mockGetAgent: vi.fn() as ReturnType<typeof vi.fn>,
+  mockUseChatStatus: vi.fn(),
+  mockUseChatSession: vi.fn(),
+  mockRecordLastChat: vi.fn(),
+  mockUsePendingApprovals: vi.fn(),
+  mockUseTouchChatSession: vi.fn(),
+}));
+
+vi.mock("@/hooks/use-pending-approvals", () => ({
+  usePendingApprovals: mockUsePendingApprovals,
+}));
+
+function pendingApprovalFor(agentId: string, chatId?: string) {
+  return {
+    id: `approval-${agentId}-${chatId ?? "default"}`,
+    agentId,
+    agentName: "Scout",
+    toolName: "odoo_write",
+    argsSummary: {},
+    // OpenClaw lowercases session keys.
+    sessionKey: `agent:${agentId}:direct:user-1${chatId ? `:${chatId}` : ""}`.toLowerCase(),
+    createdAt: "2026-11-05T10:00:00.000Z",
+    expiresAt: "2026-11-05T10:15:00.000Z",
+  };
+}
 
 vi.mock("@/lib/last-chat-store", () => ({
   recordLastChat: (...args: unknown[]) => mockRecordLastChat(...args),
@@ -34,12 +62,14 @@ vi.mock("@/lib/avatar", () => ({
 
 vi.mock("@/components/chat-session-provider", () => ({
   useChatSession: mockUseChatSession,
+  chatSessionKey: (agentId: string, chatId?: string) => (chatId ? `${agentId}:${chatId}` : agentId),
   // ChatSwitcher (rendered in the header) reads run-state via this hook to
   // refresh the chat title when a run completes; idle in these tests.
   useChatSessionIsRunning: () => false,
   // ChatErrorBanner reads this to suppress itself when the thread already shows
   // the inline error (#583); no inline error in these tests.
   useChatSessionHasInlineError: () => false,
+  useTouchChatSession: mockUseTouchChatSession,
 }));
 
 vi.mock("@/hooks/use-chat-status", () => ({
@@ -51,14 +81,32 @@ vi.mock("@assistant-ui/react", () => ({
 }));
 
 vi.mock("@/components/assistant-ui/thread", () => ({
-  Thread: () => <div data-testid="thread">Thread</div>,
+  Thread: () => (
+    <div data-testid="thread">
+      Thread
+      <textarea aria-label="draft" />
+    </div>
+  ),
 }));
 
 vi.mock("@/components/mobile-chat-header", () => ({
-  MobileChatHeader: ({ agentId, agentName, avatarUrl }: any) => (
-    <div data-testid="mobile-chat-header" data-agent-id={agentId} data-avatar-url={avatarUrl}>
+  MobileChatHeader: ({ agentId, agentName, avatarUrl, searchesKnowledge }: any) => (
+    <div
+      data-testid="mobile-chat-header"
+      data-agent-id={agentId}
+      data-avatar-url={avatarUrl}
+      data-searches-knowledge={String(Boolean(searchesKnowledge))}
+    >
       {agentName}
     </div>
+  ),
+}));
+
+vi.mock("@/components/knowledge-search-sheet", () => ({
+  KnowledgeSearchSheet: ({ agentId }: any) => (
+    <button type="button" data-testid="knowledge-search" data-agent-id={agentId}>
+      What can this agent search?
+    </button>
   ),
 }));
 
@@ -83,6 +131,7 @@ vi.mock("next/link", () => ({
 // chats, the switcher falls back to the agent name in its trigger).
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn() }),
+  usePathname: () => "/chat/agent-1",
 }));
 
 vi.mock("@/lib/api-client", async (importOriginal) => {
@@ -110,6 +159,13 @@ describe("Chat", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetAgent.mockReturnValue(undefined);
+    mockUsePendingApprovals.mockReturnValue({
+      approvals: [],
+      openId: null,
+      open: vi.fn(),
+      busy: null,
+      decide: vi.fn(),
+    });
     mockUseChatStatus.mockReturnValue({ kind: "ready" });
     mockUseChatSession.mockReturnValue({
       bundle: DEFAULT_BUNDLE,
@@ -132,6 +188,11 @@ describe("Chat", () => {
   it("passes the chatId through to useChatSession (#508)", () => {
     render(<Chat agentId="agent-1" agentName="Smithers" chatId="chat-x" />);
     expect(mockUseChatSession).toHaveBeenCalledWith("agent-1", "chat-x");
+  });
+
+  it("marks its chat as the most recently viewed one, so the tab's socket cap evicts others first (#957)", () => {
+    render(<Chat agentId="agent-1" agentName="Smithers" chatId="chat-x" />);
+    expect(mockUseTouchChatSession).toHaveBeenCalledWith("agent-1", "chat-x");
   });
 
   it("calls useChatSession without a chatId for the legacy/default chat", () => {
@@ -189,16 +250,39 @@ describe("Chat", () => {
       expect(getDotColor(/reconnecting/i)).toContain("bg-destructive");
     });
 
-    it('shows red dot with label containing "reload" for unavailable/exhausted status', () => {
-      mockUseChatStatus.mockReturnValue({ kind: "unavailable", reason: "exhausted" });
+    it.each([
+      ["offline", /offline/i],
+      ["rejected", /too many/i],
+      ["upstreamDown", /agent isn't reachable/i],
+      ["unreachable", /can't reach/i],
+    ])("shows red dot for unavailable/%s status", (reason, label) => {
+      mockUseChatStatus.mockReturnValue({ kind: "unavailable", reason });
       render(<Chat agentId="agent-1" agentName="Smithers" />);
-      expect(getDotColor(/reload/i)).toContain("bg-destructive");
+      expect(getDotColor(label)).toContain("bg-destructive");
     });
 
     it('shows red dot with label containing "Image too large" for payloadRejected status', () => {
       mockUseChatStatus.mockReturnValue({ kind: "payloadRejected" });
       render(<Chat agentId="agent-1" agentName="Smithers" />);
       expect(getDotColor(/image too large/i)).toContain("bg-destructive");
+    });
+
+    // The cold-start E2E guard watches for a red flash during startup. It must
+    // see every red state, not only the one whose label it once matched.
+    it.each([
+      [{ kind: "unavailable", reason: "disconnected" }, "true"],
+      [{ kind: "unavailable", reason: "upstreamDown" }, "true"],
+      [{ kind: "unavailable", reason: "unreachable" }, "true"],
+      [{ kind: "unavailable", reason: "historyTimeout" }, "true"],
+      [{ kind: "payloadRejected" }, "true"],
+      [{ kind: "starting" }, "false"],
+      [{ kind: "unavailable", reason: "configuring" }, "false"],
+      [{ kind: "ready" }, "false"],
+    ])("marks the indicator for %o with data-error=%s", (status, expected) => {
+      mockUseChatStatus.mockReturnValue(status);
+      render(<Chat agentId="agent-1" agentName="Smithers" />);
+      const button = document.querySelector("button[data-error]");
+      expect(button?.getAttribute("data-error")).toBe(expected);
     });
   });
 
@@ -212,6 +296,23 @@ describe("Chat", () => {
   it("should not render a settings link when canEdit is false", () => {
     render(<Chat agentId="agent-1" agentName="Smithers" canEdit={false} />);
     expect(screen.queryByRole("link", { name: /settings/i })).not.toBeInTheDocument();
+  });
+
+  it("offers 'What can this agent search?' on both headers only for a knowledge-base agent", () => {
+    const { unmount } = render(<Chat agentId="agent-1" agentName="Smithers" searchesKnowledge />);
+    expect(screen.getByTestId("knowledge-search")).toHaveAttribute("data-agent-id", "agent-1");
+    expect(screen.getByTestId("mobile-chat-header")).toHaveAttribute(
+      "data-searches-knowledge",
+      "true"
+    );
+    unmount();
+
+    render(<Chat agentId="agent-1" agentName="Smithers" />);
+    expect(screen.queryByTestId("knowledge-search")).not.toBeInTheDocument();
+    expect(screen.getByTestId("mobile-chat-header")).toHaveAttribute(
+      "data-searches-knowledge",
+      "false"
+    );
   });
 
   it("should render MobileChatHeader", () => {
@@ -230,6 +331,34 @@ describe("Chat", () => {
   it("should show 'Shared' badge for shared agents", () => {
     render(<Chat agentId="agent-1" agentName="Sales Bot" isPersonal={false} />);
     expect(screen.getByText("Shared")).toBeInTheDocument();
+  });
+
+  describe("Shared badge tooltip", () => {
+    // Memory is a per-agent permission (`pinchy_memory`). Only an agent that
+    // holds it turns conversations into shared knowledge (#1275).
+    async function hoverSharedBadge() {
+      await userEvent.hover(screen.getByText("Shared"));
+    }
+
+    it("says conversations build team knowledge when the agent has memory", async () => {
+      mockGetAgent.mockReturnValue(makeAgent({ allowedTools: ["pinchy_memory"] }));
+      render(<Chat agentId="agent-1" agentName="Sales Bot" />);
+      await hoverSharedBadge();
+      expect((await screen.findAllByText(/help build team knowledge/i)).length).toBeGreaterThan(0);
+    });
+
+    it("does not claim team knowledge when the agent has no memory", async () => {
+      mockGetAgent.mockReturnValue(makeAgent({ allowedTools: ["knowledge_search"] }));
+      render(<Chat agentId="agent-1" agentName="Sales Bot" />);
+      await hoverSharedBadge();
+      // Only memory is off: files in the shared workspace still persist, so the
+      // tooltip must not claim that nothing carries over.
+      expect(
+        (await screen.findAllByText(/doesn't keep memory of your conversations/i)).length
+      ).toBeGreaterThan(0);
+      expect(screen.queryByText(/nothing carries over/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/team knowledge/i)).not.toBeInTheDocument();
+    });
   });
 
   it("should show 'Private' badge for personal agents", () => {
@@ -340,7 +469,8 @@ describe("Chat", () => {
         isHistoryLoaded: true,
         hasInitialContent: true,
         isRunning: false,
-        reconnectExhausted: false,
+        isOffline: false,
+        connectionRejection: null,
         payloadRejected: false,
         configuring: false,
       })
@@ -384,10 +514,90 @@ describe("Chat", () => {
       expect(screen.getByText(/taking longer than usual/i)).toBeInTheDocument();
     });
 
-    it("shows exhausted message when unavailable/exhausted", () => {
-      mockUseChatStatus.mockReturnValue({ kind: "unavailable", reason: "exhausted" });
+    describe("while the agent waits for the user's confirmation (#1301)", () => {
+      function delayedResponding() {
+        mockUseChatStatus.mockReturnValue({ kind: "responding" });
+        mockUseChatSession.mockReturnValue({
+          bundle: { ...DEFAULT_BUNDLE, isDelayed: true, isRunning: true },
+          publish: vi.fn(),
+          remove: vi.fn(),
+        });
+      }
+
+      it("says it is waiting for the confirmation, not that the agent is slow", () => {
+        delayedResponding();
+        mockUsePendingApprovals.mockReturnValue({
+          approvals: [pendingApprovalFor("agent-1")],
+          openId: null,
+          open: vi.fn(),
+          busy: null,
+          decide: vi.fn(),
+        });
+        render(<Chat agentId="agent-1" agentName="Smithers" />);
+        expect(screen.getByText(/waiting for your confirmation/i)).toBeInTheDocument();
+        expect(screen.queryByText(/taking longer than usual/i)).not.toBeInTheDocument();
+      });
+
+      it.each([
+        ["another chat with this agent", "agent-1", "chat-b", undefined],
+        ["the default chat, from a named one", "agent-1", undefined, "chat-a"],
+      ])(
+        "still shows the delay hint when the confirmation waits in %s",
+        (_label, approvalAgent, approvalChat, openChat) => {
+          // A confirmation stalls only the run of its own session; approving it
+          // does nothing for this chat's run (#508 per-chat sessions).
+          delayedResponding();
+          mockUsePendingApprovals.mockReturnValue({
+            approvals: [pendingApprovalFor(approvalAgent, approvalChat)],
+            openId: null,
+            open: vi.fn(),
+            busy: null,
+            decide: vi.fn(),
+          });
+          render(<Chat agentId="agent-1" agentName="Smithers" chatId={openChat} />);
+          expect(screen.getByText(/taking longer than usual/i)).toBeInTheDocument();
+          expect(screen.queryByText(/waiting for your confirmation/i)).not.toBeInTheDocument();
+        }
+      );
+
+      it("says it is waiting when the confirmation waits in this named chat", () => {
+        delayedResponding();
+        mockUsePendingApprovals.mockReturnValue({
+          approvals: [pendingApprovalFor("agent-1", "chat-a")],
+          openId: null,
+          open: vi.fn(),
+          busy: null,
+          decide: vi.fn(),
+        });
+        render(<Chat agentId="agent-1" agentName="Smithers" chatId="chat-a" />);
+        expect(screen.getByText(/waiting for your confirmation/i)).toBeInTheDocument();
+      });
+
+      it("still shows the delay hint when only another agent waits for a confirmation", () => {
+        delayedResponding();
+        mockUsePendingApprovals.mockReturnValue({
+          approvals: [pendingApprovalFor("agent-2")],
+          openId: null,
+          open: vi.fn(),
+          busy: null,
+          decide: vi.fn(),
+        });
+        render(<Chat agentId="agent-1" agentName="Smithers" />);
+        expect(screen.getByText(/taking longer than usual/i)).toBeInTheDocument();
+        expect(screen.queryByText(/waiting for your confirmation/i)).not.toBeInTheDocument();
+      });
+    });
+
+    it("offers Try again and Reload once the connection stays unreachable", () => {
+      mockUseChatStatus.mockReturnValue({
+        kind: "unavailable",
+        reason: "unreachable",
+        escalated: true,
+      });
       render(<Chat agentId="agent-1" agentName="Smithers" />);
-      expect(screen.getByText(/reload the page/i)).toBeInTheDocument();
+      expect(screen.getByText(/still trying/i)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /^try again$/i })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /^reload$/i })).toBeInTheDocument();
     });
 
     it("shows configuring message when unavailable/configuring", () => {
@@ -396,9 +606,11 @@ describe("Chat", () => {
       expect(screen.getByText(/applying your changes/i)).toBeInTheDocument();
     });
 
-    it("shows nothing when unavailable/disconnected", () => {
+    it("says it is still retrying, with no reload prompt, when unavailable/disconnected", () => {
       mockUseChatStatus.mockReturnValue({ kind: "unavailable", reason: "disconnected" });
       render(<Chat agentId="agent-1" agentName="Smithers" />);
+      expect(screen.getByRole("status")).toHaveTextContent(/reconnecting/i);
+      expect(screen.queryByRole("button", { name: /^reload$/i })).not.toBeInTheDocument();
       expect(screen.queryByText(/taking longer than usual/i)).not.toBeInTheDocument();
       expect(screen.queryByText(/reload the page/i)).not.toBeInTheDocument();
       expect(screen.queryByText(/applying your changes/i)).not.toBeInTheDocument();
@@ -411,5 +623,111 @@ describe("Chat", () => {
       expect(screen.queryByText(/reload the page/i)).not.toBeInTheDocument();
       expect(screen.queryByText(/applying your changes/i)).not.toBeInTheDocument();
     });
+  });
+});
+
+describe("connection status banner (#1422)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearChatConnection("agent-1");
+    mockGetAgent.mockReturnValue(undefined);
+    mockUsePendingApprovals.mockReturnValue({
+      approvals: [],
+      openId: null,
+      open: vi.fn(),
+      busy: null,
+      decide: vi.fn(),
+    });
+  });
+
+  function renderWith(
+    status: object,
+    rejection: "too_many_connections" | "rate_limited" | null = null
+  ) {
+    mockUseChatStatus.mockReturnValue(status);
+    const retryHistory = vi.fn();
+    mockUseChatSession.mockReturnValue({
+      bundle: { ...DEFAULT_BUNDLE, retryHistory },
+      publish: vi.fn(),
+      remove: vi.fn(),
+    });
+    publishChatConnection("agent-1", undefined, { isOffline: false, rejection });
+    render(<Chat agentId="agent-1" agentName="Smithers" />);
+    return { retryHistory };
+  }
+
+  it("is one polite live region", () => {
+    renderWith({ kind: "unavailable", reason: "disconnected" });
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    expect(screen.getByRole("status")).toHaveAttribute("aria-live", "polite");
+  });
+
+  it("keeps the live region in the DOM while nothing is wrong", () => {
+    renderWith({ kind: "ready" });
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+  });
+
+  it("offers Try again now while reconnecting and reconnects on click", async () => {
+    const { retryHistory } = renderWith({ kind: "unavailable", reason: "disconnected" });
+    await userEvent.click(screen.getByRole("button", { name: /try again now/i }));
+    expect(retryHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it("says we are offline and will reconnect on our own", () => {
+    renderWith({ kind: "unavailable", reason: "offline" });
+    expect(screen.getByRole("status")).toHaveTextContent(/you're offline/i);
+    expect(screen.getByRole("status")).toHaveTextContent(/as soon as you're back/i);
+  });
+
+  it("names the connection limit when the server refused with too_many_connections", () => {
+    renderWith({ kind: "unavailable", reason: "rejected" }, "too_many_connections");
+    expect(screen.getByRole("status")).toHaveTextContent(/too many open connections/i);
+    expect(screen.getByRole("status")).toHaveTextContent(/still trying/i);
+  });
+
+  it("names the rate limit when the server refused with rate_limited", () => {
+    renderWith({ kind: "unavailable", reason: "rejected" }, "rate_limited");
+    expect(screen.getByRole("status")).toHaveTextContent(/connecting too quickly/i);
+  });
+
+  it("distinguishes a down agent runtime from a configuring one", () => {
+    renderWith({ kind: "unavailable", reason: "upstreamDown" });
+    expect(screen.getByRole("status")).toHaveTextContent(/agent isn't reachable/i);
+    expect(screen.queryByRole("button", { name: /report/i })).not.toBeInTheDocument();
+  });
+
+  it("offers a bug report once the agent has stayed down", () => {
+    renderWith({ kind: "unavailable", reason: "upstreamDown", escalated: true });
+    expect(screen.getByRole("button", { name: /report/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^try again$/i })).toBeInTheDocument();
+  });
+
+  it("Try again after escalation reconnects, Reload reloads the page", async () => {
+    const reload = vi.fn();
+    vi.stubGlobal("location", { ...window.location, reload });
+    const { retryHistory } = renderWith({
+      kind: "unavailable",
+      reason: "unreachable",
+      escalated: true,
+    });
+    await userEvent.click(screen.getByRole("button", { name: /^try again$/i }));
+    expect(retryHistory).toHaveBeenCalledTimes(1);
+    await userEvent.click(screen.getByRole("button", { name: /^reload$/i }));
+    expect(reload).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps the composer draft when Try again recreates the connection", async () => {
+    renderWith({ kind: "unavailable", reason: "unreachable", escalated: true });
+    const draft = screen.getByLabelText("draft");
+    await userEvent.type(draft, "half-written question");
+    await userEvent.click(screen.getByRole("button", { name: /^try again$/i }));
+    expect(screen.getByLabelText("draft")).toBe(draft);
+    expect(screen.getByLabelText("draft")).toHaveValue("half-written question");
+  });
+
+  it("shows no connection buttons when everything is fine", () => {
+    renderWith({ kind: "ready" });
+    expect(screen.queryByRole("button", { name: /try again/i })).not.toBeInTheDocument();
   });
 });

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   isValidDomain,
+  normalizeLockableHost,
   validatePinchyWebConfig,
   pluginConfigSchema,
 } from "@/lib/domain-validation";
@@ -24,6 +25,50 @@ describe("isValidDomain", () => {
     " example.com",
   ])("rejects %s", (d) => {
     expect(isValidDomain(d)).toBe(false);
+  });
+});
+
+describe("normalizeLockableHost", () => {
+  // These assert the value that gets STORED, not merely that the input was
+  // accepted. Case and a default `:443` are folded here because that is
+  // exactly what `normalizeHost` folds when the gate later matches a request
+  // against the stored value — validating one form while storing another is
+  // how a lock stops matching the browser that created it.
+  it.each([
+    ["example.com", "example.com"],
+    ["pinchy.example.com", "pinchy.example.com"],
+    ["localhost", "localhost"],
+    ["localhost:7779", "localhost:7779"],
+    ["pinchy.example.com:8443", "pinchy.example.com:8443"],
+    ["[::1]:8443", "[::1]:8443"],
+    ["xn--bcher-kva.example", "xn--bcher-kva.example"],
+    ["EXAMPLE.COM", "example.com"],
+    ["Pinchy.Example.COM:8443", "pinchy.example.com:8443"],
+    ["pinchy.example.com:443", "pinchy.example.com"],
+  ])("normalizes %s to %s", (input, expected) => {
+    expect(normalizeLockableHost(input)).toBe(expected);
+  });
+
+  it.each([
+    "",
+    " pinchy.example.com",
+    "pinchy.example.com ",
+    "evil example.com",
+    'a"><script>alert(1)</script>',
+    "evil.com:1;rm -rf /",
+    "evil.com/path",
+    "evil.com@attacker.com",
+    // Folding a default port must not fold a userinfo split that ends in one:
+    // the parsed host there is `attacker.com`, which is not what arrived.
+    "evil.com@attacker.com:443",
+    "evil.com:443/path",
+    "evil.com#frag",
+    "evil.com?x=1",
+    "evil.com\\attacker.com",
+    "//evil.com",
+    ":443",
+  ])("rejects %s", (h) => {
+    expect(normalizeLockableHost(h)).toBeNull();
   });
 });
 
@@ -100,6 +145,124 @@ describe("pluginConfigSchema — pinchy-files", () => {
         allowed_paths: ["/data/kb"],
         evil_field: "x",
       },
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+/**
+ * `allowed_paths` is not a preference — it is the allowlist that scopes the
+ * agent's file tools, its knowledge-base retrieval AND the browser-facing
+ * `/api/agents/[id]/workspace-file` route. It has to be clamped in the SCHEMA
+ * rather than in a route, because the two routes disagreed about it: POST
+ * only called `validateAllowedPaths` when `template.pluginId ===
+ * "pinchy-files"`, and PATCH never called it at all — so any member could
+ * widen their own personal agent's scope to `/` and read the container's
+ * secrets. One boundary, shared by every writer, is the only version of this
+ * that stays true as routes are added.
+ */
+describe("pluginConfigSchema — allowed_paths is clamped to /data/", () => {
+  const accepts = (paths: string[]) =>
+    pluginConfigSchema.safeParse({ "pinchy-files": { allowed_paths: paths } }).success;
+
+  it("accepts paths under /data/", () => {
+    expect(accepts(["/data/kb", "/data/finance/invoices"])).toBe(true);
+  });
+
+  it("accepts /data itself", () => {
+    expect(accepts(["/data"])).toBe(true);
+  });
+
+  it("rejects the filesystem root", () => {
+    expect(accepts(["/"])).toBe(false);
+  });
+
+  it("rejects the directory holding the container's decrypted provider keys", () => {
+    expect(accepts(["/openclaw-secrets"])).toBe(false);
+  });
+
+  it("rejects the directory holding the AES master key", () => {
+    expect(accepts(["/app/secrets"])).toBe(false);
+  });
+
+  it("rejects a traversal that lexically escapes /data", () => {
+    expect(accepts(["/data/../etc"])).toBe(false);
+  });
+
+  it("rejects a sibling that merely shares the /data prefix", () => {
+    expect(accepts(["/database"])).toBe(false);
+  });
+
+  it("rejects a relative path, which would resolve against the server's cwd", () => {
+    expect(accepts(["kb"])).toBe(false);
+  });
+
+  it("rejects a null byte, which can truncate the path in a native call", () => {
+    expect(accepts(["/data/kb\0/../../etc"])).toBe(false);
+  });
+
+  it("rejects the whole list when only one entry escapes", () => {
+    expect(accepts(["/data/kb", "/etc"])).toBe(false);
+  });
+});
+
+describe("pluginConfigSchema — pinchy-approvals", () => {
+  it("accepts a confirmTools list", () => {
+    const result = pluginConfigSchema.safeParse({
+      "pinchy-approvals": { confirmTools: ["odoo_write", "email_send"] },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts an empty confirmTools list", () => {
+    const result = pluginConfigSchema.safeParse({
+      "pinchy-approvals": { confirmTools: [] },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts a confirm map, including a per-resource key", () => {
+    const result = pluginConfigSchema.safeParse({
+      "pinchy-approvals": {
+        confirm: { odoo_delete: "confirm", "odoo_delete:note.note": "allow" },
+      },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts an empty confirm map", () => {
+    const result = pluginConfigSchema.safeParse({ "pinchy-approvals": { confirm: {} } });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a confirm value that is neither confirm nor allow", () => {
+    const result = pluginConfigSchema.safeParse({
+      "pinchy-approvals": { confirm: { odoo_delete: "off" } },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  // The write side of the #1133 storage switch. `.strict()` means a config the
+  // schema no longer knows is REJECTED, not ignored — so an agent configured
+  // before the switch would fail its next save with a validation error until
+  // someone re-ticked its policy by hand.
+  it("still accepts a pre-#1133 config that carries only confirmTools", () => {
+    const result = pluginConfigSchema.safeParse({
+      "pinchy-approvals": { confirmTools: ["odoo_write"] },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts an agent mid-migration carrying both shapes", () => {
+    const result = pluginConfigSchema.safeParse({
+      "pinchy-approvals": { confirm: { odoo_write: "confirm" }, confirmTools: ["odoo_write"] },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects unknown fields in pinchy-approvals config", () => {
+    const result = pluginConfigSchema.safeParse({
+      "pinchy-approvals": { confirmTools: [], evil_field: "x" },
     });
     expect(result.success).toBe(false);
   });

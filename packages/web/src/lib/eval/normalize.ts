@@ -6,7 +6,7 @@
  * responsible for gathering the raw inputs (audit rows, the scraped final
  * assistant message, the Odoo mock read-back) and calling `buildTrajectory`.
  */
-import type { OdooMoveRecord, RunTrajectory, ToolCall } from "./types";
+import type { OdooMoveRecord, RunTokenUsage, RunTrajectory, ToolCall } from "./types";
 
 const TOOL_EVENT_PREFIX = "tool.";
 
@@ -21,8 +21,10 @@ export interface NormalizeInput {
   model: string;
   auditEntries: NormalizeAuditEntry[];
   finalMessage: string;
-  /** Raw account.move records from the Odoo mock. */
+  /** Raw records of the scenario's first read-back model (see RunTrajectory.odooMoves). */
   odooMoves: OdooMoveRecord[];
+  /** Raw post-run read-back keyed by Odoo model, when the scenario declares several (#803). */
+  odooRecordsByModel?: Record<string, OdooMoveRecord[]>;
   /**
    * The handle the pinchy-email plugin issues for the seeded message,
    * pre-computed by the caller via `handleFor(seededMessageId, MSG_PREFIX)`.
@@ -33,8 +35,12 @@ export interface NormalizeInput {
    * code with the full monorepo available) computes it.
    */
   issuedMessageHandle: string;
-  /** The handle the plugin issues for the seeded attachment (see above). */
-  issuedAttachmentHandle: string;
+  /**
+   * The handle the plugin issues for the seeded attachment (see above).
+   * Optional (#803): the crm-lead domain has no attachment leg — its seeded
+   * inquiry email carries no attachment, so there is no handle to issue.
+   */
+  issuedAttachmentHandle?: string;
   /**
    * Handles for ADDITIONAL seeded inbox items (e.g. a distractor scenario's
    * second invoice). Without these, `gradeIdFidelity` would false-flag the
@@ -43,7 +49,7 @@ export interface NormalizeInput {
   extraIssuedMessageHandles?: string[];
   extraIssuedAttachmentHandles?: string[];
   latencyMs: number;
-  tokens?: { prompt: number; completion: number };
+  tokens?: RunTokenUsage;
 }
 
 function toToolCall(entry: NormalizeAuditEntry): ToolCall {
@@ -107,7 +113,10 @@ export function buildTrajectory(input: NormalizeInput): RunTrajectory {
   attachIssuedId(
     toolCalls,
     ["email_read"],
-    [input.issuedAttachmentHandle, ...(input.extraIssuedAttachmentHandles ?? [])]
+    [
+      ...(input.issuedAttachmentHandle !== undefined ? [input.issuedAttachmentHandle] : []),
+      ...(input.extraIssuedAttachmentHandles ?? []),
+    ]
   );
 
   return {
@@ -115,6 +124,14 @@ export function buildTrajectory(input: NormalizeInput): RunTrajectory {
     toolCalls,
     finalMessage: input.finalMessage,
     odooMoves: input.odooMoves.map(coerceOdooMove),
+    odooRecordsByModel: input.odooRecordsByModel
+      ? Object.fromEntries(
+          Object.entries(input.odooRecordsByModel).map(([model, records]) => [
+            model,
+            records.map(coerceOdooMove),
+          ])
+        )
+      : undefined,
     latencyMs: input.latencyMs,
     tokens: input.tokens,
   };

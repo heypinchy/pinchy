@@ -1,15 +1,24 @@
-// audit-exempt: User self-service action (linking own Telegram account), not an admin operation
+// audit-exempt: Linking/unlinking one's own Telegram account is a user
+// self-service action, not an admin operation. Denied pairing attempts ARE
+// audited (auth.telegram_pairing_denied, throttled) — see
+// lib/telegram-pairing-security.ts — because that path is the brute-force
+// surface; the exemption covers success/unlink only.
 import { NextResponse } from "next/server";
-import { z } from "zod";
 import { withAuth } from "@/lib/api-auth";
 import { resolvePairingCode } from "@/lib/telegram-pairing";
+import {
+  tryAcquireTelegramPairingSlot,
+  releaseTelegramPairingSlot,
+  recordTelegramPairingFailure,
+  isChannelUserIdConflictError,
+} from "@/lib/telegram-pairing-security";
 import { recalculateTelegramAllowStores, removePairingRequest } from "@/lib/telegram-allow-store";
+import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
 import { channelLinks } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
 import { parseRequestBody } from "@/lib/api-validation";
-
-const linkTelegramSchema = z.object({ code: z.string().min(1) });
+import { linkTelegramSchema } from "@/lib/schemas/telegram";
 
 export const GET = withAuth(async (_req, _ctx, session) => {
   const link = await db.query.channelLinks.findFirst({
@@ -27,9 +36,31 @@ export const POST = withAuth(async (req, _ctx, session) => {
   if ("error" in parsed) return parsed.error;
   const { code } = parsed.data;
 
-  // Resolve pairing code to Telegram user ID by reading OpenClaw's pairing file
-  const pairing = resolvePairingCode(code);
+  // Brute-force guard: pairing codes are short human-typed strings with no
+  // rate limit of their own otherwise, and a successful guess against
+  // another user's pending code hands the attacker that user's full
+  // Telegram transcript (see lib/telegram-pairing-security.ts).
+  if (!tryAcquireTelegramPairingSlot(session.user.id)) {
+    await recordTelegramPairingFailure(session.user.id, "rate_limited");
+    return NextResponse.json(
+      { error: "Too many pairing attempts. Wait a few minutes and try again." },
+      { status: 429 }
+    );
+  }
+
+  // Resolve the pairing code to a Telegram user ID through OpenClaw's store.
+  const pairing = await resolvePairingCode(code);
+  if (!pairing.found && pairing.unavailable) {
+    // We could not ask OpenClaw, so the code may well be valid: no failed
+    // guess is recorded against the user, and the attempt does not count.
+    releaseTelegramPairingSlot(session.user.id);
+    return NextResponse.json(
+      { error: "We can't reach the agent runtime right now. Try again in a moment." },
+      { status: 503 }
+    );
+  }
   if (!pairing.found) {
+    await recordTelegramPairingFailure(session.user.id, "invalid_or_expired_code");
     return NextResponse.json(
       { error: "Invalid or expired pairing code. Send a new message to the bot and try again." },
       { status: 400 }
@@ -40,31 +71,54 @@ export const POST = withAuth(async (req, _ctx, session) => {
 
   // DB first (source of truth). onConflictDoUpdate handles re-linking
   // to a different Telegram account (unique constraint on userId+channel).
-  await db
-    .insert(channelLinks)
-    .values({
-      userId: session.user.id,
-      channel: "telegram",
-      channelUserId: telegramUserId,
-    })
-    .onConflictDoUpdate({
-      target: [channelLinks.userId, channelLinks.channel],
-      set: { channelUserId: telegramUserId, linkedAt: new Date() },
-    });
+  // A second unique constraint (channel+channelUserId) guards the reverse
+  // direction — one Telegram account cannot be linked to two Pinchy users —
+  // and isn't an onConflictDoUpdate target, so it still raises; caught below
+  // and turned into an honest 409 instead of a raw Postgres error.
+  try {
+    await db
+      .insert(channelLinks)
+      .values({
+        userId: session.user.id,
+        channel: "telegram",
+        channelUserId: telegramUserId,
+      })
+      .onConflictDoUpdate({
+        target: [channelLinks.userId, channelLinks.channel],
+        set: { channelUserId: telegramUserId, linkedAt: new Date() },
+      });
+  } catch (err) {
+    if (isChannelUserIdConflictError(err)) {
+      await recordTelegramPairingFailure(session.user.id, "channel_user_id_conflict");
+      return NextResponse.json(
+        { error: "This Telegram account is already linked to a different Pinchy user." },
+        { status: 409 }
+      );
+    }
+    throw err;
+  }
 
   // Clear the pairing request from OpenClaw's store so it doesn't retain
   // any internal "approved" state. The allow-from stores (computed below)
   // become the sole authority for Telegram access.
-  removePairingRequest(telegramUserId);
+  await removePairingRequest(telegramUserId);
+
+  // Routing before access. A personal bot lets every linked user in and sends
+  // each to their own personal agent by peer binding; the account-wide binding
+  // to the bot owner's agent catches everyone else (openclaw-config/build.ts).
+  // The regenerate writes this user's peer binding, a no-op reload in OpenClaw
+  // 2026.9 that costs no restart. It reaches OpenClaw in the background,
+  // though, so the recalculation lets the user in only once OpenClaw routes
+  // them to their own agent, and asks again until it does
+  // (telegram-allow-store.ts).
+  await regenerateOpenClawConfig();
 
   // Recalculate per-account allow-from stores (permission-aware)
   await recalculateTelegramAllowStores();
 
   // #508: per-task session model. We no longer write session.identityLinks —
   // each Telegram peer keeps its own per-peer OpenClaw session rather than
-  // being folded into the user's web chat session. Pinchy's own authorization
-  // (Chats list, Telegram allow-listing) reads channel_links directly, so the
-  // link is fully effective without any identityLinks emission.
+  // being folded into the user's web chat session.
 
   return NextResponse.json({ linked: true, telegramUserId });
 });
@@ -81,15 +135,14 @@ export const DELETE = withAuth(async (_req, _ctx, session) => {
 
   // Remove the pairing request so OpenClaw issues a fresh code on next message
   if (existingLink) {
-    removePairingRequest(existingLink.channelUserId);
+    await removePairingRequest(existingLink.channelUserId);
   }
 
   // Recalculate per-account allow-from stores (removes unlinked user)
   await recalculateTelegramAllowStores();
 
-  // #508: per-task session model — no session.identityLinks to update. The
-  // per-account allow-from recalculation above (driven by channel_links) is
-  // the sole config-side effect of unlinking.
+  // Access is gone; now drop the user's stale peer binding.
+  await regenerateOpenClawConfig();
 
   return NextResponse.json({ linked: false });
 });

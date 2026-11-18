@@ -7,9 +7,10 @@ import {
   writeIdentityFile,
 } from "@/lib/workspace";
 import { getContextForAgent } from "@/lib/context-sync";
-import { getSetting } from "@/lib/settings";
+import { getUsableDefaultProvider } from "@/lib/model-resolver/usable-default-provider";
 import { type ProviderName } from "@/lib/providers";
-import { resolveModelForTemplate } from "@/lib/model-resolver";
+import { BALANCED_ANCHORS } from "@/lib/provider-model-constants";
+import { resolveAvailableModelForTemplate } from "@/lib/model-resolver/resolve-available";
 import type { ModelHint } from "@/lib/model-resolver/types";
 import { TemplateCapabilityUnavailableError } from "@/lib/model-resolver/types";
 import { SMITHERS_SOUL_MD } from "@/lib/smithers-soul";
@@ -36,9 +37,17 @@ export async function createSmithersAgent({
   // docs_list / docs_read come from the pinchy-docs plugin, which is enabled
   // automatically for every personal agent (see openclaw-config.ts). No need
   // to list them here.
+  // pinchy_memory is not negotiable for a personal agent: the docs call
+  // Smithers the user's personal notebook, and until memory became its own
+  // grant it had none at all — createSmithersAgent never received the
+  // pinchy_write the New-Agent form injected into UI-created agents, so every
+  // personal agent shipped memory-less (#755).
+  //
+  // Deliberately NOT pinchy_write: Smithers has no file-producing job today,
+  // and granting one here would be a capability nobody asked for.
   const allowedTools = isAdmin
-    ? ["pinchy_save_user_context", "pinchy_save_org_context"]
-    : ["pinchy_save_user_context"];
+    ? ["pinchy_memory", "pinchy_save_user_context", "pinchy_save_org_context"]
+    : ["pinchy_memory", "pinchy_save_user_context"];
 
   const [agent] = await db
     .insert(agents)
@@ -78,24 +87,24 @@ export async function seedPersonalAgent(userId: string, isAdmin = false) {
   });
   if (existing) return existing;
 
-  const defaultProvider = (await getSetting("default_provider")) as ProviderName | null;
+  const defaultProvider = (await getUsableDefaultProvider()) as ProviderName | null;
   let model: string;
   if (defaultProvider) {
     try {
-      const resolved = await resolveModelForTemplate({
+      const resolved = await resolveAvailableModelForTemplate({
         hint: SMITHERS_MODEL_HINT,
         provider: defaultProvider,
       });
       model = resolved.model;
     } catch (err) {
       if (err instanceof TemplateCapabilityUnavailableError) {
-        model = "anthropic/claude-sonnet-4-6";
+        model = BALANCED_ANCHORS.anthropic;
       } else {
         throw err;
       }
     }
   } else {
-    model = "anthropic/claude-sonnet-4-6";
+    model = BALANCED_ANCHORS.anthropic;
   }
 
   return createSmithersAgent({ model, ownerId: userId, isPersonal: true, isAdmin });

@@ -1,7 +1,9 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import "@testing-library/jest-dom";
 import { DeleteAgentDialog } from "@/components/delete-agent-dialog";
+import { jsonResponse } from "@/test-helpers/fetch";
 
 const pushMock = vi.fn();
 const refreshMock = vi.fn();
@@ -44,10 +46,7 @@ describe("DeleteAgentDialog", () => {
   });
 
   it("should call DELETE /api/agents/:id when confirmed", async () => {
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ success: true }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ success: true }));
 
     render(<DeleteAgentDialog agentId="agent-1" agentName="Smithers" />);
 
@@ -62,10 +61,7 @@ describe("DeleteAgentDialog", () => {
   });
 
   it("should redirect to / on successful delete", async () => {
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ success: true }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ success: true }));
 
     render(<DeleteAgentDialog agentId="agent-1" agentName="Smithers" />);
 
@@ -78,10 +74,9 @@ describe("DeleteAgentDialog", () => {
   });
 
   it("should show error message on failure", async () => {
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: false,
-      json: async () => ({ error: "Personal agents cannot be deleted" }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse({ error: "Personal agents cannot be deleted" }, { status: 400 })
+    );
 
     render(<DeleteAgentDialog agentId="agent-1" agentName="Smithers" />);
 
@@ -94,10 +89,9 @@ describe("DeleteAgentDialog", () => {
   });
 
   it("should not redirect on failure", async () => {
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: false,
-      json: async () => ({ error: "Failed to delete agent" }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse({ error: "Failed to delete agent" }, { status: 400 })
+    );
 
     render(<DeleteAgentDialog agentId="agent-1" agentName="Smithers" />);
 

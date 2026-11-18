@@ -64,6 +64,23 @@ vi.mock("@/lib/settings", () => ({
   getSetting: vi.fn().mockResolvedValue(null),
 }));
 
+vi.mock("@/lib/openai-compatible-providers", () => ({
+  listProvidersForModelFetch: vi.fn().mockResolvedValue([]),
+}));
+
+// #894 backend redesign: the live model list is resolved via
+// resolveCustomProviderModels (openai-compatible-discovery.ts), not read
+// straight off the DB row. Default mock is an identity pass-through of the
+// snapshot, matching "nothing overrides it" behavior; individual tests below
+// override it to exercise the live-fetch and fallback paths explicitly. The
+// resolver's own cache/fallback mechanics are unit-tested in
+// openai-compatible-discovery.test.ts — this file only checks that
+// fetchProviderModels calls it correctly and namespaces its result.
+vi.mock("@/lib/openai-compatible-discovery", () => ({
+  resolveCustomProviderModels: vi.fn(async (p: { models: unknown }) => p.models),
+  resetCustomModelCache: vi.fn(),
+}));
+
 global.fetch = vi.fn();
 
 import {
@@ -74,14 +91,79 @@ import {
   extractModelDate,
   isRejectedVariant,
   selectDefaultModel,
+  PROVIDER_CATALOG_FETCH_TIMEOUT_MS,
 } from "@/lib/provider-models";
 import { getSetting } from "@/lib/settings";
+import { listProvidersForModelFetch } from "@/lib/openai-compatible-providers";
+import type { ProviderModelFetchSource } from "@/lib/openai-compatible-providers";
+import { resolveCustomProviderModels } from "@/lib/openai-compatible-discovery";
+import { getModelCatalogForProvider } from "@/lib/openclaw-builtin-models";
+
+/**
+ * What the model picker lists for a built-in provider when its live catalog is
+ * unreachable: the curated catalog, i.e. exactly the models OpenClaw is told
+ * about. A hand-kept second list here drifted the moment the catalog moved on.
+ */
+function curatedFallback(provider: "anthropic" | "openai" | "google") {
+  return getModelCatalogForProvider(provider).map((m) => ({
+    id: `${provider}/${m.id}`,
+    name: m.name,
+  }));
+}
+
+/**
+ * Build a typed custom-provider model-fetch source. Only `slug`,
+ * `displayName`, `baseUrl`, `apiKey` and `models[].id/name` matter to
+ * fetchProviderModels; the rest satisfies the OpenClawModelDefinition shape
+ * so the web-typecheck gate is happy.
+ */
+function customProvider(
+  slug: string,
+  displayName: string,
+  modelDefs: { id: string; name: string }[]
+): ProviderModelFetchSource {
+  return {
+    id: `id-${slug}`,
+    slug,
+    displayName,
+    baseUrl: `https://${slug}.test/v1`,
+    apiKey: `sk-${slug}-key`,
+    keyVersion: `${slug}-key-version`,
+    models: modelDefs.map((m) => ({
+      id: m.id,
+      name: m.name,
+      contextWindow: 8192,
+      maxTokens: 4096,
+      reasoning: false,
+      vision: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    })),
+  };
+}
+
+// `pnpm models:discover` on 2026-11-16: https://ollama.com/v1/models no longer
+// serves these curated models, so they were dropped from the catalog.
+const RETIRED_2026_11_16 = [
+  "deepseek-v4-flash",
+  "deepseek-v4-pro",
+  "glm-5.1",
+  "kimi-k2.5",
+  "minimax-m2.5",
+  "minimax-m2.7",
+  "mistral-large-3:675b",
+  "qwen3.5:397b",
+];
 
 describe("fetchProviderModels", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetCache();
     vi.mocked(getSetting).mockResolvedValue(null);
+    vi.mocked(listProvidersForModelFetch).mockResolvedValue([]);
+    vi.mocked(resolveCustomProviderModels).mockImplementation(
+      async (p: { models: unknown }) => p.models as never
+    );
   });
 
   it("returns models grouped by configured provider", async () => {
@@ -115,6 +197,23 @@ describe("fetchProviderModels", () => {
     });
   });
 
+  // Anthropic pages the list (20 by default, newest first). The curated models
+  // are the oldest live ones, so reading one default page would drop them as
+  // Anthropic ships more — and the balanced default would fall back to a model
+  // Pinchy has no definition for.
+  it("asks Anthropic for the whole model list, not its first page", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) =>
+      key === "anthropic_api_key" ? "sk-ant-test-key" : null
+    );
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ data: [] }), { status: 200 }));
+
+    await fetchProviderModels();
+
+    const url = new URL(String(vi.mocked(fetch).mock.calls[0][0]));
+    expect(url.pathname).toBe("/v1/models");
+    expect(url.searchParams.get("limit")).toBe("1000");
+  });
+
   it("skips providers without stored keys", async () => {
     vi.mocked(getSetting).mockResolvedValue(null);
 
@@ -136,11 +235,45 @@ describe("fetchProviderModels", () => {
 
     expect(result).toHaveLength(1);
     expect(result[0].id).toBe("anthropic");
-    expect(result[0].models).toEqual([
-      { id: "anthropic/claude-opus-4-7", name: "Claude Opus 4.7" },
-      { id: "anthropic/claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
-      { id: "anthropic/claude-haiku-4-5-20251001", name: "Claude Haiku 4.5" },
-    ]);
+    expect(result[0].models).toEqual(curatedFallback("anthropic"));
+  });
+
+  it("bounds a hanging provider fetch instead of pinning the request", async () => {
+    // `/api/templates` awaits this on every first render after a cache miss, so
+    // an unbounded fetch is a page that never loads — the exact failure mode a
+    // self-hosted deployment behind a filtering proxy hits, where the provider
+    // host accepts the connection and then never answers. Bounded, we degrade
+    // to the offline catalog, which is what "offline-first" has to mean here.
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-test-key";
+      return null;
+    });
+
+    vi.useFakeTimers();
+    try {
+      vi.mocked(fetch).mockImplementation(
+        (_url: string | Request | URL, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () =>
+              reject(new DOMException("The operation was aborted", "AbortError"))
+            );
+          })
+      );
+
+      const pending = fetchProviderModels();
+      await vi.advanceTimersByTimeAsync(PROVIDER_CATALOG_FETCH_TIMEOUT_MS + 100);
+      const result = await pending;
+
+      expect(result).toHaveLength(1);
+      expect(result[0].models).toEqual(curatedFallback("anthropic"));
+    } finally {
+      vi.useRealTimers();
+      // `beforeEach` runs `clearAllMocks`, which clears calls but keeps
+      // implementations — so this never-settling one would outlive the test.
+      // Every test below happens to stub `fetch` itself; the first that forgets
+      // would hang for the abort timeout and fail somewhere unrelated to it.
+      vi.mocked(fetch).mockReset();
+    }
   });
 
   it("handles multiple configured providers", async () => {
@@ -188,6 +321,116 @@ describe("fetchProviderModels", () => {
       { id: "openai/gpt-5.4-mini", name: "gpt-5.4-mini" },
     ]);
     // dall-e-3 should be filtered out (doesn't start with gpt- or o)
+  });
+
+  it("appends one entry per custom OpenAI-compatible provider", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-test-key";
+      return null;
+    });
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: [{ id: "claude-opus-4-7", display_name: "Claude Opus 4.7" }],
+        }),
+        { status: 200 }
+      )
+    );
+    vi.mocked(listProvidersForModelFetch).mockResolvedValue([
+      customProvider("acme", "Acme LLM", [
+        { id: "acme-large", name: "Acme Large" },
+        { id: "acme-small", name: "Acme Small" },
+      ]),
+    ]);
+
+    const result = await fetchProviderModels();
+
+    // Built-in enumeration is untouched.
+    const anthropic = result.find((p) => p.id === "anthropic");
+    expect(anthropic).toBeDefined();
+    expect(anthropic!.models).toEqual([
+      { id: "anthropic/claude-opus-4-7", name: "Claude Opus 4.7" },
+    ]);
+
+    // Custom instance appended, keyed by slug, models namespaced <slug>/<modelId>.
+    const custom = result.find((p) => p.id === "acme");
+    expect(custom).toBeDefined();
+    expect(custom!.name).toBe("Acme LLM");
+    expect(custom!.models).toEqual([
+      { id: "acme/acme-large", name: "Acme Large" },
+      { id: "acme/acme-small", name: "Acme Small" },
+    ]);
+  });
+
+  it("appends every custom instance and works with no built-ins configured", async () => {
+    vi.mocked(getSetting).mockResolvedValue(null);
+    vi.mocked(listProvidersForModelFetch).mockResolvedValue([
+      customProvider("acme", "Acme LLM", [{ id: "acme-large", name: "Acme Large" }]),
+      customProvider("beta-corp", "Beta Corp", [{ id: "b1", name: "Beta One" }]),
+    ]);
+
+    const result = await fetchProviderModels();
+
+    expect(result.map((p) => p.id)).toEqual(["acme", "beta-corp"]);
+    expect(result.find((p) => p.id === "beta-corp")!.models).toEqual([
+      { id: "beta-corp/b1", name: "Beta One" },
+    ]);
+  });
+
+  it("resolves a custom provider's models via resolveCustomProviderModels (live path), passing baseUrl/apiKey/snapshot", async () => {
+    // #894 backend redesign: the list is no longer read straight off the DB
+    // row's `models` snapshot — it goes through resolveCustomProviderModels,
+    // which may return something DIFFERENT from the snapshot (a live-fetched
+    // model the snapshot doesn't know about yet).
+    vi.mocked(getSetting).mockResolvedValue(null);
+    const snapshot = customProvider("acme", "Acme LLM", [{ id: "acme-old", name: "Acme Old" }]);
+    vi.mocked(listProvidersForModelFetch).mockResolvedValue([snapshot]);
+    vi.mocked(resolveCustomProviderModels).mockResolvedValue([
+      {
+        id: "acme-fresh",
+        name: "Acme Fresh",
+        contextWindow: 8192,
+        maxTokens: 4096,
+        reasoning: false,
+        vision: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      },
+    ]);
+
+    const result = await fetchProviderModels();
+
+    const custom = result.find((p) => p.id === "acme");
+    expect(custom!.models).toEqual([{ id: "acme/acme-fresh", name: "Acme Fresh" }]);
+    expect(resolveCustomProviderModels).toHaveBeenCalledWith(
+      expect.objectContaining({
+        slug: "acme",
+        baseUrl: "https://acme.test/v1",
+        apiKey: "sk-acme-key",
+        keyVersion: "acme-key-version",
+        models: snapshot.models,
+      })
+    );
+  });
+
+  it("falls back to the last-known-good snapshot when live resolution can't discover anything", async () => {
+    // resolveCustomProviderModels itself owns the live-vs-snapshot decision
+    // (unit-tested in openai-compatible-discovery.test.ts); this only checks
+    // that fetchProviderModels surfaces whatever it returns, unmodified and
+    // correctly namespaced — including the fallback case.
+    vi.mocked(getSetting).mockResolvedValue(null);
+    const snapshotModels = customProvider("acme", "Acme LLM", [
+      { id: "acme-snapshot", name: "Acme Snapshot" },
+    ]).models;
+    vi.mocked(listProvidersForModelFetch).mockResolvedValue([
+      { ...customProvider("acme", "Acme LLM", []), models: snapshotModels },
+    ]);
+    vi.mocked(resolveCustomProviderModels).mockResolvedValue(snapshotModels);
+
+    const result = await fetchProviderModels();
+
+    const custom = result.find((p) => p.id === "acme");
+    expect(custom!.models).toEqual([{ id: "acme/acme-snapshot", name: "Acme Snapshot" }]);
   });
 
   it("filters OpenAI models to gpt- and o- prefixed", async () => {
@@ -256,6 +499,11 @@ describe("fetchProviderModels", () => {
     );
 
     const result = await fetchProviderModels();
+    const googleCall = vi
+      .mocked(fetch)
+      .mock.calls.find(([u]) => String(u).includes("generativelanguage"))!;
+    expect(String(googleCall[0])).not.toContain("key=");
+    expect((googleCall[1] as RequestInit).headers).toEqual({ "x-goog-api-key": "AIza-test" });
     const google = result.find((p) => p.id === "google");
     expect(google).toBeDefined();
     expect(google!.models).toEqual([{ id: "google/gemini-2.5-flash", name: "Gemini 2.0 Flash" }]);
@@ -278,43 +526,28 @@ describe("fetchProviderModels", () => {
         JSON.stringify({
           data: [
             // Tool-capable — should appear
-            { id: "deepseek-v3.1:671b" },
-            { id: "deepseek-v3.2" },
-            { id: "deepseek-v4-flash" },
-            { id: "deepseek-v4-pro" },
-            { id: "devstral-2:123b" },
-            { id: "devstral-small-2:24b" },
-            { id: "gemini-3-flash-preview" },
             { id: "gemma4:31b" },
-            { id: "glm-4.7" },
-            { id: "glm-5" },
-            { id: "glm-5.1" },
             { id: "glm-5.2" },
             { id: "gpt-oss:20b" },
             { id: "gpt-oss:120b" },
             // kimi-k2-thinking: still returned by Ollama API but removed from Pinchy allowlist (#305)
             { id: "kimi-k2-thinking" },
-            { id: "kimi-k2.5" },
             { id: "kimi-k2.6" },
             { id: "kimi-k2.7-code" },
-            { id: "minimax-m2.1" },
-            { id: "minimax-m2.5" },
-            { id: "minimax-m2.7" },
             { id: "minimax-m3" },
-            { id: "ministral-3:3b" },
-            { id: "ministral-3:8b" },
-            { id: "ministral-3:14b" },
-            { id: "mistral-large-3:675b" },
-            { id: "nemotron-3-nano:30b" },
             { id: "nemotron-3-super" },
             { id: "nemotron-3-ultra" },
-            { id: "qwen3-coder-next" },
-            { id: "qwen3-coder:480b" },
             { id: "qwen3-next:80b" },
-            { id: "qwen3.5:397b" },
-            { id: "rnj-1:8b" },
+            // Retired from the catalog 2026-11-16 — a stale or proxied /v1/models
+            // that still lists them must not bring them back into the picker.
+            ...RETIRED_2026_11_16.map((id) => ({ id })),
             // Tool-broken on the live chat/completions endpoint — must be filtered out
             { id: "cogito-2.1:671b" },
+            // Still served, but dropped from the catalog on 2026-07-30: it skips
+            // the tool call in 4 of 5 rounds. Kept in this served list on purpose
+            // — the interesting assertion is that the filter removes a model the
+            // API still offers, which is the whole job of the allowlist.
+            { id: "nemotron-3-nano:30b" },
             { id: "gemma3:27b" },
             { id: "gemma3:12b" },
             { id: "gemma3:4b" },
@@ -332,49 +565,34 @@ describe("fetchProviderModels", () => {
     // Every tool-capable model surfaces
     expect(ids).toEqual(
       expect.arrayContaining([
-        "ollama-cloud/deepseek-v3.1:671b",
-        "ollama-cloud/deepseek-v3.2",
-        "ollama-cloud/deepseek-v4-flash",
-        "ollama-cloud/deepseek-v4-pro",
-        "ollama-cloud/devstral-2:123b",
-        "ollama-cloud/devstral-small-2:24b",
-        "ollama-cloud/gemini-3-flash-preview",
         "ollama-cloud/gemma4:31b",
-        "ollama-cloud/glm-4.7",
-        "ollama-cloud/glm-5",
-        "ollama-cloud/glm-5.1",
         "ollama-cloud/glm-5.2",
         "ollama-cloud/gpt-oss:20b",
         "ollama-cloud/gpt-oss:120b",
-        "ollama-cloud/kimi-k2.5",
         "ollama-cloud/kimi-k2.6",
         "ollama-cloud/kimi-k2.7-code",
-        "ollama-cloud/minimax-m2.1",
-        "ollama-cloud/minimax-m2.5",
-        "ollama-cloud/minimax-m2.7",
         "ollama-cloud/minimax-m3",
-        "ollama-cloud/ministral-3:3b",
-        "ollama-cloud/ministral-3:8b",
-        "ollama-cloud/ministral-3:14b",
-        "ollama-cloud/mistral-large-3:675b",
-        "ollama-cloud/nemotron-3-nano:30b",
         "ollama-cloud/nemotron-3-super",
         "ollama-cloud/nemotron-3-ultra",
-        "ollama-cloud/qwen3-coder-next",
-        "ollama-cloud/qwen3-coder:480b",
-        "ollama-cloud/qwen3.5:397b",
-        "ollama-cloud/rnj-1:8b",
       ])
     );
     // kimi-k2-thinking removed from allowlist (#305 — Ollama Cloud returns HTTP 500 for this model)
     expect(ids).not.toContain("ollama-cloud/kimi-k2-thinking");
+    // nemotron-3-nano:30b is still served (see the mock list above) but was
+    // dropped from the catalog on 2026-07-30 for skipping tool calls 4/5 rounds.
+    expect(ids).not.toContain("ollama-cloud/nemotron-3-nano:30b");
     // qwen3-next:80b is still returned by /v1/models but no longer allow-listed:
     // tool calls are still flaky on the OpenAI-completions endpoint (re-probed
     // 2026-06-12: one of four rounds returned empty content with no call).
     expect(ids).not.toContain("ollama-cloud/qwen3-next:80b");
     // minimax-m3 was added to the allowlist (vision + tools confirmed live).
     expect(ids).toContain("ollama-cloud/minimax-m3");
-    expect(ids).toHaveLength(32);
+    // The 8 models Ollama stopped serving (2026-11-16) are not in the mock
+    // response above and must not come back from the allowlist either.
+    for (const retired of RETIRED_2026_11_16) {
+      expect(ids).not.toContain(`ollama-cloud/${retired}`);
+    }
+    expect(ids).toHaveLength(9);
 
     // Tool-broken models are filtered out (probed 2026-06-12: gemma3:4b leaks
     // pseudo tool calls as text, gemma3:12b serves HTTP 500, gemma3:27b
@@ -400,11 +618,7 @@ describe("fetchProviderModels", () => {
     const result = await fetchProviderModels();
     const openai = result.find((p) => p.id === "openai");
     expect(openai).toBeDefined();
-    expect(openai!.models).toEqual([
-      { id: "openai/gpt-5.5", name: "GPT-5.5" },
-      { id: "openai/gpt-5.4", name: "GPT-5.4" },
-      { id: "openai/gpt-5.4-mini", name: "GPT-5.4 Mini" },
-    ]);
+    expect(openai!.models).toEqual(curatedFallback("openai"));
   });
 
   it("falls back to every tool-capable cloud model when Ollama Cloud API fails", async () => {
@@ -423,41 +637,22 @@ describe("fetchProviderModels", () => {
     const ids = ollama!.models.map((m) => m.id);
     // kimi-k2-thinking removed from allowlist (#305 — Ollama Cloud returns HTTP 500 for this model)
     expect(ids).not.toContain("ollama-cloud/kimi-k2-thinking");
-    expect(ids).toHaveLength(32);
+    expect(ids).toHaveLength(9);
+    // The offline fallback must not resurrect models Ollama stopped serving.
+    for (const retired of RETIRED_2026_11_16) {
+      expect(ids).not.toContain(`ollama-cloud/${retired}`);
+    }
     expect(ids).toEqual(
       expect.arrayContaining([
-        "ollama-cloud/deepseek-v3.1:671b",
-        "ollama-cloud/deepseek-v3.2",
-        "ollama-cloud/deepseek-v4-flash",
-        "ollama-cloud/deepseek-v4-pro",
-        "ollama-cloud/devstral-2:123b",
-        "ollama-cloud/devstral-small-2:24b",
-        "ollama-cloud/gemini-3-flash-preview",
         "ollama-cloud/gemma4:31b",
-        "ollama-cloud/glm-4.7",
-        "ollama-cloud/glm-5",
-        "ollama-cloud/glm-5.1",
         "ollama-cloud/glm-5.2",
         "ollama-cloud/gpt-oss:20b",
         "ollama-cloud/gpt-oss:120b",
-        "ollama-cloud/kimi-k2.5",
         "ollama-cloud/kimi-k2.6",
         "ollama-cloud/kimi-k2.7-code",
-        "ollama-cloud/minimax-m2.1",
-        "ollama-cloud/minimax-m2.5",
-        "ollama-cloud/minimax-m2.7",
         "ollama-cloud/minimax-m3",
-        "ollama-cloud/ministral-3:3b",
-        "ollama-cloud/ministral-3:8b",
-        "ollama-cloud/ministral-3:14b",
-        "ollama-cloud/mistral-large-3:675b",
-        "ollama-cloud/nemotron-3-nano:30b",
         "ollama-cloud/nemotron-3-super",
         "ollama-cloud/nemotron-3-ultra",
-        "ollama-cloud/qwen3-coder-next",
-        "ollama-cloud/qwen3-coder:480b",
-        "ollama-cloud/qwen3.5:397b",
-        "ollama-cloud/rnj-1:8b",
       ])
     );
   });
@@ -810,7 +1005,7 @@ describe("selectDefaultModel", () => {
     const { selectDefaultModel } = await import("@/lib/provider-models");
     const models = [{ id: "anthropic/claude-opus-4-7", name: "Claude Opus 4.7" }];
     // No sonnet in the list — falls back to BALANCED_ANCHORS
-    expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-sonnet-4-6");
+    expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-sonnet-5");
   });
 
   it("falls back to BALANCED_ANCHORS when model list is empty", async () => {
@@ -858,6 +1053,7 @@ describe("getDefaultModel", () => {
     vi.clearAllMocks();
     resetCache();
     vi.mocked(getSetting).mockResolvedValue(null);
+    vi.mocked(listProvidersForModelFetch).mockResolvedValue([]);
   });
 
   it("returns dynamically selected balanced-tier model from live model list", async () => {
@@ -890,6 +1086,57 @@ describe("getDefaultModel", () => {
     const { getDefaultModel } = await import("@/lib/provider-models");
     const model = await getDefaultModel("openai");
     expect(model).toBe("openai/gpt-5.5");
+  });
+
+  it("resolves a custom OpenAI-compatible slug to its first model, namespaced <slug>/<modelId> (#894)", async () => {
+    // No built-in keys configured — only a custom instance exists. A custom
+    // slug carries no balanced/reasoning tier metadata, so its first persisted
+    // model IS the default, mirroring the delete-migration choice.
+    vi.mocked(getSetting).mockResolvedValue(null);
+    vi.mocked(listProvidersForModelFetch).mockResolvedValue([
+      customProvider("acme", "Acme LLM", [
+        { id: "acme-large", name: "Acme Large" },
+        { id: "acme-small", name: "Acme Small" },
+      ]),
+    ]);
+
+    const { getDefaultModel } = await import("@/lib/provider-models");
+    const model = await getDefaultModel("acme");
+    expect(model).toBe("acme/acme-large");
+  });
+
+  it("throws a defined 'Unknown provider' error for a slug that matches no built-in and no instance (#894)", async () => {
+    vi.mocked(getSetting).mockResolvedValue(null);
+    vi.mocked(listProvidersForModelFetch).mockResolvedValue([]);
+
+    const { getDefaultModel } = await import("@/lib/provider-models");
+    await expect(getDefaultModel("ghost")).rejects.toThrow("Unknown provider: ghost");
+  });
+
+  it("does NOT misclassify an Object.prototype-key slug as a built-in — throws the defined error, not a raw TypeError (#894)", async () => {
+    // `"constructor"` is creatable: RESERVED_PROVIDER_SLUGS only blocks the 5
+    // real names + "ollama", and deriveProviderSlug("Constructor") → "constructor".
+    // A `slug in PROVIDERS` check walks the prototype chain and would falsely
+    // treat it as built-in, then raw-TypeError on BALANCED_PATTERNS["constructor"]
+    // / PROVIDERS["constructor"].defaultModel. Object.hasOwn must route it into
+    // the custom branch instead, where — with no matching instance — it throws.
+    vi.mocked(getSetting).mockResolvedValue(null);
+    vi.mocked(listProvidersForModelFetch).mockResolvedValue([]);
+
+    const { getDefaultModel } = await import("@/lib/provider-models");
+    const result = getDefaultModel("constructor");
+    await expect(result).rejects.toThrow("Unknown provider: constructor");
+    await expect(result).rejects.not.toThrow(TypeError);
+  });
+
+  it("resolves a live instance whose slug is an Object.prototype key (constructor) via the own-property check (#894)", async () => {
+    vi.mocked(getSetting).mockResolvedValue(null);
+    vi.mocked(listProvidersForModelFetch).mockResolvedValue([
+      customProvider("constructor", "Constructor LLM", [{ id: "c-large", name: "C Large" }]),
+    ]);
+
+    const { getDefaultModel } = await import("@/lib/provider-models");
+    expect(await getDefaultModel("constructor")).toBe("constructor/c-large");
   });
 });
 
@@ -1296,7 +1543,7 @@ describe("selectDefaultModel — balanced-tier defaults", () => {
 
   it("falls back to BALANCED_ANCHORS when no candidate matches", () => {
     const models = [{ id: "anthropic/claude-experimental-foo", name: "x" }];
-    expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-sonnet-4-6");
+    expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-sonnet-5");
   });
 });
 
@@ -1318,8 +1565,11 @@ describe("isRejectedVariant", () => {
     "google/gemini-3-pro-experimental",
     // Ollama Cloud reasoning/fast-tier models: correctly rejected for balanced-default
     // selection. kimi-k2-thinking is a reasoning model; nemotron-3-nano is fast/cheap.
-    // They appear in the allowlist because they are tool-capable, but isRejectedVariant
-    // intentionally filters them from the auto-selected balanced default.
+    // isRejectedVariant matches on the ID alone, so these stay valid cases even
+    // though NEITHER is in the allowlist any more (kimi-k2-thinking removed for
+    // HTTP 500s, #305; nemotron-3-nano on 2026-07-30 for skipping tool calls).
+    // That is the point of keeping them: the balanced default must reject a
+    // reasoning or fast-tier ID whether or not the catalog still carries it.
     "ollama-cloud/kimi-k2-thinking",
     "ollama-cloud/nemotron-3-nano:30b",
   ])("rejects %s", (id) => {

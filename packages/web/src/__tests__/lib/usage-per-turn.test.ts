@@ -1,5 +1,34 @@
-import { describe, it, expect } from "vitest";
-import { buildUsageRows } from "@/lib/usage-per-turn";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+const mockValues = vi.fn();
+const mockResolveSessionId = vi.fn();
+const mockReadTrajectoryJsonl = vi.fn();
+
+vi.mock("@/db", () => ({
+  db: { insert: () => ({ values: mockValues }) },
+}));
+
+vi.mock("@/db/schema", () => ({
+  usageRecords: { _table: "usage_records", sessionKey: "session_key", runId: "run_id" },
+}));
+
+// Partial mock: only the two readers are stubbed. `TrajectoryFileNotFoundError`
+// stays the REAL class so the `instanceof` branch under test is exercised
+// against the same identity production code sees.
+vi.mock("@/lib/diagnostics/jsonl-reader", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/diagnostics/jsonl-reader")>(
+    "@/lib/diagnostics/jsonl-reader"
+  );
+  return {
+    ...actual,
+    resolveSessionId: (...args: unknown[]) => mockResolveSessionId(...args),
+    readTrajectoryJsonl: (...args: unknown[]) => mockReadTrajectoryJsonl(...args),
+  };
+});
+
+import { buildUsageRows, recordSessionTurnsUsage } from "@/lib/usage-per-turn";
+import { TrajectoryFileNotFoundError } from "@/lib/diagnostics/jsonl-reader";
+import { _resetPricingCacheForTest } from "@/lib/usage";
 import type { PerTurnUsage } from "@/lib/usage-from-trajectory";
 
 const ctx = {
@@ -20,6 +49,7 @@ function turn(over: Partial<PerTurnUsage> = {}): PerTurnUsage {
     outputTokens: 630,
     cacheReadTokens: 32336,
     cacheWriteTokens: 16956,
+    contextTokens: null,
     ...over,
   };
 }
@@ -42,6 +72,7 @@ describe("buildUsageRows", () => {
         estimatedCostUsd: "0.082751",
         runId: "run-1",
         seq: 5,
+        contextTokens: null,
       },
     ]);
   });
@@ -78,5 +109,287 @@ describe("buildUsageRows", () => {
   it("uses the context sessionKey (normalized), not the raw event one", () => {
     const rows = buildUsageRows([turn({ sessionKey: "AGENT:A1:DIRECT:U1" })], ctx, () => null);
     expect(rows[0].sessionKey).toBe("agent:a1:direct:u1");
+  });
+});
+
+// Seam test. `buildUsageRows` above is pure and takes an INJECTED `priceFor`,
+// so all of its cost assertions pass regardless of whether the real lookup
+// works — which is exactly how the 2026-07-15 gap survived: every chat turn
+// recorded a null cost in production while these tests stayed green. This
+// test deliberately does NOT mock `getModelPricing`; it drives the real
+// trajectory → model-id → config-pricing chain end to end.
+describe("recordSessionTurnsUsage cost wiring", () => {
+  // One `model.completed` event in OpenClaw's real shape: `provider` and
+  // `modelId` are separate fields, which extractPerTurnUsage joins into the
+  // qualified "ollama-cloud/deepseek-v4-pro" the pricing lookup must resolve.
+  const trajectory = JSON.stringify({
+    type: "model.completed",
+    runId: "run-1",
+    seq: 1,
+    sessionId: "sess-1",
+    sessionKey: "agent:a1:direct:u1",
+    provider: "ollama-cloud",
+    modelId: "deepseek-v4-pro",
+    data: {
+      usage: { input: 1000, output: 500, total: 1500 },
+      promptCache: { lastCallUsage: { input: 400, output: 500, cacheRead: 0, cacheWrite: 0 } },
+    },
+  });
+
+  // Pinchy emits models keyed by their bare id — see openclaw-config/build.ts.
+  const config = {
+    config: {
+      models: {
+        providers: {
+          "ollama-cloud": {
+            models: [{ id: "deepseek-v4-pro", cost: { input: 3, output: 15 } }],
+          },
+        },
+      },
+    },
+  };
+
+  function client() {
+    return {
+      config: { get: vi.fn().mockResolvedValue(config) },
+    } as unknown as Parameters<typeof recordSessionTurnsUsage>[0]["openclawClient"];
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    _resetPricingCacheForTest();
+    mockResolveSessionId.mockResolvedValue("sess-1");
+    mockReadTrajectoryJsonl.mockResolvedValue(trajectory);
+    mockValues.mockImplementation((rows: unknown[]) => ({
+      onConflictDoNothing: () => ({
+        returning: () => Promise.resolve(rows.map((_, i) => ({ id: String(i) }))),
+      }),
+    }));
+  });
+
+  it("attaches a cost to a chat turn whose trajectory model is fully qualified", async () => {
+    const recorded = await recordSessionTurnsUsage({
+      openclawClient: client(),
+      agentId: "a1",
+      userId: "u1",
+      agentName: "Ada",
+      sessionKey: "agent:a1:direct:u1",
+    });
+
+    expect(recorded).toBe(1);
+    const rows = mockValues.mock.calls[0][0] as Array<Record<string, unknown>>;
+    expect(rows[0].model).toBe("ollama-cloud/deepseek-v4-pro");
+    expect(rows[0].estimatedCostUsd).not.toBeNull();
+  });
+
+  it("reads the trajectory through the OpenClaw client it was given", async () => {
+    const openclawClient = client();
+    await recordSessionTurnsUsage({
+      openclawClient,
+      agentId: "a1",
+      userId: "u1",
+      agentName: "Ada",
+      sessionKey: "agent:a1:direct:u1",
+    });
+
+    expect(mockResolveSessionId).toHaveBeenCalledWith("a1", "agent:a1:direct:u1", openclawClient);
+    expect(mockReadTrajectoryJsonl).toHaveBeenCalledWith("a1", "sess-1", openclawClient);
+  });
+
+  it("records the turn's context size, distinct from the billed input tokens", async () => {
+    // Guards the whole trajectory → DB-row path: the row must bill the summed
+    // 1000 while reporting the last call's 400 as context pressure. Collapsing
+    // the two is the mistake this column exists to prevent.
+    await recordSessionTurnsUsage({
+      openclawClient: client(),
+      agentId: "a1",
+      userId: "u1",
+      agentName: "Ada",
+      sessionKey: "agent:a1:direct:u1",
+    });
+
+    const rows = mockValues.mock.calls[0][0] as Array<Record<string, unknown>>;
+    expect(rows[0].inputTokens).toBe(1000);
+    expect(rows[0].contextTokens).toBe(400);
+  });
+
+  // The turn's tool-loop calls are summed into one row, but only the LAST
+  // call's prompt size is known, so the tier is picked by that size. Usually
+  // the prompt grows within a turn, which makes a turn that crosses 100K
+  // tokens mid-loop read slightly high (usage-per-turn.ts names the cases
+  // that read low).
+  it("prices a Claude Haiku 5.5 turn by its prompt-length tier", async () => {
+    mockReadTrajectoryJsonl.mockResolvedValue(
+      JSON.stringify({
+        type: "model.completed",
+        runId: "run-3",
+        seq: 1,
+        sessionId: "sess-1",
+        sessionKey: "agent:a1:direct:u1",
+        provider: "anthropic",
+        modelId: "claude-haiku-5-5",
+        data: {
+          usage: { input: 1_000_000, output: 1_000_000, total: 2_000_000 },
+          promptCache: {
+            lastCallUsage: { input: 10_000, output: 500, cacheRead: 140_000, cacheWrite: 0 },
+          },
+        },
+      })
+    );
+    const tiered = {
+      config: {
+        models: {
+          providers: {
+            anthropic: {
+              models: [
+                {
+                  id: "claude-haiku-5-5",
+                  cost: {
+                    input: 0.1,
+                    output: 0.5,
+                    cacheRead: 0.01,
+                    cacheWrite: 0.125,
+                    tieredPricing: [
+                      {
+                        input: 0.1,
+                        output: 0.5,
+                        cacheRead: 0.01,
+                        cacheWrite: 0.125,
+                        range: [0, 100001],
+                      },
+                      {
+                        input: 0.5,
+                        output: 2.5,
+                        cacheRead: 0.05,
+                        cacheWrite: 0.625,
+                        range: [100001],
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    };
+
+    await recordSessionTurnsUsage({
+      openclawClient: {
+        config: { get: vi.fn().mockResolvedValue(tiered) },
+      } as unknown as Parameters<typeof recordSessionTurnsUsage>[0]["openclawClient"],
+      agentId: "a1",
+      userId: "u1",
+      agentName: "Ada",
+      sessionKey: "agent:a1:direct:u1",
+    });
+
+    const rows = mockValues.mock.calls[0][0] as Array<Record<string, unknown>>;
+    // 1M input at $0.50 + 1M output at $2.50: the long-prompt card, because the
+    // turn's last call read 150,000 prompt tokens.
+    expect(rows[0].estimatedCostUsd).toBe("3.000000");
+  });
+
+  it("still records the turn with a null cost when the model is unpriced", async () => {
+    mockReadTrajectoryJsonl.mockResolvedValue(
+      JSON.stringify({
+        type: "model.completed",
+        runId: "run-2",
+        seq: 1,
+        sessionId: "sess-1",
+        sessionKey: "agent:a1:direct:u1",
+        provider: "ollama-local",
+        modelId: "llama-unknown",
+        data: { usage: { input: 10, output: 5, total: 15 } },
+      })
+    );
+
+    const recorded = await recordSessionTurnsUsage({
+      openclawClient: client(),
+      agentId: "a1",
+      userId: "u1",
+      agentName: "Ada",
+      sessionKey: "agent:a1:direct:u1",
+    });
+
+    expect(recorded).toBe(1);
+    const rows = mockValues.mock.calls[0][0] as Array<Record<string, unknown>>;
+    expect(rows[0].estimatedCostUsd).toBeNull();
+  });
+});
+
+// #885: a session whose run never wrote a trajectory (e.g. it failed on a
+// retired model) is an EXPECTED state, not an error — but the poller re-scans
+// it forever, so logging it as an error floods the container logs and evicts
+// real signal from log-capture's 100-entry diagnostics ring.
+describe("recordSessionTurnsUsage with no trajectory file", () => {
+  function client() {
+    return {
+      config: { get: vi.fn().mockResolvedValue({ config: {} }) },
+    } as unknown as Parameters<typeof recordSessionTurnsUsage>[0]["openclawClient"];
+  }
+
+  const params = () => ({
+    openclawClient: client(),
+    agentId: "a1",
+    userId: "u1",
+    agentName: "Ada",
+    sessionKey: "agent:a1:direct:u1",
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    _resetPricingCacheForTest();
+    mockResolveSessionId.mockResolvedValue("sess-1");
+  });
+
+  it("returns 0 without logging an error when the trajectory file is absent", async () => {
+    mockReadTrajectoryJsonl.mockRejectedValue(
+      new TrajectoryFileNotFoundError("/openclaw-config/agents/a1/sessions/sess-1.trajectory.jsonl")
+    );
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const recorded = await recordSessionTurnsUsage(params());
+
+    expect(recorded).toBe(0);
+    expect(consoleError).not.toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
+
+  it("reports a real IO failure as null and logs it, so genuine breakage stays visible and retryable", async () => {
+    // EACCES is the transient case `readFileResilient` already retries against
+    // OpenClaw's chmod window — reaching the recorder means those retries are
+    // exhausted, so this is real breakage and must NOT join the silent branch.
+    //
+    // It returns `null`, not `0`: the poller marks a session processed on a
+    // successful scan, and 0 is a perfectly successful scan ("no new turn").
+    // Reporting a failure as 0 made the poller skip the session until its
+    // 5-minute catch-up, and made the #261 retry it documents unreachable —
+    // the only tests that exercised it had to fake a rejection this function
+    // never produces.
+    const ioError = Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+    mockReadTrajectoryJsonl.mockRejectedValue(ioError);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const recorded = await recordSessionTurnsUsage(params());
+
+    expect(recorded).toBeNull();
+    expect(consoleError).toHaveBeenCalledTimes(1);
+    // The original error must reach the log, not a rewrapped stand-in — the
+    // `code`/stack is what an operator diagnoses the volume mount from.
+    expect(consoleError).toHaveBeenCalledWith(expect.any(String), ioError);
+    consoleError.mockRestore();
+  });
+});
+
+describe("buildUsageRows context size", () => {
+  it("carries the turn's context size onto the row", () => {
+    const rows = buildUsageRows([turn({ contextTokens: 169592 })], ctx, () => null);
+    expect(rows[0].contextTokens).toBe(169592);
+  });
+
+  it("passes an unknown context size through as null, not 0", () => {
+    const rows = buildUsageRows([turn({ contextTokens: null })], ctx, () => null);
+    expect(rows[0].contextTokens).toBeNull();
   });
 });

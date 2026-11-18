@@ -1,0 +1,60 @@
+name: 📊 Eval dataset dispute
+description: Dispute a grade, a task's fairness, or a published reliability number
+labels: ["eval-dispute", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Found a run you think we graded wrong, a scenario you think is unfair or
+        underspecified, or a published number you can't reproduce? Tell us here.
+        The dataset and harness are open precisely so this is checkable — point us
+        at the evidence and we'll re-grade or correct.
+
+        **Our triage promise:** we acknowledge within 5 working days, and every
+        accepted correction lands as a versioned dataset change (see
+        `packages/web/eval/data/CHANGELOG.md`) with the reasoning recorded.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What are you disputing?
+      options:
+        - A specific run's grade (pass/fail or failure tag)
+        - A scenario's fairness or specification
+        - A published number I can't reproduce
+        - Something else
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Dataset version / harness commit
+      description: From `dataset-version.ts` / `CHANGELOG.md`, or the harness commit you ran.
+      placeholder: "1.0.0 (harness 255678c25)"
+    validations:
+      required: true
+  - type: input
+    id: locator
+    attributes:
+      label: Scenario and model
+      description: Which cell? Include the run's model and scenario label.
+      placeholder: "hetzner-invoice-rejected-models / glm-5.1"
+    validations:
+      required: false
+  - type: textarea
+    id: claim
+    attributes:
+      label: What's wrong, and what should it be?
+      description: State the current grade/number and what you believe is correct.
+      placeholder: "This run is tagged false-success, but the final message honestly reports the create failed — it should pass."
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: >
+        Quote the trajectory (`<scenario>.trajectories.jsonl`), the DB read-back,
+        or the reproduction command. The more specific, the faster we can verify.
+      render: shell
+    validations:
+      required: true

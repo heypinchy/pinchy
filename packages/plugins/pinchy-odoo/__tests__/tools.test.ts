@@ -12,8 +12,15 @@ const mockUnlink = vi.fn();
 const mockFields = vi.fn();
 const mockCallMethod = vi.fn();
 
-vi.mock("odoo-node", () => {
-  const MockOdooClient = vi.fn(function (this: Record<string, unknown>) {
+vi.mock("odoo-node", async (importOriginal) => {
+  // The real OdooError, so error tests throw exactly what odoo-node throws.
+  const { OdooError } = await importOriginal<typeof import("odoo-node")>();
+  const MockOdooClient = vi.fn(function (
+    this: Record<string, unknown>,
+    config: { fetch?: unknown }
+  ) {
+    // Keeps the transport like odoo-node >= 0.4.0, which pinOdooClient checks.
+    this.transport = { fetch: config.fetch };
     this.searchRead = mockSearchRead;
     this.searchCount = mockSearchCount;
     this.readGroup = mockReadGroup;
@@ -23,7 +30,7 @@ vi.mock("odoo-node", () => {
     this.fields = mockFields;
     this.callMethod = mockCallMethod;
   });
-  return { OdooClient: MockOdooClient };
+  return { OdooClient: MockOdooClient, OdooError };
 });
 
 // Mock the io wrapper for odoo_attach_file tests
@@ -33,7 +40,7 @@ const { mockReadFile, mockStat } = vi.hoisted(() => ({
 }));
 vi.mock("../io", () => ({ readFile: mockReadFile, stat: mockStat }));
 
-import { OdooClient } from "odoo-node";
+import { OdooClient, OdooError } from "odoo-node";
 import { encodeRef, decodeRef } from "../integration-ref";
 import plugin, {
   compactType,
@@ -41,6 +48,8 @@ import plugin, {
   sortFieldsByPriority,
   compactSchema,
   augmentFieldsWithCompanyId,
+  stripSyntheticFields,
+  SYNTHETIC_FIELD_NAMES,
   extractCompanyLabel,
   extractCompanyId,
   formatMultiMatchError,
@@ -49,6 +58,16 @@ import plugin, {
   findInvalidSelectionValues,
   formatInvalidSelectionError,
   PRODUCT_REF_DISAMBIGUATION_HINT,
+  MANY2ONE_VALUE_HINT,
+  enforceReadResultBudget,
+  ODOO_READ_RESULT_BUDGET_CHARS,
+  ODOO_READ_TRUNCATION_HINT,
+  ODOO_AGGREGATE_TRUNCATION_HINT,
+  ODOO_READ_DEFAULT_LIMIT,
+  ODOO_READ_LIMIT_CAP,
+  ODOO_DELETE_DETAIL_LABEL_CAP,
+  ODOO_DELETE_DETAIL_BUDGET_BYTES,
+  buildDeleteAuditDetail,
 } from "../index";
 
 const MOVE_FIELDS: OdooField[] = [
@@ -85,9 +104,9 @@ describe("findInvalidSelectionValues", () => {
   });
 
   it("accepts a valid selection value", () => {
-    expect(
-      findInvalidSelectionValues(MOVE_FIELDS, { move_type: "in_invoice", ref: "X" }),
-    ).toEqual([]);
+    expect(findInvalidSelectionValues(MOVE_FIELDS, { move_type: "in_invoice", ref: "X" })).toEqual(
+      []
+    );
   });
 
   it("ignores non-selection fields, unknown fields, and non-primitive values", () => {
@@ -96,7 +115,7 @@ describe("findInvalidSelectionValues", () => {
         ref: "anything", // char field, not validated
         unknown_field: "whatever", // not in schema
         partner_id: { ref: "pinchy_ref:v1:abc" }, // relational, not a scalar
-      }),
+      })
     ).toEqual([]);
   });
 
@@ -123,7 +142,7 @@ interface AgentTool {
   execute: (
     toolCallId: string,
     params: Record<string, unknown>,
-    signal?: AbortSignal,
+    signal?: AbortSignal
   ) => Promise<{
     content: Array<{ type: string; text: string }>;
     isError?: boolean;
@@ -150,7 +169,11 @@ const fetchMock = vi.fn(async (_input: string | URL, _init?: RequestInit) => ({
   ok: true,
   status: 200,
   statusText: "OK",
-  json: async () => ({ type: "odoo", credentials: testCredentials }),
+  json: async () => ({
+    type: "odoo",
+    credentials: testCredentials,
+    checkedAddresses: { url: ["203.0.113.10"] },
+  }),
 }));
 // Vitest typing dance: cast through unknown for mock fetch
 globalThis.fetch = fetchMock as unknown as typeof fetch;
@@ -169,7 +192,7 @@ function createApi(agentConfigs: Record<string, AgentOdooConfig> = {}) {
     },
     registerTool: (
       factory: (ctx: { agentId?: string }) => AgentTool | null,
-      opts?: { name?: string },
+      opts?: { name?: string }
     ) => {
       tools.push({ factory, name: opts?.name ?? "" });
     },
@@ -182,7 +205,7 @@ function createApi(agentConfigs: Record<string, AgentOdooConfig> = {}) {
 function findTool(
   tools: ReturnType<typeof createApi>,
   name: string,
-  agentId?: string,
+  agentId?: string
 ): AgentTool | null {
   const entry = tools.find((t) => t.name === name);
   if (!entry) return null;
@@ -216,9 +239,7 @@ describe("compactType", () => {
   });
 
   it("returns 'unknown' for undefined type", () => {
-    expect(
-      compactType({ name: "wtf", type: undefined as unknown as string }),
-    ).toBe("unknown");
+    expect(compactType({ name: "wtf", type: undefined as unknown as string })).toBe("unknown");
   });
 
   it("encodes many2one as 'm2o:<relation>'", () => {
@@ -227,7 +248,7 @@ describe("compactType", () => {
         name: "partner_id",
         type: "many2one",
         relation: "res.partner",
-      }),
+      })
     ).toBe("m2o:res.partner");
   });
 
@@ -237,7 +258,7 @@ describe("compactType", () => {
         name: "line_ids",
         type: "one2many",
         relation: "account.move.line",
-      }),
+      })
     ).toBe("o2m:account.move.line");
   });
 
@@ -247,7 +268,7 @@ describe("compactType", () => {
         name: "tag_ids",
         type: "many2many",
         relation: "res.partner.category",
-      }),
+      })
     ).toBe("m2m:res.partner.category");
   });
 
@@ -265,7 +286,7 @@ describe("compactType", () => {
           ["posted", "Posted"],
           ["cancel", "Cancelled"],
         ],
-      }),
+      })
     ).toBe("selection:draft|posted|cancel");
   });
 
@@ -275,14 +296,12 @@ describe("compactType", () => {
         name: "color",
         type: "selection",
         selection: [["red", "Red"]],
-      }),
+      })
     ).toBe("selection:red");
   });
 
   it("handles selection without options (empty array)", () => {
-    expect(compactType({ name: "x", type: "selection", selection: [] })).toBe(
-      "selection:",
-    );
+    expect(compactType({ name: "x", type: "selection", selection: [] })).toBe("selection:");
   });
 
   it("handles selection without options (undefined)", () => {
@@ -559,9 +578,7 @@ describe("compactSchema", () => {
       const out = compactSchema(fs, { limit: 40, verbose: false });
       expect(String(out.fields.id)).toMatch(/NOT the SKU/i);
       expect(String(out.fields.default_code)).toMatch(/NOT the database id/i);
-      expect(String(out.fields.default_code)).toMatch(
-        /SKU|internal reference/i,
-      );
+      expect(String(out.fields.default_code)).toMatch(/SKU|internal reference/i);
       // Unrelated fields stay as plain compact type strings.
       expect(out.fields.name).toBe("char");
     });
@@ -590,9 +607,7 @@ describe("compactSchema", () => {
         verbose: false,
       });
       expect(String(out.fields.default_code)).toMatch(/NOT the database id/i);
-      expect(String(out.fields.default_code)).toMatch(
-        /SKU|internal reference/i,
-      );
+      expect(String(out.fields.default_code)).toMatch(/SKU|internal reference/i);
     });
 
     // Symmetric case to the one above.
@@ -704,6 +719,44 @@ describe("augmentFieldsWithCompanyId", () => {
   });
 });
 
+// Why the plugin has to strip its own invented field names at all:
+// SYNTHETIC_FIELD_NAMES in index.ts.
+describe("stripSyntheticFields", () => {
+  it("returns undefined unchanged", () => {
+    expect(stripSyntheticFields(undefined)).toBeUndefined();
+  });
+
+  it("treats [] as 'didn't ask' and returns it unchanged (referentially equal)", () => {
+    const requested: string[] = [];
+    expect(stripSyntheticFields(requested)).toBe(requested);
+  });
+
+  it("returns the original list (referentially equal) when nothing is synthetic", () => {
+    const requested = ["name", "amount_total"];
+    expect(stripSyntheticFields(requested)).toBe(requested);
+  });
+
+  it("strips a bare `_pinchy_ref` entry", () => {
+    const result = stripSyntheticFields(["name", "_pinchy_ref", "amount_total"]);
+    expect(result).toEqual(["name", "amount_total"]);
+  });
+
+  it("strips `_pinchy_ref` even with an aggregation/granularity suffix (odoo_aggregate's `field:agg` syntax)", () => {
+    const result = stripSyntheticFields(["partner_id", "_pinchy_ref:count_distinct"]);
+    expect(result).toEqual(["partner_id"]);
+  });
+
+  it("strips every synthetic field name in SYNTHETIC_FIELD_NAMES, not just a hardcoded literal", () => {
+    for (const name of SYNTHETIC_FIELD_NAMES) {
+      expect(stripSyntheticFields(["name", name])).toEqual(["name"]);
+    }
+  });
+
+  it("can strip down to an empty array when every requested field was synthetic", () => {
+    expect(stripSyntheticFields(["_pinchy_ref"])).toEqual([]);
+  });
+});
+
 describe("extractCompanyLabel", () => {
   it("returns the string label from a [id, name] tuple", () => {
     expect(extractCompanyLabel([1, "GmbH A"])).toBe("GmbH A");
@@ -767,12 +820,7 @@ describe("assertNoCrossCompanyRefs", () => {
     vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
   });
 
-  function tagged(
-    model: string,
-    id: number,
-    companyId: number,
-    companyLabel: string,
-  ) {
+  function tagged(model: string, id: number, companyId: number, companyLabel: string) {
     return {
       ref: encodeRef({
         integrationType: "odoo",
@@ -801,7 +849,7 @@ describe("assertNoCrossCompanyRefs", () => {
     expect(() =>
       assertNoCrossCompanyRefs({
         account_id: tagged("account.account", 1, 1, "A"),
-      }),
+      })
     ).not.toThrow();
   });
 
@@ -810,7 +858,7 @@ describe("assertNoCrossCompanyRefs", () => {
       assertNoCrossCompanyRefs({
         company_id: untagged("res.company", 1),
         account_id: tagged("account.account", 1, 2, "B"),
-      }),
+      })
     ).not.toThrow();
   });
 
@@ -819,7 +867,7 @@ describe("assertNoCrossCompanyRefs", () => {
       assertNoCrossCompanyRefs({
         company_id: tagged("res.company", 1, 1, "A"),
         partner_id: untagged("res.partner", 99),
-      }),
+      })
     ).not.toThrow();
   });
 
@@ -828,7 +876,7 @@ describe("assertNoCrossCompanyRefs", () => {
       assertNoCrossCompanyRefs({
         company_id: tagged("res.company", 1, 1, "GmbH A"),
         account_id: tagged("account.account", 42, 2, "GmbH B"),
-      }),
+      })
     ).toThrow(/cross-company/i);
   });
 
@@ -856,7 +904,7 @@ describe("assertNoCrossCompanyRefs", () => {
         company_id: tagged("res.company", 1, 1, "A"),
         account_id: "1000 Wareneinsatz", // string lookup, not a ref
         partner_id: 42, // raw id (would be rejected later, but not by this guard)
-      }),
+      })
     ).not.toThrow();
   });
 
@@ -868,9 +916,7 @@ describe("assertNoCrossCompanyRefs", () => {
       try {
         assertNoCrossCompanyRefs({
           company_id: tagged("res.company", 1, 1, "GmbH A"),
-          line_ids: [
-            [0, 0, { account_id: tagged("account.account", 5, 2, "GmbH B") }],
-          ],
+          line_ids: [[0, 0, { account_id: tagged("account.account", 5, 2, "GmbH B") }]],
         });
         throw new Error("did not throw");
       } catch (err) {
@@ -896,7 +942,7 @@ describe("assertNoCrossCompanyRefs", () => {
               },
             ],
           ],
-        }),
+        })
       ).not.toThrow();
     });
 
@@ -905,7 +951,7 @@ describe("assertNoCrossCompanyRefs", () => {
         assertNoCrossCompanyRefs({
           company_id: tagged("res.company", 1, 1, "GmbH A"),
           line_ids: [[2, tagged("account.move.line", 9, 2, "GmbH B")]],
-        }),
+        })
       ).toThrow(/cross-company/i);
     });
 
@@ -914,7 +960,7 @@ describe("assertNoCrossCompanyRefs", () => {
         assertNoCrossCompanyRefs({
           company_id: tagged("res.company", 1, 1, "GmbH A"),
           line_ids: [[1, tagged("account.move.line", 9, 2, "GmbH B"), {}]],
-        }),
+        })
       ).toThrow(/cross-company/i);
     });
 
@@ -927,7 +973,7 @@ describe("assertNoCrossCompanyRefs", () => {
             [4, 42],
             [6, 0, [1, 2, 3]],
           ],
-        }),
+        })
       ).not.toThrow();
     });
   });
@@ -1028,9 +1074,7 @@ describe("odoo_list_models", () => {
       models: Array<{ model: string; name: string; operations: string[] }>;
     };
     expect(data.models).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ model: "res.partner" }),
-      ]),
+      expect.arrayContaining([expect.objectContaining({ model: "res.partner" })])
     );
     expect(data.models.length).toBeGreaterThan(0);
   });
@@ -1046,9 +1090,9 @@ describe("odoo_list_models", () => {
 });
 
 describe("tool registration", () => {
-  it("registers all 18 tools (including the deprecated odoo_schema alias)", () => {
+  it("registers all 19 tools (including the deprecated odoo_schema alias)", () => {
     const tools = createApi({ [agentId]: agentConfig });
-    expect(tools).toHaveLength(18);
+    expect(tools).toHaveLength(19);
     const names = tools.map((t) => t.name);
     expect(names).toContain("odoo_list_models");
     expect(names).toContain("odoo_describe_model");
@@ -1065,6 +1109,7 @@ describe("tool registration", () => {
     expect(names).toContain("odoo_validate_picking");
     expect(names).toContain("odoo_mark_mo_done");
     expect(names).toContain("odoo_set_approval");
+    expect(names).toContain("odoo_reconcile");
     expect(names).toContain("odoo_write");
     expect(names).toContain("odoo_delete");
     expect(names).toContain("odoo_attach_file");
@@ -1143,9 +1188,7 @@ describe("odoo_describe_model", () => {
     // `id` is described as NOT-the-SKU.
     expect(tool.description).toMatch(/`id`[^.]*NOT the SKU/);
     // SKU / internal reference IS `default_code`.
-    expect(tool.description).toMatch(
-      /(SKU|internal reference)[^.]*`default_code`/i,
-    );
+    expect(tool.description).toMatch(/(SKU|internal reference)[^.]*`default_code`/i);
   });
 });
 
@@ -1170,9 +1213,7 @@ describe("odoo_schema deprecated alias", () => {
       models: Array<{ model: string; name: string }>;
     };
     expect(data.models).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ model: "res.partner" }),
-      ]),
+      expect.arrayContaining([expect.objectContaining({ model: "res.partner" })])
     );
   });
 
@@ -1218,19 +1259,152 @@ describe("odoo_schema deprecated alias", () => {
 // directly on the constant so that swap-typo fails here loudly.
 describe("PRODUCT_REF_DISAMBIGUATION_HINT (issue #377)", () => {
   it("directs SKU / internal-reference wording to `default_code` (not `id`)", () => {
-    expect(PRODUCT_REF_DISAMBIGUATION_HINT).toMatch(
-      /(SKU|internal reference)[^.]*`default_code`/i,
-    );
+    expect(PRODUCT_REF_DISAMBIGUATION_HINT).toMatch(/(SKU|internal reference)[^.]*`default_code`/i);
   });
 
   it("directs 'record ID' / 'URL' wording to `id` (not `default_code`)", () => {
-    expect(PRODUCT_REF_DISAMBIGUATION_HINT).toMatch(
-      /(record ID|URL)[^.]*`id`/i,
-    );
+    expect(PRODUCT_REF_DISAMBIGUATION_HINT).toMatch(/(record ID|URL)[^.]*`id`/i);
   });
 
   it("contains the explicit anti-direction `default_code`, not `id`", () => {
     expect(PRODUCT_REF_DISAMBIGUATION_HINT).toMatch(/`default_code`, not `id`/);
+  });
+});
+
+// OpenClaw's runtime caps every tool result at maxChars=64000 and the whole
+// prompt history at aggregateBudgetChars=256000, replacing the overflow with a
+// literal "[... N more characters truncated …]" marker MID-JSON. A `crm.lead`
+// read of real production data reached ~509,000 chars — ~8× the per-result cap
+// — so the model received corrupt JSON plus the marker and narrated "the
+// results are truncated" in an unbreakable retry loop (pinchy production, Piper
+// agent, 2026-07-22). `enforceReadResultBudget` pre-empts that blind cut with a
+// Pinchy-side budget so odoo_read always returns valid, self-describing JSON.
+describe("enforceReadResultBudget", () => {
+  const bigRecords = (n: number, descLen = 1000) =>
+    Array.from({ length: n }, (_, i) => ({
+      id: i + 1,
+      name: `Lead ${i + 1}`,
+      description: "x".repeat(descLen),
+    }));
+
+  it("returns the input unchanged when it already fits the budget", () => {
+    const result = { records: [{ id: 1, name: "SO001" }], total: 1, limit: 100, offset: 0 };
+    const out = enforceReadResultBudget(result);
+    expect(out).toBe(result);
+    expect(out).not.toHaveProperty("truncated");
+  });
+
+  it("trims the record set to fit and reports the truncation honestly", () => {
+    const result = { records: bigRecords(200), total: 200, limit: 200, offset: 0 };
+    const out = enforceReadResultBudget(result) as {
+      records: unknown[];
+      total: number;
+      returned: number;
+      truncated: boolean;
+      hint: string;
+    };
+    expect(out.truncated).toBe(true);
+    expect(out.records.length).toBeLessThan(200);
+    expect(out.records.length).toBeGreaterThan(0);
+    expect(out.returned).toBe(out.records.length);
+    // `total` still reports the full Odoo match count so the model knows there is more.
+    expect(out.total).toBe(200);
+    expect(out.hint).toBe(ODOO_READ_TRUNCATION_HINT);
+    // The whole point: the serialized result stays under the budget (and thus
+    // comfortably under OpenClaw's 64000 per-result cap), so it is never cut.
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(ODOO_READ_RESULT_BUDGET_CHARS);
+  });
+
+  // The kept records MUST be the leading prefix of the Odoo page, in order.
+  // The truncation hint tells the model to fetch the rest with
+  // `offset = offset + returned`; that only lands on the next unseen record if
+  // what we keep are records 0..returned-1. A future refactor that dropped, say,
+  // the *largest* records instead would still pass every size assertion above
+  // while silently making paging skip rows — this pins the invariant.
+  it("keeps the leading prefix in order so `offset + returned` pages correctly", () => {
+    const result = { records: bigRecords(200), total: 200, limit: 200, offset: 0 };
+    const out = enforceReadResultBudget(result) as {
+      records: Array<{ id: number }>;
+      returned: number;
+    };
+    const expectedIds = Array.from({ length: out.returned }, (_, i) => i + 1);
+    expect(out.records.map((r) => r.id)).toEqual(expectedIds);
+  });
+
+  it("always keeps at least one record, even if that record alone exceeds the budget", () => {
+    const result = {
+      records: bigRecords(3, ODOO_READ_RESULT_BUDGET_CHARS * 2),
+      total: 3,
+      limit: 3,
+      offset: 0,
+    };
+    const out = enforceReadResultBudget(result) as { records: unknown[]; truncated: boolean };
+    expect(out.records).toHaveLength(1);
+    expect(out.truncated).toBe(true);
+  });
+
+  it("wraps a bare oversized array into a self-describing object", () => {
+    const out = enforceReadResultBudget(bigRecords(200)) as {
+      records: unknown[];
+      total: number;
+      returned: number;
+      truncated: boolean;
+    };
+    expect(out.truncated).toBe(true);
+    expect(out.total).toBe(200);
+    expect(out.returned).toBe(out.records.length);
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(ODOO_READ_RESULT_BUDGET_CHARS);
+  });
+
+  // odoo_aggregate's readGroup result nests its rows under `groups`, not
+  // `records` — the same shape difference odoo_read never has. A budget
+  // helper that only ever looks for `records` would report `records.length
+  // === 0` for a `{ groups: [...] }` payload and return it unbounded, which
+  // is exactly the gap this closes.
+  it("supports a custom key so it can also bound odoo_aggregate's `groups` result", () => {
+    const result = { groups: bigRecords(200) };
+    const out = enforceReadResultBudget(
+      result,
+      ODOO_READ_RESULT_BUDGET_CHARS,
+      "groups",
+      ODOO_AGGREGATE_TRUNCATION_HINT
+    ) as {
+      groups: unknown[];
+      total: number;
+      returned: number;
+      truncated: boolean;
+      hint: string;
+    };
+    expect(out.truncated).toBe(true);
+    expect(out.groups.length).toBeLessThan(200);
+    expect(out.groups.length).toBeGreaterThan(0);
+    expect(out.returned).toBe(out.groups.length);
+    expect(out.hint).toBe(ODOO_AGGREGATE_TRUNCATION_HINT);
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(ODOO_READ_RESULT_BUDGET_CHARS);
+  });
+
+  it("still uses the read hint when no hint is passed, so odoo_read is unchanged", () => {
+    const out = enforceReadResultBudget({ records: bigRecords(200) }) as { hint: string };
+    expect(out.hint).toBe(ODOO_READ_TRUNCATION_HINT);
+  });
+});
+
+// The hint is the only thing the model has to recover from a cut result, so
+// its advice has to be executable for the tool that emitted it. Reusing the
+// read hint here told the model to "request fewer `fields` (drop heavy ones
+// like `description`)" — on an aggregation a field IS the aggregation, so
+// following that advice removes the answer rather than shrinking the result.
+describe("ODOO_AGGREGATE_TRUNCATION_HINT", () => {
+  it("names levers odoo_aggregate actually has", () => {
+    expect(ODOO_AGGREGATE_TRUNCATION_HINT).toContain("limit");
+    expect(ODOO_AGGREGATE_TRUNCATION_HINT).toContain("group by");
+    expect(ODOO_AGGREGATE_TRUNCATION_HINT).toContain("filters");
+    expect(ODOO_AGGREGATE_TRUNCATION_HINT).toContain("offset");
+  });
+
+  it("does not repeat the read hint's inapplicable advice", () => {
+    expect(ODOO_AGGREGATE_TRUNCATION_HINT).not.toContain("description");
+    expect(ODOO_AGGREGATE_TRUNCATION_HINT).not.toContain("records");
   });
 });
 
@@ -1285,11 +1459,7 @@ describe("odoo_read", () => {
     });
 
     expect(result.isError).toBeFalsy();
-    expect(mockSearchRead).toHaveBeenCalledWith(
-      "sale.order",
-      [],
-      expect.any(Object),
-    );
+    expect(mockSearchRead).toHaveBeenCalledWith("sale.order", [], expect.any(Object));
   });
 
   it("reads records with correct parameters", async () => {
@@ -1316,15 +1486,183 @@ describe("odoo_read", () => {
     expect(data.records).toHaveLength(1);
     expect(data.total).toBe(1);
 
+    expect(mockSearchRead).toHaveBeenCalledWith("sale.order", [["state", "=", "sale"]], {
+      fields: ["name", "amount_total"],
+      limit: 10,
+      offset: 0,
+      order: "date_order desc",
+    });
+  });
+
+  // P3: `params.limit` used to reach `client.searchRead` unclamped — a model
+  // requesting `limit: 999999` got exactly that against Odoo, defeating the
+  // whole point of pagination. The tool description already promises a
+  // "default: 100"; this pins an actual cap so a runaway request can't ask
+  // for the entire table in one call.
+  it("clamps an oversized limit to the cap instead of forwarding it verbatim", async () => {
+    mockSearchRead.mockResolvedValue({ records: [], total: 0, limit: 500, offset: 0 });
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+
+    const result = await tool.execute("call-huge-limit", {
+      model: "sale.order",
+      limit: 999999,
+    });
+
+    expect(result.isError).toBeFalsy();
     expect(mockSearchRead).toHaveBeenCalledWith(
       "sale.order",
-      [["state", "=", "sale"]],
-      {
-        fields: ["name", "amount_total"],
-        limit: 10,
-        offset: 0,
-        order: "date_order desc",
-      },
+      [],
+      expect.objectContaining({ limit: 500 })
+    );
+  });
+
+  // Same parameter, missing rather than oversized. `odoo-node`'s `searchRead`
+  // does already substitute its own `DEFAULT_LIMIT = 100` for an `undefined`
+  // limit, so this was never the unbounded case — but the tool description
+  // promises "default: 100" and that promise should be pinned here rather
+  // than depend on a library constant we don't own.
+  it("defaults limit to 100 when omitted, instead of forwarding undefined", async () => {
+    mockSearchRead.mockResolvedValue({ records: [], total: 0, limit: 100, offset: 0 });
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+
+    const result = await tool.execute("call-default-limit", {
+      model: "sale.order",
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockSearchRead).toHaveBeenCalledWith(
+      "sale.order",
+      [],
+      expect.objectContaining({ limit: 100 })
+    );
+  });
+
+  // `Math.min` alone is a ONE-SIDED clamp, and the open side is the one that
+  // matters: Odoo reads `limit=0` as *no limit*, and odoo-node forwards it
+  // verbatim (`options?.limit ?? DEFAULT_LIMIT` — `0 ?? 100` is `0`). So a
+  // model writing `limit: 0` got the entire table back through the very cap
+  // that exists to prevent that. Anything that is not a usable row count
+  // falls back to the documented default.
+  it.each([
+    ["zero", 0],
+    ["negative", -1],
+    ["NaN", Number.NaN],
+    ["Infinity", Number.POSITIVE_INFINITY],
+  ])("treats a %s limit as unspecified rather than forwarding it", async (_label, limit) => {
+    mockSearchRead.mockResolvedValue({ records: [], total: 0, limit: 100, offset: 0 });
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+
+    const result = await tool.execute("call-unusable-limit", {
+      model: "sale.order",
+      limit,
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockSearchRead).toHaveBeenCalledWith(
+      "sale.order",
+      [],
+      expect.objectContaining({ limit: ODOO_READ_DEFAULT_LIMIT })
+    );
+  });
+
+  // A fractional limit reaches Postgres as a fractional LIMIT. Floor it to a
+  // row count instead of letting the database decide what 10.7 rows means.
+  it("floors a fractional limit to a whole row count", async () => {
+    mockSearchRead.mockResolvedValue({ records: [], total: 0, limit: 10, offset: 0 });
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+
+    const result = await tool.execute("call-fractional-limit", {
+      model: "sale.order",
+      limit: 10.7,
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockSearchRead).toHaveBeenCalledWith(
+      "sale.order",
+      [],
+      expect.objectContaining({ limit: 10 })
+    );
+  });
+
+  // The numbers in the tool description are what the model plans against, so
+  // a description that drifts from the enforced bound is worse than no
+  // description. Pin them to the same constants the clamp reads.
+  it("documents the default and cap the clamp actually enforces", () => {
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+    const limitDescription = (tool.parameters as { properties: { limit: { description: string } } })
+      .properties.limit.description;
+
+    expect(limitDescription).toContain(String(ODOO_READ_DEFAULT_LIMIT));
+    expect(limitDescription).toContain(String(ODOO_READ_LIMIT_CAP));
+  });
+
+  // Regression (pinchy production, 2026-07-22): a real crm.lead read produced a
+  // ~509,000-char result that OpenClaw cut mid-JSON, so Piper looped on "the
+  // results are truncated". odoo_read must bound its own output so the returned
+  // JSON never approaches OpenClaw's 64000 per-result cap.
+  it("bounds an oversized result below OpenClaw's per-result cap", async () => {
+    const OPENCLAW_TOOL_RESULT_CAP = 64000;
+    mockSearchRead.mockResolvedValue({
+      records: Array.from({ length: 200 }, (_, i) => ({
+        id: i + 1,
+        name: `Lead ${i + 1}`,
+        description: "x".repeat(1000),
+      })),
+      total: 200,
+      limit: 200,
+      offset: 0,
+    });
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+
+    const result = await tool.execute("call-big", {
+      model: "sale.order",
+      fields: ["name", "description"],
+      limit: 200,
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text.length).toBeLessThan(OPENCLAW_TOOL_RESULT_CAP);
+    const data = JSON.parse(result.content[0].text);
+    expect(data.truncated).toBe(true);
+    expect(data.total).toBe(200);
+    expect(data.records.length).toBeLessThan(200);
+    expect(data.returned).toBe(data.records.length);
+  });
+
+  // The read side of the same trap: the tool prompt teaches `_pinchy_ref`,
+  // so the model asks for it back here first. Odoo has no such column.
+  it("strips the synthetic `_pinchy_ref` field before forwarding to Odoo", async () => {
+    mockSearchRead.mockResolvedValue({
+      records: [{ id: 1, name: "Acme Corp" }],
+      total: 1,
+      limit: 100,
+      offset: 0,
+    });
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+
+    const result = await tool.execute("call-ref", {
+      model: "res.partner",
+      fields: ["name", "_pinchy_ref"],
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockSearchRead).toHaveBeenCalledWith(
+      "res.partner",
+      [],
+      expect.objectContaining({ fields: ["name"] })
     );
   });
 
@@ -1723,11 +2061,7 @@ describe("odoo_read — one2many line refs (Feature 3)", () => {
       ids: [40],
       values: {
         line_ids: [
-          [
-            1,
-            { _pinchy_ref: lineRef, id: 102, model: "account.move.line" },
-            { credit: 7 },
-          ],
+          [1, { _pinchy_ref: lineRef, id: 102, model: "account.move.line" }, { credit: 7 }],
         ],
       },
     });
@@ -1827,9 +2161,7 @@ describe("odoo_count", () => {
 
     const data = JSON.parse(result.content[0].text);
     expect(data.count).toBe(42);
-    expect(mockSearchCount).toHaveBeenCalledWith("sale.order", [
-      ["state", "=", "sale"],
-    ]);
+    expect(mockSearchCount).toHaveBeenCalledWith("sale.order", [["state", "=", "sale"]]);
   });
 
   it("treats omitted `filters` as an empty domain (match all), not an error", async () => {
@@ -1890,9 +2222,7 @@ describe("odoo_aggregate", () => {
 
   it("aggregates data for a permitted model", async () => {
     mockReadGroup.mockResolvedValue({
-      groups: [
-        { partner_id: [1, "Customer A"], amount_total: 1500, __count: 3 },
-      ],
+      groups: [{ partner_id: [1, "Customer A"], amount_total: 1500, __count: 3 }],
     });
 
     const tools = createApi({ [agentId]: agentConfig });
@@ -1912,9 +2242,161 @@ describe("odoo_aggregate", () => {
       [],
       ["partner_id", "amount_total:sum"],
       ["partner_id"],
-      { limit: undefined, offset: undefined, orderby: undefined },
+      { limit: undefined, offset: undefined, orderby: undefined }
     );
   });
+
+  // P3, same defect as odoo_read: `params.limit` reached `client.readGroup`
+  // unclamped. Unlike odoo_read the tool never promised a default, so an
+  // omitted limit must stay `undefined` (pinned above) — only an oversized
+  // one gets capped.
+  it("clamps an oversized limit to the cap instead of forwarding it verbatim", async () => {
+    mockReadGroup.mockResolvedValue({ groups: [] });
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_aggregate", agentId)!;
+
+    const result = await tool.execute("call-huge-limit", {
+      model: "sale.order",
+      filters: [],
+      fields: ["partner_id", "amount_total:sum"],
+      groupby: ["partner_id"],
+      limit: 999999,
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockReadGroup).toHaveBeenCalledWith(
+      "sale.order",
+      [],
+      ["partner_id", "amount_total:sum"],
+      ["partner_id"],
+      expect.objectContaining({ limit: 500 })
+    );
+  });
+
+  // Same one-sided-clamp hole as odoo_read: `Math.min(0, 500)` is `0`, which
+  // odoo-node forwards and Odoo reads as *no limit*. `odoo_aggregate` has no
+  // documented default, so an unusable value collapses to `undefined` — the
+  // same state as omitting the parameter, never a forwarded `0`/`-1`/`NaN`.
+  it.each([
+    ["zero", 0],
+    ["negative", -1],
+    ["NaN", Number.NaN],
+  ])("treats a %s limit as unspecified rather than forwarding it", async (_label, limit) => {
+    mockReadGroup.mockResolvedValue({ groups: [] });
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_aggregate", agentId)!;
+
+    const result = await tool.execute("call-unusable-limit", {
+      model: "sale.order",
+      filters: [],
+      fields: ["partner_id", "amount_total:sum"],
+      groupby: ["partner_id"],
+      limit,
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockReadGroup).toHaveBeenCalledWith(
+      "sale.order",
+      [],
+      ["partner_id", "amount_total:sum"],
+      ["partner_id"],
+      expect.objectContaining({ limit: undefined })
+    );
+  });
+
+  // Same trap, two more model-supplied lists — `groupby` additionally
+  // accepts the `field:agg` suffix form, which must strip by base name.
+  it("strips synthetic `_pinchy_ref` entries from both `fields` and `groupby` before forwarding to Odoo", async () => {
+    mockReadGroup.mockResolvedValue({ groups: [] });
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_aggregate", agentId)!;
+
+    const result = await tool.execute("call-ref", {
+      model: "sale.order",
+      filters: [],
+      fields: ["partner_id", "_pinchy_ref:count_distinct"],
+      groupby: ["partner_id", "_pinchy_ref"],
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockReadGroup).toHaveBeenCalledWith(
+      "sale.order",
+      [],
+      ["partner_id"],
+      ["partner_id"],
+      expect.any(Object)
+    );
+  });
+
+  // Stripping a list down to NOTHING is not the same as never asking. An
+  // empty `groupby` means "one global aggregate" to Odoo, so silently
+  // forwarding it answers a different question than the model asked —
+  // plausible, wrong, and invisible to the model. Refuse instead, and name
+  // the real column to group by.
+  it("rejects a `groupby` that consisted only of synthetic fields instead of silently aggregating globally", async () => {
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_aggregate", agentId)!;
+
+    const result = await tool.execute("call-ref", {
+      model: "sale.order",
+      filters: [],
+      fields: ["amount_total:sum"],
+      groupby: ["_pinchy_ref"],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("_pinchy_ref");
+    expect(result.content[0].text).toContain("groupby");
+    expect(mockReadGroup).not.toHaveBeenCalled();
+  });
+
+  it("rejects a `fields` list that consisted only of synthetic fields", async () => {
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_aggregate", agentId)!;
+
+    const result = await tool.execute("call-ref", {
+      model: "sale.order",
+      filters: [],
+      fields: ["_pinchy_ref:count_distinct"],
+      groupby: ["partner_id"],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("_pinchy_ref");
+    expect(result.content[0].text).toContain("fields");
+    expect(mockReadGroup).not.toHaveBeenCalled();
+  });
+
+  // `params.fields`/`params.groupby` are cast to string[] but arrive as
+  // whatever the model sent. A bare string used to reach Odoo as garbage;
+  // once stripSyntheticFields runs over it, it would instead die on
+  // `.filter is not a function` — an internal TypeError the model can't act
+  // on. Same gate as the `filters` shape check.
+  it.each([
+    ["fields", { fields: "amount_total:sum", groupby: ["partner_id"] }],
+    ["groupby", { fields: ["amount_total:sum"], groupby: "partner_id" }],
+  ])(
+    "rejects a non-array `%s` with a clear error instead of an internal TypeError",
+    async (param, params) => {
+      const tools = createApi({ [agentId]: agentConfig });
+      const tool = findTool(tools, "odoo_aggregate", agentId)!;
+
+      const result = await tool.execute("call-shape", {
+        model: "sale.order",
+        filters: [],
+        ...params,
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain(`\`${param}\``);
+      expect(result.content[0].text).toContain("array");
+      expect(result.content[0].text).not.toContain("is not a function");
+      expect(mockReadGroup).not.toHaveBeenCalled();
+    }
+  );
 
   it("denies aggregation on unpermitted model", async () => {
     const tools = createApi({ [agentId]: agentConfig });
@@ -1929,6 +2411,40 @@ describe("odoo_aggregate", () => {
 
     expect(result.content[0].text).toContain("Permission denied");
     expect(result.isError).toBe(true);
+  });
+
+  // Same production incident as odoo_read (see ODOO_READ_RESULT_BUDGET_CHARS):
+  // a wide `groupby` on a large table can return hundreds of groups, and the
+  // readGroup result was serialized verbatim with no budget at all. Without
+  // this, OpenClaw's blind 64000-char mid-JSON truncation corrupts the JSON
+  // and the model loops, exactly as with the original odoo_read incident.
+  it("truncates an oversized readGroup result into valid, self-describing JSON instead of letting OpenClaw cut it mid-JSON", async () => {
+    mockReadGroup.mockResolvedValue({
+      groups: Array.from({ length: 500 }, (_, i) => ({
+        partner_id: [i + 1, `Customer ${i + 1} ${"x".repeat(500)}`],
+        amount_total: 1500,
+        __count: 3,
+      })),
+    });
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_aggregate", agentId)!;
+
+    const result = await tool.execute("call-budget", {
+      model: "sale.order",
+      filters: [],
+      fields: ["partner_id", "amount_total:sum"],
+      groupby: ["partner_id"],
+    });
+
+    expect(result.content[0].text.length).toBeLessThanOrEqual(ODOO_READ_RESULT_BUDGET_CHARS);
+    const data = JSON.parse(result.content[0].text);
+    expect(data.truncated).toBe(true);
+    expect(data.groups.length).toBeGreaterThan(0);
+    expect(data.groups.length).toBeLessThan(500);
+    // The recovery advice the model receives has to be the aggregate one —
+    // the read hint's "drop heavy `fields`" removes the aggregation itself.
+    expect(data.hint).toBe(ODOO_AGGREGATE_TRUNCATION_HINT);
   });
 });
 
@@ -2093,9 +2609,7 @@ describe("odoo_create", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain(
-      "Raw numeric IDs are not accepted",
-    );
+    expect(result.content[0].text).toContain("Raw numeric IDs are not accepted");
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
@@ -2271,6 +2785,160 @@ describe("odoo_create", () => {
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
+  // P3: an unresolved country value used to fetch the whole res.country
+  // table (empty domain, limit: 1000) on every call, bypassing
+  // searchRelationByName only because that helper's field list omits `code`.
+  // A code lookup should scope the search read to that one code instead.
+  it("scopes the country search read to the resolved code instead of scanning the whole table", async () => {
+    mockFields.mockResolvedValue([
+      { name: "name", string: "Name", type: "char" },
+      {
+        name: "country_id",
+        string: "Country",
+        type: "many2one",
+        relation: "res.country",
+      },
+    ]);
+    mockSearchRead.mockResolvedValue({
+      records: [{ id: 14, name: "Austria", code: "AT" }],
+      total: 1,
+      limit: 1000,
+      offset: 0,
+    });
+    mockCreate.mockResolvedValue(46);
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-country-code-domain", {
+      model: "res.partner",
+      values: { name: "Wien Partner", country_id: { lookup: { code: "AT" } } },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockSearchRead).toHaveBeenCalledWith(
+      "res.country",
+      [["code", "=", "AT"]],
+      expect.objectContaining({ fields: expect.arrayContaining(["code"]) })
+    );
+    expect(mockCreate).toHaveBeenCalledWith("res.partner", {
+      name: "Wien Partner",
+      country_id: 14,
+    });
+  });
+
+  // Same defect, name-based path: a country resolved by display name must not
+  // fetch the whole table either — it should send an ilike domain scoped to
+  // the requested name. Asserted as the exact domain, not `arrayContaining`:
+  // a domain that merely *contains* the right leaves passes that matcher even
+  // when the `"|"` operator is missing, which is an implicit AND and a
+  // different query.
+  it("scopes the country search read to an ilike domain instead of scanning the whole table when resolving by name", async () => {
+    mockFields.mockResolvedValue([
+      { name: "name", string: "Name", type: "char" },
+      {
+        name: "country_id",
+        string: "Country",
+        type: "many2one",
+        relation: "res.country",
+      },
+    ]);
+    mockSearchRead.mockResolvedValue({
+      records: [{ id: 14, name: "Austria", code: "AT" }],
+      total: 1,
+      limit: 1000,
+      offset: 0,
+    });
+    mockCreate.mockResolvedValue(47);
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-country-name-domain", {
+      model: "res.partner",
+      values: { name: "Wien Partner", country_id: "Austria" },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const [, domain] = mockSearchRead.mock.calls.find(([model]) => model === "res.country")!;
+    expect(domain).toEqual([["name", "ilike", "Austria"]]);
+  });
+
+  // A lookup carrying BOTH a code and a name used to resolve by name when the
+  // code matched nothing, because the whole table was in hand and
+  // `resolveReferenceFromRecords` falls through from the code branch to the
+  // exact-name branch. A code-only domain silently removes that fallback: the
+  // records the name branch needs are never fetched. OR the two.
+  it("keeps the name fallback reachable when a lookup carries both a code and a name", async () => {
+    mockFields.mockResolvedValue([
+      { name: "name", string: "Name", type: "char" },
+      {
+        name: "country_id",
+        string: "Country",
+        type: "many2one",
+        relation: "res.country",
+      },
+    ]);
+    // The code matches nothing; only the name does.
+    mockSearchRead.mockResolvedValue({
+      records: [{ id: 14, name: "Austria", code: "AT" }],
+      total: 1,
+      limit: 1000,
+      offset: 0,
+    });
+    mockCreate.mockResolvedValue(48);
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-country-code-and-name", {
+      model: "res.partner",
+      values: {
+        name: "Wien Partner",
+        country_id: { lookup: { code: "XX", name: "Austria" } },
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const [, domain] = mockSearchRead.mock.calls.find(([model]) => model === "res.country")!;
+    expect(domain).toEqual(["|", ["code", "=", "XX"], ["name", "ilike", "Austria"]]);
+    expect(mockCreate).toHaveBeenCalledWith("res.partner", {
+      name: "Wien Partner",
+      country_id: 14,
+    });
+  });
+
+  // The one input shape carrying NO scoping information at all was the one
+  // that kept the old behaviour: `{lookup: {}}` (or a non-string `name`, which
+  // `parseLookup` drops) produced `["|", ["name","ilike",""], …]`, and
+  // `ilike ""` is `LIKE '%%'` — every row, exactly the full-table scan this
+  // change exists to remove. There is nothing to search for, so don't search:
+  // fail with the same "provide an exact name or ref" error, unqueried.
+  it("does not query res.country at all when the lookup carries neither a code nor a name", async () => {
+    mockFields.mockResolvedValue([
+      { name: "name", string: "Name", type: "char" },
+      {
+        name: "country_id",
+        string: "Country",
+        type: "many2one",
+        relation: "res.country",
+      },
+    ]);
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-country-empty-lookup", {
+      model: "res.partner",
+      values: { name: "Wien Partner", country_id: { lookup: {} } },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Could not resolve country_id");
+    expect(mockSearchRead.mock.calls.filter(([model]) => model === "res.country")).toHaveLength(0);
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
   it("denies create on model without create permission", async () => {
     const tools = createApi({ [agentId]: agentConfig });
     const tool = findTool(tools, "odoo_create", agentId)!;
@@ -2323,6 +2991,295 @@ describe("odoo_create", () => {
     const tools = createApi({ [agentId]: agentConfig });
     const tool = findTool(tools, "odoo_create", agentId)!;
     expect(tool.description).toMatch(/price_unit`[^.]{0,80}tax-exclusive/i);
+  });
+});
+
+// pinchy#721: deterministic vendor-bill duplicate guard. Before an odoo_create on
+// account.move for a VENDOR document (move_type in_invoice / in_refund), the plugin
+// searches for an existing bill with the same partner + ref and, on a hit, blocks
+// the create and returns a structured snapshot of the existing bill so the model
+// relays it to the user instead of double-booking (a double-payment risk). An
+// explicit `allow_duplicate: true` override exists for deliberate re-filings.
+//
+// Scope is intentionally the two VENDOR move types only — matching Odoo's own
+// _fetch_duplicate_reference, which keys vendor docs on `ref` and never
+// ref-dedups customer invoices (out_invoice) or journal entries (entry).
+describe("odoo_create vendor-bill duplicate guard (#721)", () => {
+  const dupConfig = {
+    connectionId: "conn-test-1",
+    permissions: { "account.move": ["read", "create"] },
+    modelNames: { "account.move": "Journal Entry" },
+  };
+  // Odoo account.move fields the guard's normalization + selection validation see.
+  const MOVE_SCHEMA_FIELDS = [
+    {
+      name: "move_type",
+      string: "Type",
+      type: "selection",
+      selection: [
+        ["entry", "Journal Entry"],
+        ["out_invoice", "Customer Invoice"],
+        ["out_refund", "Customer Credit Note"],
+        ["in_invoice", "Vendor Bill"],
+        ["in_refund", "Vendor Credit Note"],
+      ],
+    },
+    { name: "ref", string: "Reference", type: "char" },
+    { name: "partner_id", string: "Partner", type: "many2one", relation: "res.partner" },
+  ];
+
+  // The vendor bill already on file that a hit must snapshot.
+  const EXISTING_BILL = {
+    id: 39,
+    name: "BILL/2026/0039",
+    state: "posted",
+    amount_total: 1234.56,
+    invoice_date: "2026-06-01",
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+    mockFields.mockResolvedValue(MOVE_SCHEMA_FIELDS);
+  });
+
+  it("blocks a vendor-bill create when a bill with the same ref already exists, snapshotting id/name/state/amount_total/date", async () => {
+    mockSearchRead.mockResolvedValue({
+      records: [EXISTING_BILL],
+      total: 1,
+      limit: 1,
+      offset: 0,
+    });
+
+    const tools = createApi({ [agentId]: dupConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-dup", {
+      model: "account.move",
+      values: { move_type: "in_invoice", ref: "083000981540" },
+    });
+
+    // Blocked: failure outcome, no write reached Odoo.
+    expect(result.isError).toBe(true);
+    expect(mockCreate).not.toHaveBeenCalled();
+
+    // Structured snapshot naming the existing bill (issue: id, name, state,
+    // amount_total, date) so the model can relay it instead of writing.
+    const text = result.content[0].text;
+    expect(text).toContain("083000981540"); // the ref
+    expect(text).toContain("39"); // existing bill id
+    expect(text).toContain("BILL/2026/0039"); // existing bill name
+    expect(text).toContain("posted"); // existing bill state
+    expect(text).toContain("1234.56"); // amount_total
+    expect(text).toContain("2026-06-01"); // date
+    // Retry-safe: point the model at the override rather than a blind retry.
+    expect(text).toMatch(/allow_duplicate/);
+  });
+
+  it("blocks a vendor CREDIT NOTE (in_refund) duplicate too — Odoo treats it with vendor bills", async () => {
+    mockSearchRead.mockResolvedValue({
+      records: [{ ...EXISTING_BILL, id: 41, name: "RBILL/2026/0041" }],
+      total: 1,
+      limit: 1,
+      offset: 0,
+    });
+
+    const tools = createApi({ [agentId]: dupConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-refund-dup", {
+      model: "account.move",
+      values: { move_type: "in_refund", ref: "CN-9001" },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(mockCreate).not.toHaveBeenCalled();
+    expect(result.content[0].text).toContain("41");
+  });
+
+  it("lets a first-time vendor bill through when no duplicate is on file", async () => {
+    // dup-guard read → no existing bill; then #720 verification read-back → the
+    // created bill (account.move is a verified-write model).
+    mockSearchRead
+      .mockResolvedValueOnce({ records: [], total: 0, limit: 1, offset: 0 })
+      .mockResolvedValue({
+        records: [{ id: 1002, move_type: "in_invoice", ref: "NEW-0001" }],
+        total: 1,
+        limit: 1,
+        offset: 0,
+      });
+    mockCreate.mockResolvedValue(1002);
+
+    const tools = createApi({ [agentId]: dupConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-first", {
+      model: "account.move",
+      values: { move_type: "in_invoice", ref: "NEW-0001" },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalledWith("account.move", {
+      move_type: "in_invoice",
+      ref: "NEW-0001",
+    });
+    expect(JSON.parse(result.content[0].text).id).toBe(1002);
+  });
+
+  it("does NOT guard a customer invoice (out_invoice) — Odoo never ref-dedups those", async () => {
+    // A same-ref customer invoice is a legitimate second entry: out-document refs
+    // are not vendor document numbers. The guard must not run its search, so the
+    // create proceeds even though a record with this ref exists.
+    // out_invoice is not dup-guarded, so no ref-keyed dup search runs; the only
+    // read is the #720 verification read-back of the created invoice.
+    mockSearchRead.mockResolvedValue({
+      records: [{ id: 2002, move_type: "out_invoice", ref: "083000981540" }],
+      total: 1,
+      limit: 1,
+      offset: 0,
+    });
+    mockCreate.mockResolvedValue(2002);
+
+    const tools = createApi({ [agentId]: dupConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-out", {
+      model: "account.move",
+      values: { move_type: "out_invoice", ref: "083000981540" },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalled();
+    // The duplicate guard (a `ref`-keyed search) never ran — the create proceeded
+    // despite a same-ref record. The only search performed was the #720
+    // verification read-back, which keys on `id`, not `ref`.
+    const dupSearched = mockSearchRead.mock.calls.some((c) =>
+      JSON.stringify(c[1] ?? "").includes('"ref"')
+    );
+    expect(dupSearched).toBe(false);
+  });
+
+  it("does NOT guard a plain journal entry (no move_type) — Odoo never dedups those", async () => {
+    // no move_type → not dup-guarded; only the #720 verification read-back runs.
+    mockSearchRead.mockResolvedValue({
+      records: [{ id: 3003, ref: "JE-0001" }],
+      total: 1,
+      limit: 1,
+      offset: 0,
+    });
+    mockCreate.mockResolvedValue(3003);
+
+    const tools = createApi({ [agentId]: dupConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-entry", {
+      model: "account.move",
+      values: { ref: "JE-0001" },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalled();
+    // No ref-keyed dup search ran; the only search was the id-keyed #720
+    // verification read-back.
+    const dupSearched = mockSearchRead.mock.calls.some((c) =>
+      JSON.stringify(c[1] ?? "").includes('"ref"')
+    );
+    expect(dupSearched).toBe(false);
+  });
+
+  it("proceeds and records a traceable override when allow_duplicate is true", async () => {
+    // dup-guard read → finds the on-file bill (override authorized); then the
+    // #720 verification read-back → the newly created bill.
+    mockSearchRead
+      .mockResolvedValueOnce({ records: [EXISTING_BILL], total: 1, limit: 1, offset: 0 })
+      .mockResolvedValue({
+        records: [{ id: 1003, move_type: "in_invoice", ref: "083000981540" }],
+        total: 1,
+        limit: 1,
+        offset: 0,
+      });
+    mockCreate.mockResolvedValue(1003);
+
+    const tools = createApi({ [agentId]: dupConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-override", {
+      model: "account.move",
+      values: { move_type: "in_invoice", ref: "083000981540" },
+      allow_duplicate: true,
+    });
+
+    // The create proceeds despite the on-file duplicate.
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalledWith("account.move", {
+      move_type: "in_invoice",
+      ref: "083000981540",
+    });
+    expect(JSON.parse(result.content[0].text).id).toBe(1003);
+
+    // The override decision is captured in a curated audit detail (the tool-use
+    // audit route lifts result.details) naming the bill that was overridden, so
+    // the deliberate double-booking is traceable.
+    const details = result.details as Record<string, unknown>;
+    expect(details.duplicateOverride).toBe(true);
+    expect((details.existingBill as { id: number }).id).toBe(39);
+    // The audit row describes the deliberate double-booking inline: what was
+    // booked (ref + move type + new id) alongside the bill it duplicated.
+    expect(details.bookedRef).toBe("083000981540");
+    expect(details.bookedMoveType).toBe("in_invoice");
+    expect(details.createdId).toBe(1003);
+  });
+
+  it("allow_duplicate on a bill with NO on-file duplicate is a normal create (no override detail)", async () => {
+    // dup-guard read → no existing bill; then #720 verification read-back → the
+    // created bill.
+    mockSearchRead
+      .mockResolvedValueOnce({ records: [], total: 0, limit: 1, offset: 0 })
+      .mockResolvedValue({
+        records: [{ id: 1004, move_type: "in_invoice", ref: "NEW-0002" }],
+        total: 1,
+        limit: 1,
+        offset: 0,
+      });
+    mockCreate.mockResolvedValue(1004);
+
+    const tools = createApi({ [agentId]: dupConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-override-noop", {
+      model: "account.move",
+      values: { move_type: "in_invoice", ref: "NEW-0002" },
+      allow_duplicate: true,
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalled();
+    // No duplicate existed, so nothing was overridden — the detail carries only
+    // the #720 verification outcome, never an override record.
+    expect(
+      (result.details as Record<string, unknown> | undefined)?.duplicateOverride
+    ).toBeUndefined();
+  });
+
+  it("skips the guard when the agent lacks read on account.move (cannot verify, so cannot block)", async () => {
+    const createOnly = {
+      connectionId: "conn-test-1",
+      permissions: { "account.move": ["create"] },
+      modelNames: { "account.move": "Journal Entry" },
+    };
+    mockCreate.mockResolvedValue(4004);
+
+    const tools = createApi({ [agentId]: createOnly });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-noread", {
+      model: "account.move",
+      values: { move_type: "in_invoice", ref: "083000981540" },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalled();
+    expect(mockSearchRead).not.toHaveBeenCalled();
   });
 });
 
@@ -2381,9 +3338,7 @@ describe("odoo_write", () => {
       ids: [42],
       values: {
         '"name"': "Tesla",
-        '"child_ids"': [
-          [0, 0, { '"name"': "Contact 1", '"email"': "a@example.com" }],
-        ],
+        '"child_ids"': [[0, 0, { '"name"': "Contact 1", '"email"': "a@example.com" }]],
       },
     });
 
@@ -2421,47 +3376,388 @@ describe("odoo_write", () => {
   });
 });
 
-describe("odoo_delete", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
+describe("buildDeleteAuditDetail (pinchy#1078)", () => {
+  const entries = (n: number, label: (i: number) => string) =>
+    Array.from({ length: n }, (_, i) => ({ id: i + 1, label: label(i + 1) }));
+
+  const bytes = (detail: unknown) => Buffer.byteLength(JSON.stringify(detail), "utf8");
+
+  it("lists every record when they fit", () => {
+    const detail = buildDeleteAuditDetail(
+      "res.partner",
+      entries(3, (i) => `Partner ${i}`)
+    );
+
+    expect(detail).toEqual({
+      model: "res.partner",
+      count: 3,
+      deleted: [
+        { id: 1, label: "Partner 1" },
+        { id: 2, label: "Partner 2" },
+        { id: 3, label: "Partner 3" },
+      ],
+    });
   });
 
-  it("deletes records on a permitted model", async () => {
-    mockUnlink.mockResolvedValue(true);
+  it("caps the list for readability and says how many it left out", () => {
+    const detail = buildDeleteAuditDetail(
+      "res.partner",
+      entries(40, (i) => `Partner ${i}`)
+    );
 
-    // Add delete permission for this test
-    const configWithDelete = {
-      ...agentConfig,
-      permissions: {
-        ...testPermissions,
-        "res.partner": ["read", "write", "create", "delete"],
-      },
-    };
-    const tools = createApi({ [agentId]: configWithDelete });
-    const tool = findTool(tools, "odoo_delete", agentId)!;
+    expect(detail.count).toBe(40);
+    expect(detail.deleted).toHaveLength(ODOO_DELETE_DETAIL_LABEL_CAP);
+    expect(detail.deletedTruncated).toBe(40 - ODOO_DELETE_DETAIL_LABEL_CAP);
+  });
 
-    const result = await tool.execute("call-1", {
+  // The count cap alone does NOT bound the byte size: an Odoo display_name has
+  // no length limit, so twenty long ones would pass a count check and blow
+  // AGENTS.md's 2048-byte detail budget.
+  it("stays inside the byte budget even when every display name is long", () => {
+    const long = "INV/2026/00042 — Müller Maschinenbau GmbH & Co. KG [Helmcraft GmbH]".repeat(6);
+    const detail = buildDeleteAuditDetail(
+      "account.move",
+      entries(40, () => long)
+    );
+
+    expect(bytes(detail)).toBeLessThanOrEqual(ODOO_DELETE_DETAIL_BUDGET_BYTES);
+    expect(bytes(detail)).toBeLessThan(2048);
+    // Whatever it had to drop is still accounted for.
+    expect((detail.deleted as unknown[]).length + (detail.deletedTruncated as number)).toBe(40);
+  });
+
+  it("clips a single pathological name instead of dropping the record", () => {
+    const detail = buildDeleteAuditDetail("account.move", [{ id: 1, label: "x".repeat(5000) }]);
+
+    const deleted = detail.deleted as Array<{ id: number; label: string }>;
+    expect(deleted).toHaveLength(1);
+    expect(deleted[0].id).toBe(1);
+    expect(deleted[0].label.length).toBeLessThan(200);
+    expect(deleted[0].label.endsWith("…")).toBe(true);
+    expect(detail.deletedTruncated).toBeUndefined();
+  });
+
+  // A UTF-16 slice can cut a surrogate pair in half. JSON.stringify then emits a
+  // lone `\ud83d`, and audit_log.detail is jsonb — Postgres rejects the row with
+  // "Unicode low surrogate must follow a high surrogate", so the delete happens
+  // and its audit entry does not. An emoji in a res.partner.category name is the
+  // everyday way to land on that boundary.
+  it("clips on a code-point boundary so the detail stays valid JSON for jsonb", () => {
+    // The 120-char clip keeps 119 code points, so put the emoji exactly there.
+    const label = `${"x".repeat(118)}😀${"y".repeat(50)}`;
+    const detail = buildDeleteAuditDetail("res.partner.category", [{ id: 1, label }]);
+
+    const json = JSON.stringify(detail);
+    expect(json).not.toMatch(/\\ud[89ab][0-9a-f]{2}/i);
+    // Round-tripping is what Postgres does; a lone surrogate survives it, so
+    // assert on the code units directly as well.
+    const clipped = (detail.deleted as Array<{ label: string }>)[0].label;
+    for (const unit of [...clipped].map((c) => c.codePointAt(0)!)) {
+      expect(unit >= 0xd800 && unit <= 0xdfff).toBe(false);
+    }
+  });
+});
+
+// pinchy#1078: odoo_delete is the most destructive tool in the plugin and was
+// the ONE writing tool that took raw `ids: number[]` — no ref, no shape check,
+// no read-back. A hallucinated `ids: [40]` deleted a record the model had never
+// read. It now speaks the same opaque-ref language as every other governed
+// tool: `targets: _pinchy_ref[]`, so a delete is only reachable for a record
+// the model has demonstrably read, on this connection, of this model.
+describe("odoo_delete", () => {
+  const deleteConfig = {
+    ...agentConfig,
+    permissions: {
+      ...testPermissions,
+      "res.partner": ["read", "write", "create", "delete"],
+    },
+  };
+
+  function partnerRef(id: number, label: string, connectionId = "conn-test-1") {
+    return encodeRef({
+      integrationType: "odoo",
+      connectionId,
       model: "res.partner",
-      ids: [5, 6],
+      id,
+      label,
+    });
+  }
+
+  function deleteTool(config: AgentOdooConfig = deleteConfig) {
+    return findTool(createApi({ [agentId]: config }), "odoo_delete", agentId)!;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+    mockUnlink.mockResolvedValue(true);
+    mockSearchRead.mockResolvedValue([]);
+  });
+
+  it("deletes the records its targets decode to", async () => {
+    mockSearchRead.mockResolvedValue([
+      { id: 5, display_name: "Müller GmbH" },
+      { id: 6, display_name: "Huber KG" },
+    ]);
+
+    const result = await deleteTool().execute("call-1", {
+      model: "res.partner",
+      targets: [partnerRef(5, "Müller GmbH"), partnerRef(6, "Huber KG")],
     });
 
     const data = JSON.parse(result.content[0].text);
     expect(data.success).toBe(true);
+    expect(data.deleted).toEqual([
+      { id: 5, label: "Müller GmbH" },
+      { id: 6, label: "Huber KG" },
+    ]);
     expect(mockUnlink).toHaveBeenCalledWith("res.partner", [5, 6]);
   });
 
-  it("denies delete on model without delete permission", async () => {
-    const tools = createApi({ [agentId]: agentConfig });
-    const tool = findTool(tools, "odoo_delete", agentId)!;
+  // AGENTS.md: "Include resource names in delete-event details because deleted
+  // rows may no longer be queryable." The audit route merges result.details into
+  // the audit row, so the names have to be read BEFORE the unlink — afterwards
+  // there is nothing left to read.
+  it("carries model, ids and names into the audit details", async () => {
+    mockSearchRead.mockResolvedValue([{ id: 5, display_name: "Müller GmbH" }]);
 
-    const result = await tool.execute("call-2", {
+    const result = await deleteTool().execute("call-2", {
       model: "res.partner",
-      ids: [1],
+      targets: [partnerRef(5, "Müller GmbH")],
+    });
+
+    expect(result.details).toEqual({
+      model: "res.partner",
+      count: 1,
+      deleted: [{ id: 5, label: "Müller GmbH" }],
+    });
+    // The name read has to happen while the record still exists.
+    expect(mockSearchRead.mock.invocationCallOrder[0]).toBeLessThan(
+      mockUnlink.mock.invocationCallOrder[0]
+    );
+  });
+
+  it("falls back to the ref's own signed label when the name read fails", async () => {
+    mockSearchRead.mockRejectedValue(new Error("AccessError: permission denied"));
+
+    const result = await deleteTool().execute("call-3", {
+      model: "res.partner",
+      targets: [partnerRef(5, "Müller GmbH")],
+    });
+
+    // A failed label lookup must not block the delete the user asked for — the
+    // ref itself carries a signed label from the read that minted it.
+    expect(mockUnlink).toHaveBeenCalledWith("res.partner", [5]);
+    expect(result.details).toEqual({
+      model: "res.partner",
+      count: 1,
+      deleted: [{ id: 5, label: "Müller GmbH" }],
+    });
+  });
+
+  // pinchy#1078: raw ids were how a hallucinated delete reached Odoo. `ids:
+  // [40]` needs no prior read, so nothing tied a delete to a record the model
+  // had actually seen. The schema declares no `ids`, so the call is refused
+  // like any undeclared parameter (unknown-params.ts) — loudly, and never
+  // quietly accepted alongside `targets`, which would be a one-parameter route
+  // back to the hole.
+  it("refuses raw numeric ids and names the ref parameter to use instead", async () => {
+    const result = await deleteTool().execute("call-4", {
+      model: "res.partner",
+      ids: [40],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('does not take the parameter "ids"');
+    expect(result.content[0].text).toContain("targets");
+    expect(mockUnlink).not.toHaveBeenCalled();
+  });
+
+  // Most runtimes refuse an undeclared `ids` against the schema before the
+  // tool's own message can name `targets`, so the description says it first.
+  it("says in its description that it takes no `ids`, only `targets`", () => {
+    const { description } = deleteTool();
+    expect(description).toContain("There is no `ids` parameter");
+    expect(description).toContain("`targets`");
+  });
+
+  it("refuses a ref minted for another Odoo connection", async () => {
+    const result = await deleteTool().execute("call-5", {
+      model: "res.partner",
+      targets: [partnerRef(5, "Müller GmbH", "conn-other")],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("does not belong to this Odoo connection");
+    expect(mockUnlink).not.toHaveBeenCalled();
+  });
+
+  // The permission check reads `model`; a ref pointing somewhere else would
+  // unlink on a model the agent was never granted delete on.
+  it("refuses a target whose ref points at a different model", async () => {
+    const otherModelRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "sale.order",
+      id: 5,
+      label: "S00005",
+    });
+
+    const result = await deleteTool().execute("call-6", {
+      model: "res.partner",
+      targets: [otherModelRef],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("sale.order");
+    expect(mockUnlink).not.toHaveBeenCalled();
+  });
+
+  it("refuses a corrupted ref with a re-fetch instruction", async () => {
+    const result = await deleteTool().execute("call-7", {
+      model: "res.partner",
+      targets: ["pinchy_ref:v1:not-a-real-token"],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/could not be decoded/);
+    expect(mockUnlink).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a missing targets list", {}],
+    ["a bare string instead of a list", { targets: "pinchy_ref:v1:abc" }],
+    ["an empty list", { targets: [] }],
+    ["a list holding a number", { targets: [5] }],
+  ])("refuses %s", async (_label, extra) => {
+    const result = await deleteTool().execute("call-8", { model: "res.partner", ...extra });
+
+    expect(result.isError).toBe(true);
+    expect(mockUnlink).not.toHaveBeenCalled();
+  });
+
+  it("rejects the {item: …} array-serialization artifact", async () => {
+    const result = await deleteTool().execute("call-9", {
+      model: "res.partner",
+      targets: { item: partnerRef(5, "Müller GmbH") },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('{"item": …}');
+    expect(mockUnlink).not.toHaveBeenCalled();
+  });
+
+  it("deduplicates repeated targets so the audit detail counts records, not calls", async () => {
+    mockSearchRead.mockResolvedValue([{ id: 5, display_name: "Müller GmbH" }]);
+    const ref = partnerRef(5, "Müller GmbH");
+
+    const result = await deleteTool().execute("call-10", {
+      model: "res.partner",
+      targets: [ref, ref],
+    });
+
+    expect(mockUnlink).toHaveBeenCalledWith("res.partner", [5]);
+    expect(result.details).toMatchObject({ count: 1 });
+  });
+
+  // AGENTS.md: "Keep audit detail under 2048 bytes. Summarize bulk operations."
+  it("summarizes a bulk delete instead of listing every name", async () => {
+    const ids = Array.from({ length: 40 }, (_, i) => i + 1);
+    mockSearchRead.mockResolvedValue(ids.map((id) => ({ id, display_name: `Partner ${id}` })));
+
+    const result = await deleteTool().execute("call-11", {
+      model: "res.partner",
+      targets: ids.map((id) => partnerRef(id, `Partner ${id}`)),
+    });
+
+    const details = result.details as Record<string, unknown>;
+    expect(mockUnlink).toHaveBeenCalledWith("res.partner", ids);
+    expect(details.count).toBe(40);
+    expect(details.deleted).toHaveLength(ODOO_DELETE_DETAIL_LABEL_CAP);
+    expect(details.deletedTruncated).toBe(40 - ODOO_DELETE_DETAIL_LABEL_CAP);
+    expect(JSON.stringify(details).length).toBeLessThan(2048);
+
+    // Only the audit ROW is capped. The tool result the model reads is the full
+    // set — a shortened list here is how an agent ends up telling the user it
+    // deleted twenty when it deleted forty.
+    const data = JSON.parse(result.content[0].text);
+    expect(data.count).toBe(40);
+    expect(data.deleted).toHaveLength(40);
+    expect(data.deleted.at(-1)).toEqual({ id: 40, label: "Partner 40" });
+
+    // And the name read is scoped to what the detail can print: reading 40
+    // display names to log 20 is payload nobody sees.
+    expect(mockSearchRead).toHaveBeenCalledTimes(1);
+    expect(mockSearchRead.mock.calls[0][1]).toEqual([
+      ["id", "in", ids.slice(0, ODOO_DELETE_DETAIL_LABEL_CAP)],
+    ]);
+  });
+
+  // The plugin comment claims an agent granted delete but not read still
+  // deletes, falling back to the ref's signed label. Nothing proved it, and the
+  // fallback is what keeps a forensic nicety from inventing a new way for the
+  // user's actual request to fail.
+  it("still deletes when the agent has delete but not read on the model", async () => {
+    const deleteOnly = {
+      ...agentConfig,
+      permissions: { ...testPermissions, "res.partner": ["delete"] },
+    };
+
+    const result = await deleteTool(deleteOnly).execute("call-13", {
+      model: "res.partner",
+      targets: [partnerRef(5, "Müller GmbH")],
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(mockUnlink).toHaveBeenCalledWith("res.partner", [5]);
+    expect(mockSearchRead).not.toHaveBeenCalled();
+    expect(result.details).toEqual({
+      model: "res.partner",
+      count: 1,
+      deleted: [{ id: 5, label: "Müller GmbH" }],
+    });
+  });
+
+  // #404 / the 2026-06-25 false-success incident: the shape to refuse is an
+  // outcome=success audit row whose detail names records as deleted that are
+  // still in Odoo. Real Odoo returns True or raises, so this is the edge — but
+  // it is the edge that produces a lie rather than an error.
+  it("reports a failure when Odoo does not confirm the unlink", async () => {
+    mockUnlink.mockResolvedValue(false);
+
+    const result = await deleteTool().execute("call-14", {
+      model: "res.partner",
+      targets: [partnerRef(5, "Müller GmbH")],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/did not confirm the delete/i);
+    // errorResult curates `{error}` only, which is what keeps the audit route
+    // from suppressing params — forensics need to see what was attempted.
+    expect(Object.keys(result.details as Record<string, unknown>)).toEqual(["error"]);
+  });
+
+  it("denies delete on a model without delete permission before decoding anything", async () => {
+    const result = await deleteTool(agentConfig).execute("call-12", {
+      model: "res.partner",
+      targets: [partnerRef(1, "Müller GmbH")],
     });
 
     expect(result.content[0].text).toContain("Permission denied");
     expect(result.isError).toBe(true);
     expect(mockUnlink).not.toHaveBeenCalled();
+    expect(mockSearchRead).not.toHaveBeenCalled();
+  });
+
+  it("tells the model in its description that only refs are accepted", () => {
+    const tool = deleteTool();
+    const schema = tool.parameters as {
+      properties: Record<string, unknown>;
+      required: string[];
+    };
+    expect(tool.description).toMatch(/_pinchy_ref/);
+    expect(schema.properties.ids).toBeUndefined();
+    expect(schema.required).toEqual(["model", "targets"]);
   });
 });
 
@@ -2504,7 +3800,7 @@ describe("error handling", () => {
 
     expect(result.isError).toBe(true);
     expect((result.details as { error?: string } | undefined)?.error).toContain(
-      "Connection refused",
+      "Connection refused"
     );
   });
 
@@ -2520,7 +3816,7 @@ describe("error handling", () => {
 
     expect(result.isError).toBe(true);
     expect((result.details as { error?: string } | undefined)?.error).toContain(
-      "Permission denied",
+      "Permission denied"
     );
   });
 
@@ -2531,9 +3827,7 @@ describe("error handling", () => {
     const result = await tool.execute("call-1", {});
 
     expect(result.isError).toBe(true);
-    expect((result.details as { error?: string } | undefined)?.error).toMatch(
-      /model.*required/i,
-    );
+    expect((result.details as { error?: string } | undefined)?.error).toMatch(/model.*required/i);
   });
 
   it("attaches details.error on an inline validation error (odoo_attach_file invalid filename)", async () => {
@@ -2546,9 +3840,7 @@ describe("error handling", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect((result.details as { error?: string } | undefined)?.error).toContain(
-      "Invalid filename",
-    );
+    expect((result.details as { error?: string } | undefined)?.error).toContain("Invalid filename");
   });
 
   // "../../etc/passwd" used to hit the "Invalid filename" branch directly.
@@ -2557,6 +3849,10 @@ describe("error handling", () => {
   // this filename is now VALID ("passwd") and the request instead fails at
   // the (also invalid) targetRef "x" — still an inline validation error,
   // still surfaced via details.error, just from a different gate.
+  //
+  // "x" has no `pinchy_ref:v1:` prefix, so it is an UNDECODABLE ref, not one
+  // minted for a different connection — this asserted the connection-mismatch
+  // message until the 2026-07-15 fix, which was simply wrong for this input.
   it("attaches details.error on an inline validation error (odoo_attach_file invalid targetRef, after filename normalization)", async () => {
     const tools = createApi({ [agentId]: agentConfig });
     const tool = findTool(tools, "odoo_attach_file", agentId)!;
@@ -2567,9 +3863,9 @@ describe("error handling", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect((result.details as { error?: string } | undefined)?.error).toContain(
-      "does not belong to this Odoo connection",
-    );
+    const error = (result.details as { error?: string } | undefined)?.error;
+    expect(error).toContain("could not be decoded");
+    expect(error).not.toContain("does not belong to this Odoo connection");
   });
 
   it("rejects a non-array `filters` with a clear error instead of forwarding garbage to Odoo", async () => {
@@ -2593,15 +3889,11 @@ describe("error handling", () => {
     const result = await tool.execute("call-1", { model: "stock.move" });
 
     expect(result.isError).toBe(true);
-    expect((result.details as { error?: string } | undefined)?.error).toMatch(
-      /not available/i,
-    );
+    expect((result.details as { error?: string } | undefined)?.error).toMatch(/not available/i);
   });
 
   it("returns permission message for Odoo access errors", async () => {
-    mockSearchRead.mockRejectedValue(
-      new Error("AccessError: no read access on sale.order"),
-    );
+    mockSearchRead.mockRejectedValue(new Error("AccessError: no read access on sale.order"));
 
     const tools = createApi({ [agentId]: agentConfig });
     const tool = findTool(tools, "odoo_read", agentId)!;
@@ -2645,6 +3937,300 @@ describe("error handling", () => {
     expect(result.content[0].text).toContain("Error: Unknown error");
     expect(result.isError).toBe(true);
   });
+
+  // What odoo-node throws when the answer is not JSON-RPC at all — a page, a
+  // metadata service's plain text. It names status and content type, never
+  // the body.
+  function notJsonRpcError(): OdooError {
+    return new OdooError("Response is not JSON-RPC (HTTP 200, text/plain)", 200);
+  }
+
+  it("tells the model a non-JSON-RPC answer means an admin should check the connection", async () => {
+    mockSearchRead.mockRejectedValue(notJsonRpcError());
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const result = await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    const detail = (result.details as { error?: string }).error ?? "";
+    for (const out of [text, detail]) {
+      expect(out).toContain("not a JSON-RPC response");
+      expect(out).toContain("Settings → Integrations");
+    }
+  });
+
+  it("tells the model a redirect was refused, naming the status", async () => {
+    mockSearchRead.mockRejectedValue(
+      new OdooError(
+        "Odoo answered with a redirect (HTTP 308); odoo-node does not follow redirects. " +
+          "Use the address Odoo is actually served from.",
+        308
+      )
+    );
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const result = await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain("redirect (HTTP 308)");
+    expect(text).toContain("Settings → Integrations");
+  });
+
+  it("reports a credentials response that is not JSON as Pinchy's, without quoting it", async () => {
+    // The plugin parses one body itself: Pinchy's credentials answer. A parse
+    // error quotes the first characters of what it choked on.
+    fetchMock.mockResolvedValueOnce(new Response("proxy-page-body", { status: 200 }) as never);
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const result = await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result)).not.toContain("proxy-page");
+    expect(JSON.stringify(result)).not.toContain("Unexpected token");
+    // It was Pinchy that answered, not Odoo.
+    expect(result.content[0].text).toContain("Failed to fetch Odoo credentials");
+    expect(result.content[0].text).not.toContain("JSON-RPC");
+  });
+
+  it.each([
+    [
+      "a connection that drops mid-body",
+      () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.error(new TypeError("terminated"));
+            },
+          }),
+          { status: 200 }
+        ),
+      "the answer from Pinchy broke off",
+    ],
+    [
+      "Pinchy being unreachable",
+      () => {
+        throw new TypeError("fetch failed");
+      },
+      "could not reach Pinchy",
+    ],
+  ])(
+    "reports %s on the credentials fetch as Pinchy's, not Odoo's",
+    async (_label, answer, says) => {
+      fetchMock.mockImplementationOnce(async () => answer() as never);
+
+      const tools = createApi({ [agentId]: agentConfig });
+      const result = await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+        model: "sale.order",
+        filters: [],
+      });
+
+      expect(result.isError).toBe(true);
+      const text = result.content[0].text;
+      expect(text).toContain("Failed to fetch Odoo credentials");
+      expect(text).toContain(says);
+      expect(text).not.toContain("JSON-RPC");
+      expect(text).not.toContain("Odoo answered");
+    }
+  );
+
+  it.each([
+    ["null", null],
+    ["an array", []],
+  ])("reports a credentials answer that is %s as Pinchy's, not Odoo's", async (_label, payload) => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify(payload), { status: 200 }) as never
+    );
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const result = await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain("credentials API");
+    expect(text).not.toContain("JSON-RPC");
+    expect(text).not.toContain("Odoo answered");
+  });
+
+  it("reports any other TypeError as an unexpected failure, not as a non-JSON-RPC answer", async () => {
+    mockSearchRead.mockRejectedValue(
+      new TypeError("Cannot read properties of undefined (reading 'map')")
+    );
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const result = await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    // odoo-node raises TypeErrors of its own on a JSON-RPC server that is not
+    // Odoo, so the text must not rule the connection out.
+    expect(text).toBe(
+      "Error: The Odoo tool failed unexpectedly (TypeError reading 'map'): either a bug in the " +
+        "tool, or an answer from the connection's URL that is not what Odoo sends."
+    );
+  });
+
+  it("never repeats an unexpected TypeError's free text to the model", async () => {
+    mockSearchRead.mockRejectedValue(new TypeError("token.secret-value is not a function"));
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const result = await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    expect(result.content[0].text).not.toContain("secret-value");
+    expect(result.content[0].text).toContain("failed unexpectedly (TypeError)");
+  });
+
+  it("does not take an HTTP 405 for a permission denial", async () => {
+    mockSearchRead.mockRejectedValue(new OdooError("HTTP 405: Method Not Allowed", 405));
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const result = await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    const text = result.content[0].text;
+    expect(text).toBe("Error: HTTP 405: Method Not Allowed");
+    expect(text).not.toMatch(/denied permission|re-sync/i);
+  });
+
+  it("does not take a TypeError reading `message` for an answer that is not JSON-RPC", async () => {
+    // odoo-node from 0.4.0 reports an error envelope without a message
+    // (`{"error": {}}`) as not JSON-RPC itself. A TypeError reading `message`
+    // is now a bug of ours, and the model is told so.
+    let thrown: unknown;
+    try {
+      const json = JSON.parse('{"error":{}}') as { error: { data: { message: string } } };
+      void json.error.data.message;
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(TypeError);
+    mockSearchRead.mockRejectedValue(thrown);
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const result = await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).not.toContain("Cannot read properties");
+    expect(result.content[0].text).toContain("failed unexpectedly (TypeError reading 'message')");
+  });
+
+  it("hands Odoo's own error to the model on one line, capped", async () => {
+    mockSearchRead.mockRejectedValue(
+      new Error(`Invalid field\nfirst line\n${"x".repeat(5000)}\nlast line`)
+    );
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const result = await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    const text = result.content[0].text;
+    expect(text).toContain("Error: Invalid field first line");
+    expect(text).not.toContain("\n");
+    expect(text).not.toContain("last line");
+    expect(text.length).toBeLessThan(1100);
+  });
+
+  it("still adds the many2one hint after an integer-syntax error (classified before it is shortened)", async () => {
+    mockSearchRead.mockRejectedValue(
+      new Error('invalid input syntax for type integer: "7600 Office supplies"\nLINE 1: ...')
+    );
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const result = await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    const text = result.content[0].text;
+    expect(text).toContain(
+      'Error: invalid input syntax for type integer: "7600 Office supplies" LINE 1: ...'
+    );
+    expect(text).toContain("Look the record up with odoo_read");
+  });
+
+  // The first failure is an auth error, so the plugin refetches credentials
+  // and retries. The FRESH credentials are fine; the retry then fails for a
+  // reason that has nothing to do with them. Reporting that as an auth failure
+  // flips a healthy connection to auth_failed, puts a "reconnect" banner in
+  // Settings, writes an `integration.auth_failed` audit row blaming the
+  // credentials — and nothing clears it on its own.
+  it.each([
+    ["a non-JSON-RPC answer", notJsonRpcError],
+    ["a transport failure", () => Object.assign(new Error("HTTP 502 Bad Gateway"), { code: 502 })],
+    [
+      "an Odoo validation error from the model's arguments",
+      () => new Error("ValidationError: The field 'state' is required"),
+    ],
+  ])(
+    "does not report an auth failure when the retry fails with %s",
+    async (_label, makeRetryError) => {
+      mockSearchRead
+        .mockRejectedValueOnce(new Error("Access Denied: invalid api key"))
+        .mockRejectedValueOnce(makeRetryError());
+
+      const tools = createApi({ [agentId]: agentConfig });
+      const result = await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+        model: "sale.order",
+        filters: [],
+      });
+
+      expect(mockSearchRead).toHaveBeenCalledTimes(2);
+      expect(result.isError).toBe(true);
+      expect(
+        fetchMock.mock.calls.filter((c) => String(c[0]).includes("report-auth-failure"))
+      ).toHaveLength(0);
+      // Still put through the error mapping: a non-JSON body never reaches
+      // the model.
+      expect(result.content[0].text).not.toContain("my-ec2-role-name");
+    }
+  );
+
+  it("still reports an auth failure when the retry is refused for its credentials too", async () => {
+    mockSearchRead
+      .mockRejectedValueOnce(new Error("Access Denied: invalid api key"))
+      .mockRejectedValueOnce(new Error("Access Denied: invalid api key"));
+
+    const tools = createApi({ [agentId]: agentConfig });
+    await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    const reportCalls = fetchMock.mock.calls.filter((c) =>
+      String(c[0]).includes("report-auth-failure")
+    );
+    expect(reportCalls).toHaveLength(1);
+    const { reason } = JSON.parse((reportCalls[0][1] as RequestInit).body as string) as {
+      reason: string;
+    };
+    expect(reason).toContain("Access Denied");
+  });
 });
 
 describe("client caching (#209 layer 2: credentials fetched lazily, cached)", () => {
@@ -2654,7 +4240,11 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
       ok: true,
       status: 200,
       statusText: "OK",
-      json: async () => ({ type: "odoo", credentials: testCredentials }),
+      json: async () => ({
+        type: "odoo",
+        credentials: testCredentials,
+        checkedAddresses: { url: ["203.0.113.10"] },
+      }),
     } as unknown as Response);
   });
 
@@ -2679,6 +4269,34 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
     expect(fetchMock).toHaveBeenCalledTimes(1);
     // OdooClient constructor called exactly once (cached client reused)
     expect(OdooClient).toHaveBeenCalledTimes(1);
+    // ...with the pinned fetch: a client built without one would reach Odoo
+    // through the global fetch, unpinned.
+    // Only a fetch pinned to the connection's URL refuses another origin
+    // before anything goes out.
+    const [config] = vi.mocked(OdooClient).mock.calls[0] as unknown as [{ fetch?: unknown }];
+    expect(config.fetch).toEqual(expect.any(Function));
+    await expect(
+      (config.fetch as typeof fetch)("https://elsewhere.example/jsonrpc")
+    ).rejects.toThrow(/checked for https:\/\/odoo\.example\.com/);
+  });
+
+  it("refuses to connect when Pinchy sent no checked address, and says why", async () => {
+    // The route refuses an Odoo URL it cannot check (403/503), so a 200
+    // without the addresses comes from a Pinchy that predates them.
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: async () => ({ type: "odoo", credentials: testCredentials }),
+    } as unknown as Response);
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const readTool = findTool(tools, "odoo_read", agentId)!;
+    const result = await readTool.execute("call-1", { model: "sale.order", filters: [] });
+
+    expect(result.content[0].text).toMatch(/same Pinchy release/);
+    expect(result.content[0].text).not.toMatch(/still resolves/);
+    expect(mockSearchRead).not.toHaveBeenCalled();
   });
 
   it("fetches credentials separately for different agents (no cross-agent leakage)", async () => {
@@ -2712,6 +4330,24 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
     expect(urls.some((u) => u.includes("conn-test-2"))).toBe(true);
   });
 
+  it("names the calling agent, so the server can check the grant (#987)", async () => {
+    // Until #987 the request carried the connectionId and a gateway token —
+    // one shared secret every plugin holds. The server could therefore not
+    // tell whether the agent behind the call had been granted that Odoo
+    // connection at all, and answered with a decrypted password either way.
+    mockSearchRead.mockResolvedValue({ records: [], total: 0, limit: 100, offset: 0 });
+
+    const tools = createApi({ [agentId]: agentConfig });
+    await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    const url = new URL(String(fetchMock.mock.calls[0][0]));
+    expect(url.pathname).toContain("conn-test-1");
+    expect(url.searchParams.get("agentId")).toBe(agentId);
+  });
+
   it("fails fast with a clear error if the credentials API returns the SecretRef object shape (#209 regression)", async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,
@@ -2719,6 +4355,7 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
       statusText: "OK",
       json: async () => ({
         type: "odoo",
+        checkedAddresses: { url: ["203.0.113.10"] },
         // Exactly the broken shape from staging: an unresolved SecretRef.
         credentials: {
           source: "file",
@@ -2743,9 +4380,7 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
   });
 
   it("invalidates the cache and refetches credentials on auth error", async () => {
-    mockSearchRead.mockRejectedValueOnce(
-      new Error("Access Denied: invalid api key"),
-    );
+    mockSearchRead.mockRejectedValueOnce(new Error("Access Denied: invalid api key"));
     mockSearchRead.mockResolvedValueOnce({
       records: [],
       total: 0,
@@ -2767,12 +4402,93 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
     expect(mockSearchRead).toHaveBeenCalledTimes(2);
   });
 
+  it("refetches after a connection hot-swap instead of serving the previous connection's client (pinchy#1077)", async () => {
+    mockSearchRead.mockResolvedValue({
+      records: [],
+      total: 0,
+      limit: 100,
+      offset: 0,
+    });
+
+    // A hot swap re-points the SAME agent at a different integration
+    // connection; the agentId does not change. Keying the client cache on
+    // agentId alone therefore kept the OLD connection's OdooClient — and
+    // with it the old Odoo instance's credentials — serving tool calls for
+    // up to CREDENTIAL_CACHE_TTL_MS after the swap.
+    //
+    // This asserts the behaviour, not the helper: credentialCacheKey's own
+    // unit test can only prove that two strings differ, which stays true
+    // even if index.ts goes back to caching on `agentId`.
+    const agentConfigs: Record<string, AgentOdooConfig> = {
+      [agentId]: { ...agentConfig, connectionId: "conn-before-swap" },
+    };
+    const tools = createApi(agentConfigs);
+
+    await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    agentConfigs[agentId] = { ...agentConfig, connectionId: "conn-after-swap" };
+
+    await findTool(tools, "odoo_read", agentId)!.execute("call-2", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    const credentialUrls = fetchMock.mock.calls
+      .map((call) => String(call[0]))
+      .filter((url) => url.includes("/credentials"));
+    expect(credentialUrls).toHaveLength(2);
+    expect(credentialUrls[0]).toContain("conn-before-swap");
+    expect(credentialUrls[1]).toContain("conn-after-swap");
+  });
+
+  it("does not replay a create when the failure merely contains the digits 401 (pinchy#1077)", async () => {
+    vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+    // The pre-#1077 matcher tested `msg.includes("401")` over the whole
+    // error message, so an amount or record id that happened to contain
+    // those digits was classified as an auth failure. withAuthRetry then
+    // invalidated the client and replayed the ENTIRE closure — including
+    // `client.create`, which is not idempotent. The second create is a
+    // duplicate record nobody asked for.
+    //
+    // Asserted on the tool, not on isAuthError: the unit test proves the
+    // matcher rejects the string, this proves the write is not repeated.
+    mockCreate.mockRejectedValue(new Error("Invalid value 401.00 for field credit_limit"));
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      model: "res.partner",
+      values: { name: "New Partner" },
+    });
+
+    // Read the count, THEN reset, THEN assert. `vi.clearAllMocks()` in
+    // beforeEach clears recorded calls but keeps a standing implementation
+    // (and any unconsumed `…Once`), so a rejection left behind here would
+    // surface as a failure in whichever later test calls create without its
+    // own setup — odoo_attach_file creates ir.attachment rows through this
+    // same mock. Resetting before the assertions means a red assertion
+    // cannot skip the cleanup and turn one failure into several.
+    const createCalls = mockCreate.mock.calls.length;
+    mockCreate.mockReset();
+
+    expect(result.isError).toBe(true);
+    expect(createCalls).toBe(1);
+  });
+
   it("POSTs report-auth-failure when retry-once also returns an auth error", async () => {
     fetchMock.mockResolvedValue({
       ok: true,
       status: 200,
       statusText: "OK",
-      json: async () => ({ type: "odoo", credentials: testCredentials }),
+      json: async () => ({
+        type: "odoo",
+        credentials: testCredentials,
+        checkedAddresses: { url: ["203.0.113.10"] },
+      }),
     } as unknown as Response);
 
     mockSearchRead
@@ -2785,12 +4501,12 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
     await tool.execute("call-1", { model: "sale.order", filters: [] });
 
     const reportCalls = fetchMock.mock.calls.filter((c) =>
-      String(c[0]).includes("report-auth-failure"),
+      String(c[0]).includes("report-auth-failure")
     );
     expect(reportCalls).toHaveLength(1);
     const [url, opts] = reportCalls[0] as [string, RequestInit];
     expect(url).toBe(
-      "http://pinchy-test:7777/api/internal/integrations/conn-test-1/report-auth-failure",
+      "http://pinchy-test:7777/api/internal/integrations/conn-test-1/report-auth-failure"
     );
     expect(opts.method).toBe("POST");
     const headers = opts.headers as Record<string, string>;
@@ -2800,17 +4516,87 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
     expect(body.reason).toBeTruthy();
   });
 
+  it("re-fetches when the same agent's config now names a different connection (#1077)", async () => {
+    mockSearchRead.mockResolvedValue({ records: [], total: 0, limit: 100, offset: 0 });
+
+    // The cache used to key on the agentId alone, so the client built from
+    // conn-test-1's credentials kept serving conn-test-2 for a full TTL.
+    const configs: Record<string, AgentOdooConfig> = {
+      [agentId]: { connectionId: "conn-test-1", permissions: testPermissions },
+    };
+    const tools = createApi(configs);
+
+    await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    configs[agentId] = { connectionId: "conn-test-2", permissions: testPermissions };
+    await findTool(tools, "odoo_read", agentId)!.execute("call-2", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    const urls = fetchMock.mock.calls.map((c) => String(c[0]));
+    expect(urls.some((u) => u.includes("conn-test-1"))).toBe(true);
+    expect(urls.some((u) => u.includes("conn-test-2"))).toBe(true);
+    expect(OdooClient).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not read a record id that contains 401 as an auth failure (#1077)", async () => {
+    // Odoo's MissingError names the offending records. The old matcher tested
+    // `msg.includes("401")`, so this error invalidated the cache, spent a
+    // second credentials round trip, re-ran the call — and then POSTed
+    // report-auth-failure, flipping a perfectly healthy connection to
+    // auth_failed in Settings → Integrations.
+    mockSearchRead.mockRejectedValue(
+      new Error("Record does not exist or has been deleted. (Records: sale.order(401,), User: 2)")
+    );
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const result = await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(mockSearchRead).toHaveBeenCalledTimes(1);
+    // One credentials fetch, and nothing else: no refetch, no report.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(
+      fetchMock.mock.calls.filter((c) => String(c[0]).includes("report-auth-failure"))
+    ).toHaveLength(0);
+  });
+
+  it("does not repeat a create when the error merely contains 401 (#1077)", async () => {
+    mockFields.mockResolvedValue([{ name: "ref", type: "char", string: "Ref" }]);
+    mockCreate.mockRejectedValue(
+      new Error("A vendor bill with ref INV-401-2026 already exists for this partner")
+    );
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const result = await findTool(tools, "odoo_create", agentId)!.execute("call-1", {
+      model: "res.partner",
+      values: { name: "Acme" },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+  });
+
   it("does not POST report-auth-failure on a transient 5xx error", async () => {
     fetchMock.mockResolvedValue({
       ok: true,
       status: 200,
       statusText: "OK",
-      json: async () => ({ type: "odoo", credentials: testCredentials }),
+      json: async () => ({
+        type: "odoo",
+        credentials: testCredentials,
+        checkedAddresses: { url: ["203.0.113.10"] },
+      }),
     } as unknown as Response);
 
-    mockSearchRead.mockRejectedValueOnce(
-      new Error("HTTP 503 Service Unavailable"),
-    );
+    mockSearchRead.mockRejectedValueOnce(new Error("HTTP 503 Service Unavailable"));
 
     const tools = createApi({ [agentId]: agentConfig });
     const tool = findTool(tools, "odoo_read", agentId)!;
@@ -2818,9 +4604,41 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
     await tool.execute("call-1", { model: "sale.order", filters: [] });
 
     const reportCalls = fetchMock.mock.calls.filter((c) =>
-      String(c[0]).includes("report-auth-failure"),
+      String(c[0]).includes("report-auth-failure")
     );
     expect(reportCalls).toHaveLength(0);
+  });
+
+  it("aborts a hung credentials fetch via AbortSignal.timeout(10_000) instead of blocking the tool call forever", async () => {
+    // Simulates a Pinchy container that never answers Pinchy's own internal
+    // credentials route (mid-deploy, network blackhole) — the mock only ever
+    // settles via the AbortSignal fetchCredentials passes in, exactly like a
+    // real hung `fetch` would once the signal fires.
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockImplementation((_ms: number) => {
+      const controller = new AbortController();
+      setTimeout(
+        () => controller.abort(new DOMException("The operation timed out.", "TimeoutError")),
+        1
+      );
+      return controller.signal;
+    });
+    fetchMock.mockImplementation((_url: string | URL, init?: RequestInit) => {
+      return new Promise((_resolve, reject) => {
+        const signal = init?.signal;
+        signal?.addEventListener("abort", () => {
+          reject(signal.reason ?? new Error("The operation was aborted"));
+        });
+      });
+    });
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_count", agentId)!;
+
+    const result = await tool.execute("call-1", { model: "sale.order", filters: [] });
+
+    expect(result.isError).toBe(true);
+    expect(timeoutSpy).toHaveBeenCalledWith(10_000);
+    timeoutSpy.mockRestore();
   });
 });
 
@@ -2843,7 +4661,11 @@ describe("odoo_attach_file", () => {
       ok: true,
       status: 200,
       statusText: "OK",
-      json: async () => ({ type: "odoo", credentials: testCredentials }),
+      json: async () => ({
+        type: "odoo",
+        credentials: testCredentials,
+        checkedAddresses: { url: ["203.0.113.10"] },
+      }),
     });
   });
 
@@ -2884,7 +4706,7 @@ describe("odoo_attach_file", () => {
     });
 
     expect(mockReadFile).toHaveBeenCalledWith(
-      `/root/.openclaw/workspaces/${attachAgentId}/uploads/receipt.jpg`,
+      `/root/.openclaw/workspaces/${attachAgentId}/uploads/receipt.jpg`
     );
   });
 
@@ -2910,9 +4732,7 @@ describe("odoo_attach_file", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain(
-      "does not belong to this Odoo connection",
-    );
+    expect(result.content[0].text).toContain("does not belong to this Odoo connection");
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
@@ -2924,9 +4744,7 @@ describe("odoo_attach_file", () => {
       id: 42,
       label: "INV/2025/0001",
     });
-    mockStat.mockRejectedValue(
-      Object.assign(new Error("no such file"), { code: "ENOENT" }),
-    );
+    mockStat.mockRejectedValue(Object.assign(new Error("no such file"), { code: "ENOENT" }));
 
     const tools = createApi({ [attachAgentId]: attachAgentConfig });
     const tool = findTool(tools, "odoo_attach_file", attachAgentId)!;
@@ -2937,9 +4755,7 @@ describe("odoo_attach_file", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect((result.details as { error?: string } | undefined)?.error).toContain(
-      "File not found",
-    );
+    expect((result.details as { error?: string } | undefined)?.error).toContain("File not found");
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
@@ -2963,9 +4779,7 @@ describe("odoo_attach_file", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect((result.details as { error?: string } | undefined)?.error).toContain(
-      "File too large",
-    );
+    expect((result.details as { error?: string } | undefined)?.error).toContain("File too large");
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
@@ -3095,7 +4909,7 @@ describe("odoo_attach_file", () => {
 
     expect(mockCreate).toHaveBeenCalledWith(
       "ir.attachment",
-      expect.objectContaining({ mimetype: expectedMime }),
+      expect.objectContaining({ mimetype: expectedMime })
     );
   });
 
@@ -3175,16 +4989,16 @@ describe("odoo_attach_file", () => {
 
         expect(result.isError).toBeFalsy();
         expect(mockStat).toHaveBeenCalledWith(
-          `/root/.openclaw/workspaces/${attachAgentId}/uploads/${expectedBasename}`,
+          `/root/.openclaw/workspaces/${attachAgentId}/uploads/${expectedBasename}`
         );
         expect(mockReadFile).toHaveBeenCalledWith(
-          `/root/.openclaw/workspaces/${attachAgentId}/uploads/${expectedBasename}`,
+          `/root/.openclaw/workspaces/${attachAgentId}/uploads/${expectedBasename}`
         );
         expect(mockCreate).toHaveBeenCalledWith(
           "ir.attachment",
-          expect.objectContaining({ name: expectedBasename }),
+          expect.objectContaining({ name: expectedBasename })
         );
-      },
+      }
     );
 
     it("accepts a plain filename with spaces, digits, and dashes", async () => {
@@ -3242,7 +5056,7 @@ describe("odoo_attach_file", () => {
       expect(mockReadFile).toHaveBeenCalledWith(expectedPath);
       expect(mockCreate).toHaveBeenCalledWith(
         "ir.attachment",
-        expect.objectContaining({ name: "file_12---abc.jpg" }),
+        expect.objectContaining({ name: "file_12---abc.jpg" })
       );
     });
 
@@ -3279,9 +5093,7 @@ describe("odoo_attach_file", () => {
         id: 42,
         label: "INV/2025/0001",
       });
-      mockStat.mockRejectedValue(
-        Object.assign(new Error("no such file"), { code: "ENOENT" }),
-      );
+      mockStat.mockRejectedValue(Object.assign(new Error("no such file"), { code: "ENOENT" }));
 
       const tools = createApi({ [attachAgentId]: attachAgentConfig });
       const tool = findTool(tools, "odoo_attach_file", attachAgentId)!;
@@ -3357,6 +5169,15 @@ describe("odoo_attach_file", () => {
       mockCreate
         .mockResolvedValueOnce(123) // odoo_create returns id 123 for account.move
         .mockResolvedValueOnce(456); // odoo_attach_file create for ir.attachment
+      // #720: account.move is a verified-write model — odoo_create reads the
+      // record back before reporting success. Echo the submitted verbatim
+      // scalars so verification passes.
+      mockSearchRead.mockResolvedValueOnce({
+        records: [{ id: 123, move_type: "in_invoice", invoice_date: "2026-01-15" }],
+        total: 1,
+        limit: 1,
+        offset: 0,
+      });
 
       const tools = createApi({ [attachAgentId]: attachAgentConfig });
       const createTool = findTool(tools, "odoo_create", attachAgentId)!;
@@ -3446,7 +5267,7 @@ describe("odoo_read multi-company auto-include", () => {
     expect(mockSearchRead).toHaveBeenCalledWith(
       "account.account",
       [],
-      expect.objectContaining({ fields: ["code", "name", "company_id"] }),
+      expect.objectContaining({ fields: ["code", "name", "company_id"] })
     );
   });
 
@@ -3478,7 +5299,7 @@ describe("odoo_read multi-company auto-include", () => {
       [],
       expect.not.objectContaining({
         fields: expect.arrayContaining(["company_id"]),
-      }),
+      })
     );
   });
 
@@ -3514,7 +5335,7 @@ describe("odoo_read multi-company auto-include", () => {
     expect(mockSearchRead).toHaveBeenCalledWith(
       "account.move",
       [],
-      expect.objectContaining({ fields: ["company_id", "name"] }),
+      expect.objectContaining({ fields: ["company_id", "name"] })
     );
   });
 
@@ -3545,7 +5366,7 @@ describe("odoo_read multi-company auto-include", () => {
     expect(mockSearchRead).toHaveBeenCalledWith(
       "account.move",
       [],
-      expect.objectContaining({ fields: undefined }),
+      expect.objectContaining({ fields: undefined })
     );
   });
 
@@ -3597,9 +5418,7 @@ describe("odoo_read multi-company auto-include", () => {
     });
 
     const payload = JSON.parse(result.content[0].text);
-    const refs = payload.records.map((r: { _pinchy_ref: string }) =>
-      decodeRef(r._pinchy_ref),
-    );
+    const refs = payload.records.map((r: { _pinchy_ref: string }) => decodeRef(r._pinchy_ref));
     expect(refs[0].label).toBe("1000 Wareneinsatz [GmbH A]");
     expect(refs[1].label).toBe("1000 Wareneinsatz [GmbH B]");
   });
@@ -3794,9 +5613,7 @@ describe("odoo_read multi-company auto-include", () => {
       filters: [],
       fields: ["display_name"],
     });
-    const decoded = decodeRef(
-      JSON.parse(result.content[0].text).records[0]._pinchy_ref,
-    );
+    const decoded = decodeRef(JSON.parse(result.content[0].text).records[0]._pinchy_ref);
     expect(decoded.companyId).toBeUndefined();
     expect(decoded.companyLabel).toBeUndefined();
   });
@@ -3832,9 +5649,7 @@ describe("odoo_read multi-company auto-include", () => {
       filters: [],
       fields: ["display_name"],
     });
-    const decoded = decodeRef(
-      JSON.parse(result.content[0].text).records[0]._pinchy_ref,
-    );
+    const decoded = decodeRef(JSON.parse(result.content[0].text).records[0]._pinchy_ref);
     expect(decoded.companyId).toBeUndefined();
     expect(decoded.companyLabel).toBeUndefined();
   });
@@ -3980,12 +5795,10 @@ describe("m2o lookup multi-company error", () => {
       })
       .catch(() => {});
 
-    const lookupCall = mockSearchRead.mock.calls.find(
-      ([model]) => model === "account.account",
-    );
+    const lookupCall = mockSearchRead.mock.calls.find(([model]) => model === "account.account");
     expect(lookupCall).toBeDefined();
     expect(lookupCall![2]?.fields).toEqual(
-      expect.arrayContaining(["id", "name", "display_name", "company_id"]),
+      expect.arrayContaining(["id", "name", "display_name", "company_id"])
     );
   });
 
@@ -4039,9 +5852,7 @@ describe("m2o lookup multi-company error", () => {
       })
       .catch(() => {});
 
-    const currencyLookup = mockSearchRead.mock.calls.find(
-      ([model]) => model === "res.currency",
-    );
+    const currencyLookup = mockSearchRead.mock.calls.find(([model]) => model === "res.currency");
     expect(currencyLookup).toBeDefined();
     expect(currencyLookup![2]?.fields).not.toContain("company_id");
   });
@@ -4735,13 +6546,11 @@ describe("bare _pinchy_ref string for many2one fields (Layer 1)", () => {
     expect(result.isError).toBeFalsy();
     expect(mockCreate).toHaveBeenCalledWith(
       "account.move",
-      expect.objectContaining({ journal_id: 17, company_id: 1 }),
+      expect.objectContaining({ journal_id: 17, company_id: 1 })
     );
     // The bare ref must short-circuit the name lookup — no searchRead on
     // account.journal should happen.
-    const journalLookup = mockSearchRead.mock.calls.find(
-      ([model]) => model === "account.journal",
-    );
+    const journalLookup = mockSearchRead.mock.calls.find(([model]) => model === "account.journal");
     expect(journalLookup).toBeUndefined();
   });
 
@@ -4781,6 +6590,52 @@ describe("bare _pinchy_ref string for many2one fields (Layer 1)", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toMatch(/expected account\.journal, got res\.partner/);
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  // The m2o path shares decodeOdooRefForConnection with decodeTargetRef, so
+  // it inherits the same "which failure was it?" problem: a corrupted ref
+  // used to surface the bare "Invalid integration reference", which tells
+  // the model nothing about what to do next. Same typed error, same
+  // actionable remedy as the target-ref path.
+  it("tells the model a corrupted bare _pinchy_ref is undecodable, not just 'invalid'", async () => {
+    const journalRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "account.journal",
+      id: 17,
+      label: "Miscellaneous Operations",
+    });
+
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "account.move") {
+        return [
+          { name: "id", type: "integer", required: false, readonly: true },
+          {
+            name: "journal_id",
+            type: "many2one",
+            relation: "account.journal",
+            required: true,
+            readonly: false,
+          },
+        ];
+      }
+      return [];
+    });
+
+    const tools = createApi({
+      [agentId]: { ...agentConfig, permissions: { "account.move": ["create"] } },
+    });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+    const result = await tool.execute("corrupt-m2o", {
+      model: "account.move",
+      values: { journal_id: journalRef.slice(0, -6) },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("could not be decoded");
+    expect(result.content[0].text).toContain("journal_id");
+    expect(result.content[0].text).not.toBe("Error: Invalid integration reference");
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
@@ -4953,9 +6808,7 @@ describe("company-scoped m2o name lookup (Layer 2)", () => {
       if (model === "account.journal") {
         const hasCompanyScope =
           Array.isArray(domain) &&
-          domain.some(
-            (c) => Array.isArray(c) && c[0] === "company_id" && c[2] === 1,
-          );
+          domain.some((c) => Array.isArray(c) && c[0] === "company_id" && c[2] === 1);
         return hasCompanyScope
           ? {
               records: [
@@ -5007,17 +6860,13 @@ describe("company-scoped m2o name lookup (Layer 2)", () => {
     });
 
     expect(result.isError).toBeFalsy();
-    const journalLookup = mockSearchRead.mock.calls.find(
-      ([model]) => model === "account.journal",
-    );
+    const journalLookup = mockSearchRead.mock.calls.find(([model]) => model === "account.journal");
     expect(journalLookup).toBeDefined();
     const domain = journalLookup![1];
-    expect(domain).toEqual(
-      expect.arrayContaining([["company_id", "=", 1]]),
-    );
+    expect(domain).toEqual(expect.arrayContaining([["company_id", "=", 1]]));
     expect(mockCreate).toHaveBeenCalledWith(
       "account.move",
-      expect.objectContaining({ journal_id: 17 }),
+      expect.objectContaining({ journal_id: 17 })
     );
   });
 
@@ -5084,9 +6933,7 @@ describe("company-scoped m2o name lookup (Layer 2)", () => {
     });
 
     expect(result.isError).toBeFalsy();
-    const currencyLookup = mockSearchRead.mock.calls.find(
-      ([model]) => model === "res.currency",
-    );
+    const currencyLookup = mockSearchRead.mock.calls.find(([model]) => model === "res.currency");
     expect(currencyLookup).toBeDefined();
     const domain = currencyLookup![1];
     // res.currency has no company_id — adding a company_id domain would make
@@ -5169,9 +7016,7 @@ describe("company scope includes shared records (company_id = false)", () => {
       if (model === "res.partner") {
         const hasSharedBranch =
           Array.isArray(domain) &&
-          domain.some(
-            (c) => Array.isArray(c) && c[0] === "company_id" && c[2] === false,
-          );
+          domain.some((c) => Array.isArray(c) && c[0] === "company_id" && c[2] === false);
         return hasSharedBranch
           ? {
               records: [
@@ -5217,18 +7062,12 @@ describe("company scope includes shared records (company_id = false)", () => {
     });
 
     expect(result.isError).toBeFalsy();
-    const partnerLookup = mockSearchRead.mock.calls.find(
-      ([model]) => model === "res.partner",
-    );
+    const partnerLookup = mockSearchRead.mock.calls.find(([model]) => model === "res.partner");
     expect(partnerLookup).toBeDefined();
     const domain = partnerLookup![1];
     // The scope must be the OR-with-false pattern, not a strict equality.
     expect(domain).toEqual(
-      expect.arrayContaining([
-        "|",
-        ["company_id", "=", false],
-        ["company_id", "=", 1],
-      ]),
+      expect.arrayContaining(["|", ["company_id", "=", false], ["company_id", "=", 1]])
     );
     // … and NOT the strict-only form that would exclude shared records.
     expect(domain).not.toEqual([
@@ -5239,7 +7078,7 @@ describe("company scope includes shared records (company_id = false)", () => {
     // company-1-only partner that a strict filter would have returned.
     expect(mockCreate).toHaveBeenCalledWith(
       "account.move",
-      expect.objectContaining({ partner_id: 5, company_id: 1 }),
+      expect.objectContaining({ partner_id: 5, company_id: 1 })
     );
   });
 });
@@ -5280,14 +7119,10 @@ describe("relationHasCompanyId / findCompanyIdField helper", () => {
     expect(relationHasCompanyId(fields)).toBe(true);
   });
   it("returns false when company_id is absent or not many2one", () => {
-    expect(
-      relationHasCompanyId(normalizeFields([{ name: "id", type: "integer" }])),
-    ).toBe(false);
-    expect(
-      relationHasCompanyId(
-        normalizeFields([{ name: "company_id", type: "char" }]),
-      ),
-    ).toBe(false);
+    expect(relationHasCompanyId(normalizeFields([{ name: "id", type: "integer" }]))).toBe(false);
+    expect(relationHasCompanyId(normalizeFields([{ name: "company_id", type: "char" }]))).toBe(
+      false
+    );
   });
 });
 
@@ -5322,8 +7157,7 @@ describe("odoo_schedule_activity", () => {
 
   it("builds the mail.activity payload with resolved res_model_id, default To-Do type, and the lead's salesperson", async () => {
     mockSearchRead.mockImplementation(async (model: string) => {
-      if (model === "ir.model")
-        return { records: [{ id: 5 }], total: 1, limit: 1, offset: 0 };
+      if (model === "ir.model") return { records: [{ id: 5 }], total: 1, limit: 1, offset: 0 };
       if (model === "ir.model.data")
         return {
           records: [{ id: 1, res_id: 9 }],
@@ -5366,8 +7200,7 @@ describe("odoo_schedule_activity", () => {
 
   it("falls back to Odoo's default activity type when the To-Do xmlid is absent", async () => {
     mockSearchRead.mockImplementation(async (model: string) => {
-      if (model === "ir.model")
-        return { records: [{ id: 5 }], total: 1, limit: 1, offset: 0 };
+      if (model === "ir.model") return { records: [{ id: 5 }], total: 1, limit: 1, offset: 0 };
       // ir.model.data lookup finds nothing → no activity_type_id forced
       return { records: [], total: 0, limit: 0, offset: 0 };
     });
@@ -5417,7 +7250,13 @@ describe("odoo_schedule_activity", () => {
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
-  it("rejects a target ref from a different connection", async () => {
+  // Two causes, two remedies — a cross-connection ref is a config problem, a
+  // garbled one the model can fix itself by re-fetching. They shared one
+  // message until the 2026-07-15 incident (see MalformedIntegrationRefError
+  // in integration-ref.ts); these tests pin them apart so a regression that
+  // merges them back together fails loudly.
+
+  it("Cause 1 — ref decodes fine but belongs to a different connection: keeps the existing, correct message", async () => {
     const tools = createApi({ [agentId]: activityConfig });
     const tool = findTool(tools, "odoo_schedule_activity", agentId)!;
     const result = await tool.execute("c", {
@@ -5426,10 +7265,121 @@ describe("odoo_schedule_activity", () => {
       dueDate: "2026-06-30",
     });
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain(
-      "does not belong to this Odoo connection",
-    );
+    expect(result.content[0].text).toContain("does not belong to this Odoo connection");
+    expect(result.content[0].text).not.toContain("could not be decoded");
     expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  // Same case the legacy "rejects a target ref from a different connection"
+  // test used to cover under the wrong label.
+  it("Cause 2 — ref is corrupted/truncated and never decodes: reports a distinct, actionable message, not a connection-mismatch claim", async () => {
+    const tools = createApi({ [agentId]: activityConfig });
+    const tool = findTool(tools, "odoo_schedule_activity", agentId)!;
+
+    // A real ref for THIS connection, mangled the way a model regurgitating
+    // a long opaque token in a tool call tends to mangle it — a few trailing
+    // characters dropped. Still starts with the `pinchy_ref:v1:` prefix, so
+    // it isn't caught by earlier validation; it fails inside decodeRef's
+    // AES-GCM decrypt/auth-tag step.
+    const truncated = leadRef().slice(0, -6);
+
+    const result = await tool.execute("c", {
+      target: truncated,
+      summary: "x",
+      dueDate: "2026-06-30",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("could not be decoded");
+    expect(result.content[0].text).not.toContain("does not belong to this Odoo connection");
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  // `assignee` decodes through the same shared gate but a different caller
+  // (resolveAssigneeUserId), which reported the bare "Invalid integration
+  // reference" for a corrupted ref. Named after the parameter the model
+  // actually passed, so it knows which of the two refs to re-fetch.
+  it("names `assignee` — not `target` — when it is the assignee ref that is corrupted", async () => {
+    const userRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "res.users",
+      id: 7,
+      label: "Sam Seller",
+    });
+
+    const tools = createApi({ [agentId]: activityConfig });
+    const tool = findTool(tools, "odoo_schedule_activity", agentId)!;
+
+    const result = await tool.execute("c", {
+      target: leadRef(),
+      summary: "x",
+      dueDate: "2026-06-30",
+      assignee: userRef.slice(0, -6),
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("could not be decoded");
+    expect(result.content[0].text).toContain("assignee");
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  // The assignee was trimmed BEFORE the ref was
+  // decoded, so `" " + ref` or `ref + "\n"` assigned the activity to the
+  // record the ref names — while the confirmation card (which shows a ref as
+  // its record only when the string IS the ref) showed opaque text, and the
+  // gate's model check never saw res.users. A padded ref is refused instead.
+  it.each([
+    ["a leading space", (ref: string) => ` ${ref}`],
+    ["a trailing line break", (ref: string) => `${ref}\n`],
+    ["a leading tab and trailing space", (ref: string) => `\t${ref} `],
+  ])("refuses an assignee ref with %s instead of acting on it", async (_label, pad) => {
+    const userRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "res.users",
+      id: 7,
+      label: "Mallory",
+    });
+    const tools = createApi({ [agentId]: activityConfig });
+    const tool = findTool(tools, "odoo_schedule_activity", agentId)!;
+
+    const result = await tool.execute("c", {
+      target: leadRef(),
+      summary: "x",
+      dueDate: "2026-06-30",
+      assignee: pad(userRef),
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("assignee");
+    expect(result.content[0].text).toMatch(/whitespace/i);
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("still trims the whitespace around an assignee NAME", async () => {
+    mockSearchRead.mockImplementation(async (model: string) => {
+      if (model === "res.users") return { records: [{ id: 2 }], total: 1, limit: 2, offset: 0 };
+      if (model === "ir.model") return { records: [{ id: 5 }], total: 1, limit: 1, offset: 0 };
+      return { records: [], total: 0, limit: 0, offset: 0 };
+    });
+    mockCreate.mockResolvedValue(11);
+    const tools = createApi({ [agentId]: activityConfig });
+    const tool = findTool(tools, "odoo_schedule_activity", agentId)!;
+
+    const result = await tool.execute("c", {
+      target: leadRef(),
+      summary: "x",
+      dueDate: "2026-06-30",
+      assignee: " Mitch Admin\n",
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockSearchRead).toHaveBeenCalledWith(
+      "res.users",
+      [["name", "=", "Mitch Admin"]],
+      expect.anything()
+    );
+    expect(mockCreate.mock.calls[0][1]).toMatchObject({ user_id: 2 });
   });
 });
 
@@ -5466,12 +7416,9 @@ describe("odoo_complete_activity", () => {
       feedback: "Spoke to the customer",
     });
     expect(result.isError).toBeFalsy();
-    expect(mockCallMethod).toHaveBeenCalledWith(
-      "mail.activity",
-      "action_feedback",
-      [[5]],
-      { feedback: "Spoke to the customer" },
-    );
+    expect(mockCallMethod).toHaveBeenCalledWith("mail.activity", "action_feedback", [[5]], {
+      feedback: "Spoke to the customer",
+    });
   });
 
   it("omits the feedback kwarg when none is given", async () => {
@@ -5479,12 +7426,7 @@ describe("odoo_complete_activity", () => {
     const tools = createApi({ [agentId]: cfg });
     const tool = findTool(tools, "odoo_complete_activity", agentId)!;
     await tool.execute("c", { target: activityRef() });
-    expect(mockCallMethod).toHaveBeenCalledWith(
-      "mail.activity",
-      "action_feedback",
-      [[5]],
-      {},
-    );
+    expect(mockCallMethod).toHaveBeenCalledWith("mail.activity", "action_feedback", [[5]], {});
   });
 
   it("requires write on mail.activity", async () => {
@@ -5546,7 +7488,7 @@ describe("odoo_reschedule_activity", () => {
     mockSearchRead.mockImplementation(async (model: string) =>
       model === "res.users"
         ? { records: [{ id: 2 }], total: 1, limit: 2, offset: 0 }
-        : { records: [], total: 0, limit: 0, offset: 0 },
+        : { records: [], total: 0, limit: 0, offset: 0 }
     );
     mockWrite.mockResolvedValue(true);
 
@@ -5580,6 +7522,32 @@ describe("odoo_reschedule_activity", () => {
     const tool = findTool(tools, "odoo_reschedule_activity", agentId)!;
     const result = await tool.execute("c", { target: activityRef() });
     expect(result.isError).toBe(true);
+    expect(mockWrite).not.toHaveBeenCalled();
+  });
+
+  // A padded assignee ref is refused here too — see the matching
+  // odoo_schedule_activity test.
+  it.each([
+    ["a leading space", (ref: string) => ` ${ref}`],
+    ["a trailing line break", (ref: string) => `${ref}\n`],
+    ["a leading tab", (ref: string) => `\t${ref}`],
+  ])("refuses an assignee ref with %s instead of reassigning", async (_label, pad) => {
+    const userRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "res.users",
+      id: 7,
+      label: "Mallory",
+    });
+    mockWrite.mockResolvedValue(true);
+    const tools = createApi({ [agentId]: cfg });
+    const tool = findTool(tools, "odoo_reschedule_activity", agentId)!;
+
+    const result = await tool.execute("c", { target: activityRef(), assignee: pad(userRef) });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("assignee");
+    expect(result.content[0].text).toMatch(/whitespace/i);
     expect(mockWrite).not.toHaveBeenCalled();
   });
 
@@ -5648,9 +7616,7 @@ describe("odoo record-action tools (confirm / apply / validate / mark-done)", ()
       };
 
       it("is registered", () => {
-        expect(createApi({ [agentId]: cfg }).map((t) => t.name)).toContain(
-          tool,
-        );
+        expect(createApi({ [agentId]: cfg }).map((t) => t.name)).toContain(tool);
       });
 
       it(`calls ${method} and reports completed`, async () => {
@@ -5685,7 +7651,7 @@ describe("odoo record-action tools (confirm / apply / validate / mark-done)", ()
             },
           }),
           tool,
-          agentId,
+          agentId
         )!;
         const result = await t.execute("c", { target: ref(model) });
         expect(result.isError).toBe(true);
@@ -5729,19 +7695,14 @@ describe("odoo_set_approval", () => {
         },
       }),
       "odoo_set_approval",
-      agentId,
+      agentId
     )!;
     const result = await t.execute("c", {
       target: ref("purchase.order"),
       decision: "approve",
     });
     expect(result.isError).toBeFalsy();
-    expect(mockCallMethod).toHaveBeenCalledWith(
-      "purchase.order",
-      "button_confirm",
-      [[3]],
-      {},
-    );
+    expect(mockCallMethod).toHaveBeenCalledWith("purchase.order", "button_confirm", [[3]], {});
   });
 
   it("refuses an expense sheet via refuse_sheet with the reason as a positional arg", async () => {
@@ -5754,7 +7715,7 @@ describe("odoo_set_approval", () => {
         },
       }),
       "odoo_set_approval",
-      agentId,
+      agentId
     )!;
     const result = await t.execute("c", {
       target: ref("hr.expense.sheet"),
@@ -5766,7 +7727,7 @@ describe("odoo_set_approval", () => {
       "hr.expense.sheet",
       "refuse_sheet",
       [[3], "Over budget"],
-      {},
+      {}
     );
   });
 
@@ -5779,7 +7740,7 @@ describe("odoo_set_approval", () => {
         },
       }),
       "odoo_set_approval",
-      agentId,
+      agentId
     )!;
     const result = await t.execute("c", {
       target: ref("sale.order"),
@@ -5799,7 +7760,7 @@ describe("odoo_set_approval", () => {
         },
       }),
       "odoo_set_approval",
-      agentId,
+      agentId
     )!;
     const result = await t.execute("c", {
       target: ref("purchase.order"),
@@ -5818,7 +7779,7 @@ describe("odoo_set_approval", () => {
         },
       }),
       "odoo_set_approval",
-      agentId,
+      agentId
     )!;
     const result = await t.execute("c", {
       target: ref("purchase.order"),
@@ -5827,5 +7788,791 @@ describe("odoo_set_approval", () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("Permission denied");
     expect(mockCallMethod).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// heypinchy/pinchy#1197 — many2one lookup by natural-key code.
+//
+// `resolveReferenceFromRecords` matched `name`/`display_name` only, and codes
+// were special-cased for exactly one relation (res.country). So an accounting
+// agent could not address a GL account the way accountants do: by its number.
+//
+// Production, 2026-08-17: five consecutive odoo_create failures, all
+// "Could not resolve account_id from '<code> <name>'. Provide an exact Account
+// name or ref." — the string a human reads off a chart of accounts, and the one
+// Odoo itself renders in most account pickers. The model then tried a bare code
+// and hit "Raw numeric IDs are not accepted", which closed the last route.
+// ---------------------------------------------------------------------------
+describe("many2one lookup by natural-key code (#1197)", () => {
+  const accountingConfig = {
+    connectionId: "conn-test-1",
+    permissions: {
+      "account.move.line": ["read", "create", "write"],
+      "account.account": ["read"],
+    },
+  } as unknown as AgentOdooConfig;
+
+  const ACCOUNT = { id: 91, name: "Entertainment expenses", code: "7660" };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+  });
+
+  function mockAccountingSchema() {
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "account.move.line") {
+        return [
+          { name: "name", string: "Label", type: "char" },
+          {
+            name: "account_id",
+            string: "Account",
+            type: "many2one",
+            relation: "account.account",
+          },
+        ];
+      }
+      if (model === "account.account") {
+        return [
+          { name: "name", string: "Name", type: "char" },
+          { name: "code", string: "Code", type: "char" },
+        ];
+      }
+      return [];
+    });
+  }
+
+  /**
+   * `searchRead` is called twice per create here and the two calls want
+   * different answers: once against account.account to find the m2o candidates,
+   * and once against account.move.line for the post-write read-back
+   * verification (#720). One blanket mockResolvedValue serves the account rows
+   * to the read-back too, which then reports the created label as mismatched —
+   * a fixture artefact that looks exactly like a product failure.
+   */
+  function mockAccountCandidates(records: Array<Record<string, unknown>>) {
+    mockSearchRead.mockImplementation(async (model: string) => {
+      if (model === "account.account") {
+        return { records, total: records.length, limit: 20, offset: 0 };
+      }
+      // read-back: the row as written
+      return {
+        records: [{ id: 1234, name: "Business lunch", account_id: [91, "Entertainment expenses"] }],
+        total: 1,
+        limit: 1,
+        offset: 0,
+      };
+    });
+  }
+
+  async function createWithAccount(accountValue: unknown) {
+    mockAccountingSchema();
+    mockCreate.mockResolvedValue(1234);
+    const tool = findTool(createApi({ [agentId]: accountingConfig }), "odoo_create", agentId)!;
+    return tool.execute("call-1", {
+      model: "account.move.line",
+      values: { name: "Business lunch", account_id: accountValue },
+    });
+  }
+
+  it("resolves an account from its bare code", async () => {
+    mockAccountCandidates([ACCOUNT]);
+
+    const result = await createWithAccount("7660");
+
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalledWith(
+      "account.move.line",
+      expect.objectContaining({ account_id: 91 })
+    );
+  });
+
+  it("resolves the '<code> <name>' form a chart of accounts prints", async () => {
+    mockAccountCandidates([ACCOUNT]);
+
+    const result = await createWithAccount("7660 Entertainment expenses");
+
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalledWith(
+      "account.move.line",
+      expect.objectContaining({ account_id: 91 })
+    );
+  });
+
+  it("still resolves by name alone", async () => {
+    mockAccountCandidates([ACCOUNT]);
+
+    const result = await createWithAccount("Entertainment expenses");
+
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalledWith(
+      "account.move.line",
+      expect.objectContaining({ account_id: 91 })
+    );
+  });
+
+  // Asserted as the exact domain, not as a substring of the serialised one: a
+  // `JSON.stringify(...).toContain("code")` is green for `["code", "ilike", …]`,
+  // for a `code` that only appears in the field list, and for a domain missing
+  // the `"|"` operator — which is an implicit AND and a different query.
+  it("asks Odoo for the code column and searches on it", async () => {
+    mockAccountCandidates([ACCOUNT]);
+
+    await createWithAccount("7660");
+
+    const call = mockSearchRead.mock.calls.find((c) => c[0] === "account.account")!;
+    expect((call[2] as { fields: string[] }).fields).toContain("code");
+    expect(call[1]).toEqual(["|", ["code", "=", "7660"], ["name", "ilike", "7660"]]);
+  });
+
+  // The guard that refuses a raw database id has to survive this. It is
+  // relaxed ONLY where the relation declares a searchable `code`, and a numeric
+  // string is then matched against `code` — never against `id` — so "an agent
+  // cannot address a record by its primary key" still holds.
+  it("still refuses a numeric string for a relation that has no code column", async () => {
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "account.move.line") {
+        return [
+          { name: "name", string: "Label", type: "char" },
+          {
+            name: "partner_id",
+            string: "Partner",
+            type: "many2one",
+            relation: "res.partner",
+          },
+        ];
+      }
+      return [{ name: "name", string: "Name", type: "char" }];
+    });
+    const tool = findTool(createApi({ [agentId]: accountingConfig }), "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      model: "account.move.line",
+      values: { name: "x", partner_id: "42" },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Raw numeric IDs are not accepted");
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  // The decoy's *name* starts with the code being looked up, so it is the
+  // `ilike` half of the search that produced it — nothing about it is an exact
+  // name, which is what the code token is allowed to outrank (#1206 review).
+  it("prefers an exact code match over a name that merely matched the search", async () => {
+    mockAccountCandidates([{ id: 55, name: "7660 reclass suspense", code: "9999" }, ACCOUNT]);
+
+    const result = await createWithAccount("7660");
+
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalledWith(
+      "account.move.line",
+      expect.objectContaining({ account_id: 91 })
+    );
+  });
+
+  it("reports an ambiguity rather than guessing when two accounts share the code", async () => {
+    mockAccountCandidates([ACCOUNT, { id: 92, name: "Entertainment (branch)", code: "7660" }]);
+
+    const result = await createWithAccount("7660");
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/Could not resolve account_id/);
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review of #1206 — the natural-key lookup, at the edges the first pass missed.
+//
+// Five of these are red without the follow-up: a `code` column that Odoo
+// cannot search (`product.product.code` is a non-stored compute aliasing
+// `default_code`), a derived code token outranking an exact name, a code-only
+// lookup still OR-ing `name ilike ""` (every row) into its domain, a duplicate
+// code aborting before the name that disambiguates it, and `parseLookup`'s
+// res.country upper-casing leaking onto every other relation.
+// ---------------------------------------------------------------------------
+describe("many2one natural-key lookup, edge cases (#1206 review)", () => {
+  const config = {
+    connectionId: "conn-test-1",
+    permissions: {
+      "account.move.line": ["read", "create", "write"],
+      "account.account": ["read"],
+      "account.journal": ["read"],
+      "product.product": ["read"],
+      "res.partner": ["read"],
+      "res.country": ["read"],
+    },
+  } as unknown as AgentOdooConfig;
+
+  const LINE_FIELDS = [
+    { name: "name", string: "Label", type: "char" },
+    { name: "account_id", string: "Account", type: "many2one", relation: "account.account" },
+    { name: "journal_id", string: "Journal", type: "many2one", relation: "account.journal" },
+    { name: "product_id", string: "Product", type: "many2one", relation: "product.product" },
+    { name: "partner_id", string: "Partner", type: "many2one", relation: "res.partner" },
+    { name: "country_id", string: "Country", type: "many2one", relation: "res.country" },
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+  });
+
+  const NAME_ONLY = [{ name: "name", string: "Name", type: "char" }];
+  const NAME_AND_CODE = [...NAME_ONLY, { name: "code", string: "Code", type: "char" }];
+
+  /**
+   * Schema per relation, keyed by model. The defaults mirror Odoo: accounts,
+   * journals and countries carry a `code`; partners and products do not
+   * (a product's human-readable key is `default_code`, and its `code` is the
+   * unsearchable compute these tests exist for). `relations` overrides one.
+   */
+  function mockSchema(relations: Record<string, Array<Record<string, unknown>>>) {
+    const defaults: Record<string, Array<Record<string, unknown>>> = {
+      "account.account": NAME_AND_CODE,
+      "account.journal": NAME_AND_CODE,
+      "res.country": NAME_AND_CODE,
+    };
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "account.move.line") return LINE_FIELDS;
+      return relations[model] ?? defaults[model] ?? NAME_ONLY;
+    });
+  }
+
+  /**
+   * Candidate rows per relation. Anything else is the post-write read-back
+   * (#720), which compares the verbatim scalars it was sent — so it has to
+   * echo the label every `create` below writes, not the relation's rows. One
+   * blanket `mockResolvedValue` serves the relation rows to the read-back too
+   * and reports a mismatch that reads exactly like a product failure.
+   */
+  const WRITTEN_LABEL = "x";
+  function mockCandidates(byModel: Record<string, Array<Record<string, unknown>>>) {
+    mockSearchRead.mockImplementation(async (model: string) => {
+      const records = byModel[model];
+      if (records) return { records, total: records.length, limit: 20, offset: 0 };
+      return { records: [{ id: 1234, name: WRITTEN_LABEL }], total: 1, limit: 1, offset: 0 };
+    });
+  }
+
+  function create(values: Record<string, unknown>) {
+    mockCreate.mockResolvedValue(1234);
+    const tool = findTool(createApi({ [agentId]: config }), "odoo_create", agentId)!;
+    return tool.execute("call-1", { model: "account.move.line", values });
+  }
+
+  function domainFor(model: string): unknown {
+    return mockSearchRead.mock.calls.find((c) => c[0] === model)?.[1];
+  }
+
+  function fieldsFor(model: string): string[] | undefined {
+    const call = mockSearchRead.mock.calls.find((c) => c[0] === model);
+    return call ? (call[2] as { fields: string[] }).fields : undefined;
+  }
+
+  // `product.product.code` exists in every Odoo — a non-stored compute with no
+  // `search` method, mirroring `default_code`. `fields_get` reports it
+  // `searchable: false`, and a `["code", "=", …]` leaf on it is either refused
+  // outright or silently widened to every row, which would put 20 arbitrary
+  // products in front of a lookup that resolved by name before.
+  it("does not search a `code` column Odoo reports as unsearchable", async () => {
+    mockSchema({
+      "product.product": [
+        { name: "name", string: "Name", type: "char" },
+        { name: "code", string: "Reference", type: "char", searchable: false },
+        { name: "default_code", string: "Internal Reference", type: "char" },
+      ],
+    });
+    mockCandidates({ "product.product": [{ id: 8, name: "Office Chair" }] });
+
+    const result = await create({ name: WRITTEN_LABEL, product_id: "Office Chair" });
+
+    expect(result.isError).toBeFalsy();
+    expect(domainFor("product.product")).toEqual([["name", "ilike", "Office Chair"]]);
+    expect(fieldsFor("product.product")).not.toContain("code");
+  });
+
+  it("still refuses a numeric string when the `code` column is unsearchable", async () => {
+    mockSchema({
+      "product.product": [
+        { name: "name", string: "Name", type: "char" },
+        { name: "code", string: "Reference", type: "char", searchable: false },
+      ],
+    });
+
+    const result = await create({ name: "x", product_id: "42" });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Raw numeric IDs are not accepted");
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  // The payload above is the one Odoo WOULD send; the one it actually sends
+  // today omits `searchable`, because odoo-node's `fields_get` does not ask for
+  // it. This is that payload — `code` beside `default_code`, which is the shape
+  // that says the stored natural key is `default_code` and `code` mirrors it.
+  it("declines a `code` that shadows a stored `default_code`", async () => {
+    mockSchema({
+      "product.product": [
+        { name: "name", string: "Name", type: "char" },
+        { name: "code", string: "Reference", type: "char" },
+        { name: "default_code", string: "Internal Reference", type: "char" },
+      ],
+    });
+    mockCandidates({ "product.product": [{ id: 8, name: "Office Chair" }] });
+
+    const byName = await create({ name: WRITTEN_LABEL, product_id: "Office Chair" });
+    expect(byName.isError).toBeFalsy();
+    expect(domainFor("product.product")).toEqual([["name", "ilike", "Office Chair"]]);
+
+    vi.clearAllMocks();
+    mockSchema({
+      "product.product": [
+        { name: "name", string: "Name", type: "char" },
+        { name: "code", string: "Reference", type: "char" },
+        { name: "default_code", string: "Internal Reference", type: "char" },
+      ],
+    });
+    const byNumber = await create({ name: "x", product_id: "42" });
+    expect(byNumber.isError).toBe(true);
+    expect(byNumber.content[0].text).toContain("Raw numeric IDs are not accepted");
+  });
+
+  // Same question one attribute over: `findCompanyIdField` has always checked
+  // the field TYPE as well as the name, and a `code` that is not a char column
+  // is not a natural key either.
+  it("still refuses a numeric string when `code` is not a char column", async () => {
+    mockSchema({
+      "product.product": [
+        { name: "name", string: "Name", type: "char" },
+        { name: "code", string: "Code", type: "selection", selection: [["a", "A"]] },
+      ],
+    });
+
+    const result = await create({ name: "x", product_id: "42" });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Raw numeric IDs are not accepted");
+  });
+
+  // The claim "relations without a code are untouched — same fields, same
+  // domain as before" was a comment. Here it is a checked one.
+  it("leaves the domain and field list of a code-less relation untouched", async () => {
+    mockSchema({ "res.partner": [{ name: "name", string: "Name", type: "char" }] });
+    mockCandidates({ "res.partner": [{ id: 5, name: "Acme GmbH" }] });
+
+    const result = await create({ name: "x", partner_id: "Acme GmbH" });
+
+    expect(result.isError).toBeFalsy();
+    expect(domainFor("res.partner")).toEqual([["name", "ilike", "Acme GmbH"]]);
+    expect(fieldsFor("res.partner")).toEqual(["id", "name", "display_name"]);
+  });
+
+  // An exact name is a fact about the input; a leading token is a guess about
+  // its shape. Analytic-style codes ("IT", "HR", "R&D") collide with the first
+  // word of ordinary names, and picking the code match writes to the wrong
+  // record with no error at all.
+  it("resolves an exact name ahead of a record whose code is its leading word", async () => {
+    mockSchema({});
+    mockCandidates({
+      "account.account": [
+        { id: 70, name: "IT Infrastructure", code: "INFRA" },
+        { id: 71, name: "Support", code: "IT" },
+      ],
+    });
+
+    const result = await create({ name: "x", account_id: "IT Infrastructure" });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalledWith(
+      "account.move.line",
+      expect.objectContaining({ account_id: 70 })
+    );
+  });
+
+  // `ilike ""` is `LIKE '%%'` — every row. OR-ed against the code leaf it puts
+  // the whole table in front of the one record that was asked for, and
+  // `limit: 20` then decides whether the answer is in the window.
+  it("queries the code alone when the lookup carries no name", async () => {
+    mockSchema({});
+    mockCandidates({
+      "account.account": [{ id: 91, name: "Entertainment expenses", code: "7660" }],
+    });
+
+    const result = await create({ name: "x", account_id: { lookup: { code: "7660" } } });
+
+    expect(result.isError).toBeFalsy();
+    expect(domainFor("account.account")).toEqual([["code", "=", "7660"]]);
+    expect(mockCreate).toHaveBeenCalledWith(
+      "account.move.line",
+      expect.objectContaining({ account_id: 91 })
+    );
+  });
+
+  // A duplicate code is the multi-company case, and the composite form carries
+  // exactly what tells the two apart. Throwing on the code discards it.
+  it("falls through to the name when the code alone is ambiguous", async () => {
+    mockSchema({});
+    mockCandidates({
+      "account.account": [
+        { id: 40, name: "Bank Helmcraft", display_name: "1800 Bank Helmcraft", code: "1800" },
+        { id: 41, name: "Bank Clemens", display_name: "1800 Bank Clemens", code: "1800" },
+      ],
+    });
+
+    const result = await create({ name: "x", account_id: "1800 Bank Helmcraft" });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalledWith(
+      "account.move.line",
+      expect.objectContaining({ account_id: 40 })
+    );
+  });
+
+  // When nothing tells them apart, the message has to be the one the codebase
+  // already writes for this: name the companies and the `company_id` remedy,
+  // not a deduplicated suggestion list of one.
+  it("explains a duplicate code across companies as a multi-company collision", async () => {
+    mockSchema({
+      "account.account": [
+        { name: "name", string: "Name", type: "char" },
+        { name: "code", string: "Code", type: "char" },
+        { name: "company_id", string: "Company", type: "many2one", relation: "res.company" },
+      ],
+    });
+    mockCandidates({
+      "account.account": [
+        { id: 40, name: "Bank", code: "1800", company_id: [1, "Helmcraft GmbH"] },
+        { id: 41, name: "Bank", code: "1800", company_id: [2, "Clemens Helm"] },
+      ],
+    });
+
+    const result = await create({ name: "x", account_id: "1800" });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain("multi-company collision");
+    expect(text).toContain("Helmcraft GmbH");
+    expect(text).toContain("Clemens Helm");
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  // `parseLookup` upper-cases `lookup.code` because ISO 3166-1 alpha-2 is
+  // upper-case. Journal and account codes are not, and `=` on a char column is
+  // case-sensitive in Postgres — so the normalisation has to stay where the
+  // fact it encodes is true.
+  it("passes an explicit code to Odoo verbatim on a non-country relation", async () => {
+    mockSchema({});
+    mockCandidates({ "account.journal": [{ id: 17, name: "Bank", code: "bnk1" }] });
+
+    const result = await create({ name: "x", journal_id: { lookup: { code: "bnk1" } } });
+
+    expect(result.isError).toBeFalsy();
+    expect(domainFor("account.journal")).toEqual([["code", "=", "bnk1"]]);
+    expect(mockCreate).toHaveBeenCalledWith(
+      "account.move.line",
+      expect.objectContaining({ journal_id: 17 })
+    );
+  });
+
+  it("still normalises a country code to upper case", async () => {
+    mockSchema({});
+    mockCandidates({ "res.country": [{ id: 14, name: "Austria", code: "AT" }] });
+
+    const result = await create({ name: "x", country_id: { lookup: { code: "at" } } });
+
+    expect(result.isError).toBeFalsy();
+    expect(domainFor("res.country")).toEqual([["code", "=", "AT"]]);
+    expect(mockCreate).toHaveBeenCalledWith(
+      "account.move.line",
+      expect.objectContaining({ country_id: 14 })
+    );
+  });
+
+  // The candidate arrived through the NAME leg, so the case difference is real
+  // rather than a fixture: only the client-side comparison can close it.
+  //
+  // The name matches the record's exactly — an explicit code is held to the
+  // name beside it — so the only difference left is the case of the code,
+  // which is what this tests.
+  it("matches an explicit code against a record whose code differs only in case", async () => {
+    mockSchema({});
+    mockCandidates({
+      "account.journal": [{ id: 17, name: "Miscellaneous Operations", code: "BNK1" }],
+    });
+
+    const result = await create({
+      name: "x",
+      journal_id: { lookup: { code: "bnk1", name: "Miscellaneous Operations" } },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalledWith(
+      "account.move.line",
+      expect.objectContaining({ journal_id: 17 })
+    );
+  });
+
+  // A country code is ISO 3166-1 alpha-2 and never numeric, so a numeric
+  // country value is a raw database id and nothing else. Relaxing the guard
+  // there traded a precise refusal for a generic "could not resolve" — and an
+  // Odoo round trip to reach it.
+  it("refuses a numeric country value outright, without querying Odoo", async () => {
+    mockSchema({});
+
+    const result = await create({ name: "x", country_id: "42" });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Raw numeric IDs are not accepted");
+    expect(mockSearchRead.mock.calls.filter((c) => c[0] === "res.country")).toHaveLength(0);
+  });
+
+  // The leading token was matched against `code` and
+  // the rest of the input ignored, so `"6000 Bank fees"` booked to account
+  // 6000 whatever it is called. The card shows "Bank fees"; the effect was
+  // "Office supplies". A name after the code is a claim about the record, and
+  // a claim the record contradicts is refused rather than overridden.
+  describe("the name after a code", () => {
+    const OFFICE = { id: 60, name: "Office supplies", code: "6000" };
+
+    it("refuses a code whose record carries a different name", async () => {
+      mockSchema({});
+      mockCandidates({ "account.account": [OFFICE] });
+
+      const result = await create({ name: "x", account_id: "6000 Bank fees" });
+
+      expect(result.isError).toBe(true);
+      const text = result.content[0].text;
+      expect(text).toContain("Could not resolve account_id");
+      expect(text).toContain('"Office supplies"');
+      expect(text).toContain('"Bank fees"');
+      expect(text).toMatch(/exact Account name or ref/);
+      expect(mockCreate).not.toHaveBeenCalled();
+    });
+
+    it("resolves when the name matches, ignoring case and spacing", async () => {
+      mockSchema({});
+      mockCandidates({ "account.account": [OFFICE] });
+
+      const result = await create({ name: WRITTEN_LABEL, account_id: "6000   office  SUPPLIES " });
+
+      expect(result.isError).toBeFalsy();
+      expect(mockCreate).toHaveBeenCalledWith(
+        "account.move.line",
+        expect.objectContaining({ account_id: 60 })
+      );
+    });
+
+    it("still resolves a bare code, which makes no claim about the name", async () => {
+      mockSchema({});
+      mockCandidates({ "account.account": [OFFICE] });
+
+      const result = await create({ name: WRITTEN_LABEL, account_id: "6000" });
+
+      expect(result.isError).toBeFalsy();
+      expect(mockCreate).toHaveBeenCalledWith(
+        "account.move.line",
+        expect.objectContaining({ account_id: 60 })
+      );
+    });
+
+    // Models write the code and the name the way a chart of accounts lists
+    // them: "600000 - Expenses". The separator is not part of the name.
+    it.each([
+      ["a hyphen", "6000 - Office supplies"],
+      ["an en dash", "6000 – Office supplies"],
+      ["an em dash", "6000 — Office supplies"],
+      ["a colon", "6000 : Office supplies"],
+      ["a pipe", "6000 | Office supplies"],
+      ["a slash", "6000 / Office supplies"],
+      ["a hyphen without a space after it", "6000 -Office supplies"],
+    ])("resolves a name after %s", async (_label, account) => {
+      mockSchema({});
+      mockCandidates({ "account.account": [OFFICE] });
+
+      const result = await create({ name: WRITTEN_LABEL, account_id: account });
+
+      expect(result.isError).toBeFalsy();
+      expect(mockCreate).toHaveBeenCalledWith(
+        "account.move.line",
+        expect.objectContaining({ account_id: 60 })
+      );
+    });
+
+    it("still refuses a contradicting name after a separator", async () => {
+      mockSchema({});
+      mockCandidates({ "account.account": [OFFICE] });
+
+      const result = await create({ name: WRITTEN_LABEL, account_id: "6000 - Bank fees" });
+
+      expect(result.isError).toBe(true);
+      const text = result.content[0].text;
+      expect(text).toContain('"Office supplies"');
+      expect(text).toContain('"Bank fees"');
+      expect(mockCreate).not.toHaveBeenCalled();
+    });
+
+    // A separator written onto the code makes it part of the code token, which
+    // no account carries: refused, never booked to 6000 on a guess
+    // (`guides/connect-odoo` says so).
+    it("refuses a separator written onto the code", async () => {
+      mockSchema({});
+      mockCandidates({ "account.account": [OFFICE] });
+
+      const result = await create({ name: WRITTEN_LABEL, account_id: "6000: Office supplies" });
+
+      expect(result.isError).toBe(true);
+      expect(mockCreate).not.toHaveBeenCalled();
+    });
+
+    // Only one separator is the form's punctuation; a second is the name's.
+    it("strips one separator, not every one", async () => {
+      mockSchema({});
+      mockCandidates({ "account.account": [{ id: 61, name: "- Misc", code: "6100" }] });
+
+      const result = await create({ name: WRITTEN_LABEL, account_id: "6100 - - Misc" });
+
+      expect(result.isError).toBeFalsy();
+      expect(mockCreate).toHaveBeenCalledWith(
+        "account.move.line",
+        expect.objectContaining({ account_id: 61 })
+      );
+    });
+
+    // The object form `{lookup: {code, name}}` is held to the same rule as the
+    // string form: resolved on the code alone, this contradiction would book
+    // to 6000.
+    it("refuses an explicit code whose record carries a different name", async () => {
+      mockSchema({});
+      mockCandidates({ "account.account": [OFFICE] });
+
+      const result = await create({
+        name: WRITTEN_LABEL,
+        account_id: { lookup: { code: "6000", name: "Bank fees" } },
+      });
+
+      expect(result.isError).toBe(true);
+      const text = result.content[0].text;
+      expect(text).toContain("Could not resolve account_id");
+      expect(text).toContain('"Office supplies"');
+      expect(text).toContain('"Bank fees"');
+      expect(text).toMatch(/exact Account name or ref/);
+      expect(mockCreate).not.toHaveBeenCalled();
+    });
+
+    it("resolves an explicit code whose name matches, ignoring case and spacing", async () => {
+      mockSchema({});
+      mockCandidates({ "account.account": [OFFICE] });
+
+      const result = await create({
+        name: WRITTEN_LABEL,
+        account_id: { lookup: { code: "6000", name: " office   Supplies" } },
+      });
+
+      expect(result.isError).toBeFalsy();
+      expect(mockCreate).toHaveBeenCalledWith(
+        "account.move.line",
+        expect.objectContaining({ account_id: 60 })
+      );
+    });
+
+    it("tells two records that share an explicit code apart by the name", async () => {
+      mockSchema({});
+      mockCandidates({
+        "account.account": [
+          { id: 40, name: "Bank Helmcraft", code: "1800" },
+          { id: 41, name: "Bank Clemens", code: "1800" },
+        ],
+      });
+
+      const result = await create({
+        name: WRITTEN_LABEL,
+        account_id: { lookup: { code: "1800", name: "Bank Clemens" } },
+      });
+
+      expect(result.isError).toBeFalsy();
+      expect(mockCreate).toHaveBeenCalledWith(
+        "account.move.line",
+        expect.objectContaining({ account_id: 41 })
+      );
+    });
+
+    // A code no record carries fell through to the
+    // exact-name branch, so `{code: "6000", name: "Bank fees"}` booked to
+    // whichever account is called "Bank fees" — 6100 — while the card read
+    // 6000. The string form "6000 Bank fees" was refused for the same input.
+    // A code is a claim too: when it names no record, the lookup is refused.
+    it("refuses an explicit code no record carries, even when the name exists", async () => {
+      mockSchema({});
+      mockCandidates({ "account.account": [{ id: 61, name: "Bank fees", code: "6100" }] });
+
+      const result = await create({
+        name: WRITTEN_LABEL,
+        account_id: { lookup: { code: "6000", name: "Bank fees" } },
+      });
+
+      expect(result.isError).toBe(true);
+      const text = result.content[0].text;
+      expect(text).toContain("Could not resolve account_id");
+      expect(text).toContain("no Account has code 6000");
+      expect(text).toContain('"Bank fees" is 6100');
+      expect(text).toMatch(/exact Account name or ref/);
+      expect(mockCreate).not.toHaveBeenCalled();
+    });
+
+    it("refuses an explicit code no record carries when the name is unknown too", async () => {
+      mockSchema({});
+      mockCandidates({ "account.account": [OFFICE] });
+
+      const result = await create({
+        name: WRITTEN_LABEL,
+        account_id: { lookup: { code: "6000x", name: "Bank fees" } },
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain("no Account has code 6000x");
+      expect(mockCreate).not.toHaveBeenCalled();
+    });
+
+    // Two companies share the code; the name after it says which one.
+    it("picks the record whose name matches when two share the code", async () => {
+      mockSchema({});
+      mockCandidates({
+        "account.account": [
+          { id: 40, name: "Bank Helmcraft", code: "1800" },
+          { id: 41, name: "Bank Clemens", code: "1800" },
+        ],
+      });
+
+      const result = await create({ name: WRITTEN_LABEL, account_id: "1800 Bank Clemens" });
+
+      expect(result.isError).toBeFalsy();
+      expect(mockCreate).toHaveBeenCalledWith(
+        "account.move.line",
+        expect.objectContaining({ account_id: 41 })
+      );
+    });
+  });
+});
+
+// The route the resolver gained is worth nothing until the model is told about
+// it — and the description it reads said the opposite: "do not pass raw numeric
+// IDs", which is exactly what a bare GL account code looks like. One shared
+// constant so the two tools cannot drift, mirroring
+// PRODUCT_REF_DISAMBIGUATION_HINT.
+describe("MANY2ONE_VALUE_HINT (#1206 review)", () => {
+  it("names the code route the resolver now supports", () => {
+    expect(MANY2ONE_VALUE_HINT).toContain("code");
+    expect(MANY2ONE_VALUE_HINT).toContain("7660 Entertainment expenses");
+  });
+
+  it("is spliced into both writing tools", () => {
+    const tools = createApi({ [agentId]: agentConfig });
+    for (const name of ["odoo_create", "odoo_write"]) {
+      const tool = findTool(tools, name, agentId)!;
+      expect(tool.description).toContain(MANY2ONE_VALUE_HINT);
+    }
   });
 });

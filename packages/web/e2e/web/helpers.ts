@@ -1,5 +1,6 @@
 const PINCHY_URL = process.env.PINCHY_URL || "http://localhost:7777";
 import { stackDbUrl } from "../shared/stack-db";
+import { settleOpenClawBestEffort } from "../shared/dispatch-probe";
 const BRAVE_MOCK_URL = process.env.BRAVE_MOCK_URL || "http://localhost:9003";
 
 // Admin credentials — set by seedSetup, used by login
@@ -49,7 +50,10 @@ export async function seedSetup(): Promise<void> {
     throw new Error(`Setup failed: ${setupRes.status} ${text}`);
   }
 
-  await new Promise((r) => setTimeout(r, 2000));
+  // No wait needed here: POST /api/setup awaits createAdmin() (including
+  // regenerateOpenClawConfig()) before responding, so setupRes.ok already
+  // guarantees those writes landed. The settings insert below is an
+  // independent, unrelated write with nothing async left to wait for.
 
   // Seed provider config (needed for agent creation)
   const testApiKey = process.env.TEST_ANTHROPIC_API_KEY || "sk-ant-fake-key-for-e2e-testing";
@@ -65,7 +69,17 @@ export async function seedSetup(): Promise<void> {
   `;
 
   await sql.end();
-  await new Promise((r) => setTimeout(r, 3000));
+
+  // /api/setup's regenerateOpenClawConfig() hands the new config to a
+  // fire-and-forget pushConfigInBackground() (write.ts), so the config change
+  // can still be in flight once /api/setup has already answered 201. Gate on
+  // the settled predicate (`connected` AND `configPushesPending === 0`, held
+  // for a window) rather than on `connected` alone: OpenClaw stays connected
+  // for the whole 33–53 s a rate-limited config.apply can be parked, so a
+  // connection-only poll would return on its first iteration and prove
+  // nothing. Best-effort like the sleep it replaces — web-search.spec.ts, the
+  // only caller, re-gates with waitForOpenClawStable before it dispatches.
+  await settleOpenClawBestEffort(() => fetch(`${PINCHY_URL}/api/health/openclaw`), "[web-setup]");
   console.log(`[web-setup] Admin created: ${_adminEmail}`);
 }
 

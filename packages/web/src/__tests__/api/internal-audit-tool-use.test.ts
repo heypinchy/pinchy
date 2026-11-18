@@ -15,6 +15,26 @@ vi.mock("@/lib/audit", async (importOriginal) => {
   };
 });
 
+// The route canonicalizes OpenClaw's lowercased session-key userId back to
+// the real (mixed-case) users.id via a single select().from(users).where(...)
+// lookup — mock db the same way agent-uploads-route.test.ts does for its
+// ownership lookup. Default (set in beforeEach) is "no match", so existing
+// tests that don't care about case-canonicalization keep seeing the
+// extracted id fall through unchanged.
+const { mockUserLookup } = vi.hoisted(() => ({
+  mockUserLookup: vi.fn(),
+}));
+
+vi.mock("@/db", () => ({
+  db: {
+    select: () => ({
+      from: () => ({
+        where: (...args: unknown[]) => mockUserLookup(...args),
+      }),
+    }),
+  },
+}));
+
 import { validateGatewayToken } from "@/lib/gateway-auth";
 import { appendAuditLog } from "@/lib/audit";
 import { POST } from "@/app/api/internal/audit/tool-use/route";
@@ -34,6 +54,7 @@ describe("POST /api/internal/audit/tool-use", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(validateGatewayToken).mockReturnValue(true);
+    mockUserLookup.mockResolvedValue([]);
   });
 
   it("returns 401 when gateway token is invalid", async () => {
@@ -155,6 +176,58 @@ describe("POST /api/internal/audit/tool-use", () => {
       outcome: "success",
       error: null,
     });
+  });
+
+  // Regression: OpenClaw lowercases session keys, so extractUserIdFromSessionKey
+  // returns a lowercased userId. appendAuditLog's pseudonym substitution does a
+  // case-sensitive `eq(users.id, actorId)` lookup, so a raw lowercased id never
+  // matches and every tool.* audit row silently skips pseudonymization (only 2 of
+  // 1221 user-actor rows were pseudonymized on staging). The route must
+  // canonicalize the lowercased id back to the real users.id case before handing
+  // it to appendAuditLog as actorId — mirroring usage-poller.ts's userIdMap.
+  it("canonicalizes a lowercased OpenClaw session-key userId back to the real users.id case", async () => {
+    const canonicalId = "9Uy331nd8hFYbtm0ulwlztjwboimggn2";
+    mockUserLookup.mockResolvedValueOnce([{ id: canonicalId }]);
+
+    const res = await POST(
+      makeRequest({
+        phase: "end",
+        toolName: "browser",
+        agentId: "agent-2",
+        sessionKey: `agent:agent-2:direct:${canonicalId.toLowerCase()}`,
+        result: { ok: true },
+      })
+    );
+
+    expect(res.status).toBe(200);
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actorType: "user",
+        actorId: canonicalId,
+      })
+    );
+  });
+
+  it("falls back to the extracted (lowercased) id when no users row matches case-insensitively", async () => {
+    mockUserLookup.mockResolvedValueOnce([]);
+
+    const res = await POST(
+      makeRequest({
+        phase: "end",
+        toolName: "browser",
+        agentId: "agent-2",
+        sessionKey: "agent:agent-2:direct:unknown-lowercase-id",
+        result: { ok: true },
+      })
+    );
+
+    expect(res.status).toBe(200);
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actorType: "user",
+        actorId: "unknown-lowercase-id",
+      })
+    );
   });
 
   // #640: diagnostics export matches a depth-truncated trajectory argument back
@@ -733,6 +806,67 @@ describe("POST /api/internal/audit/tool-use", () => {
       expect((detail.params as Record<string, unknown>).model).toBe("account.move");
     });
 
+    it("records verified:true and keeps params for a verified success (#720)", async () => {
+      // #720: pinchy-odoo returns `details: { verified: true }` after reading a
+      // create/write back. `verified` is a verification-outcome flag, NOT a
+      // curated PII field, so it must land in the audit detail AND must not
+      // trigger param-suppression — the params still belong in the audit row.
+      await POST(
+        makeRequest({
+          phase: "end",
+          toolName: "odoo_create",
+          agentId: "agent-1",
+          params: { model: "account.move", values: { move_type: "in_invoice" } },
+          result: {
+            content: [{ type: "text", text: JSON.stringify({ id: 5, verified: true }) }],
+            details: { verified: true },
+          },
+        })
+      );
+
+      const call = vi.mocked(appendAuditLog).mock.calls[0]?.[0];
+      expect(call?.outcome).toBe("success");
+      const detail = call?.detail as Record<string, unknown>;
+      expect(detail.verified).toBe(true);
+      // params retained (verified is not a curated PII field)
+      expect(detail).toHaveProperty("params");
+      expect((detail.params as Record<string, unknown>).model).toBe("account.move");
+    });
+
+    it("records verified:false and keeps params on a verification failure (#720)", async () => {
+      // The failure path returns `details: { error, verified: false }`. The
+      // extra `verified: false` must NOT suppress params — forensics still need
+      // to know what the failed create attempted (same contract as the
+      // error-only case above).
+      await POST(
+        makeRequest({
+          phase: "end",
+          toolName: "odoo_create",
+          agentId: "agent-1",
+          params: { model: "account.move", values: { ref: "INV-1" } },
+          result: {
+            content: [
+              { type: "text", text: "Odoo returned id 5 but the record could not be read back" },
+            ],
+            details: {
+              error: "Odoo returned id 5 but the record could not be read back",
+              verified: false,
+            },
+          },
+        })
+      );
+
+      const call = vi.mocked(appendAuditLog).mock.calls[0]?.[0];
+      expect(call?.outcome).toBe("failure");
+      const detail = call?.detail as Record<string, unknown>;
+      expect(detail.verified).toBe(false);
+      expect(detail.success).toBe(false);
+      // params retained for forensics
+      expect(detail).toHaveProperty("params");
+      const params = (detail.params as Record<string, unknown>).values as Record<string, unknown>;
+      expect(params.ref).toBe("INV-1");
+    });
+
     it("keeps params when result.details is not a plain object", async () => {
       await POST(
         makeRequest({
@@ -865,5 +999,115 @@ describe("POST /api/internal/audit/tool-use", () => {
       expect(JSON.stringify(entry)).not.toContain("admin@corp.example");
       expect(entry?.error?.message).toContain("<email-redacted>");
     });
+  });
+
+  // Backstop for the transport-error path: when OpenClaw's hook reports a
+  // dispatch-level failure it forwards no plugin result, so the pinchy-email
+  // plugin's own detail-curation never runs and the raw params (recipient +
+  // full body) would be logged verbatim. The route must redact them itself.
+  describe("email-tool param PII backstop (no plugin-curated details)", () => {
+    it("redacts recipient and body from email_send params when the dispatch fails before curation", async () => {
+      await POST(
+        makeRequest({
+          phase: "end",
+          toolName: "email_send",
+          agentId: "agent-1",
+          error: "dispatch timed out",
+          params: { to: "recipient@test.com", subject: "Hello", body: "secret body text" },
+        })
+      );
+
+      const entry = vi.mocked(appendAuditLog).mock.calls[0]?.[0];
+      const serialized = JSON.stringify(entry);
+      expect(serialized).not.toContain("recipient@test.com");
+      expect(serialized).not.toContain("secret body text");
+      const detail = entry?.detail as Record<string, unknown>;
+      const params = detail.params as Record<string, unknown>;
+      // Forensic value preserved: which fields were set, non-PII subject.
+      expect(params.subject).toBe("Hello");
+      expect(params.body).toBe(`<redacted ${Buffer.byteLength("secret body text", "utf8")} bytes>`);
+    });
+
+    it("redacts address filters from email_search params on the transport-error path", async () => {
+      await POST(
+        makeRequest({
+          phase: "end",
+          toolName: "email_search",
+          agentId: "agent-1",
+          error: "imap connection reset",
+          params: { from: "sender@test.com", to: "recipient@test.com", folder: "INBOX" },
+        })
+      );
+
+      const entry = vi.mocked(appendAuditLog).mock.calls[0]?.[0];
+      const serialized = JSON.stringify(entry);
+      expect(serialized).not.toContain("sender@test.com");
+      expect(serialized).not.toContain("recipient@test.com");
+      const detail = entry?.detail as Record<string, unknown>;
+      const params = detail.params as Record<string, unknown>;
+      expect(params.folder).toBe("INBOX");
+    });
+
+    it("leaves non-email tool params untouched (scoped to email tools)", async () => {
+      await POST(
+        makeRequest({
+          phase: "end",
+          toolName: "pinchy_read",
+          agentId: "agent-1",
+          error: "boom",
+          params: { path: "/data/kb/report.md" },
+        })
+      );
+
+      const entry = vi.mocked(appendAuditLog).mock.calls[0]?.[0];
+      const detail = entry?.detail as Record<string, unknown>;
+      const params = detail.params as Record<string, unknown>;
+      expect(params.path).toBe("/data/kb/report.md");
+    });
+  });
+
+  it("bounds a caller-supplied agentId in actorId and resource instead of rejecting the row", async () => {
+    const hostile = `x${"y".repeat(500)}<b>`;
+    const res = await POST(
+      makeRequest({ phase: "end", toolName: "browser", agentId: hostile, result: { ok: true } })
+    );
+    expect(res.status).toBe(200);
+    const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+    expect(entry.actorId.length).toBeLessThanOrEqual(128);
+    expect(entry.resource!.length).toBeLessThanOrEqual("agent:".length + 128);
+    expect(entry.actorId).not.toMatch(/[<>]/);
+  });
+
+  it("bounds an oversized user id parsed from the sessionKey", async () => {
+    const res = await POST(
+      makeRequest({
+        phase: "end",
+        toolName: "browser",
+        agentId: "agent-1",
+        sessionKey: `agent:agent-1:direct:${"u".repeat(500)}`,
+        result: { ok: true },
+      })
+    );
+    expect(res.status).toBe(200);
+    const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+    expect(entry.actorId.length).toBeLessThanOrEqual(128);
+  });
+
+  it("leaves a user id the database resolved untouched, even outside the clamp's alphabet", async () => {
+    // DB-owned ids are what resolveActorId's pseudonym lookup matches on.
+    const dbId = "Legacy.User@Import-1";
+    mockUserLookup.mockResolvedValueOnce([{ id: dbId }]);
+    await POST(
+      makeRequest({
+        phase: "end",
+        toolName: "browser",
+        agentId: "agent-2",
+        sessionKey: `agent:agent-2:direct:${dbId.toLowerCase()}`,
+        result: { ok: true },
+      })
+    );
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({ actorType: "user", actorId: dbId })
+    );
   });
 });

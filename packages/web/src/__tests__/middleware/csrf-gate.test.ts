@@ -5,8 +5,12 @@ vi.mock("@/lib/audit", () => ({
   appendAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { applyCsrfGate } from "@/server/csrf-check";
+import { applyCsrfGate, resetCsrfBlockWindow } from "@/server/csrf-check";
+import type { ResolvedClientIp } from "@/server/client-ip";
 import { appendAuditLog } from "@/lib/audit";
+
+/** server.ts resolves this before the gate runs; the gate only passes it on. */
+const TEST_CLIENT: ResolvedClientIp = { address: "203.0.113.42", source: "forwarded" };
 
 function makeReq(opts: {
   method: string;
@@ -59,6 +63,9 @@ function makeRes(): ServerResponse & {
 describe("applyCsrfGate", () => {
   beforeEach(() => {
     vi.mocked(appendAuditLog).mockClear();
+    // The audit flood window is process-global (audit-flood-window.ts), so
+    // without this the second block-and-assert test in the file finds no row.
+    resetCsrfBlockWindow();
   });
 
   it("allows GET requests through (returns false, no 403)", async () => {
@@ -69,7 +76,7 @@ describe("applyCsrfGate", () => {
     });
     const res = makeRes();
 
-    const blocked = await applyCsrfGate(req, res);
+    const blocked = await applyCsrfGate(req, res, TEST_CLIENT);
 
     expect(blocked).toBe(false);
     expect(res._statusCode).toBeUndefined();
@@ -86,7 +93,7 @@ describe("applyCsrfGate", () => {
     });
     const res = makeRes();
 
-    const blocked = await applyCsrfGate(req, res);
+    const blocked = await applyCsrfGate(req, res, TEST_CLIENT);
 
     expect(blocked).toBe(false);
     expect(appendAuditLog).not.toHaveBeenCalled();
@@ -103,7 +110,7 @@ describe("applyCsrfGate", () => {
     });
     const res = makeRes();
 
-    const blocked = await applyCsrfGate(req, res);
+    const blocked = await applyCsrfGate(req, res, TEST_CLIENT);
 
     expect(blocked).toBe(true);
     expect(res._statusCode).toBe(403);
@@ -131,7 +138,7 @@ describe("applyCsrfGate", () => {
     });
     const res = makeRes();
 
-    const blocked = await applyCsrfGate(req, res);
+    const blocked = await applyCsrfGate(req, res, TEST_CLIENT);
 
     expect(blocked).toBe(false);
   });
@@ -146,7 +153,7 @@ describe("applyCsrfGate", () => {
     });
     const res = makeRes();
 
-    const blocked = await applyCsrfGate(req, res);
+    const blocked = await applyCsrfGate(req, res, TEST_CLIENT);
 
     expect(blocked).toBe(true);
     const auditCall = vi.mocked(appendAuditLog).mock.calls[0][0];
@@ -163,7 +170,7 @@ describe("applyCsrfGate", () => {
     });
     const res = makeRes();
 
-    const blocked = await applyCsrfGate(req, res);
+    const blocked = await applyCsrfGate(req, res, TEST_CLIENT);
 
     expect(blocked).toBe(false);
     expect(appendAuditLog).not.toHaveBeenCalled();

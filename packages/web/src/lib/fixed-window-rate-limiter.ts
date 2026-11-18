@@ -40,6 +40,32 @@ export class FixedWindowRateLimiter {
     return true;
   }
 
+  /**
+   * `true` once this limiter's window has elapsed — i.e. the next
+   * `tryAcquire` would open a fresh one regardless of the count it holds.
+   *
+   * For a caller that keeps one instance PER client in a `Map` (the per-IP
+   * buckets in `@/lib/api-key-rate-limiter`), that is the condition under
+   * which dropping the instance is behaviour-preserving rather than a
+   * rate-limit bypass: a limiter reporting `true` has nothing left to
+   * enforce. Deliberately the SAME predicate `tryAcquire` resets on — the
+   * two must not drift, or eviction starts clearing live windows.
+   */
+  isExpired(now: number = Date.now()): boolean {
+    return now - this.windowStart > this.windowMs;
+  }
+
+  /**
+   * Gives back a slot taken by `tryAcquire` in the current window, for a
+   * request that turned out not to count. Does nothing once the window has
+   * expired: the reset already gave that slot back, and releasing it again
+   * would hand the new window an extra one.
+   */
+  release(now: number = Date.now()): void {
+    if (this.isExpired(now) || this.count === 0) return;
+    this.count--;
+  }
+
   /** Resets the window. Intended for tests. */
   reset(): void {
     this.windowStart = 0;

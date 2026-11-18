@@ -11,7 +11,7 @@
 //     Body: the raw file blob.
 //     Headers: Content-Type: <mime>, X-Filename: <encodeURIComponent(name)>
 
-const CACHE_NAME = "share-target";
+export const CACHE_NAME = "share-target";
 
 interface ShareMetaFile {
   index: number;

@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { isEnterprise } from "@/lib/enterprise";
-import { parseDays } from "@/lib/usage-params";
+import { parseUsageFilter } from "@/lib/usage-params";
 import { db } from "@/db";
 import { usageRecords } from "@/db/schema";
-import { desc, gte, eq, and } from "drizzle-orm";
+import { desc } from "drizzle-orm";
 import { csvEscape } from "@/lib/csv";
 
 const MAX_EXPORT_ROWS = 100_000;
@@ -19,22 +19,9 @@ export async function GET(request: NextRequest) {
 
   const url = new URL(request.url);
   const format = url.searchParams.get("format") || "json";
-  const daysOrError = parseDays(url.searchParams.get("days"));
-  if (daysOrError instanceof NextResponse) return daysOrError;
-  const days = daysOrError;
-  const agentId = url.searchParams.get("agentId");
-
-  const conditions = [];
-  if (days > 0) {
-    const since = new Date();
-    since.setDate(since.getDate() - days);
-    conditions.push(gte(usageRecords.timestamp, since));
-  }
-  if (agentId) {
-    conditions.push(eq(usageRecords.agentId, agentId));
-  }
-
-  const where = conditions.length > 0 ? and(...conditions) : undefined;
+  const filter = parseUsageFilter(url);
+  if (filter instanceof NextResponse) return filter;
+  const { where } = filter;
 
   const records = await db
     .select()

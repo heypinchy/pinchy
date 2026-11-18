@@ -8,9 +8,9 @@ describe("resolveAnthropic", () => {
     expect(r.fallbackUsed).toBe(false);
   });
 
-  it("maps tier=balanced to sonnet", () => {
+  it("maps tier=balanced to sonnet 5", () => {
     const r = resolveAnthropic({ tier: "balanced" });
-    expect(r.model).toMatch(/sonnet/);
+    expect(r.model).toBe("anthropic/claude-sonnet-5");
   });
 
   it("maps tier=reasoning to opus 4.7 (latest)", () => {

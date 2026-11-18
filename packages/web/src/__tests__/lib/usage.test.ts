@@ -1,597 +1,108 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// Matches usage.ts's `sum(usageRecords.*Tokens)` select shape — Postgres SUM
-// comes back as text (string) or null when there are no prior rows.
-type PrevSumRow = {
-  totalInput: string | null;
-  totalOutput: string | null;
-  totalCacheRead: string | null;
-  totalCacheWrite: string | null;
-};
+import { getModelPricing, _resetPricingCacheForTest } from "@/lib/usage";
 
-const mockInsert = vi.fn();
-const mockValues = vi.fn();
-const mockSelect = vi.fn();
-const mockFrom = vi.fn();
-// `_result` is a real, typed property on the mock (via Object.assign) rather
-// than a stashed untyped field — it lets each test drive what the mocked
-// `where()` call returns without a `Mock<Procedure>` type violation.
-const mockWhere = Object.assign(vi.fn(), { _result: [] as PrevSumRow[] });
-
-vi.mock("@/db", () => ({
-  db: {
-    insert: (...args: unknown[]) => {
-      mockInsert(...args);
-      return { values: mockValues };
-    },
-    select: (...args: unknown[]) => {
-      mockSelect(...args);
-      return {
-        from: (...fArgs: unknown[]) => {
-          mockFrom(...fArgs);
-          return {
-            where: (...wArgs: unknown[]) => {
-              mockWhere(...wArgs);
-              return mockWhere._result;
-            },
-          };
-        },
-      };
-    },
-  },
-}));
-
-vi.mock("@/db/schema", () => ({
-  usageRecords: { _table: "usage_records" },
-}));
-
-vi.mock("drizzle-orm", () => ({
-  eq: vi.fn((_col, val) => ({ _type: "eq", val })),
-  sum: vi.fn((col) => ({ _type: "sum", col })),
-}));
-
-import {
-  recordUsage,
-  _resetPricingCacheForTest,
-  _resetPendingSessionsForTest,
-  _resetUsageWatermarksForTest,
-} from "@/lib/usage";
-import { usageRecords } from "@/db/schema";
-
-const emptyConfig = { config: { models: { providers: {} } } };
-
-function makeOpenClawClient(sessions: unknown[] = [], configResponse: unknown = emptyConfig) {
+function makeOpenClawClient(configResponse: unknown): Parameters<typeof getModelPricing>[0] {
   return {
-    sessions: {
-      list: vi.fn().mockResolvedValue({ sessions }),
-    },
     config: {
       get: vi.fn().mockResolvedValue(configResponse),
     },
-  } as unknown as Parameters<typeof recordUsage>[0]["openclawClient"];
+  } as unknown as Parameters<typeof getModelPricing>[0];
 }
 
-const baseParams = {
-  userId: "user-1",
-  agentId: "agent-1",
-  agentName: "Smithers",
-  sessionKey: "agent:agent-1:user-user-1",
-};
+// Regression guard for a silent, production-confirmed pricing gap (2026-07-15).
+//
+// Pinchy emits every model into the OpenClaw config keyed by its BARE id
+// (openclaw-config/build.ts: `id: m.id`), but the per-turn usage path
+// (usage-per-turn.ts) asks with the trajectory's fully-qualified
+// `<provider>/<modelId>` ("ollama-cloud/kimi-k2.6"), because `model.completed`
+// events carry a separate `provider` field.
+//
+// Only the bare form ever matched, so EVERY chat turn silently recorded
+// `estimated_cost_usd = NULL`. Production bore this out exactly: 330/330
+// per-turn rows had no cost. It stayed invisible because Ollama Cloud is
+// subscription-priced (cost 0), but on a per-token provider it would
+// under-report chat spend as zero.
+//
+// It slipped through because `buildUsageRows` — the only tested unit — takes an
+// INJECTED `priceFor`, so the real lookup was never exercised. `getModelPricing`
+// therefore keys every model under BOTH the qualified and the bare form.
+describe("getModelPricing model-id resolution", () => {
+  const configWithPricing = {
+    config: {
+      models: {
+        providers: {
+          "ollama-cloud": {
+            models: [{ id: "deepseek-v4-pro", cost: { input: 1, output: 2 } }],
+          },
+        },
+      },
+    },
+  };
 
-describe("recordUsage", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
     _resetPricingCacheForTest();
-    _resetPendingSessionsForTest();
-    _resetUsageWatermarksForTest();
-    mockValues.mockResolvedValue(undefined);
-    // Default: no previous records
-    mockWhere._result = [
-      { totalInput: null, totalOutput: null, totalCacheRead: null, totalCacheWrite: null },
+  });
+
+  it("resolves a bare model id", async () => {
+    const client = makeOpenClawClient(configWithPricing);
+    await expect(getModelPricing(client, "deepseek-v4-pro")).resolves.toEqual({
+      input: 1,
+      output: 2,
+    });
+  });
+
+  it("resolves a fully-qualified <provider>/<modelId> (per-turn path)", async () => {
+    const client = makeOpenClawClient(configWithPricing);
+    await expect(getModelPricing(client, "ollama-cloud/deepseek-v4-pro")).resolves.toEqual({
+      input: 1,
+      output: 2,
+    });
+  });
+
+  it("returns null for a known provider but unknown model", async () => {
+    const client = makeOpenClawClient(configWithPricing);
+    await expect(getModelPricing(client, "ollama-cloud/no-such-model")).resolves.toBeNull();
+  });
+
+  it("does not resolve a model attributed to the wrong provider", async () => {
+    const client = makeOpenClawClient(configWithPricing);
+    await expect(getModelPricing(client, "anthropic/deepseek-v4-pro")).resolves.toBeNull();
+  });
+});
+
+// Regression pin, not new behaviour: getModelPricing has always returned the
+// configured `cost` object verbatim, so it already carries `tieredPricing`.
+// The prompt-length tiers of Claude Haiku 5.5 depend on that — a lookup that
+// one day picks out only input/output would silently price every long prompt
+// at the short-prompt rate, and this test is what notices.
+describe("getModelPricing tiered pricing", () => {
+  beforeEach(() => {
+    _resetPricingCacheForTest();
+  });
+
+  it("passes a model's tieredPricing through", async () => {
+    const tieredPricing = [
+      { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125, range: [0, 100001] },
+      { input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 0.625, range: [100001] },
     ];
-  });
-
-  it("inserts a usage record when no previous snapshots exist", async () => {
-    const client = makeOpenClawClient([
-      {
-        key: "agent:agent-1:user-user-1",
-        inputTokens: 100,
-        outputTokens: 200,
-        cacheReadTokens: 10,
-        cacheWriteTokens: 5,
-        model: "claude-sonnet-4-6",
-      },
-    ]);
-
-    await recordUsage({ openclawClient: client, ...baseParams });
-
-    expect(mockInsert).toHaveBeenCalledWith(usageRecords);
-    expect(mockValues).toHaveBeenCalledWith({
-      userId: "user-1",
-      agentId: "agent-1",
-      agentName: "Smithers",
-      sessionKey: "agent:agent-1:user-user-1",
-      model: "claude-sonnet-4-6",
-      inputTokens: 100,
-      outputTokens: 200,
-      cacheReadTokens: 10,
-      cacheWriteTokens: 5,
-      estimatedCostUsd: null,
-    });
-  });
-
-  it("computes delta correctly when previous snapshots exist", async () => {
-    const client = makeOpenClawClient([
-      {
-        key: "agent:agent-1:user-user-1",
-        inputTokens: 500,
-        outputTokens: 800,
-        cacheReadTokens: 50,
-        cacheWriteTokens: 20,
-        model: "claude-sonnet-4-6",
-      },
-    ]);
-
-    // Previous records sum
-    mockWhere._result = [
-      { totalInput: "300", totalOutput: "500", totalCacheRead: "30", totalCacheWrite: "10" },
-    ];
-
-    await recordUsage({ openclawClient: client, ...baseParams });
-
-    expect(mockValues).toHaveBeenCalledWith({
-      userId: "user-1",
-      agentId: "agent-1",
-      agentName: "Smithers",
-      sessionKey: "agent:agent-1:user-user-1",
-      model: "claude-sonnet-4-6",
-      inputTokens: 200,
-      outputTokens: 300,
-      cacheReadTokens: 20,
-      cacheWriteTokens: 10,
-      estimatedCostUsd: null,
-    });
-  });
-
-  it("skips recording when no token delta", async () => {
-    const client = makeOpenClawClient([
-      {
-        key: "agent:agent-1:user-user-1",
-        inputTokens: 100,
-        outputTokens: 200,
-        cacheReadTokens: 0,
-        cacheWriteTokens: 0,
-      },
-    ]);
-
-    mockWhere._result = [
-      { totalInput: "100", totalOutput: "200", totalCacheRead: "0", totalCacheWrite: "0" },
-    ];
-
-    await recordUsage({ openclawClient: client, ...baseParams });
-
-    expect(mockInsert).not.toHaveBeenCalled();
-  });
-
-  it("matches session key case-insensitively (OpenClaw normalizes to lowercase)", async () => {
-    const client = makeOpenClawClient([
-      {
-        key: "agent:agent-1:user-user-1", // lowercase from OpenClaw
-        inputTokens: 500,
-        outputTokens: 250,
-        model: "claude-sonnet-4-6",
-      },
-    ]);
-
-    // Pinchy generates mixed-case session key
-    await recordUsage({
-      openclawClient: client,
-      userId: "user-1",
-      agentId: "agent-1",
-      agentName: "Smithers",
-      sessionKey: "agent:agent-1:user-User-1", // mixed case
-    });
-
-    expect(mockInsert).toHaveBeenCalled();
-    expect(mockValues).toHaveBeenCalledWith(
-      expect.objectContaining({
-        inputTokens: 500,
-        outputTokens: 250,
-      })
-    );
-  });
-
-  it("does not throw when sessions.list() fails", async () => {
-    const client = {
-      sessions: {
-        list: vi.fn().mockRejectedValue(new Error("connection failed")),
-      },
-    } as unknown as Parameters<typeof recordUsage>[0]["openclawClient"];
-
-    await expect(recordUsage({ openclawClient: client, ...baseParams })).resolves.toBeUndefined();
-  });
-
-  it("does not throw when session is not found in sessions.list() result", async () => {
-    const client = makeOpenClawClient([
-      {
-        key: "agent:other-agent:user-user-1",
-        inputTokens: 100,
-        outputTokens: 200,
-      },
-    ]);
-
-    await expect(recordUsage({ openclawClient: client, ...baseParams })).resolves.toBeUndefined();
-
-    expect(mockInsert).not.toHaveBeenCalled();
-  });
-
-  it("calculates estimated cost from model pricing", async () => {
-    const configWithPricing = {
+    const client = makeOpenClawClient({
       config: {
         models: {
           providers: {
             anthropic: {
               models: [
-                {
-                  id: "claude-sonnet-4-6",
-                  cost: { input: 3.0, output: 15.0 },
-                },
+                { id: "claude-haiku-5-5", cost: { input: 0.1, output: 0.5, tieredPricing } },
               ],
             },
           },
         },
       },
-    };
-
-    const client = makeOpenClawClient(
-      [
-        {
-          key: "agent:agent-1:user-user-1",
-          inputTokens: 1000,
-          outputTokens: 500,
-          cacheReadTokens: 0,
-          cacheWriteTokens: 0,
-          model: "claude-sonnet-4-6",
-        },
-      ],
-      configWithPricing
-    );
-
-    await recordUsage({ openclawClient: client, ...baseParams });
-
-    // cost = (1000 * 3.0 / 1_000_000) + (500 * 15.0 / 1_000_000)
-    //      = 0.003 + 0.0075 = 0.0105
-    expect(mockValues).toHaveBeenCalledWith(
-      expect.objectContaining({
-        estimatedCostUsd: "0.010500",
-      })
-    );
-  });
-
-  it("includes cache read tokens at 10% of input price in cost estimation", async () => {
-    const configWithPricing = {
-      config: {
-        models: {
-          providers: {
-            anthropic: {
-              models: [
-                {
-                  id: "claude-sonnet-4-6",
-                  cost: { input: 3.0, output: 15.0 },
-                },
-              ],
-            },
-          },
-        },
-      },
-    };
-
-    const client = makeOpenClawClient(
-      [
-        {
-          key: "agent:agent-1:user-user-1",
-          inputTokens: 1000,
-          outputTokens: 500,
-          cacheReadTokens: 2000,
-          cacheWriteTokens: 0,
-          model: "claude-sonnet-4-6",
-        },
-      ],
-      configWithPricing
-    );
-
-    await recordUsage({ openclawClient: client, ...baseParams });
-
-    // cost = (1000*3.0 + 500*15.0 + 2000*0.3) / 1_000_000
-    //      = (3000 + 7500 + 600) / 1_000_000 = 0.011100
-    expect(mockValues).toHaveBeenCalledWith(
-      expect.objectContaining({
-        estimatedCostUsd: "0.011100",
-      })
-    );
-  });
-
-  it("includes cache write tokens at 125% of input price in cost estimation", async () => {
-    const configWithPricing = {
-      config: {
-        models: {
-          providers: {
-            anthropic: {
-              models: [
-                {
-                  id: "claude-sonnet-4-6",
-                  cost: { input: 3.0, output: 15.0 },
-                },
-              ],
-            },
-          },
-        },
-      },
-    };
-
-    const client = makeOpenClawClient(
-      [
-        {
-          key: "agent:agent-1:user-user-1",
-          inputTokens: 0,
-          outputTokens: 0,
-          cacheReadTokens: 0,
-          cacheWriteTokens: 1000,
-          model: "claude-sonnet-4-6",
-        },
-      ],
-      configWithPricing
-    );
-
-    await recordUsage({ openclawClient: client, ...baseParams });
-
-    // cost = (1000 * 3.75) / 1_000_000 = 0.003750
-    expect(mockValues).toHaveBeenCalledWith(
-      expect.objectContaining({
-        estimatedCostUsd: "0.003750",
-      })
-    );
-  });
-
-  it("sets estimatedCostUsd to null when no pricing configured for model", async () => {
-    const configWithOtherModel = {
-      config: {
-        models: {
-          providers: {
-            openai: {
-              models: [
-                {
-                  id: "gpt-5.4",
-                  cost: { input: 5.0, output: 15.0 },
-                },
-              ],
-            },
-          },
-        },
-      },
-    };
-
-    const client = makeOpenClawClient(
-      [
-        {
-          key: "agent:agent-1:user-user-1",
-          inputTokens: 100,
-          outputTokens: 200,
-          cacheReadTokens: 0,
-          cacheWriteTokens: 0,
-          model: "claude-sonnet-4-6",
-        },
-      ],
-      configWithOtherModel
-    );
-
-    await recordUsage({ openclawClient: client, ...baseParams });
-
-    expect(mockValues).toHaveBeenCalledWith(
-      expect.objectContaining({
-        estimatedCostUsd: null,
-      })
-    );
-  });
-
-  it("sets estimatedCostUsd to null when model is null", async () => {
-    const configWithPricing = {
-      config: {
-        models: {
-          providers: {
-            anthropic: {
-              models: [
-                {
-                  id: "claude-sonnet-4-6",
-                  cost: { input: 3.0, output: 15.0 },
-                },
-              ],
-            },
-          },
-        },
-      },
-    };
-
-    const client = makeOpenClawClient(
-      [
-        {
-          key: "agent:agent-1:user-user-1",
-          inputTokens: 100,
-          outputTokens: 200,
-          cacheReadTokens: 0,
-          cacheWriteTokens: 0,
-          // no model field
-        },
-      ],
-      configWithPricing
-    );
-
-    await recordUsage({ openclawClient: client, ...baseParams });
-
-    expect(mockValues).toHaveBeenCalledWith(
-      expect.objectContaining({
-        estimatedCostUsd: null,
-      })
-    );
-  });
-
-  it("still records usage when config.get() fails", async () => {
-    const client = makeOpenClawClient([
-      {
-        key: "agent:agent-1:user-user-1",
-        inputTokens: 100,
-        outputTokens: 200,
-        cacheReadTokens: 10,
-        cacheWriteTokens: 5,
-        model: "claude-sonnet-4-6",
-      },
-    ]);
-
-    // Make config.get() throw (e.g. Gateway unreachable)
-    (client.config.get as ReturnType<typeof vi.fn>).mockRejectedValue(
-      new Error("Gateway unreachable")
-    );
-
-    await recordUsage({ openclawClient: client, ...baseParams });
-
-    expect(mockInsert).toHaveBeenCalledWith(usageRecords);
-    expect(mockValues).toHaveBeenCalledWith({
-      userId: "user-1",
-      agentId: "agent-1",
-      agentName: "Smithers",
-      sessionKey: "agent:agent-1:user-user-1",
-      model: "claude-sonnet-4-6",
-      inputTokens: 100,
-      outputTokens: 200,
-      cacheReadTokens: 10,
-      cacheWriteTokens: 5,
-      estimatedCostUsd: null,
     });
-  });
-
-  it("does not advance watermark when DB insert fails", async () => {
-    const client = makeOpenClawClient([
-      {
-        key: "agent:agent-1:user-user-1",
-        inputTokens: 100,
-        outputTokens: 200,
-        cacheReadTokens: 0,
-        cacheWriteTokens: 0,
-        model: "test-model",
-      },
-    ]);
-
-    // First call succeeds — establishes watermark
-    await recordUsage({ openclawClient: client, ...baseParams });
-    expect(mockInsert).toHaveBeenCalledTimes(1);
-    mockInsert.mockClear();
-    mockValues.mockClear();
-
-    // Bump OpenClaw counters
-    (client.sessions.list as ReturnType<typeof vi.fn>).mockResolvedValue({
-      sessions: [
-        {
-          key: "agent:agent-1:user-user-1",
-          inputTokens: 300,
-          outputTokens: 400,
-          cacheReadTokens: 0,
-          cacheWriteTokens: 0,
-          model: "test-model",
-        },
-      ],
+    await expect(getModelPricing(client, "anthropic/claude-haiku-5-5")).resolves.toEqual({
+      input: 0.1,
+      output: 0.5,
+      tieredPricing,
     });
-
-    // Make DB insert fail
-    mockValues.mockRejectedValueOnce(new Error("connection pool exhausted"));
-
-    await recordUsage({ openclawClient: client, ...baseParams });
-
-    // Reset mock to succeed again
-    mockValues.mockResolvedValue(undefined);
-
-    // Bump OpenClaw counters again
-    (client.sessions.list as ReturnType<typeof vi.fn>).mockResolvedValue({
-      sessions: [
-        {
-          key: "agent:agent-1:user-user-1",
-          inputTokens: 350,
-          outputTokens: 450,
-          cacheReadTokens: 0,
-          cacheWriteTokens: 0,
-          model: "test-model",
-        },
-      ],
-    });
-
-    // Third call: should see delta from 100/200 (last SUCCESSFUL watermark),
-    // not from 300/400 (failed call's watermark)
-    await recordUsage({ openclawClient: client, ...baseParams });
-
-    expect(mockValues).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        inputTokens: 250, // 350 - 100, not 350 - 300
-        outputTokens: 250, // 450 - 200, not 450 - 400
-      })
-    );
-  });
-
-  it("caches config and does not call config.get() again within 5 minutes", async () => {
-    const configWithPricing = {
-      config: {
-        models: {
-          providers: {
-            anthropic: {
-              models: [
-                {
-                  id: "claude-sonnet-4-6",
-                  cost: { input: 3.0, output: 15.0 },
-                },
-              ],
-            },
-          },
-        },
-      },
-    };
-
-    const client = makeOpenClawClient(
-      [
-        {
-          key: "agent:agent-1:user-user-1",
-          inputTokens: 100,
-          outputTokens: 200,
-          cacheReadTokens: 0,
-          cacheWriteTokens: 0,
-          model: "claude-sonnet-4-6",
-        },
-      ],
-      configWithPricing
-    );
-
-    await recordUsage({ openclawClient: client, ...baseParams });
-    // Reset insert mocks but keep config cache
-    mockInsert.mockClear();
-    mockValues.mockClear();
-    mockValues.mockResolvedValue(undefined);
-    mockWhere._result = [
-      { totalInput: "100", totalOutput: "200", totalCacheRead: "0", totalCacheWrite: "0" },
-    ];
-
-    // Update session tokens so a new record is created
-    (client.sessions.list as ReturnType<typeof vi.fn>).mockResolvedValue({
-      sessions: [
-        {
-          key: "agent:agent-1:user-user-1",
-          inputTokens: 300,
-          outputTokens: 400,
-          cacheReadTokens: 0,
-          cacheWriteTokens: 0,
-          model: "claude-sonnet-4-6",
-        },
-      ],
-    });
-
-    await recordUsage({ openclawClient: client, ...baseParams });
-
-    expect(client.config.get).toHaveBeenCalledTimes(1);
   });
 });

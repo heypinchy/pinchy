@@ -1,5 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+// @vitest-environment jsdom
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "events";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
 import type { LicenseState } from "@/lib/license-state";
 
 const {
@@ -21,6 +25,7 @@ const {
   mockRecordChatSessionError,
   mockSupersedeChatSessionErrors,
   mockAgentRanToolSince,
+  mockUploadedFileRows,
 } = vi.hoisted(() => ({
   mockChat: vi.fn(),
   mockSessionsHistory: vi.fn(),
@@ -41,6 +46,10 @@ const {
   mockRecordChatSessionError: vi.fn().mockResolvedValue(undefined),
   mockSupersedeChatSessionErrors: vi.fn().mockResolvedValue(undefined),
   mockAgentRanToolSince: vi.fn().mockResolvedValue(false),
+  // Rows the #1195 upload-id recovery reads back for history user turns.
+  // Empty by default: every other history test asserts `files` without an
+  // `uploadId`, which is what "no matching upload row" produces.
+  mockUploadedFileRows: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("@/lib/agent-access", async (importOriginal) => {
@@ -76,6 +85,19 @@ vi.mock("@/lib/enterprise", () => ({
   getLicenseState: vi.fn().mockResolvedValue("paid"),
 }));
 
+const { mockGetInstancePolicy, mockGetExhaustedBlockingBudget } = vi.hoisted(() => ({
+  mockGetInstancePolicy: vi.fn(),
+  mockGetExhaustedBlockingBudget: vi.fn(),
+}));
+vi.mock("@/lib/budgets", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/budgets")>()),
+  getExhaustedBlockingBudget: mockGetExhaustedBlockingBudget,
+}));
+vi.mock("@/lib/instance-policy", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/instance-policy")>();
+  return { ...actual, getInstancePolicy: mockGetInstancePolicy };
+});
+
 vi.mock("@/db", () => ({
   db: {
     query: {
@@ -86,8 +108,25 @@ vi.mock("@/db", () => ({
         findFirst: mockUserFindFirst,
       },
     },
-    // db.select().from(models).where(...) — used by listVisionCandidates on image turns.
-    select: () => ({ from: () => ({ where: () => mockListVisionModels() }) }),
+    // db.select().from(models).where(...) — used by listVisionCandidates on image
+    // turns AND by the #703 delivery glue's grant-existence lookup (both resolve
+    // to an array; [] means "no rows", which the delivery path reads as "no
+    // pre-existing grant").
+    //
+    // Routed by table for `uploaded_files` (#1195 upload-id recovery), via the
+    // `__table` marker on the schema mock below: it runs on the SAME history
+    // path as the grants lookup, so a single shared resolver would make a test
+    // that seeds upload rows depend on which of the two queries fires first.
+    select: () => ({
+      from: (table: unknown) => ({
+        where: () =>
+          (table as { __table?: string } | undefined)?.__table === "uploaded_files"
+            ? mockUploadedFileRows()
+            : mockListVisionModels(),
+      }),
+    }),
+    // db.insert(agentDeliveredFiles).values(...) — the #703 delivery grant write.
+    insert: () => ({ values: vi.fn().mockResolvedValue(undefined) }),
   },
 }));
 
@@ -95,6 +134,20 @@ vi.mock("@/db/schema", () => ({
   agents: { id: "id" },
   users: { id: "id" },
   models: { vision: "vision", provider: "provider", modelId: "modelId", tools: "tools" },
+  agentDeliveredFiles: {
+    filename: "filename",
+    mimeType: "mime_type",
+    createdAt: "created_at",
+    sessionKey: "session_key",
+  },
+  uploadedFiles: {
+    __table: "uploaded_files",
+    id: "id",
+    filename: "filename",
+    agentId: "agent_id",
+    userId: "user_id",
+    status: "status",
+  },
 }));
 
 vi.mock("@/lib/model-vision", () => ({
@@ -108,6 +161,8 @@ vi.mock("@/lib/openclaw-config/write", () => ({
 
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((col, val) => ({ col, val })),
+  and: vi.fn((...conds) => ({ and: conds })),
+  inArray: vi.fn((col, vals) => ({ col, vals })),
 }));
 
 vi.mock("@/lib/audit", async (importOriginal) => {
@@ -157,7 +212,9 @@ vi.mock("@/server/attachment-pipeline", async (importOriginal) => {
 
 import { ClientRouter } from "@/server/client-router";
 import { SessionCache } from "@/server/session-cache";
+import { ActiveRuns } from "@/server/active-runs";
 import { CHAT_HISTORY_OVERSIZED_PLACEHOLDER } from "@/lib/openclaw-history";
+import { getUserSocketRegistry, ACCOUNT_DEACTIVATED_CLOSE_CODE } from "@/server/user-sockets";
 
 function createMockClientWs() {
   const sent: string[] = [];
@@ -201,6 +258,10 @@ function createMockOpenClawClient(connected = true) {
     // OC's runtime before re-dispatching.
     hasMethod: (method: string) => method === "agents.list",
     agents: { list: mockAgentsList },
+    // Native RPC surface (openclaw-node >= 0.13). The #703 delivery glue polls
+    // `artifacts.list` after a run; default to an empty artifact set so ordinary
+    // streaming tests deliver nothing. Delivery tests override this per-case.
+    request: vi.fn().mockResolvedValue({ payload: {} }),
     isConnected: connected,
   });
   return client;
@@ -222,13 +283,23 @@ describe("ClientRouter", () => {
 
     // Default: agent exists and is accessible
     mockFindFirst.mockResolvedValue(defaultAgent);
+    // Default: members may use their personal agent and its automations.
+    mockGetInstancePolicy.mockResolvedValue({
+      memberPersonalAgents: true,
+      memberAutomations: true,
+    });
+    // Default: no budget has stopped anything.
+    mockGetExhaustedBlockingBudget.mockResolvedValue(null);
     // Default: user has no context
     mockUserFindFirst.mockResolvedValue({ id: "user-1", context: null });
     // Default: empty history for history-mode requests
     mockSessionsHistory.mockResolvedValue({ messages: [] });
     // Default: the agent is present in OC's runtime agents.list, so the
     // dispatch-race readiness gate confirms readiness on the first poll.
-    mockAgentsList.mockResolvedValue({ defaultId: "agent-1", agents: [{ id: "agent-1" }] });
+    mockAgentsList.mockResolvedValue({
+      defaultId: "agent-1",
+      agents: [{ id: "agent-1", name: "Smithers" }],
+    });
   });
 
   describe("computeSessionKey", () => {
@@ -320,7 +391,103 @@ describe("ClientRouter", () => {
       );
     });
 
-    it("supersedes the triggering message's durable error once its run succeeds", async () => {
+    it("stores the run window so the gate can be re-derived later (#1013)", async () => {
+      // `sideEffects: false` above is exactly the answer #1013 says may be
+      // wrong — the audit row can still be in flight. Persisting the window it
+      // was derived over is what lets the retry gate ask again at click time;
+      // without it the stale `false` is the final word.
+      async function* stream() {
+        yield { type: "error" as const, text: "the model is overloaded", runId: "r1" };
+      }
+      mockChat.mockReturnValue(stream());
+      const before = Date.now();
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "hi",
+        agentId: "agent-1",
+        clientMessageId: "cm-window",
+      });
+
+      const [entry] = mockRecordChatSessionError.mock.calls.at(-1)!;
+      const runStartedAt = (entry as { runStartedAt: Date }).runStartedAt;
+      expect(runStartedAt).toBeInstanceOf(Date);
+      // The same bound `agentRanToolSince` was asked with, so re-deriving later
+      // covers the same run rather than a wider or narrower slice of history —
+      // and about this user's tools only, never a shared agent's other members
+      // (#1274).
+      expect(mockAgentRanToolSince).toHaveBeenLastCalledWith("agent-1", "user-1", runStartedAt);
+      // Starts before the run and not in the future — a window that opens after
+      // the first tool call would miss exactly what it exists to find.
+      expect(runStartedAt.getTime()).toBeLessThanOrEqual(before);
+    });
+
+    it("records an inline-only class too, but keeps it out of the banner", async () => {
+      // `unknown` shows no banner (nothing actionable to put in one) — but the
+      // inline bubble still offers Retry, so the gate still needs a window.
+      // Gating the INSERT on `shouldPersistDurableError` left that retry with
+      // nothing to re-derive from.
+      async function* stream() {
+        yield { type: "error" as const, text: "LLM request failed.", runId: "r1" };
+      }
+      mockChat.mockReturnValue(stream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "hi",
+        agentId: "agent-1",
+        clientMessageId: "cm-unknown",
+      });
+
+      expect(mockRecordChatSessionError).toHaveBeenCalledWith(
+        expect.objectContaining({ errorClass: "unknown", showBanner: false })
+      );
+    });
+
+    it("marks a banner-worthy class as banner-eligible", async () => {
+      async function* stream() {
+        yield { type: "error" as const, text: "⚠️ API rate limit reached", runId: "r1" };
+      }
+      mockChat.mockReturnValue(stream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "hi",
+        agentId: "agent-1",
+        clientMessageId: "cm-transient",
+      });
+
+      expect(mockRecordChatSessionError).toHaveBeenCalledWith(
+        expect.objectContaining({ errorClass: "transient", showBanner: true })
+      );
+    });
+
+    it("records a window for a thrown failure too generic to show, without storing its text", async () => {
+      // The #882 security gate: a thrown failure whose message isn't
+      // provider-facing gets the generic bubble and is deliberately NOT stored,
+      // because the banner would re-render the raw text. That bubble is still
+      // retryable, so the retry gate had no window here at all. Store the
+      // window — never the text — and keep it off the banner.
+      async function* stream(): AsyncGenerator<never> {
+        throw new Error("connect ECONNREFUSED 10.1.2.3:5432");
+      }
+      mockChat.mockReturnValue(stream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "hi",
+        agentId: "agent-1",
+        clientMessageId: "cm-generic",
+      });
+
+      expect(mockRecordChatSessionError).toHaveBeenCalledWith(
+        expect.objectContaining({ showBanner: false, runStartedAt: expect.any(Date) })
+      );
+      const [entry] = mockRecordChatSessionError.mock.calls.at(-1)!;
+      expect((entry as { providerError: string }).providerError).not.toContain("10.1.2.3");
+    });
+
+    it("supersedes the session's earlier durable errors once a run succeeds", async () => {
       async function* stream() {
         yield {
           type: "userMessagePersisted" as const,
@@ -341,9 +508,11 @@ describe("ClientRouter", () => {
         clientMessageId: "cm-3",
       });
 
+      // Every error recorded before this success, not only the one this
+      // message raised: a later turn that went through answers them all (#1301).
       expect(mockSupersedeChatSessionErrors).toHaveBeenCalledWith({
         sessionKey: "agent:agent-1:direct:user-1",
-        clientMessageId: "cm-3",
+        before: expect.any(Date),
       });
       expect(mockRecordChatSessionError).not.toHaveBeenCalled();
     });
@@ -375,6 +544,215 @@ describe("ClientRouter", () => {
       expect(mockRecordChatSessionError).toHaveBeenCalledTimes(1);
       expect(mockSupersedeChatSessionErrors).not.toHaveBeenCalled();
     });
+
+    it("does NOT supersede on a turn boundary inside a run that then fails", async () => {
+      // openclaw-node emits `done` between the turns of one run ("one moment",
+      // a tool, then the reply). The run has not gone through until it ends.
+      async function* stream() {
+        yield { type: "text" as const, text: "One moment", runId: "r1" };
+        yield { type: "done" as const, text: "", runId: "r1" };
+        yield { type: "error" as const, text: "Rate limit reached", runId: "r1" };
+        yield { type: "done" as const, text: "", runId: "r1" };
+      }
+      mockChat.mockReturnValue(stream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "x",
+        agentId: "agent-1",
+        clientMessageId: "cm-mid",
+      });
+
+      expect(mockSupersedeChatSessionErrors).not.toHaveBeenCalled();
+    });
+
+    it("does NOT supersede when the run throws after it said something", async () => {
+      async function* stream() {
+        yield { type: "text" as const, text: "Working on it", runId: "r1" };
+        throw new Error("FailoverError: upstream exploded");
+      }
+      mockChat.mockReturnValue(stream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "x",
+        agentId: "agent-1",
+        clientMessageId: "cm-throw",
+      });
+
+      expect(mockSupersedeChatSessionErrors).not.toHaveBeenCalled();
+    });
+
+    it("does NOT supersede on a turn that said nothing", async () => {
+      // A silent run is a failure of its own (the silent-stream banner), not a
+      // message that went through.
+      async function* stream() {
+        yield { type: "done" as const, text: "", runId: "r1" };
+      }
+      mockChat.mockReturnValue(stream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "x",
+        agentId: "agent-1",
+        clientMessageId: "cm-silent",
+      });
+
+      expect(mockSupersedeChatSessionErrors).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("thrown run-level failure surfacing (#882)", () => {
+    it("classifies, audits, persists and richly surfaces a THROWN provider failure instead of a generic bubble", async () => {
+      // Some run-level failures reach Pinchy as a THROWN exception from the
+      // chat() generator (an RPC-level rejection OpenClaw raises instead of
+      // yielding an `error` chunk) rather than an in-stream error chunk. Before
+      // #882 this hit the send-handler catch and collapsed to the opaque
+      // "Something went wrong. Please try again." — no class, no audit, no
+      // durable row, no model name. It must now get the SAME rich treatment as
+      // an in-stream error chunk.
+      mockFindFirst.mockResolvedValue({ ...defaultAgent, model: "gpt-5-turbo" });
+      async function* stream() {
+        // A first chunk clears the dispatch-race first-chunk window, so the
+        // throw below propagates as a genuine mid-stream generator rejection.
+        yield {
+          type: "userMessagePersisted" as const,
+          clientMessageId: "cm-throw",
+          sessionKey: undefined,
+          persistedAt: 0,
+          runId: "r1",
+        };
+        throw new Error("FailoverError: HTTP 410 gpt-5-turbo was retired");
+      }
+      mockChat.mockReturnValue(stream());
+
+      const ws = createMockClientWs();
+      await router.handleMessage(ws as any, {
+        type: "message",
+        content: "do it",
+        agentId: "agent-1",
+        clientMessageId: "cm-throw",
+      });
+
+      const frames = ws.sent.map((s) => JSON.parse(s));
+      const errorFrame = frames.find((f) => f.type === "error");
+      expect(errorFrame).toBeDefined();
+      // Rich, cause-specific frame — NOT the generic sanitized bubble.
+      expect(errorFrame.message).not.toBe("Something went wrong. Please try again.");
+      expect(errorFrame.providerError).toBeTruthy();
+      // Names the dead model and the retirement cause (ask #3).
+      expect(errorFrame.providerError).toContain("gpt-5-turbo");
+      expect(errorFrame.providerError.toLowerCase()).toContain("retired");
+      expect(errorFrame.agentName).toBe("Smithers");
+      // Terminal failed liveness so the client never guesses failure from silence.
+      expect(frames.some((f) => f.type === "liveness" && f.state === "failed")).toBe(true);
+
+      // Durable record — the "chat_session_errors had 0 rows" fix. A retired
+      // model classifies as model_retired and persists so the banner re-surfaces
+      // after a reload.
+      expect(mockRecordChatSessionError).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: "user-1",
+          agentId: "agent-1",
+          sessionKey: "agent:agent-1:direct:user-1",
+          agentName: "Smithers",
+          model: "gpt-5-turbo",
+          errorClass: "model_retired",
+        })
+      );
+      // Umbrella audit fired for the thrown failure too.
+      expect(mockAppendAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventType: "chat.agent_error",
+          detail: expect.objectContaining({ errorClass: "model_retired" }),
+        })
+      );
+    });
+
+    // The security half of the same sink: a THROWN error is `err.message`, which
+    // is NOT guaranteed to be provider-facing. An infra error can carry an
+    // internal host/IP/DB-user AND happen to classify as a known provider class
+    // (a connection `ETIMEDOUT` matches `transient` via "timed out"; a Postgres
+    // "authentication failed" matches `provider_config` via "authenticat"), so a
+    // class check alone can't gate it. Only a class with a CANNED rewrite (which
+    // never echoes the raw text) may be surfaced/persisted; everything else falls
+    // back to the generic bubble. These two lock that the raw text never reaches
+    // the browser through the live frame, the liveness `reason`, OR the durable
+    // row (which the reload banner re-renders verbatim).
+    it.each([
+      [
+        "a connection ETIMEDOUT (classifies transient, but is internal infra)",
+        "connect ETIMEDOUT 10.0.0.42:8443",
+        ["10.0.0.42", "8443", "ETIMEDOUT"],
+      ],
+      [
+        "a Postgres auth failure (classifies provider_config, but is internal infra)",
+        'password authentication failed for user "pinchy" at 10.0.0.5',
+        ["10.0.0.5", "pinchy", "password"],
+      ],
+    ])(
+      "does NOT leak raw thrown infra text to the browser and does NOT persist it: %s",
+      async (_label, thrown, secrets) => {
+        mockFindFirst.mockResolvedValue({ ...defaultAgent, model: "gpt-5-turbo" });
+        async function* stream() {
+          yield {
+            type: "userMessagePersisted" as const,
+            clientMessageId: "cm-leak",
+            sessionKey: undefined,
+            persistedAt: 0,
+            runId: "r1",
+          };
+          throw new Error(thrown);
+        }
+        mockChat.mockReturnValue(stream());
+
+        const ws = createMockClientWs();
+        await router.handleMessage(ws as any, {
+          type: "message",
+          content: "do it",
+          agentId: "agent-1",
+          clientMessageId: "cm-leak",
+        });
+
+        // No raw text in ANY frame sent to the browser — covers the live error
+        // frame's providerError, the liveness `reason`, and any other field.
+        const wire = ws.sent.join("\n");
+        for (const secret of secrets) {
+          expect(wire).not.toContain(secret);
+        }
+
+        // The user still gets a terminal error — the generic, non-leaking bubble.
+        const frames = ws.sent.map((s) => JSON.parse(s));
+        const errorFrame = frames.find((f) => f.type === "error");
+        expect(errorFrame).toBeDefined();
+        expect(errorFrame.message).toBe("Something went wrong. Please try again.");
+        // No cause-specific fields that would carry the raw text.
+        expect(errorFrame.providerError).toBeUndefined();
+
+        // A row IS written now — the generic bubble is retryable, and #1013's
+        // gate needs this run's window to answer for that retry. What must never
+        // happen is the leak this branch exists to prevent, so assert the row's
+        // WHOLE payload rather than its absence: no secret in any field, and no
+        // path to the banner that would re-render it.
+        expect(mockRecordChatSessionError).toHaveBeenCalledTimes(1);
+        const [persisted] = mockRecordChatSessionError.mock.calls[0];
+        const stored = JSON.stringify(persisted);
+        for (const secret of secrets) {
+          expect(stored).not.toContain(secret);
+        }
+        expect(persisted).toMatchObject({
+          showBanner: false,
+          providerError: "Something went wrong. Please try again.",
+          runStartedAt: expect.any(Date),
+        });
+
+        // But it IS audited server-side (PII-scrubbed) — the diagnosability trail
+        // #882 asks for is kept even for the failures we won't show the user.
+        expect(mockAppendAuditLog).toHaveBeenCalledWith(
+          expect.objectContaining({ eventType: "chat.agent_error" })
+        );
+      }
+    );
   });
 
   it("should return error when agent not found", async () => {
@@ -393,7 +771,7 @@ describe("ClientRouter", () => {
     expect(messages[0].message).toBe("Agent not found");
   });
 
-  it("should return access denied for unauthorized user", async () => {
+  it("answers a denied agent exactly as it answers a missing one", async () => {
     const clientWs = createMockClientWs();
     mockFindFirst.mockResolvedValue({
       id: "agent-1",
@@ -411,7 +789,10 @@ describe("ClientRouter", () => {
     const messages = clientWs.sent.map((s) => JSON.parse(s));
     expect(messages).toHaveLength(1);
     expect(messages[0].type).toBe("error");
-    expect(messages[0].message).toBe("Access denied");
+    // Deliberately the same string the "nonexistent-agent" test above asserts:
+    // over the socket as over HTTP, a personal agent owned by someone else must
+    // not be distinguishable from an id that was never issued.
+    expect(messages[0].message).toBe("Agent not found");
   });
 
   describe("multi-device live-sync subscription is gated on access (Lane B)", () => {
@@ -449,7 +830,7 @@ describe("ClientRouter", () => {
       // to a user who may not access the agent; this pins the ordering.
       expect(pokeBridge.view).not.toHaveBeenCalled();
       const messages = clientWs.sent.map((s) => JSON.parse(s));
-      expect(messages[0].message).toBe("Access denied");
+      expect(messages[0].message).toBe("Agent not found");
     });
 
     it("registers the socket to its OWN server-built session key once access is granted", async () => {
@@ -685,6 +1066,50 @@ describe("ClientRouter", () => {
     expect(textChunks[1].content).toBe("there!");
   });
 
+  it("binds a live-delivered file chip to the assistant turn that streamed, not a rotated id (#703)", async () => {
+    // Regression guard: deliverRunArtifacts runs AFTER the stream loop, and the
+    // final `done` rotates messageId to a fresh id for the next turn. If we hand
+    // that fresh id to the delivery poll, the client can't match it to the reply
+    // bubble and spawns a stray empty bubble for the chip (and live placement
+    // then disagrees with the timestamp-based reload re-attach). The file frame's
+    // messageId MUST equal the id the reply streamed into (the `done` frame's id).
+    const clientWs = createMockClientWs();
+    mockOpenClawClient.request = vi.fn().mockResolvedValue({
+      payload: { artifacts: [{ type: "file", title: "invoice.pdf", mimeType: "application/pdf" }] },
+    });
+    // A delivery is pinned to the bytes it was minted from (#903), so the file
+    // has to exist for a grant — and therefore a chip — to be produced at all.
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "pinchy-client-router-delivery-"));
+    vi.stubEnv("WORKSPACE_BASE_PATH", workspaceRoot);
+    mkdirSync(join(workspaceRoot, "agent-1", "workbench"), { recursive: true });
+    writeFileSync(join(workspaceRoot, "agent-1", "workbench", "invoice.pdf"), "%PDF-1.4\n");
+
+    async function* fakeStream() {
+      yield { type: "text" as const, text: "Here is your invoice." };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    try {
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "get the invoice",
+        agentId: "agent-1",
+      });
+
+      const frames = clientWs.sent.map((s) => JSON.parse(s));
+      const doneFrame = frames.find((f: any) => f.type === "done");
+      const fileFrame = frames.find((f: any) => f.type === "file");
+      expect(fileFrame).toBeTruthy();
+      expect(fileFrame.filename).toBe("invoice.pdf");
+      expect(doneFrame).toBeTruthy();
+      expect(fileFrame.messageId).toBe(doneFrame.messageId);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
   it("recovers from the cold-start 'Unknown model' dispatch race without surfacing an error", async () => {
     // End-to-end guard for the OC 2026.6.1 setup-wizard flake: the cold-start
     // config-apply storm lands the agent before its model's provider, so the
@@ -776,6 +1201,33 @@ describe("ClientRouter", () => {
     const textChunks = messages.filter((m: any) => m.type === "chunk");
     const allText = textChunks.map((c: any) => c.content).join("");
     expect(allText).toBe("Right away! How can I help?");
+  });
+
+  it("strips OpenClaw's MEDIA: directive lines from streamed chunks (#1298)", async () => {
+    // The agent's system prompt tells it to name an attachment on its own
+    // `MEDIA:<path>` line. The chip already stands for the file, and the path
+    // is an internal container path the user must not see.
+    const clientWs = createMockClientWs();
+    async function* fakeStream() {
+      yield { type: "text" as const, text: "Here is smoke.csv.\nME" };
+      yield { type: "text" as const, text: "DIA:/root/.openclaw/workspaces/agent-1/workbench/" };
+      yield { type: "text" as const, text: "smoke.csv" };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    await router.handleMessage(clientWs as any, {
+      type: "message",
+      agentId: "agent-1",
+      content: "hi",
+    });
+
+    const messages = clientWs.sent.map((s) => JSON.parse(s));
+    const allText = messages
+      .filter((m: any) => m.type === "chunk")
+      .map((c: any) => c.content)
+      .join("");
+    expect(allText).toBe("Here is smoke.csv.\n");
   });
 
   it("should suppress NO_REPLY sentinel arriving as a single text chunk", async () => {
@@ -1179,6 +1631,57 @@ describe("ClientRouter", () => {
     }
   });
 
+  it("does not re-dispatch while agents.list lists the agent only from disk", async () => {
+    // CI run 41569393728: right after a gateway restart OpenClaw's runtime
+    // agents.list is empty, so its `agents.list` RPC reports every agent
+    // directory on disk — without a `name` — while the dispatch handler rejects
+    // the id. Reading those raw ids as "ready" re-dispatched ~4,800 times in
+    // 19 s. The gate must wait until the response comes from the configured list.
+    vi.useFakeTimers();
+    try {
+      const clientWs = createMockClientWs();
+      async function* raceError() {
+        yield {
+          type: "error" as const,
+          text: 'invalid agent params: unknown agent id "agent-1"',
+          runId: "r0",
+        };
+      }
+      async function* success() {
+        yield { type: "done" as const, text: "", runId: "r1" };
+      }
+      mockChat.mockReturnValueOnce(raceError()).mockReturnValue(success());
+      mockAgentsList.mockResolvedValue({
+        defaultId: "main",
+        agents: [{ id: "main" }, { id: "agent-1" }],
+      });
+
+      const handlePromise = router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(2_000);
+      // Gate is polling, nothing re-dispatched yet.
+      expect(mockAgentsList.mock.calls.length).toBeGreaterThan(1);
+      expect(mockChat).toHaveBeenCalledTimes(1);
+
+      // The agents apply: the entry now comes from the configured list.
+      mockAgentsList.mockResolvedValue({
+        defaultId: "agent-1",
+        agents: [{ id: "agent-1", name: "Smithers" }],
+      });
+      await vi.advanceTimersByTimeAsync(600);
+      expect(mockChat).toHaveBeenCalledTimes(2);
+
+      await handlePromise;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("should send a thinking message before consuming the stream so the UI can show a spinner", async () => {
     const clientWs = createMockClientWs();
     let firstSent: unknown = null;
@@ -1460,6 +1963,61 @@ describe("ClientRouter", () => {
     );
   });
 
+  it("tells materializeAttachments that a retry frame is a retry", async () => {
+    // The one line connecting the client half of #1195 to the server half. The
+    // client tests assert only the outgoing frame and the pipeline integration
+    // tests set `isRetry` by hand, so without this the wiring can be deleted
+    // with every other test still green — and the regression that returns is
+    // the whole bug: a retry of a message whose first attempt materialized is
+    // refused outright with AttachmentAlreadyAttachedError.
+    const attachmentId = "550e8400-e29b-41d4-a716-446655440000";
+    mockMaterializeAttachments.mockResolvedValue({ chatAttachments: [], workspaceRefs: [] });
+
+    async function* fakeStream() {
+      yield { type: "text" as const, text: "ok" };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    await router.handleMessage(createMockClientWs() as any, {
+      type: "message",
+      content: "Analyze this file",
+      agentId: "agent-1",
+      attachmentIds: [attachmentId],
+      isRetry: true,
+      retryReason: "send_failure",
+    });
+
+    expect(mockMaterializeAttachments).toHaveBeenCalledWith(
+      expect.objectContaining({ attachmentIds: [attachmentId], isRetry: true })
+    );
+  });
+
+  it("does not claim a retry on an ordinary send", async () => {
+    // The negative control: `isRetry` is what gates the already-attached
+    // exemption, so a send that reports itself as a retry would hand any of
+    // the user's own earlier uploads back into a fresh message.
+    const attachmentId = "550e8400-e29b-41d4-a716-446655440001";
+    mockMaterializeAttachments.mockResolvedValue({ chatAttachments: [], workspaceRefs: [] });
+
+    async function* fakeStream() {
+      yield { type: "text" as const, text: "ok" };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    await router.handleMessage(createMockClientWs() as any, {
+      type: "message",
+      content: "Analyze this file",
+      agentId: "agent-1",
+      attachmentIds: [attachmentId],
+    });
+
+    expect(mockMaterializeAttachments).toHaveBeenCalledWith(
+      expect.objectContaining({ isRetry: false })
+    );
+  });
+
   it("rejects attachmentIds with more than the configured maximum (10)", async () => {
     // Clients are bounded by attachmentIdsSchema to 10 ids/message. A frame
     // that exceeds this is almost certainly malicious (or a buggy client) and
@@ -1581,6 +2139,37 @@ describe("ClientRouter", () => {
     expect(userMsg.role).toBe("user");
     expect(userMsg.content).toBe("Was steht in dieser Datei?");
     expect(userMsg.files).toEqual([{ filename: "invoice.pdf", mimeType: "application/pdf" }]);
+  });
+
+  it("surfaces the upload id behind each history file chip so a retry can re-send it", async () => {
+    // #1195. The client keeps `attachmentIds` in message state, which dies on
+    // reload — while the retry affordance does not (ChatErrorBanner
+    // re-surfaces the session's last agent error on mount). Without the id on
+    // the history frame, that Retry sends the text alone: the production
+    // symptom, one layer out from the in-tab path the client fix covers.
+    const clientWs = createMockClientWs();
+    mockUploadedFileRows.mockResolvedValueOnce([{ id: "upload-42", filename: "invoice.pdf" }]);
+    mockSessionsHistory.mockResolvedValue({
+      messages: [
+        {
+          role: "user",
+          content:
+            "Was steht in dieser Datei?\n\n<pinchy:attachments>\n" +
+            "The user attached these files (already saved into your workspace). Read each file with the listed tool, using the exact absolute path:\n" +
+            "- `/root/.openclaw/workspaces/agent-1/uploads/invoice.pdf` (application/pdf, 240 KB) — analyze with `pinchy_read`\n" +
+            "\nIf you delegate this task to a sub-agent or another tool, pass these exact paths verbatim — do not retype from memory.\n" +
+            "</pinchy:attachments>",
+          timestamp: 1708460000000,
+        },
+      ],
+    });
+
+    await router.handleMessage(clientWs as any, { type: "history", agentId: "agent-1" });
+
+    const sent = clientWs.sent.map((s) => JSON.parse(s));
+    expect(sent[0].messages[0].files).toEqual([
+      { filename: "invoice.pdf", mimeType: "application/pdf", uploadId: "upload-42" },
+    ]);
   });
 
   it("should preserve user messages that contain ONLY an attachment block (no accompanying text)", async () => {
@@ -1759,6 +2348,63 @@ describe("ClientRouter", () => {
 
     const sent = clientWs.sent.map((s) => JSON.parse(s));
     expect(sent[0].messages[0].content).toBe("Right away! How can I help?");
+  });
+
+  it("strips MEDIA: directive lines from history assistant messages (#1298)", async () => {
+    const clientWs = createMockClientWs();
+    mockSessionsHistory.mockResolvedValue({
+      messages: [
+        {
+          role: "assistant",
+          content:
+            "Here is smoke.csv.\nMEDIA:/root/.openclaw/workspaces/agent-1/workbench/smoke.csv",
+        },
+      ],
+    });
+
+    await router.handleMessage(clientWs as any, {
+      type: "history",
+      agentId: "agent-1",
+    });
+
+    const sent = clientWs.sent.map((s) => JSON.parse(s));
+    expect(sent[0].messages[0].content).toBe("Here is smoke.csv.\n");
+  });
+
+  it("keeps a reply that was only a MEDIA: directive as the anchor of its delivered chip (#1298)", async () => {
+    // Stripping the directive empties the reply. Dropping it as empty would
+    // move the file chip onto an earlier answer (grants attach by timestamp);
+    // keep it while the chip is attached, then drop it if no chip landed.
+    const clientWs = createMockClientWs();
+    mockSessionsHistory.mockResolvedValue({
+      messages: [
+        { role: "user", content: "first", timestamp: 1000 },
+        { role: "assistant", content: "Earlier answer", timestamp: 2000 },
+        { role: "user", content: "make a csv", timestamp: 3000 },
+        { role: "assistant", content: "MEDIA:/root/.openclaw/x/smoke.csv", timestamp: 4000 },
+        { role: "user", content: "and another", timestamp: 5000 },
+        { role: "assistant", content: "MEDIA:/root/.openclaw/x/gone.csv", timestamp: 6000 },
+      ],
+    });
+    mockListVisionModels.mockResolvedValueOnce([
+      { filename: "smoke.csv", mimeType: "text/csv", createdAt: new Date(4500) },
+    ]);
+
+    await router.handleMessage(clientWs as any, {
+      type: "history",
+      agentId: "agent-1",
+    });
+
+    const sent = clientWs.sent.map((s) => JSON.parse(s));
+    const assistant = sent[0].messages.filter((m: any) => m.role === "assistant");
+    expect(assistant).toHaveLength(2);
+    expect(assistant[0]).toMatchObject({ content: "Earlier answer" });
+    expect(assistant[0].files).toBeUndefined();
+    expect(assistant[1]).toMatchObject({
+      content: "",
+      files: [{ filename: "smoke.csv", mimeType: "text/csv" }],
+    });
+    expect(JSON.stringify(sent[0].messages)).not.toContain("MEDIA:");
   });
 
   it("should strip timestamp prefix from user messages in history", async () => {
@@ -2412,6 +3058,281 @@ describe("ClientRouter", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+  });
+
+  describe("a user deactivated while their chat was open", () => {
+    // DELETE /api/users/:id closes the user's sockets (user-sockets.ts), but a
+    // frame already in flight on a closing socket still reaches the router.
+    // It must not reach the agent: no lookup, no OpenClaw call, no tool run.
+    beforeEach(() => getUserSocketRegistry().revoke("user-1"));
+    afterEach(() => getUserSocketRegistry().restore("user-1"));
+
+    it.each(["message", "history", "abort"] as const)(
+      "refuses its %s frame and closes the socket",
+      async (type) => {
+        const clientWs = createMockClientWs();
+
+        await router.handleMessage(
+          clientWs as any,
+          {
+            type,
+            content: "Run the payroll export",
+            agentId: "agent-1",
+          } as any
+        );
+
+        expect(mockChat).not.toHaveBeenCalled();
+        expect(mockSessionsHistory).not.toHaveBeenCalled();
+        expect(mockFindFirst).not.toHaveBeenCalled();
+        expect(clientWs.sent.map((s) => JSON.parse(s))).toEqual([
+          {
+            type: "error",
+            code: "policy_account_deactivated",
+            message: "Your account has been deactivated.",
+          },
+        ]);
+        expect(clientWs.close).toHaveBeenCalledWith(
+          ACCOUNT_DEACTIVATED_CLOSE_CODE,
+          "Account deactivated"
+        );
+      }
+    );
+
+    it("does not start a run when the deactivation lands while the message is being prepared", async () => {
+      // The top-of-handleMessage check passes, then the router awaits a
+      // string of lookups before it registers the run. A deactivation in
+      // that window finds no run to abort (abortRunsOfUser snapshots the
+      // registry), so the router itself must notice before it registers.
+      getUserSocketRegistry().restore("user-1");
+      const activeRuns = new ActiveRuns();
+      const parked = new ClientRouter(
+        mockOpenClawClient as any,
+        "user-1",
+        "member",
+        sessionCache,
+        activeRuns
+      );
+      let releaseUserLookup!: (row: unknown) => void;
+      mockUserFindFirst.mockImplementationOnce(
+        () => new Promise((resolve) => (releaseUserLookup = resolve))
+      );
+      mockChat.mockImplementation(async function* () {
+        yield { type: "text", text: "Exported." };
+        yield { type: "done" };
+      });
+      const clientWs = createMockClientWs();
+
+      const handling = parked.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Run the payroll export",
+        agentId: "agent-1",
+      });
+      await vi.waitFor(() => expect(mockUserFindFirst).toHaveBeenCalled());
+
+      // What DELETE /api/users/:id does, in the same tick: revoke, then abort
+      // whatever is registered — nothing is yet.
+      getUserSocketRegistry().revoke("user-1");
+      releaseUserLookup({ id: "user-1", context: null });
+      await handling;
+
+      expect(mockChat).not.toHaveBeenCalled();
+      expect(activeRuns.size()).toBe(0);
+      expect(clientWs.sent.map((s) => JSON.parse(s))).toContainEqual({
+        type: "error",
+        code: "policy_account_deactivated",
+        message: "Your account has been deactivated.",
+      });
+      expect(clientWs.close).toHaveBeenCalledWith(
+        ACCOUNT_DEACTIVATED_CLOSE_CODE,
+        "Account deactivated"
+      );
+    });
+
+    it("serves a different, active user as before", async () => {
+      const other = new ClientRouter(mockOpenClawClient as any, "user-2", "member", sessionCache);
+      const clientWs = createMockClientWs();
+
+      await other.handleMessage(clientWs as any, { type: "history", agentId: "agent-1" } as any);
+
+      expect(mockFindFirst).toHaveBeenCalled();
+    });
+  });
+
+  describe("an agent a blocking budget has stopped this month", () => {
+    const exhausted = {
+      id: "budget-1",
+      agent: { id: "agent-1", name: "Smithers" },
+      monthlyLimitUsd: 50,
+      onExceeded: "block",
+      spentUsd: 51.2,
+      period: "2026-10",
+      state: "exceeded",
+    };
+
+    it("refuses a send with a policy code instead of forwarding it to OpenClaw", async () => {
+      mockGetExhaustedBlockingBudget.mockResolvedValue(exhausted);
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockChat).not.toHaveBeenCalled();
+      expect(mockGetExhaustedBlockingBudget).toHaveBeenCalledWith("agent-1");
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toMatchObject({ type: "error", code: "policy_budget_exhausted" });
+      expect(messages[0].message).toMatch(/monthly budget/i);
+    });
+
+    it("says so when it is the whole instance's budget, not this agent's", async () => {
+      mockGetExhaustedBlockingBudget.mockResolvedValue({ ...exhausted, agent: null });
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      const [frame] = clientWs.sent.map((s) => JSON.parse(s));
+      expect(frame.message).toMatch(/this Pinchy/i);
+    });
+
+    it("audits the refused send with the budget it hit", async () => {
+      mockGetExhaustedBlockingBudget.mockResolvedValue(exhausted);
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockAppendAuditLog).toHaveBeenCalledWith({
+        actorType: "user",
+        actorId: "user-1",
+        eventType: "chat.policy_refused",
+        resource: "agent:agent-1",
+        detail: {
+          reason: "budget_exhausted",
+          agent: { id: "agent-1", name: "Smithers" },
+          budget: { id: "budget-1", period: "2026-10" },
+        },
+        outcome: "failure",
+      });
+    });
+
+    it("still serves history — reading what was said costs nothing", async () => {
+      mockGetExhaustedBlockingBudget.mockResolvedValue(exhausted);
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(clientWs as any, { type: "history", agentId: "agent-1" });
+
+      expect(mockSessionsHistory).toHaveBeenCalled();
+      expect(mockGetExhaustedBlockingBudget).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("a member's personal agent while members may not use one", () => {
+    const ownSmithers = {
+      id: "agent-1",
+      name: "Smithers",
+      ownerId: "user-1",
+      isPersonal: true,
+      greetingMessage: "Hello.",
+    };
+
+    beforeEach(() => {
+      mockGetInstancePolicy.mockResolvedValue({
+        memberPersonalAgents: false,
+        memberAutomations: true,
+      });
+      mockFindFirst.mockResolvedValue(ownSmithers);
+    });
+
+    it("refuses the send with a policy code instead of forwarding it to OpenClaw", async () => {
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockChat).not.toHaveBeenCalled();
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      expect(messages).toHaveLength(1);
+      // `policy_` is the family the client renders without a Retry button —
+      // retrying cannot succeed until an admin changes the setting.
+      expect(messages[0]).toMatchObject({
+        type: "error",
+        code: "policy_personal_agent_disabled",
+      });
+      expect(messages[0].message).toMatch(/turned off/i);
+    });
+
+    it("audits the refused send with the agent snapshotted by name", async () => {
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockAppendAuditLog).toHaveBeenCalledWith({
+        actorType: "user",
+        actorId: "user-1",
+        eventType: "chat.policy_refused",
+        resource: "agent:agent-1",
+        detail: { reason: "personal_agent_disabled", agent: { id: "agent-1", name: "Smithers" } },
+        outcome: "failure",
+      });
+    });
+
+    it("refuses history as well, without an audit row per reconnect", async () => {
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(clientWs as any, { type: "history", agentId: "agent-1" });
+
+      expect(mockSessionsHistory).not.toHaveBeenCalled();
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      expect(messages[0]).toMatchObject({ type: "error", code: "policy_personal_agent_disabled" });
+      expect(mockAppendAuditLog).not.toHaveBeenCalled();
+    });
+
+    it("still lets the member stop a run that is already going — stopping is never what the policy is against", async () => {
+      const chatAbort = vi.fn().mockResolvedValue({ ok: true, aborted: true });
+      Object.assign(mockOpenClawClient, { chatAbort });
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(clientWs as any, { type: "abort", agentId: "agent-1" });
+
+      // The admin switched personal agents off mid-run. Refusing the stop
+      // would leave the run spending until it finished on its own.
+      expect(chatAbort).toHaveBeenCalledTimes(1);
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      expect(messages.some((m) => m.code === "policy_personal_agent_disabled")).toBe(false);
+    });
+
+    it("lets an admin keep using their own Smithers", async () => {
+      const adminRouter = new ClientRouter(
+        mockOpenClawClient as any,
+        "admin-1",
+        "admin",
+        sessionCache
+      );
+      mockFindFirst.mockResolvedValue({ ...ownSmithers, ownerId: "admin-1" });
+      const clientWs = createMockClientWs();
+
+      await adminRouter.handleMessage(clientWs as any, { type: "history", agentId: "agent-1" });
+
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      expect(messages.some((m) => m.code === "policy_personal_agent_disabled")).toBe(false);
     });
   });
 
@@ -3112,9 +4033,12 @@ describe("ClientRouter", () => {
       );
     });
 
-    it("injects the ## Memory capability block when the agent has pinchy_write", async () => {
+    it("leaves the ## Memory block to pinchy-files, so a memory agent's turn carries it once", async () => {
+      // pinchy-files' before_prompt_build hook adds the block to every turn of a
+      // memory agent, this one included (memory-prompt-entry-points.test.ts). A
+      // second copy here would put it into the web chat's prompt twice.
       mockUserFindFirst.mockResolvedValue({ id: "user-1", name: "Alice", context: null });
-      mockFindFirst.mockResolvedValue({ ...defaultAgent, allowedTools: ["pinchy_write"] });
+      mockFindFirst.mockResolvedValue({ ...defaultAgent, allowedTools: ["pinchy_memory"] });
       async function* fakeStream() {
         yield { type: "text" as const, text: "Hello!" };
         yield { type: "done" as const, text: "" };
@@ -3128,8 +4052,8 @@ describe("ClientRouter", () => {
       });
 
       const callArgs = mockChat.mock.calls[0][1];
-      expect(callArgs.extraSystemPrompt).toContain("## Memory");
-      expect(callArgs.extraSystemPrompt).toContain("pinchy_write");
+      expect(callArgs.extraSystemPrompt).toContain("Alice");
+      expect(callArgs.extraSystemPrompt).not.toContain("## Memory");
     });
 
     it("does NOT inject the memory block when the agent cannot write (no pinchy_write)", async () => {
@@ -3470,11 +4394,17 @@ describe("ClientRouter", () => {
           outcome: "success",
           detail: expect.objectContaining({
             agent: { id: "agent-1", name: "Smithers" },
-            sessionKey: "agent:agent-1:direct:user-1",
+            chatId: null,
             reason: "send_failure",
           }),
         })
       );
+      // #824: no raw users.id in the verbatim detail (the session key embeds it).
+      const retryEntry = mockAppendAuditLog.mock.calls
+        .map((c) => c[0])
+        .find((e) => e.eventType === "chat.retry_triggered");
+      expect(retryEntry.detail).not.toHaveProperty("sessionKey");
+      expect(JSON.stringify(retryEntry.detail)).not.toContain("user-1");
     });
 
     it("appends audit log with explicit reason 'orphan'", async () => {
@@ -4602,6 +5532,9 @@ describe("ClientRouter", () => {
       expect(audit.detail.agentModel).toBe("zhipu/glm-5.1");
       expect(audit.detail.fallbackModel).toBe("zhipu/glm-4v");
       expect(audit.outcome).toBe("success");
+      // #824: no raw users.id in the verbatim detail (the session key embeds it).
+      expect(audit.detail).not.toHaveProperty("sessionKey");
+      expect(JSON.stringify(audit.detail)).not.toContain("user-1");
     });
 
     it("does not route a tool-using agent's image turn to a tools-blocked preview model — picks the next usable same-provider vision model", async () => {
@@ -4620,7 +5553,7 @@ describe("ClientRouter", () => {
       mockMaterializeAttachments.mockResolvedValue(imageAttachment());
       mockListVisionModels.mockResolvedValue([
         { provider: "ollama-cloud", modelId: "gemini-3-flash-preview", vision: true, tools: true },
-        { provider: "ollama-cloud", modelId: "minimax-m3", vision: true, tools: true },
+        { provider: "ollama-cloud", modelId: "gemma4:31b", vision: true, tools: true },
       ]);
       mockChat.mockReturnValue(okStream());
 
@@ -4633,13 +5566,62 @@ describe("ClientRouter", () => {
 
       const [, options] = mockChat.mock.calls[0];
       expect(options.provider).toBe("ollama-cloud");
-      expect(options.model).toBe("minimax-m3");
+      expect(options.model).toBe("gemma4:31b");
 
       const audit = mockAppendAuditLog.mock.calls
         .map((c) => c[0])
         .find((e) => e.eventType === "chat.image_model_fallback");
       expect(audit).toBeDefined();
-      expect(audit.detail.fallbackModel).toBe("ollama-cloud/minimax-m3");
+      expect(audit.detail.fallbackModel).toBe("ollama-cloud/gemma4:31b");
+    });
+
+    it("routes Penny's image turn to kimi-k2.6 — skips tool-mangling minimax-m3 AND long-ref-corrupting gemma4:31b", async () => {
+      // Penny's exact shape, 2026-07-15: a text-only agent (deepseek-v4-pro)
+      // using Odoo tools received a receipt photo. minimax-m3 is seeded
+      // tools:true AND outranked gemma4:31b in OLLAMA_CLOUD_IMAGE_PREFERENCE, so
+      // it won the fallback — then mangled every nested tool argument (Odoo
+      // domains arrived as {'item': [...]}, invoice_line_ids commands rejected).
+      // It must be skipped whenever the turn needs tools, even though it is the
+      // better pure-vision model.
+      //
+      // Blocking minimax alone is NOT enough: that leaves gemma4:31b as the only
+      // curated ollama-cloud vision model, and gemma4:31b corrupts long
+      // identifiers across turns (~150-char Graph message ID, balanced-tier note
+      // in providers/ollama-cloud.ts). Pinchy's opaque refs are ~230 chars, so
+      // Penny would just swap one failure mode for another. kimi-k2.6 is listed
+      // last here on purpose: before it was curated it ranked BEHIND every
+      // curated model (intraProviderVisionRank), so a kimi-k2.6 result proves it
+      // is now curated ahead of gemma4:31b rather than winning by row order.
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        model: "ollama-cloud/deepseek-v4-pro",
+        allowedTools: ["odoo_read", "odoo_create"],
+      });
+      mockIsModelVisionCapable.mockReturnValue(false);
+      mockMaterializeAttachments.mockResolvedValue(imageAttachment());
+      mockListVisionModels.mockResolvedValue([
+        { provider: "ollama-cloud", modelId: "minimax-m3", vision: true, tools: true },
+        { provider: "ollama-cloud", modelId: "gemma4:31b", vision: true, tools: true },
+        { provider: "ollama-cloud", modelId: "kimi-k2.6", vision: true, tools: true },
+      ]);
+      mockChat.mockReturnValue(okStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Book this receipt",
+        attachmentIds: [ATTACHMENT_ID],
+        agentId: "agent-1",
+      });
+
+      const [, options] = mockChat.mock.calls[0];
+      expect(options.provider).toBe("ollama-cloud");
+      expect(options.model).toBe("kimi-k2.6");
+
+      const audit = mockAppendAuditLog.mock.calls
+        .map((c) => c[0])
+        .find((e) => e.eventType === "chat.image_model_fallback");
+      expect(audit).toBeDefined();
+      expect(audit.detail.fallbackModel).toBe("ollama-cloud/kimi-k2.6");
     });
 
     it("picks the highest-quality vision fallback, independent of catalog row order and alphabetical order", async () => {
@@ -4650,10 +5632,23 @@ describe("ClientRouter", () => {
       // so that both "first row" (gemma4:31b) and "alphabetically first"
       // (gemma4:31b < minimax-m3) would pick the WRONG model if quality were
       // ignored, so a minimax-m3 result proves the preference sort.
+      //
+      // The agent deliberately has no admin-configured tools: minimax-m3 is
+      // tools-blocked (it mangles nested tool arguments), so a tool-using agent
+      // would skip it and land on a different model for the wrong reason,
+      // proving nothing about sorting. Image description with built-ins only is
+      // where minimax-m3 is still preferred.
+      //
+      // Note `allowedTools: []` means "built-ins only" — session_status, plus
+      // the Pinchy plugin tools the allowlist always names — NOT "no tools at
+      // all". The memory built-ins are no longer among them: they follow the
+      // `pinchy_memory` grant, which this agent does not have. Those schemas are
+      // flat, which minimax-m3 handles; see the proxy caveat at the
+      // resolveImageTurnModel call site.
       mockFindFirst.mockResolvedValue({
         ...defaultAgent,
         model: "ollama-cloud/glm-5.2",
-        allowedTools: ["odoo_search_read"],
+        allowedTools: [],
       });
       mockIsModelVisionCapable.mockReturnValue(false);
       mockMaterializeAttachments.mockResolvedValue(imageAttachment());

@@ -57,4 +57,73 @@ describe("FixedWindowRateLimiter", () => {
     expect(limiter.tryAcquire()).toBe(true);
     expect(limiter.tryAcquire()).toBe(false);
   });
+
+  describe("isExpired", () => {
+    // Callers that keep ONE limiter PER caller in a Map (api-key-rate-limiter's
+    // per-IP buckets) need to know when dropping an instance is
+    // behaviour-preserving. That is exactly the condition tryAcquire uses to
+    // open a fresh window, so the two must be the same predicate — a looser
+    // isExpired would evict a limiter that still holds a live count, which is
+    // a rate-limit bypass rather than a cleanup.
+    it("reports a limiter as expired exactly when the next tryAcquire would reset it", () => {
+      const limiter = new FixedWindowRateLimiter({ max: 1, windowMs: 1000 });
+      const start = 1_000_000;
+
+      limiter.tryAcquire(start);
+      expect(limiter.isExpired(start)).toBe(false);
+      expect(limiter.isExpired(start + 1000)).toBe(false);
+      expect(limiter.tryAcquire(start + 1000)).toBe(false);
+
+      expect(limiter.isExpired(start + 1001)).toBe(true);
+      expect(limiter.tryAcquire(start + 1001)).toBe(true);
+    });
+
+    it("stays expired while the window is exhausted but elapsed", () => {
+      const limiter = new FixedWindowRateLimiter({ max: 2, windowMs: 1000 });
+      const start = 1_000_000;
+
+      limiter.tryAcquire(start);
+      limiter.tryAcquire(start);
+      expect(limiter.isExpired(start + 500)).toBe(false);
+      expect(limiter.isExpired(start + 5000)).toBe(true);
+    });
+  });
+  describe("release", () => {
+    it("gives a slot back within the current window", () => {
+      const limiter = new FixedWindowRateLimiter({ max: 2, windowMs: 1000 });
+      const now = 1_000_000;
+      limiter.tryAcquire(now);
+      limiter.tryAcquire(now);
+      expect(limiter.tryAcquire(now)).toBe(false);
+
+      limiter.release(now);
+
+      expect(limiter.tryAcquire(now)).toBe(true);
+      expect(limiter.tryAcquire(now)).toBe(false);
+    });
+
+    // A slot taken in an old window was already given back by the reset;
+    // releasing it again would hand the new window an extra one.
+    it("does nothing once the window has expired", () => {
+      const limiter = new FixedWindowRateLimiter({ max: 1, windowMs: 1000 });
+      const start = 1_000_000;
+      limiter.tryAcquire(start);
+
+      limiter.release(start + 5000);
+
+      expect(limiter.tryAcquire(start + 5000)).toBe(true);
+      expect(limiter.tryAcquire(start + 5000)).toBe(false);
+    });
+
+    it("never goes below zero", () => {
+      const limiter = new FixedWindowRateLimiter({ max: 1, windowMs: 1000 });
+      const now = 1_000_000;
+      limiter.tryAcquire(now);
+      limiter.release(now);
+      limiter.release(now);
+
+      expect(limiter.tryAcquire(now)).toBe(true);
+      expect(limiter.tryAcquire(now)).toBe(false);
+    });
+  });
 });

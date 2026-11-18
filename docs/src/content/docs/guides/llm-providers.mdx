@@ -1,6 +1,6 @@
 ---
 title: Manage LLM Providers
-description: Add, switch, or remove the LLM providers that power your Pinchy agents — Anthropic, OpenAI, Google, Ollama Cloud, and local Ollama.
+description: Add, switch, or remove the LLM providers that power your Pinchy agents — Anthropic, OpenAI, Google, Ollama Cloud, local Ollama, and any OpenAI-compatible endpoint.
 ---
 
 import { Aside } from "@astrojs/starlight/components";
@@ -11,13 +11,14 @@ For the very first provider during the setup wizard, see [Installation](/install
 
 ## Supported providers
 
-| Provider           | Auth    | What you get                                                                 |
-| ------------------ | ------- | ---------------------------------------------------------------------------- |
-| **Anthropic**      | API key | Claude family — strongest tool calling and reasoning                         |
-| **OpenAI**         | API key | GPT-5 family, o-series reasoning models                                      |
-| **Google**         | API key | Gemini family — long context, fast and cheap                                 |
-| **Ollama Cloud**   | API key | Hosted open-source models (Kimi, Qwen, Mistral, Gemini Flash) via ollama.com |
-| **Ollama (Local)** | URL     | Fully air-gapped local inference — see [Ollama setup](/guides/ollama-setup/) |
+| Provider              | Auth          | What you get                                                                                                                   |
+| --------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| **Anthropic**         | API key       | Claude family (Haiku, Sonnet, Opus, Fable) — strongest tool calling and reasoning                                              |
+| **OpenAI**            | API key       | GPT-5 family, o-series reasoning models                                                                                        |
+| **Google**            | API key       | Gemini family — long context, fast and cheap                                                                                   |
+| **Ollama Cloud**      | API key       | Hosted open-source models (Kimi, GLM, MiniMax, Gemma, gpt-oss, Nemotron) via ollama.com                                        |
+| **Ollama (Local)**    | URL           | Fully air-gapped local inference — see [Ollama setup](/guides/ollama-setup/)                                                   |
+| **OpenAI-compatible** | URL + API key | Any endpoint that speaks the OpenAI API — sovereign EU clouds, self-hosted gateways. See [below](#openai-compatible-providers) |
 
 You can have any combination of providers configured at the same time. Each agent picks one model from one provider.
 
@@ -25,7 +26,9 @@ You can have any combination of providers configured at the same time. Each agen
 
 <Aside type="note">Only admins can configure providers.</Aside>
 
-1. Go to **Settings → LLM Provider**
+**Settings → AI Provider** shows a single grid: a tile for each of the 5 built-in providers, one tile per OpenAI-compatible provider you've already added, and a dashed **Add custom provider** tile. Selecting any tile opens its panel below the grid.
+
+1. Go to **Settings → AI Provider**
 2. Click the provider you want to add
 3. Paste your API key (or for local Ollama, enter the URL)
 4. Click **Save**
@@ -33,6 +36,21 @@ You can have any combination of providers configured at the same time. Each agen
 Pinchy validates the credentials immediately by making a test call to the provider's `/models` endpoint. If the key works, the provider activates and its models become available in every agent's model dropdown within a few seconds.
 
 API keys are encrypted at rest with AES-256-GCM. They never appear in logs, audit events, or error messages.
+
+## Rotate an API key
+
+Keys expire, and sometimes one has to be replaced in a hurry. Rotating is the same three clicks as adding:
+
+1. Go to **Settings → AI Provider**
+2. Click the provider's tile and paste the new key
+3. Click **Save**
+
+Pinchy validates the new key, stores it, and hands it straight to the agent runtime — your agents usually pick it up within seconds. There is nothing to restart.
+
+<Aside type="note">
+  For security, Pinchy never shows a saved key back to you. A blank field means
+  "keep the current key", so an empty save is not an accidental rotation.
+</Aside>
 
 ## Change an agent's model
 
@@ -53,15 +71,132 @@ The dropdown shows every model from every configured provider. Models are groupe
 
 ## Switch the default provider
 
-The "default provider" is the one Pinchy reaches for when creating new agents. You can change it at **Settings → LLM Provider** by clicking **Set as default** on any configured provider. Existing agents keep their current model — only newly created agents pick up the new default.
+The "default provider" is the one Pinchy reaches for when creating new agents. In the grid, the default tile carries a **star** in its top-right corner; every other configured tile — built-in or custom — carries a small check. The grid lists the default first, then the other configured providers, then the rest.
+
+The **very first** provider you configure — built-in or custom — automatically becomes the default. After that, adding more providers never changes the default: you switch it explicitly. To switch the default, click the tile you want, then click **Set as default** in its panel (shown whenever that provider is configured and isn't already the default). Existing agents keep their current model — only newly created agents pick up the new default.
+
+## Which model Pinchy picks
+
+When you create an agent from a template, Pinchy doesn't ask you for a model. Each template says how much model it needs — **fast**, **balanced** or **reasoning** — and Pinchy picks that model from your default provider:
+
+| Provider     | Fast                  | Balanced        | Reasoning       |
+| ------------ | --------------------- | --------------- | --------------- |
+| Anthropic    | Claude Haiku 4.5      | Claude Sonnet 5 | Claude Opus 4.7 |
+| OpenAI       | GPT-5.4 Mini          | GPT-5.5         | GPT-5.5         |
+| Google       | Gemini 2.5 Flash-Lite | Gemini 2.5 Pro  | Gemini 2.5 Pro  |
+| Ollama Cloud | Kimi K2.6             | Kimi K2.6       | Kimi K2.6       |
+
+For Anthropic, OpenAI and Google, the balanced model is also what a **Custom Agent** starts on, and it's the model behind Pinchy's **PDF and image tools** — which also read the scanned pages your knowledge base sends out at index time (see [What indexing sends to your provider](/guides/mount-data-directories/#what-indexing-sends-to-your-provider)). With several providers configured, that reading goes to Anthropic first, then Google, then OpenAI, then Ollama Cloud. On Ollama Cloud, a Custom Agent starts on Kimi K2.6 too, but the PDF and image tools use MiniMax M3.
+
+The pick is a starting point: [changing an agent's model](#change-an-agents-model) takes a few clicks.
+
+The model dropdown lists everything the provider serves, so a model released after your Pinchy version shows up there too. You can select it, but it isn't picked automatically while a model in Pinchy's [capability catalog](#model-capability-catalog) is available. Whether it can see images comes from the model list Pinchy ships with; a model too new for that list is treated as text-only until an update adds it.
+
+**Claude Opus 5, Opus 5.5, Sonnet 5.5 and Fable 5.1** are listed too, but disabled. They need a newer agent runtime than this Pinchy release ships, and their requests would be rejected — so the dropdown says so instead of letting a chat fail. Use Claude Sonnet 5 in the meantime; enabling them is tracked in [#1225](https://github.com/heypinchy/pinchy/issues/1225).
+
+**Claude Haiku 5.5** is selectable. The runtime this release ships doesn't know it yet, and if it were told that Haiku 5.5 can think, it would send a thinking budget the model rejects. So we never tell it that, and the runtime sends Haiku 5.5 no thinking setting at all. The model still thinks: Anthropic runs it with adaptive thinking at its default effort whenever a request leaves the setting out. Templates on the fast tier still start on Claude Haiku 4.5; pick Haiku 5.5 in an agent's settings if you want it.
+
+Anthropic bills Haiku 5.5 by prompt length: $0.10 input / $0.50 output per million tokens while a request's prompt is 100,000 tokens or fewer, five times that above. The prompt includes the conversation history that is resent — cached or not — on every request, so a long conversation crosses that line routinely. The [Usage & Costs dashboard](/guides/usage-dashboard/) prices each turn at the rate its prompt size selects.
 
 ## Remove a provider
 
-1. Go to **Settings → LLM Provider**
-2. Find the provider in the list
-3. Click **Remove**
+1. Go to **Settings → AI Provider**
+2. Click the provider's tile in the grid
+3. Click **Remove key** / **Remove URL** (built-in) or **Remove provider** (custom), and confirm
 
-If any agent currently uses a model from the removed provider, the chat will fail to start until you assign that agent a model from a still-configured provider. Pinchy will not silently re-assign agents.
+Agents pinned to a model from the removed provider are moved to a still-configured one, so no agent is left on a model that no longer exists. The confirmation dialog states the outcome before you commit: how many agents are affected, and which provider and model they'll be moved to. If you removed your default provider, the provider those agents moved to becomes the new default.
+
+Pinchy refuses to remove the **last** configured provider — add another one first. The confirmation dialog says so and keeps **Remove** disabled. That is what keeps the sentence above true: there is always somewhere for an orphaned agent to go.
+
+A custom provider whose base URL is refused (its tile says **Not in use**, see [Which base URLs are allowed](#which-base-urls-are-allowed)) never counts as that somewhere. Pinchy doesn't move agents onto it or make it the new default, and the dialog names the next usable provider instead. If every other configured provider is refused, the removal is refused too: the dialog says why and keeps **Remove** disabled. Change one of those base URLs, or add another provider first. The same goes for removing a refused provider when every other one is refused as well — the dialog then says that no usable provider would remain, since the one you're removing wasn't usable either.
+
+Removing a provider with a long model list — an OpenAI-compatible endpoint serving dozens of models, say — can take a few minutes to reach the agent runtime. The runtime refuses to lose more than half of its configuration in one write, as a guard against a corrupted config, so we hand it the removal in smaller steps, at the pace the runtime accepts configuration writes. If something interrupts the hand-over — the runtime restarting, or a burst of other configuration changes using up its write allowance — we never force the change into its configuration file behind its back. We try once more on our own a few seconds later. If that attempt is interrupted too, the removal completes with whichever comes first: the runtime's next reconnect to Pinchy (after it restarts, say), the next configuration change (saving a setting, an agent or a provider), or the next Pinchy restart.
+
+The removed provider's API key does not wait for the hand-over. It leaves the database and the runtime's [secrets file](/security/secrets/#the-runtime-secrets-file-tmpfs) the moment you confirm. Just before that, we rewrite the runtime's configuration file so that nothing in it refers to the key any more (in the rare case that this rewrite would leave the file under half the size of one the runtime may still hold, we hand it to the runtime as a configuration change instead, and the key leaves the secrets file once the runtime has applied it): until the hand-over removes the provider, the runtime keeps it listed with its models but without a key, and at a reserved address that never resolves instead of its own — so nothing that was stored with it, credentials in its URL included, reaches the runtime again. So a runtime restart in the meantime starts as usual, and other configuration changes, such as connecting a Telegram bot, still land. Agents we moved off the provider switch over with the first step of the hand-over, usually within seconds. Until then, an agent still on the removed provider can answer with an error, because the runtime no longer has the key.
+
+The move is a starting point, not a verdict: pick a different model for any agent afterwards — see [Change an agent's model](#change-an-agents-model).
+
+## OpenAI-compatible providers
+
+Beyond the built-in providers, Pinchy can connect to **any endpoint that speaks the OpenAI API**. If a service exposes the familiar `/v1/chat/completions` and `/v1/models` routes with Bearer-token auth, you can wire it in — no code changes, no waiting for us to add it as a first-class provider.
+
+This is the option to reach for when you want to run agents on:
+
+- **Sovereign EU model clouds** — Swisscom AI Platform, IONOS AI Model Hub, OVHcloud AI Endpoints, Scaleway, T-Systems, and similar, so data stays with a provider under your jurisdiction.
+- **Your own inference servers** — a self-hosted vLLM or TGI deployment serving open-weight models on your hardware.
+- **LLM gateways** — a LiteLLM (or similar) proxy that fronts several upstream models behind one OpenAI-style endpoint.
+
+Unlike the built-in providers, you can add **as many OpenAI-compatible endpoints as you like** and manage them side by side.
+
+### Add an OpenAI-compatible provider
+
+<Aside type="note">Only admins can configure providers.</Aside>
+
+You can add one during the initial [setup wizard](/installation/) — it's offered as a **Custom provider** action below the built-in provider tiles — or any time afterwards from **Settings → AI Provider**. The fields are the same in both places:
+
+1. Open **Settings → AI Provider** and click the dashed **Add custom provider** tile in the grid (in the wizard, click **Custom provider**). Every custom provider you've already added shows as its own tile in the same grid — click one to edit it.
+2. **Name** — a label you choose, shown wherever the provider's models appear (e.g. "Swisscom AI Platform").
+3. **Base URL** — the endpoint's base, entered **exactly as the provider documents it, including the `/v1` path** (e.g. `https://api.example.com/v1`). Pinchy appends the standard routes to this base, so don't trim the version segment.
+4. **API key** — your key for the endpoint.
+5. Click **Add provider**.
+
+That's it — there's no separate discover-and-select step. This works just like the built-in providers: you supply the credentials, and Pinchy takes it from there. Once added, the provider's tile carries the same **Set as default** and remove affordances as a built-in provider — see [Switch the default provider](#switch-the-default-provider) and [Remove a provider](#remove-a-provider) above.
+
+### How models are detected
+
+When you save, Pinchy calls `GET <base URL>/models` and offers **every chat model the endpoint serves** — no manual selection. The list is fetched **live** (briefly cached), so a model you add on the provider's side later shows up on its own, and models are picked per agent from the usual model dropdown, exactly like every other provider. Non-chat models (embeddings, rerankers, transcription, and the like) are filtered out automatically. Capabilities — context window, vision, and more — come from Pinchy's bundled model catalog, with safe defaults for models it doesn't recognise (see [Where capabilities come from](#where-capabilities-come-from)).
+
+Some endpoints — a bare vLLM server, say — don't publish a `/models` list. When Pinchy finds none, it asks you to enter the **model ids** by hand (comma-separated); everything else is unchanged.
+
+<Aside type="tip">
+  Editing a provider later? For security, Pinchy never shows a saved key. Leave
+  the API key blank to keep the current one, or re-enter it to rotate it. If you
+  change the base URL — host, port or path — you have to enter the key again:
+  Pinchy never sends a stored key to a new address.
+</Aside>
+
+### Moving a provider to a much smaller endpoint
+
+The agent runtime picks up a provider's new address and key together, as soon as it takes the change — usually straight away. If something interrupts that — Pinchy restarting at the wrong moment, say, or another configuration change overtaking it — we finish it on our own: a few seconds later, or as soon as Pinchy and the runtime are back. Its model list can lag behind when the new endpoint serves far fewer models than the old one — a hosted catalogue of hundreds of models swapped for a single self-hosted one, say. Until the shorter list arrives, the runtime also lists some of the previous models after the new ones — just enough to keep its configuration from shrinking by more than half at once, which the runtime would take for a damaged file. Agents on a model the new endpoint doesn't serve answer with an error meanwhile.
+
+How soon the shorter list arrives depends on how much smaller it is:
+
+- **It keeps more than half of the runtime's configuration:** it's handed over right away.
+- **It cuts the configuration by more than half:** we don't hand it over with this save. A provider that suddenly lists far fewer models usually means discovery failed half-way, not that you changed anything, and handing that over would leave your agents without their models. Because the runtime now carries only some of the previous models, the next configuration change you make — or the next Pinchy restart — hands the shorter list over, as long as it is at least half of what the runtime carries now (roughly a quarter of its configuration before the move). If the runtime is stopped at that point, we don't write the shorter list into its configuration file behind its back — until the runtime has seen the configuration with some previous models, it would still take the shorter list for a damaged file when it starts. Instead we hand it over as soon as the runtime is running and connected to Pinchy again, without another change from you.
+- **It is smaller still:** it isn't handed over by any later change either, and other configuration changes are held back the same way, so they don't reach the runtime.
+
+To make such a move in one go, whatever the size, [remove the provider](#remove-a-provider) and add it again with the new address. A removal is handed over in steps the runtime accepts, and the new provider's models are then simply added.
+
+### Which base URLs are allowed
+
+Because Pinchy connects to the base URL from the server, it guards against being pointed at somewhere it shouldn't reach:
+
+- **Public endpoints** (sovereign clouds, hosted gateways) and **private-network endpoints** (a self-hosted vLLM/TGI box on your LAN, e.g. `http://10.0.0.5:8000/v1`, an IPv6 unique-local address, a Tailscale `100.x` address, or any other of the [private ranges](/reference/network-address-checks/#private-ranges)) all work out of the box.
+- **Reserved and internal addresses are refused** — loopback (`localhost` inside the Pinchy container is Pinchy itself, not your host), cloud-metadata/link-local (`169.254.x.x`, `100.100.100.200`, Azure's WireServer `168.63.129.16`, and the IPv6 metadata endpoints `fd00:ec2::254`, `fd00:ec2::23`, `fd20:ce::254` and `fd00:c1::a9fe:a9fe`), multicast, the documentation and other reserved ranges, a NAT64 or 6to4 address that carries one of those, Teredo and SIIT addresses, and non-`http(s)` URLs. These are never a real model endpoint, and blocking them protects the host Pinchy runs on. It's the same [address table](/reference/network-address-checks/) the Odoo and mail-server checks use.
+
+If you operate Pinchy as a **managed/multi-tenant host** (where the person configuring a provider isn't the owner of the underlying network), add `PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS=1` to your `.env` and run `docker compose up -d` to also refuse private-network addresses. Self-hosted deployments leave it unset so LAN endpoints keep working.
+
+A saved provider is checked again after you save it, too: before Pinchy lists its models, and each time Pinchy writes the agent runtime's configuration. So a provider saved under older rules, saved before `PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS` was set, or whose hostname now resolves to a refused address doesn't quietly keep being reached. Pinchy keeps the provider and its saved models in the runtime's configuration, but replaces its base URL with a reserved address that can never resolve (`https://base-url-refused.invalid/v1`) and leaves out its API key, so agents on its models get an error instead of an answer and the key goes nowhere. The model picker keeps showing the models saved with it. In **Settings → AI Provider** its tile says **Not in use**; select it to see why its base URL is refused. You can't make it the default while it's refused — **Set as default** isn't offered, and the API answers `400`. If it already was your default, it keeps its **Default** mark, but the runtime's default model no longer points at it, and agents created from a template in the meantime get their model from the first usable provider instead — the one a removal would move agents onto: built-in providers first, then custom ones, refused ones skipped. Only when no usable provider is left do they get the model Pinchy picks when no default is set. The reason also goes to Pinchy's log (`docker compose logs pinchy`) every time Pinchy writes the runtime's configuration, which happens on most settings and agent changes; it isn't an audit event, because nothing changed. Changing the base URL fixes it. As with the save-time check, a hostname that doesn't resolve at that moment — or whose lookup takes longer than 2.5 seconds — is let through, so a DNS hiccup doesn't take a provider away from every agent or hold up the settings page.
+
+When Pinchy contacts the endpoint itself — the model list it fetches when you save and whenever it lists a provider's models, and the [discovery endpoint](/reference/api/#post-apisettingsprovidersopenai-compatiblediscover), which also checks the API key — it connects to the addresses the check just looked up, and does the same for every redirect. So a DNS answer that changes a moment later (DNS rebinding) can't send that request, or the key it carries, somewhere the check would refuse. For these requests there is no "let through": a hostname that doesn't resolve, or whose lookup takes longer than 2.5 seconds, counts as unreachable and isn't contacted at all. The discovery endpoint then answers `network_error`. Saving a new provider answers "No models found at this endpoint. Enter model ids manually.", so you can still save it with model ids you type in; saving changes to an existing provider keeps the models saved with it, and so does any other model listing. The agent runtime's own requests to the provider resolve the hostname themselves, so this doesn't reach them.
+
+<Aside type="note">
+  Editing a provider and removing a model that agents were already using? Pinchy
+  moves those agents onto another of the same provider's models automatically,
+  so none are left pointing at a model that no longer exists.
+</Aside>
+
+### Where capabilities come from
+
+Pinchy resolves each model's capabilities — context window, vision, and more — from a catalog snapshot bundled with the app. A model the catalog recognises arrives with sensible values already filled in; anything unknown falls back to conservative defaults (a modest context window and no vision).
+
+The catalog refreshes with every Pinchy release, so **upgrading is how you pick up metadata for newer models**. See [Upgrading](/guides/upgrading/) to stay current.
+
+One capability is deliberately bounded: agents run on at most **256K tokens of context**, even where a model advertises more. That's what keeps automatic summarization firing on very-long-window models instead of letting a conversation grow until every turn is slow and expensive. Models at or below 256K are unaffected, and the model's real context window is still what the catalog says. See [Session lifecycle and compaction](/architecture/#session-lifecycle-and-compaction) for the full picture.
+
+### Your keys stay yours
+
+Every OpenAI-compatible key is encrypted at rest and handled exactly like every other provider secret: it's never written into the OpenClaw configuration in plaintext — only an encrypted reference is — and it never appears in logs, audit events, or error messages. See [Secret handling](/security/secrets/) for the full picture.
 
 ## Model capability catalog
 
@@ -71,7 +206,7 @@ For local Ollama, capabilities depend on which model you've pulled. Pinchy reads
 
 Capability data drives two things in practice:
 
-1. **Template model selection** — when you create an agent from a template, Pinchy picks the first model from your configured providers that meets the template's required capabilities (e.g. vision for a document-analyzer). If no model qualifies, you see a warning.
+1. **Template model selection** — the model Pinchy [picks for a template](#which-model-pinchy-picks) has to have the capabilities the template requires (e.g. vision for a document-analyzer). If it doesn't, you see a warning instead of getting an agent that can't do the job.
 2. **Pre-send checks** — if you attach an image and the agent's current model doesn't support vision, Pinchy warns you before sending and shows you how to switch to a capable model. PDFs are never blocked: they are analyzed by a dedicated PDF tool whose model Pinchy picks from your configured providers, independent of the agent's chat model (see [Upload Files in Chat](/guides/file-uploads/)).
 
 Admins can inspect raw capability data by querying the `models` table directly:
@@ -90,7 +225,7 @@ Tokens used through every provider are recorded in the [Usage Dashboard](/guides
 
 ## Troubleshooting
 
-When a provider returns an error, Pinchy shows it directly in the chat as a distinct error card with the agent name and the provider's error message. Admins see a hint pointing to **Settings → LLM Provider**; non-admin users see a prompt to contact their administrator. Transient errors (rate limits, timeouts) suggest trying again.
+When a provider returns an error, Pinchy shows it directly in the chat as a distinct error card with the agent name and the provider's error message. Admins see a hint pointing to **Settings → AI Provider**; non-admin users see a prompt to contact their administrator. Transient errors (rate limits, timeouts) suggest trying again.
 
 ### Model-unavailable errors
 
@@ -103,12 +238,17 @@ When the provider returns a server error (HTTP 5xx) that Pinchy recognises as a 
 
 This avoids having to hunt through menus when a model goes down.
 
-### Removed model: `ollama-cloud/kimi-k2-thinking`
+### A model was removed from Pinchy's list
 
-`ollama-cloud/kimi-k2-thinking` has been removed from Pinchy's supported model list. Agents that used this model will show the model-unavailable bubble the next time they receive a message. To resolve it:
+When a provider stops serving a model, Pinchy removes it from the model list (most recently eight Ollama Cloud models, see [Upgrading](/guides/upgrading/#eight-ollama-cloud-models-are-gone)). An agent that still names a removed model keeps that setting:
 
-1. Click **Switch model →** in the error bubble, or open the agent's settings manually (gear icon → **General → Model**).
-2. Select a replacement — `ollama-cloud/deepseek-v4-pro` is a good like-for-like option for reasoning-heavy workloads.
+- On a built-in provider (Anthropic, OpenAI, Google, Ollama Cloud, Ollama Local) that is still configured, the agent falls back to the provider's default model, so it keeps answering, but every message first costs a failed request to the removed model.
+- Without a fallback, for example on an OpenAI-compatible provider, every message fails with an error. If the provider's error says the model is retired or unknown, Pinchy says the model is no longer available. Otherwise you see the provider's own error with the model named, and for a server error the model-unavailable bubble described above.
+
+Either way, the agent's **Model** field marks the old model **(no longer available)**. To resolve it:
+
+1. Open the agent's settings (gear icon → **General → Model**), or click **Switch model →** if the error shows it.
+2. Select a replacement from the same provider. On Ollama Cloud, `kimi-k2.6` is a good like-for-like option.
 3. Click **Save**. The agent is ready immediately.
 
 **"Invalid API key"** — Double-check the key with the provider's own dashboard. Anthropic keys start with `sk-ant-`, OpenAI keys with `sk-`, Google keys are typically `AIza...`.
@@ -123,4 +263,4 @@ This avoids having to hunt through menus when a model goes down.
 
 **The model dropdown is empty after adding a key** — Pinchy caches the model list for one hour for cloud providers. Try waiting a minute, or remove and re-add the provider to force a refresh. Local Ollama is always fetched live.
 
-**Ollama Cloud returns `HTTP 500: "Internal Server Error (ref: …)"` on every retry** — Ollama Cloud occasionally retires a model from its serving fleet without surfacing a `model_not_found` error or a deprecation header. The model can still appear on `ollama.com/library/<model>` and pull fine for self-hosted Ollama, but the hosted `ollama.com/v1` endpoint no longer routes to it, so every request to that one model ends in a generic upstream 500 with a fresh reference ID. We first saw this with `kimi-k2-thinking` on 2026-05-08; consecutive retries each produced different upstream reference IDs, all 500. If retries fail consistently and other Ollama Cloud models on the same key still work, treat the failing model as unavailable and switch the agent to another Ollama Cloud model (for example Kimi K2.5, Kimi K2.6, or DeepSeek V4). If every Ollama Cloud model fails, the issue is transient — wait a moment and retry.
+**Ollama Cloud returns `HTTP 500: "Internal Server Error (ref: …)"` on every retry** — Ollama Cloud occasionally retires a model from its serving fleet without surfacing a `model_not_found` error or a deprecation header. The model can still appear on `ollama.com/library/<model>` and pull fine for self-hosted Ollama, but the hosted `ollama.com/v1` endpoint no longer routes to it, so every request to that one model ends in a generic upstream 500 with a fresh reference ID. We first saw this with `kimi-k2-thinking` on 2026-05-08; consecutive retries each produced different upstream reference IDs, all 500. If retries fail consistently and other Ollama Cloud models on the same key still work, treat the failing model as unavailable and switch the agent to another Ollama Cloud model (for example Kimi K2.6). If every Ollama Cloud model fails, the issue is transient — wait a moment and retry.

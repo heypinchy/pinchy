@@ -47,8 +47,12 @@ vi.mock("@/lib/telegram-allow-store", () => ({
   recalculateTelegramAllowStores: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("@/db", () => ({
-  db: {
+vi.mock("@/lib/user-provenance", () => ({
+  findUnknownOriginUsers: vi.fn().mockResolvedValue([]),
+}));
+
+vi.mock("@/db", () => {
+  const db: Record<string, unknown> = {
     query: {
       users: {
         findMany: vi.fn().mockResolvedValue([]),
@@ -71,15 +75,22 @@ vi.mock("@/db", () => ({
         returning: vi.fn().mockResolvedValue([]),
       }),
     }),
-  },
-}));
+  };
+  // Default: run the callback against the SAME db object, so tx.update /
+  // tx.delete are the exact mocks above and existing per-test overrides via
+  // db.update/db.delete.mockReturnValueOnce keep working unchanged.
+  db.transaction = vi.fn((cb: (tx: unknown) => unknown) => cb(db));
+  return { db };
+});
 
 import { auth } from "@/lib/auth";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { deleteWorkspace } from "@/lib/workspace";
 import { appendAuditLog } from "@/lib/audit";
+import { getAuditWriteFailedCount, resetAuditWriteFailedCount } from "@/lib/audit-deferred";
+import { findUnknownOriginUsers } from "@/lib/user-provenance";
 import { db } from "@/db";
-import { users, sessions } from "@/db/schema";
+import { users, sessions, agents } from "@/db/schema";
 
 // ── GET /api/users ───────────────────────────────────────────────────────
 
@@ -113,6 +124,57 @@ describe("GET /api/users", () => {
 
     const body = await response.json();
     expect(body.error).toBe("Forbidden");
+    // Provenance is admin-only information: a member must not even trigger
+    // the lookup.
+    expect(findUnknownOriginUsers).not.toHaveBeenCalled();
+  });
+
+  it("flags the accounts that neither the setup wizard nor a claimed invite created", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+    vi.mocked(db.query.users.findMany).mockResolvedValueOnce([
+      {
+        id: "admin-1",
+        name: "Bob",
+        email: "bob@test.com",
+        role: "admin",
+        banned: false,
+        userGroups: [],
+      },
+      {
+        id: "user-1",
+        name: "Alice",
+        email: "alice@test.com",
+        role: "member",
+        banned: false,
+        userGroups: [],
+      },
+      {
+        id: "user-2",
+        name: "Mallory",
+        email: "m@test.com",
+        role: "member",
+        banned: false,
+        userGroups: [],
+      },
+    ] as never);
+    vi.mocked(findUnknownOriginUsers).mockResolvedValueOnce([
+      { id: "user-2", name: "Mallory", role: "member", banned: false, createdAt: new Date() },
+    ]);
+
+    const response = await GET();
+    expect(response.status).toBe(200);
+
+    const body = await response.json();
+    expect(
+      body.users.map((u: { id: string; unknownOrigin: boolean }) => [u.id, u.unknownOrigin])
+    ).toEqual([
+      ["admin-1", false],
+      ["user-1", false],
+      ["user-2", true],
+    ]);
   });
 
   it("returns only selected user fields", async () => {
@@ -158,6 +220,7 @@ describe("GET /api/users", () => {
       "id",
       "name",
       "role",
+      "unknownOrigin",
     ]);
   });
 
@@ -400,6 +463,34 @@ describe("DELETE /api/users/[userId]", () => {
     expect(JSON.stringify(detail)).not.toContain("secret@example.com");
   });
 
+  it("still answers 200 and counts the failure when the user.deleted audit write fails", async () => {
+    resetAuditWriteFailedCount();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as never);
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([]),
+      }),
+    } as never);
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: "user-1", name: "Test User" }]),
+      }),
+    } as never);
+    vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("audit db down"));
+
+    const request = new NextRequest("http://localhost:7777/api/users/user-1", { method: "DELETE" });
+    const res = await DELETE(request, { params: Promise.resolve({ userId: "user-1" }) });
+
+    // The user is already deactivated; a retry would answer 404, so the success stands.
+    expect(res.status).toBe(200);
+    expect(getAuditWriteFailedCount()).toBe(1);
+  });
+
   it("returns 404 when user not found", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "admin-1", role: "admin" },
@@ -495,13 +586,7 @@ describe("DELETE /api/users/[userId]", () => {
       }),
     } as never);
 
-    // Mock: update for personal agent-1 soft-delete
-    vi.mocked(db.update).mockReturnValueOnce({
-      set: vi.fn().mockReturnThis(),
-      where: vi.fn().mockResolvedValue(undefined),
-    } as never);
-
-    // Mock: update for personal agent-2 soft-delete
+    // Mock: one batched update soft-deletes both personal agents (#…, N+1 fix)
     vi.mocked(db.update).mockReturnValueOnce({
       set: vi.fn().mockReturnThis(),
       where: vi.fn().mockResolvedValue(undefined),
@@ -518,6 +603,286 @@ describe("DELETE /api/users/[userId]", () => {
     expect(deleteWorkspace).toHaveBeenCalledWith("agent-1");
     expect(deleteWorkspace).toHaveBeenCalledWith("agent-2");
     expect(deleteWorkspace).toHaveBeenCalledTimes(2);
+  });
+
+  it("soft-deletes every personal agent in a single batched update, not one per agent", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ id: "agent-1" }, { id: "agent-2" }]),
+      }),
+    } as never);
+
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: "user-1" }]),
+      }),
+    } as never);
+
+    const agentUpdateSet = vi.fn().mockReturnThis();
+    const agentUpdateWhere = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: agentUpdateSet,
+      where: agentUpdateWhere,
+    } as never);
+
+    const request = new NextRequest("http://localhost:7777/api/users/user-1", {
+      method: "DELETE",
+    });
+
+    await DELETE(request, {
+      params: Promise.resolve({ userId: "user-1" }),
+    });
+
+    // Ban + one batched agent update — never one db.update per agent.
+    expect(db.update).toHaveBeenCalledTimes(2);
+    expect(db.update).toHaveBeenNthCalledWith(2, agents);
+    expect(agentUpdateSet).toHaveBeenCalledWith(
+      expect.objectContaining({ deletedAt: expect.any(Date) })
+    );
+  });
+
+  it("wraps ban + session revocation + agent soft-delete in a single transaction (atomic deactivation)", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ id: "agent-1" }]),
+      }),
+    } as never);
+
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: "user-1", name: "Test User" }]),
+      }),
+    } as never);
+
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockResolvedValue(undefined),
+    } as never);
+
+    const request = new NextRequest("http://localhost:7777/api/users/user-1", {
+      method: "DELETE",
+    });
+
+    const response = await DELETE(request, {
+      params: Promise.resolve({ userId: "user-1" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(db.transaction).toHaveBeenCalledTimes(1);
+    expect(db.update).toHaveBeenCalled();
+    expect(db.delete).toHaveBeenCalledWith(sessions);
+  });
+
+  it("does not ban the user when the session revocation fails inside the transaction (atomicity)", async () => {
+    // Simulates a real transaction's rollback semantics with a stateful fake
+    // store: the ban only takes effect once the whole callback commits.
+    // Pre-fix, the route calls db.update/db.delete directly (never touching
+    // db.transaction), so this test's fake store is never exercised and the
+    // DELETE resolves 200 instead of rejecting — the red state this test
+    // starts from.
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([]),
+      }),
+    } as never);
+
+    let bannedCommitted = false;
+    vi.mocked(db.transaction).mockImplementationOnce((async (cb: (tx: unknown) => unknown) => {
+      let pendingBanned = false;
+      const tx = {
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockImplementation(async () => {
+                pendingBanned = true;
+                return [{ id: "user-1", name: "Test User" }];
+              }),
+            }),
+          }),
+        }),
+        delete: vi.fn().mockReturnValue({
+          where: vi.fn().mockImplementation(async () => {
+            throw new Error("session delete failed");
+          }),
+        }),
+      };
+      await cb(tx);
+      // Only reached if cb() didn't throw — a real transaction rolls back on
+      // any error inside the callback, so a thrown error must skip this line.
+      bannedCommitted = pendingBanned;
+    }) as never);
+
+    const request = new NextRequest("http://localhost:7777/api/users/user-1", {
+      method: "DELETE",
+    });
+
+    await expect(
+      DELETE(request, { params: Promise.resolve({ userId: "user-1" }) })
+    ).rejects.toThrow("session delete failed");
+
+    expect(bannedCommitted).toBe(false);
+    expect(appendAuditLog).not.toHaveBeenCalled();
+  });
+
+  // Regression for the event-loop-blocking finding: deleteWorkspace used to be
+  // a synchronous rmSync call made directly in the request handler, so a large
+  // (GB-sized knowledge-base) workspace froze the whole process — every other
+  // chat and WS heartbeat — until it finished. It must now be scheduled via
+  // after() (already used elsewhere in this file for the audit write) so it
+  // runs once the response is on its way, not inline in the request path.
+  it("schedules workspace deletion via after() rather than calling it synchronously in the request path", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ id: "agent-1" }]),
+      }),
+    } as never);
+
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: "user-1" }]),
+      }),
+    } as never);
+
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockResolvedValue(undefined),
+    } as never);
+
+    // test-setup.ts mocks next/server's after() to run its callback
+    // immediately, so existing tests can assert deferred side effects without
+    // a real request lifecycle. That default would make this test unable to
+    // tell "called via after()" apart from "called synchronously in the
+    // handler body" — so for THIS test only, capture the callbacks instead of
+    // auto-running them, and restore the shared default afterwards.
+    const { after } = await import("next/server");
+    const runImmediately = vi.mocked(after).getMockImplementation();
+    const capturedCallbacks: Array<() => void | Promise<void>> = [];
+    vi.mocked(after).mockImplementation((task: Parameters<typeof after>[0]) => {
+      capturedCallbacks.push(task as () => void | Promise<void>);
+    });
+
+    const request = new NextRequest("http://localhost:7777/api/users/user-1", {
+      method: "DELETE",
+    });
+
+    let response: Awaited<ReturnType<typeof DELETE>>;
+    try {
+      response = await DELETE(request, {
+        params: Promise.resolve({ userId: "user-1" }),
+      });
+
+      // The response resolved without deleteWorkspace having run at all — it
+      // only exists inside a captured (not-yet-run) after() callback.
+      expect(deleteWorkspace).not.toHaveBeenCalled();
+
+      // Running the captured callbacks is what next/server does once the
+      // response has actually been sent — this is what triggers cleanup.
+      for (const cb of capturedCallbacks) {
+        await cb();
+      }
+    } finally {
+      if (runImmediately) vi.mocked(after).mockImplementation(runImmediately);
+    }
+
+    expect(response.status).toBe(200);
+    expect(deleteWorkspace).toHaveBeenCalledWith("agent-1");
+  });
+
+  // The after() callback must RETURN the deletion promise, not fire-and-forget
+  // it. after() awaits what its callback returns — that costs nothing (the
+  // response is already on its way) and buys two things a discarded promise
+  // loses: Next keeps the request lifecycle open until cleanup finishes, so a
+  // graceful shutdown mid-request doesn't silently orphan a GB-sized
+  // workspace directory (nothing in the repo sweeps for orphans); and a
+  // rejection reaches Next's error handler instead of surfacing as an
+  // unhandled rejection, which Node 22 answers by killing the process.
+  it("returns the deletion promise from the after() callback instead of discarding it", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ id: "agent-1" }]),
+      }),
+    } as never);
+
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: "user-1" }]),
+      }),
+    } as never);
+
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockResolvedValue(undefined),
+    } as never);
+
+    // A deletion that is still in flight — the whole question is whether the
+    // callback's own promise stays pending alongside it.
+    let finishDeletion!: () => void;
+    vi.mocked(deleteWorkspace).mockImplementationOnce(
+      () => new Promise<void>((resolve) => (finishDeletion = resolve))
+    );
+
+    const { after } = await import("next/server");
+    const runImmediately = vi.mocked(after).getMockImplementation();
+    const capturedCallbacks: Array<() => void | Promise<void>> = [];
+    vi.mocked(after).mockImplementation((task: Parameters<typeof after>[0]) => {
+      capturedCallbacks.push(task as () => void | Promise<void>);
+    });
+
+    try {
+      const response = await DELETE(
+        new NextRequest("http://localhost:7777/api/users/user-1", { method: "DELETE" }),
+        { params: Promise.resolve({ userId: "user-1" }) }
+      );
+      expect(response.status).toBe(200);
+
+      // The audit callback is scheduled first; the workspace one is last.
+      const workspaceCallback = capturedCallbacks[capturedCallbacks.length - 1];
+      let settled = false;
+      const pending = Promise.resolve(workspaceCallback()).then(() => {
+        settled = true;
+      });
+
+      // Drain the microtask queue. A callback that discarded the promise has
+      // already resolved to undefined by now, even though the rm() behind it
+      // has not finished.
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+      expect(settled).toBe(false);
+
+      finishDeletion();
+      await pending;
+      expect(settled).toBe(true);
+    } finally {
+      if (runImmediately) vi.mocked(after).mockImplementation(runImmediately);
+    }
   });
 
   it("calls regenerateOpenClawConfig after deletion", async () => {

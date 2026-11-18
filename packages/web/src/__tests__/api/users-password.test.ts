@@ -33,6 +33,22 @@ import { auth } from "@/lib/auth";
 import { appendAuditLog } from "@/lib/audit";
 import { mockSession } from "@/test-helpers/auth";
 import { routeContext } from "@/test-helpers/route";
+import {
+  resetPasswordChangeRateLimiterForTest,
+  PASSWORD_CHANGE_RATE_LIMIT_MAX_ATTEMPTS,
+  PASSWORD_CHANGE_RATE_LIMIT_WINDOW_MS,
+  PASSWORD_CHANGE_RATE_LIMIT_WINDOW_MINUTES,
+} from "@/lib/password-change-rate-limiter";
+
+// `auth.api.changePassword` is called with `returnHeaders: true` so the route
+// can forward the Set-Cookie of the reissued session (see revokeOtherSessions
+// tests below). Give the default mock the shape that call returns.
+function changePasswordResult(headers: Headers = new Headers()) {
+  return {
+    headers,
+    response: { token: null, user: { id: "user-1" } },
+  };
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -51,13 +67,14 @@ describe("POST /api/users/me/password", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    resetPasswordChangeRateLimiterForTest();
     const mod = await import("@/app/api/users/me/password/route");
     POST = mod.POST;
 
     vi.mocked(auth.api.getSession).mockResolvedValue(
       mockSession({ user: { id: "user-1", email: "user@test.com", role: "member" } })
     );
-    vi.mocked(auth.api.changePassword).mockResolvedValue(undefined as any);
+    vi.mocked(auth.api.changePassword).mockResolvedValue(changePasswordResult() as any);
   });
 
   it("should return 401 when unauthenticated", async () => {
@@ -219,5 +236,205 @@ describe("POST /api/users/me/password", () => {
     const serialized = JSON.stringify(vi.mocked(appendAuditLog).mock.calls);
     expect(serialized).not.toContain("Br1ghtNova!2");
     expect(serialized).not.toContain("oldpass1234567");
+  });
+
+  // Post-compromise hardening: a stolen session is the classic reason someone
+  // changes their password, so the change must not leave the thief's session
+  // valid. Better Auth's revokeOtherSessions actually revokes ALL of the
+  // user's sessions and mints a fresh one for the caller (see
+  // update-user.mjs in better-auth) — this is asserted directly against the
+  // installed package below, and pinned here as the contract the route relies on.
+  it("passes revokeOtherSessions: true to auth.api.changePassword", async () => {
+    await POST(
+      makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" }),
+      routeContext()
+    );
+    expect(auth.api.changePassword).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.objectContaining({ revokeOtherSessions: true }),
+      })
+    );
+  });
+
+  // revokeOtherSessions: true deletes the CALLING session too and mints a
+  // replacement (better-auth/dist/api/routes/update-user.mjs), setting its
+  // cookie via `returnHeaders: true`. Unless the route forwards that
+  // Set-Cookie onto its own response, the browser keeps sending the
+  // now-deleted session token and the user is logged out right after a
+  // successful password change.
+  it("forwards the Set-Cookie of the reissued session onto the response", async () => {
+    const reissuedCookie = "better-auth.session_token=new-token-value; Path=/; HttpOnly";
+    const headers = new Headers();
+    headers.append("Set-Cookie", reissuedCookie);
+    vi.mocked(auth.api.changePassword).mockResolvedValueOnce(changePasswordResult(headers) as any);
+
+    const response = await POST(
+      makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" }),
+      routeContext()
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.getSetCookie()).toContain(reissuedCookie);
+  });
+
+  describe("rate limiting", () => {
+    it(`allows up to ${PASSWORD_CHANGE_RATE_LIMIT_MAX_ATTEMPTS} attempts within the window`, async () => {
+      for (let i = 0; i < PASSWORD_CHANGE_RATE_LIMIT_MAX_ATTEMPTS; i++) {
+        const response = await POST(
+          makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" }),
+          routeContext()
+        );
+        expect(response.status).toBe(200);
+      }
+    });
+
+    it("returns 429 on the attempt after the limit is exhausted", async () => {
+      for (let i = 0; i < PASSWORD_CHANGE_RATE_LIMIT_MAX_ATTEMPTS; i++) {
+        await POST(
+          makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" }),
+          routeContext()
+        );
+      }
+
+      const response = await POST(
+        makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" }),
+        routeContext()
+      );
+      expect(response.status).toBe(429);
+      const data = await response.json();
+      expect(data.error).toBeDefined();
+    });
+
+    it("rate-limits by user id, not globally", async () => {
+      for (let i = 0; i < PASSWORD_CHANGE_RATE_LIMIT_MAX_ATTEMPTS; i++) {
+        await POST(
+          makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" }),
+          routeContext()
+        );
+      }
+      vi.mocked(auth.api.getSession).mockResolvedValueOnce(
+        mockSession({ user: { id: "user-2", email: "other@test.com", role: "member" } })
+      );
+
+      const response = await POST(
+        makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" }),
+        routeContext()
+      );
+      expect(response.status).toBe(200);
+    });
+
+    it("must not call auth.api.changePassword once the limit is exhausted", async () => {
+      for (let i = 0; i < PASSWORD_CHANGE_RATE_LIMIT_MAX_ATTEMPTS; i++) {
+        await POST(
+          makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" }),
+          routeContext()
+        );
+      }
+      vi.mocked(auth.api.changePassword).mockClear();
+
+      await POST(
+        makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" }),
+        routeContext()
+      );
+      expect(auth.api.changePassword).not.toHaveBeenCalled();
+    });
+
+    it("writes a throttled auth.password_changed failure row when the limit is hit", async () => {
+      for (let i = 0; i < PASSWORD_CHANGE_RATE_LIMIT_MAX_ATTEMPTS; i++) {
+        await POST(
+          makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" }),
+          routeContext()
+        );
+      }
+      vi.mocked(appendAuditLog).mockClear();
+
+      const response = await POST(
+        makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" }),
+        routeContext()
+      );
+      expect(response.status).toBe(429);
+      expect(appendAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventType: "auth.password_changed",
+          actorType: "user",
+          actorId: "user-1",
+          resource: "user-1",
+          outcome: "failure",
+        })
+      );
+    });
+
+    it("throttles the audit row itself: only one row for a burst of 429s in the same window", async () => {
+      for (let i = 0; i < PASSWORD_CHANGE_RATE_LIMIT_MAX_ATTEMPTS; i++) {
+        await POST(
+          makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" }),
+          routeContext()
+        );
+      }
+      vi.mocked(appendAuditLog).mockClear();
+
+      // Three more attempts, all rejected — must not produce three audit rows.
+      await POST(
+        makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" }),
+        routeContext()
+      );
+      await POST(
+        makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" }),
+        routeContext()
+      );
+      await POST(
+        makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" }),
+        routeContext()
+      );
+
+      const rateLimitRows = vi
+        .mocked(appendAuditLog)
+        .mock.calls.filter(([entry]) => entry.outcome === "failure");
+      expect(rateLimitRows).toHaveLength(1);
+    });
+
+    // The blocked user has to be told how long, not "later" — the same
+    // contract the login page honours via @/lib/auth-rate-limit. Asserted
+    // against the window constant so the message can't drift from the rule.
+    it("names the wait in the 429 body and carries it in Retry-After", async () => {
+      for (let i = 0; i < PASSWORD_CHANGE_RATE_LIMIT_MAX_ATTEMPTS; i++) {
+        await POST(
+          makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" }),
+          routeContext()
+        );
+      }
+
+      const response = await POST(
+        makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" }),
+        routeContext()
+      );
+      expect(response.status).toBe(429);
+      const data = await response.json();
+      expect(data.error).toContain(`${PASSWORD_CHANGE_RATE_LIMIT_WINDOW_MINUTES} minutes`);
+      expect(response.headers.get("Retry-After")).toBe(
+        String(PASSWORD_CHANGE_RATE_LIMIT_WINDOW_MS / 1000)
+      );
+    });
+
+    // A broken audit DB must not turn a deliberate 429 into a 500 — the same
+    // rule @/lib/api-auth states for its scope-denial row ("logging must never
+    // gate authorization"). It matters more here than it looks: the audit
+    // window is already open by the time the write runs, so a throw that
+    // propagated would also suppress the next window's worth of denials
+    // against a row that was never written.
+    it("still answers 429 when the audit write throws", async () => {
+      for (let i = 0; i < PASSWORD_CHANGE_RATE_LIMIT_MAX_ATTEMPTS; i++) {
+        await POST(
+          makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" }),
+          routeContext()
+        );
+      }
+      vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("audit db down"));
+
+      const response = await POST(
+        makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" }),
+        routeContext()
+      );
+      expect(response.status).toBe(429);
+    });
   });
 });

@@ -1,5 +1,6 @@
 // @vitest-environment node
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { resetInsecureMockWarningsForTest } from "../email-adapter.js";
 
 // Mock googleapis before importing the adapter
 const mockList = vi.fn();
@@ -42,6 +43,8 @@ vi.mock("googleapis", () => {
 });
 
 import { GmailAdapter } from "../gmail-adapter.js";
+import { google } from "googleapis";
+import { MAX_ATTACHMENT_BYTES } from "../email-adapter.js";
 
 // Helper: base64url encode a string
 function base64url(str: string): string {
@@ -139,9 +142,7 @@ describe("GmailAdapter", () => {
 
       await adapter.list({ folder: "INBOX" });
 
-      expect(mockList).toHaveBeenCalledWith(
-        expect.objectContaining({ labelIds: ["INBOX"] }),
-      );
+      expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ labelIds: ["INBOX"] }));
     });
 
     it("filters unread only", async () => {
@@ -149,9 +150,7 @@ describe("GmailAdapter", () => {
 
       await adapter.list({ unreadOnly: true });
 
-      expect(mockList).toHaveBeenCalledWith(
-        expect.objectContaining({ q: "is:unread" }),
-      );
+      expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ q: "is:unread" }));
     });
 
     it("returns empty array when no messages", async () => {
@@ -167,9 +166,7 @@ describe("GmailAdapter", () => {
 
       await adapter.list({});
 
-      expect(mockList).toHaveBeenCalledWith(
-        expect.objectContaining({ maxResults: 20 }),
-      );
+      expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ maxResults: 20 }));
     });
 
     it("defaults to the INBOX label when folder is omitted", async () => {
@@ -180,9 +177,7 @@ describe("GmailAdapter", () => {
 
       await adapter.list({});
 
-      expect(mockList).toHaveBeenCalledWith(
-        expect.objectContaining({ labelIds: ["INBOX"] }),
-      );
+      expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ labelIds: ["INBOX"] }));
     });
   });
 
@@ -288,7 +283,11 @@ describe("GmailAdapter", () => {
 
       const result = await adapter.read("msg3");
 
-      expect(result.body).toBe("<b>HTML only</b>");
+      // The fallback used to return raw markup — the same defect the Graph
+      // adapter had, and for the same reason: an html-only message is common
+      // for anything machine-generated, and its tags are noise the model has
+      // to read past.
+      expect(result.body).toBe("HTML only");
     });
 
     it("handles nested multipart/mixed with multipart/alternative", async () => {
@@ -419,9 +418,7 @@ describe("GmailAdapter", () => {
             parts: [
               {
                 mimeType: "multipart/alternative",
-                parts: [
-                  { mimeType: "text/plain", body: { data: base64url("body") } },
-                ],
+                parts: [{ mimeType: "text/plain", body: { data: base64url("body") } }],
               },
               {
                 mimeType: "multipart/mixed",
@@ -594,11 +591,14 @@ describe("GmailAdapter", () => {
       expect(Buffer.isBuffer(result.data)).toBe(true);
       expect(result.data.toString("utf-8")).toBe("%PDF-");
 
-      expect(mockAttachmentsGet).toHaveBeenCalledWith({
-        userId: "me",
-        messageId: "msg-dl",
-        id: "att-dl",
-      });
+      expect(mockAttachmentsGet).toHaveBeenCalledWith(
+        {
+          userId: "me",
+          messageId: "msg-dl",
+          id: "att-dl",
+        },
+        { timeout: 120_000 }
+      );
     });
 
     it("decodes attachment bytes faithfully, including high-bit bytes", async () => {
@@ -666,11 +666,140 @@ describe("GmailAdapter", () => {
         },
       });
 
-      await expect(
-        adapter.getAttachment("msg-stale", "att-gone"),
-      ).rejects.toThrow(/re-read/i);
+      await expect(adapter.getAttachment("msg-stale", "att-gone")).rejects.toThrow(/re-read/i);
       // Must not attempt the bytes fetch when the id can't be resolved.
       expect(mockAttachmentsGet).not.toHaveBeenCalled();
+    });
+
+    it("rejects an oversized attachment by the part-listing `size` field WITHOUT ever calling attachments.get — the size is already known before download", async () => {
+      mockGet.mockResolvedValue({
+        data: {
+          id: "msg-huge",
+          snippet: "x",
+          labelIds: [],
+          payload: {
+            mimeType: "multipart/mixed",
+            parts: [
+              {
+                mimeType: "application/zip",
+                filename: "huge.zip",
+                // 50 MB — over the 25 MB MAX_ATTACHMENT_BYTES cap.
+                body: { attachmentId: "att-huge", size: 50 * 1024 * 1024 },
+              },
+            ],
+            headers: [
+              { name: "From", value: "a@b.com" },
+              { name: "To", value: "c@d.com" },
+              { name: "Subject", value: "x" },
+              { name: "Date", value: "Mon, 7 Apr 2026 10:00:00 +0000" },
+            ],
+          },
+        },
+      });
+
+      await expect(adapter.getAttachment("msg-huge", "att-huge")).rejects.toThrow(
+        /too large.*50\.0 MB.*max allowed is 25 MB/is
+      );
+      // The whole point: never download bytes we already know are too big.
+      expect(mockAttachmentsGet).not.toHaveBeenCalled();
+    });
+
+    // The pair below is the actual boundary. "size: 5 is allowed" says nothing
+    // about where the cut sits — a `>=` typo would pass it — so these pin the
+    // exact cap from both sides.
+    it("allows a part whose declared size is EXACTLY MAX_ATTACHMENT_BYTES", async () => {
+      mockGet.mockResolvedValue({
+        data: {
+          id: "msg-ok",
+          snippet: "x",
+          labelIds: [],
+          payload: {
+            mimeType: "multipart/mixed",
+            parts: [
+              {
+                mimeType: "text/plain",
+                filename: "small.txt",
+                body: { attachmentId: "att-ok", size: MAX_ATTACHMENT_BYTES },
+              },
+            ],
+            headers: [
+              { name: "From", value: "a@b.com" },
+              { name: "To", value: "c@d.com" },
+              { name: "Subject", value: "x" },
+              { name: "Date", value: "Mon, 7 Apr 2026 10:00:00 +0000" },
+            ],
+          },
+        },
+      });
+      mockAttachmentsGet.mockResolvedValue({
+        data: { size: 5, data: Buffer.from("hello").toString("base64url") },
+      });
+
+      const result = await adapter.getAttachment("msg-ok", "att-ok");
+      expect(result.data.toString("utf-8")).toBe("hello");
+    });
+
+    it("rejects a part ONE byte over MAX_ATTACHMENT_BYTES", async () => {
+      mockGet.mockResolvedValue({
+        data: {
+          id: "msg-edge",
+          snippet: "x",
+          labelIds: [],
+          payload: {
+            mimeType: "multipart/mixed",
+            parts: [
+              {
+                mimeType: "text/plain",
+                filename: "edge.txt",
+                body: { attachmentId: "att-edge", size: MAX_ATTACHMENT_BYTES + 1 },
+              },
+            ],
+            headers: [
+              { name: "From", value: "a@b.com" },
+              { name: "To", value: "c@d.com" },
+              { name: "Subject", value: "x" },
+              { name: "Date", value: "Mon, 7 Apr 2026 10:00:00 +0000" },
+            ],
+          },
+        },
+      });
+
+      await expect(adapter.getAttachment("msg-edge", "att-edge")).rejects.toThrow(/too large/i);
+      expect(mockAttachmentsGet).not.toHaveBeenCalled();
+    });
+
+    it("downloads when the part declares no size at all — a missing signal must not block a legal attachment", async () => {
+      mockGet.mockResolvedValue({
+        data: {
+          id: "msg-nosize",
+          snippet: "x",
+          labelIds: [],
+          payload: {
+            mimeType: "multipart/mixed",
+            parts: [
+              {
+                mimeType: "text/plain",
+                filename: "nosize.txt",
+                // No `size` — index.ts's post-download check is the fallback.
+                body: { attachmentId: "att-nosize" },
+              },
+            ],
+            headers: [
+              { name: "From", value: "a@b.com" },
+              { name: "To", value: "c@d.com" },
+              { name: "Subject", value: "x" },
+              { name: "Date", value: "Mon, 7 Apr 2026 10:00:00 +0000" },
+            ],
+          },
+        },
+      });
+      mockAttachmentsGet.mockResolvedValue({
+        data: { size: 5, data: Buffer.from("hello").toString("base64url") },
+      });
+
+      const result = await adapter.getAttachment("msg-nosize", "att-nosize");
+      expect(result.data.toString("utf-8")).toBe("hello");
+      expect(mockAttachmentsGet).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -693,9 +822,7 @@ describe("GmailAdapter", () => {
 
       await adapter.search({ from: "test", limit: 5 });
 
-      expect(mockList).toHaveBeenCalledWith(
-        expect.objectContaining({ maxResults: 5 }),
-      );
+      expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ maxResults: 5 }));
     });
   });
 
@@ -703,15 +830,13 @@ describe("GmailAdapter", () => {
     it("maps canonical folders to Gmail label IDs", async () => {
       mockList.mockResolvedValue({ data: { messages: [] } });
       await adapter.list({ folder: "DRAFTS", limit: 5 });
-      expect(mockList).toHaveBeenCalledWith(
-        expect.objectContaining({ labelIds: ["DRAFT"] }),
-      );
+      expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ labelIds: ["DRAFT"] }));
     });
 
     it("rejects custom folder names", async () => {
-      await expect(
-        adapter.list({ folder: "CUSTOM_LABEL" as never }),
-      ).rejects.toThrow(/unknown folder/i);
+      await expect(adapter.list({ folder: "CUSTOM_LABEL" as never })).rejects.toThrow(
+        /unknown folder/i
+      );
     });
   });
 
@@ -727,7 +852,7 @@ describe("GmailAdapter", () => {
       expect(mockList).toHaveBeenCalledWith(
         expect.objectContaining({
           q: "from:alice@example.com subject:invoice is:unread newer_than:7d",
-        }),
+        })
       );
     });
 
@@ -735,7 +860,7 @@ describe("GmailAdapter", () => {
       mockList.mockResolvedValue({ data: { messages: [] } });
       await adapter.search({ subject: "monthly report" });
       expect(mockList).toHaveBeenCalledWith(
-        expect.objectContaining({ q: 'subject:"monthly report"' }),
+        expect.objectContaining({ q: 'subject:"monthly report"' })
       );
     });
 
@@ -744,9 +869,7 @@ describe("GmailAdapter", () => {
       // A backslash must be doubled so a trailing "\" can't escape the closing
       // quote. Input `re: a\b` → `subject:"re: a\\b"`.
       await adapter.search({ subject: "re: a\\b" });
-      expect(mockList).toHaveBeenCalledWith(
-        expect.objectContaining({ q: 'subject:"re: a\\\\b"' }),
-      );
+      expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ q: 'subject:"re: a\\\\b"' }));
     });
 
     it("requires at least one field", async () => {
@@ -764,17 +887,13 @@ describe("GmailAdapter", () => {
     it("adds a single-token `text` value as a bare, unquoted term", async () => {
       mockList.mockResolvedValue({ data: { messages: [] } });
       await adapter.search({ text: "PO-1234" });
-      expect(mockList).toHaveBeenCalledWith(
-        expect.objectContaining({ q: "PO-1234" }),
-      );
+      expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ q: "PO-1234" }));
     });
 
     it("quotes a multi-word `text` value", async () => {
       mockList.mockResolvedValue({ data: { messages: [] } });
       await adapter.search({ text: "quarterly report" });
-      expect(mockList).toHaveBeenCalledWith(
-        expect.objectContaining({ q: '"quarterly report"' }),
-      );
+      expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ q: '"quarterly report"' }));
     });
 
     it("combines `text` with other DSL fields", async () => {
@@ -810,25 +929,19 @@ describe("GmailAdapter", () => {
     it("uses in:spam for SPAM folder", async () => {
       mockList.mockResolvedValue({ data: { messages: [] } });
       await adapter.search({ folder: "SPAM" });
-      expect(mockList).toHaveBeenCalledWith(
-        expect.objectContaining({ q: "in:spam" }),
-      );
+      expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ q: "in:spam" }));
     });
 
     it("uses in:inbox for INBOX folder", async () => {
       mockList.mockResolvedValue({ data: { messages: [] } });
       await adapter.search({ folder: "INBOX" });
-      expect(mockList).toHaveBeenCalledWith(
-        expect.objectContaining({ q: "in:inbox" }),
-      );
+      expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ q: "in:inbox" }));
     });
 
     it("uses in:sent for SENT folder", async () => {
       mockList.mockResolvedValue({ data: { messages: [] } });
       await adapter.search({ folder: "SENT" });
-      expect(mockList).toHaveBeenCalledWith(
-        expect.objectContaining({ q: "in:sent" }),
-      );
+      expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ q: "in:sent" }));
     });
 
     it("uses in:drafts (not in:draft, not label:DRAFT) for DRAFTS folder", async () => {
@@ -841,9 +954,7 @@ describe("GmailAdapter", () => {
     });
 
     it("throws the unknown-folder error for an invalid folder", async () => {
-      await expect(
-        adapter.search({ folder: "BOGUS" as never }),
-      ).rejects.toThrow(/unknown folder/i);
+      await expect(adapter.search({ folder: "BOGUS" as never })).rejects.toThrow(/unknown folder/i);
     });
   });
 
@@ -888,10 +999,7 @@ describe("GmailAdapter", () => {
 
       // Verify the raw message content
       const call = mockDraftsCreate.mock.calls[0][0];
-      const raw = Buffer.from(
-        call.requestBody.message.raw,
-        "base64url",
-      ).toString("utf-8");
+      const raw = Buffer.from(call.requestBody.message.raw, "base64url").toString("utf-8");
       expect(raw).toContain("To: bob@example.com");
       expect(raw).toContain("Subject: Draft subject");
       expect(raw).toContain("Draft body");
@@ -910,10 +1018,7 @@ describe("GmailAdapter", () => {
       });
 
       const call = mockDraftsCreate.mock.calls[0][0];
-      const raw = Buffer.from(
-        call.requestBody.message.raw,
-        "base64url",
-      ).toString("utf-8");
+      const raw = Buffer.from(call.requestBody.message.raw, "base64url").toString("utf-8");
       expect(raw).toContain("In-Reply-To: <original-msg-id@example.com>");
     });
   });
@@ -941,9 +1046,7 @@ describe("GmailAdapter", () => {
 
       // Verify the raw message content
       const call = mockSend.mock.calls[0][0];
-      const raw = Buffer.from(call.requestBody.raw, "base64url").toString(
-        "utf-8",
-      );
+      const raw = Buffer.from(call.requestBody.raw, "base64url").toString("utf-8");
       expect(raw).toContain("To: bob@example.com");
       expect(raw).toContain("Subject: Sent subject");
       expect(raw).toContain("Sent body");
@@ -962,10 +1065,91 @@ describe("GmailAdapter", () => {
       });
 
       const call = mockSend.mock.calls[0][0];
-      const raw = Buffer.from(call.requestBody.raw, "base64url").toString(
-        "utf-8",
-      );
+      const raw = Buffer.from(call.requestBody.raw, "base64url").toString("utf-8");
       expect(raw).toContain("In-Reply-To: <thread-id@example.com>");
+    });
+  });
+
+  // SKILL.md tells the model to write `Name <address>`. A raw `To:` header
+  // must carry a non-ASCII display name as an RFC 2047 encoded-word, and an
+  // ASCII one quoted, so no character of the name is read as address syntax.
+  describe("named recipients", () => {
+    function rawOf(mockFn: ReturnType<typeof vi.fn>): string {
+      const call = mockFn.mock.calls[0][0];
+      const raw = call.requestBody.raw ?? call.requestBody.message.raw;
+      return Buffer.from(raw, "base64url").toString("utf-8");
+    }
+
+    it("quotes an ASCII display name", async () => {
+      mockSend.mockResolvedValue({ data: { id: "s1" } });
+      await adapter.send({ to: "Dr. Ada Lovelace <ada@example.com>", subject: "S", body: "B" });
+      expect(rawOf(mockSend)).toContain('To: "Dr. Ada Lovelace" <ada@example.com>\r\n');
+    });
+
+    it("encodes a non-ASCII display name per RFC 2047", async () => {
+      mockDraftsCreate.mockResolvedValue({ data: { id: "d1" } });
+      await adapter.draft({
+        to: "Jos\u00E9 M\u00FCller <jose@example.com>",
+        subject: "S",
+        body: "B",
+      });
+      const encoded = Buffer.from("Jos\u00E9 M\u00FCller", "utf8").toString("base64");
+      expect(rawOf(mockDraftsCreate)).toContain(
+        `To: =?UTF-8?B?${encoded}?= <jose@example.com>\r\n`
+      );
+    });
+
+    it("keeps a bare address bare", async () => {
+      mockSend.mockResolvedValue({ data: { id: "s1" } });
+      await adapter.send({ to: "ada@example.com", subject: "S", body: "B" });
+      expect(rawOf(mockSend)).toContain("To: ada@example.com\r\n");
+    });
+
+    /** The To: header, unfolded, with its encoded-words decoded — what a
+     * receiving mail program shows. */
+    function decodedTo(raw: string): { lines: string[]; name: string; address: string } {
+      const header = /^To: .*(?:\r\n .*)*/m.exec(raw)![0];
+      const lines = header.split("\r\n");
+      const unfolded = header.replace(/\r\n /g, " ");
+      const address = /<([^<>]+)>$/.exec(unfolded)![1];
+      const words = [...unfolded.matchAll(/=\?UTF-8\?B\?([^?]*)\?=/g)].map((m) =>
+        Buffer.from(m[1], "base64")
+      );
+      const name = words.length
+        ? Buffer.concat(words).toString("utf8")
+        : /^To: "(.*)" </.exec(unfolded)![1];
+      return { lines, name, address };
+    }
+
+    // A quoted name with a comma is one mailbox, and the header must say so —
+    // the card shows `hans@x.de`, named "Müller, Hans".
+    it("keeps a quoted name with a comma one mailbox, ASCII or not", async () => {
+      mockSend.mockResolvedValue({ data: { id: "s1" } });
+      await adapter.send({ to: '"Mueller, Hans" <hans@x.de>', subject: "S", body: "B" });
+      expect(rawOf(mockSend)).toContain('To: "Mueller, Hans" <hans@x.de>\r\n');
+
+      mockSend.mockClear();
+      await adapter.send({ to: '"M\u00FCller, Hans" <hans@x.de>', subject: "S", body: "B" });
+      expect(decodedTo(rawOf(mockSend))).toMatchObject({
+        name: "M\u00FCller, Hans",
+        address: "hans@x.de",
+      });
+    });
+
+    // RFC 2047 §2: a header line carrying encoded-words is at most 76
+    // characters, so a long non-ASCII name is folded rather than written as
+    // one line of several words.
+    it("folds a long encoded name so no header line exceeds 76 characters", async () => {
+      mockSend.mockResolvedValue({ data: { id: "s1" } });
+      const name = "\u5C71\u7530\u592A\u90CE".repeat(16); // 64 CJK code points
+      expect([...name]).toHaveLength(64);
+      await adapter.send({ to: `${name} <taro@example.jp>`, subject: "S", body: "B" });
+      const { lines, name: decoded, address } = decodedTo(rawOf(mockSend));
+      expect(lines.length).toBeGreaterThan(1);
+      for (const line of lines) expect(line.length, line).toBeLessThanOrEqual(76);
+      for (const line of lines.slice(1)) expect(line.startsWith(" ")).toBe(true);
+      expect(decoded).toBe(name);
+      expect(address).toBe("taro@example.jp");
     });
   });
 
@@ -976,10 +1160,7 @@ describe("GmailAdapter", () => {
 
     function getRawLines(mockFn: ReturnType<typeof vi.fn>): string[] {
       const call = mockFn.mock.calls[0][0];
-      const raw = Buffer.from(
-        call.requestBody.message.raw,
-        "base64url",
-      ).toString("utf-8");
+      const raw = Buffer.from(call.requestBody.message.raw, "base64url").toString("utf-8");
       return raw.split("\r\n");
     }
 
@@ -1055,5 +1236,96 @@ describe("GmailAdapter", () => {
 
       expect(result.body).toBe(originalText);
     });
+  });
+
+  describe("request timeouts", () => {
+    // Gmail is the one mailbox provider that does NOT go through `fetch`, so
+    // no AbortSignal.timeout() reaches it. It talks through googleapis, whose
+    // transport (gaxios) documents `timeout` as "No timeout by default" — so
+    // without an explicit value every Gmail call is exactly the unbounded I/O
+    // the timeouts elsewhere in this plugin exist to close.
+    it("bounds every Gmail API call by configuring a client-level timeout", async () => {
+      const { google } = await import("googleapis");
+
+      new GmailAdapter({ accessToken: "test-token" });
+
+      expect(google.gmail).toHaveBeenCalledWith(
+        expect.objectContaining({ version: "v1", timeout: 30_000 })
+      );
+    });
+
+    it("gives the attachment download a longer bound than an ordinary call", async () => {
+      // attachments.get carries the whole file as base64 inside the JSON body
+      // (up to the 25 MB the tools layer accepts, ~33 MB on the wire). The
+      // bound that is generous for a metadata call is tight for that, so the
+      // download overrides it — a working-but-slow link must not be aborted.
+      mockGet.mockResolvedValue({
+        data: {
+          id: "msg-dl",
+          payload: {
+            mimeType: "multipart/mixed",
+            headers: [],
+            parts: [
+              {
+                filename: "invoice.pdf",
+                mimeType: "application/pdf",
+                body: { attachmentId: "att-dl", size: 5 },
+              },
+            ],
+          },
+        },
+      });
+      mockAttachmentsGet.mockResolvedValue({
+        data: { size: 5, data: Buffer.from("%PDF-").toString("base64url") },
+      });
+
+      await adapter.getAttachment("msg-dl", "att-dl");
+
+      const [, options] = mockAttachmentsGet.mock.calls[0];
+      expect(options.timeout).toBe(120_000);
+      expect(options.timeout).toBeGreaterThan(30_000);
+    });
+  });
+});
+
+describe("GmailAdapter mock env overrides", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    resetInsecureMockWarningsForTest();
+  });
+
+  it("does not pass rootUrl when GMAIL_API_BASE_URL is not set", () => {
+    new GmailAdapter({ accessToken: "test-token" });
+
+    expect(google.gmail).toHaveBeenCalledWith(
+      expect.not.objectContaining({ rootUrl: expect.anything() })
+    );
+  });
+
+  it("ignores GMAIL_API_BASE_URL and uses the real API host when the insecure flag is absent", () => {
+    vi.stubEnv("GMAIL_API_BASE_URL", "http://gmail-mock:9004");
+    // No PINCHY_INSECURE_MAIL_MOCK: the mock seam must NOT fire, so a stray
+    // override left over in production can't redirect the OAuth token.
+
+    new GmailAdapter({ accessToken: "test-token" });
+
+    expect(google.gmail).toHaveBeenCalledWith(
+      expect.not.objectContaining({ rootUrl: expect.anything() })
+    );
+  });
+
+  it("passes rootUrl from GMAIL_API_BASE_URL when the insecure flag is also set", () => {
+    vi.stubEnv("GMAIL_API_BASE_URL", "http://gmail-mock:9004");
+    vi.stubEnv("PINCHY_INSECURE_MAIL_MOCK", "1");
+
+    new GmailAdapter({ accessToken: "test-token" });
+
+    expect(google.gmail).toHaveBeenCalledWith(
+      expect.objectContaining({ rootUrl: "http://gmail-mock:9004" })
+    );
   });
 });

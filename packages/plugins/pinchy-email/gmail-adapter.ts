@@ -1,5 +1,11 @@
 import { google } from "googleapis";
-import { createFolderMapper, escapeDoubleQuoted } from "./email-adapter.js";
+import {
+  createFolderMapper,
+  escapeDoubleQuoted,
+  resolveInsecureMockBaseUrl,
+  stripHtml,
+  MAX_ATTACHMENT_BYTES,
+} from "./email-adapter.js";
 import type {
   EmailAdapter,
   EmailAttachment,
@@ -9,6 +15,7 @@ import type {
   EmailSummary,
   EmailFull,
 } from "./email-adapter.js";
+import { splitMailbox } from "./recipient.js";
 
 export type { EmailSummary, EmailFull };
 
@@ -42,8 +49,7 @@ function buildGmailQuery(opts: SearchOptions): string {
   // Wrap in outer quotes only when the value has whitespace or characters
   // that would otherwise break the term boundary; escapeDoubleQuoted handles
   // the backslash-before-quote escaping shared with the Graph adapter.
-  const quote = (v: string) =>
-    /[\s"\\]/.test(v) ? `"${escapeDoubleQuoted(v)}"` : v;
+  const quote = (v: string) => (/[\s"\\]/.test(v) ? `"${escapeDoubleQuoted(v)}"` : v);
   // Bare term (no `field:` prefix) — Gmail free-text search matches the
   // whole message, including the body, unlike `subject:` which only scopes
   // to the subject header.
@@ -54,10 +60,25 @@ function buildGmailQuery(opts: SearchOptions): string {
   if (opts.unread) parts.push("is:unread");
   if (opts.sinceDays != null) parts.push(`newer_than:${opts.sinceDays}d`);
   if (opts.folder) parts.push(mapFolderToSearchOperator(opts.folder));
-  if (parts.length === 0)
-    throw new Error("search requires at least one filter field");
+  if (parts.length === 0) throw new Error("search requires at least one filter field");
   return parts.join(" ");
 }
+
+// Gmail is the one mailbox provider that never touches `fetch`, so none of the
+// AbortSignal.timeout() bounds elsewhere in this plugin reach it. It talks
+// through googleapis, and that transport (gaxios) documents its `timeout`
+// option as "No timeout by default" — so an unset value is not a sane default,
+// it is the unbounded-I/O hole: a hung Gmail endpoint (or a network blackhole
+// that never sends an RST) would block the tool call forever. Set on the
+// client so all seven call sites inherit it and none can be forgotten.
+const REQUEST_TIMEOUT_MS = 30_000;
+
+// The attachment download carries the whole file as base64 inside the JSON
+// body — up to the 25 MB the tools layer accepts, ~33 MB on the wire. The
+// bound that is generous for a metadata call is tight for that, so this path
+// gets its own; a working-but-slow link must not be aborted mid-download.
+// Per-method options win over the client-level ones in googleapis-common.
+const ATTACHMENT_TIMEOUT_MS = 120_000;
 
 export class GmailAdapter implements EmailAdapter {
   private gmail: ReturnType<typeof google.gmail>;
@@ -66,11 +87,14 @@ export class GmailAdapter implements EmailAdapter {
     const auth = new google.auth.OAuth2();
     auth.setCredentials({ access_token: opts.accessToken });
     // GMAIL_API_BASE_URL allows E2E tests to redirect gmail API calls to a
-    // local mock server instead of https://gmail.googleapis.com/
-    const rootUrl = process.env.GMAIL_API_BASE_URL;
+    // local mock server instead of https://gmail.googleapis.com/. Only takes
+    // effect alongside PINCHY_INSECURE_MAIL_MOCK=1 — see
+    // resolveInsecureMockBaseUrl in email-adapter.ts.
+    const rootUrl = resolveInsecureMockBaseUrl("GMAIL_API_BASE_URL", "PINCHY_INSECURE_MAIL_MOCK");
     this.gmail = google.gmail({
       version: "v1",
       auth,
+      timeout: REQUEST_TIMEOUT_MS,
       ...(rootUrl ? { rootUrl } : {}),
     });
   }
@@ -96,10 +120,7 @@ export class GmailAdapter implements EmailAdapter {
     });
 
     const data = response.data;
-    if (!data.payload)
-      throw new Error(
-        `Gmail API returned message without payload for id: ${id}`,
-      );
+    if (!data.payload) throw new Error(`Gmail API returned message without payload for id: ${id}`);
     const payload = data.payload;
 
     return {
@@ -118,7 +139,7 @@ export class GmailAdapter implements EmailAdapter {
 
   async getAttachment(
     messageId: string,
-    attachmentId: string,
+    attachmentId: string
   ): Promise<{ filename: string; mimeType: string; data: Buffer }> {
     // The attachments.get endpoint returns only { size, data } — no filename or
     // mimeType — so we re-read the message and locate the part carrying this
@@ -134,15 +155,31 @@ export class GmailAdapter implements EmailAdapter {
     if (!part) {
       throw new Error(
         `attachment ${attachmentId} not found on message ${messageId}. ` +
-          `Gmail attachment ids change between reads — re-read the message to get fresh attachment ids.`,
+          `Gmail attachment ids change between reads — re-read the message to get fresh attachment ids.`
       );
     }
 
-    const response = await this.gmail.users.messages.attachments.get({
-      userId: "me",
-      messageId,
-      id: attachmentId,
-    });
+    // Unlike Graph, Gmail's part-listing already carries the decoded byte
+    // size (part.body.size) BEFORE any download — so reject here rather
+    // than paying for attachments.get only to discard the result. This is
+    // best-effort (Gmail could in principle omit/misreport size), so
+    // index.ts's post-download length check on the real buffer stays the
+    // authoritative guard.
+    const declaredBytes = part.body?.size;
+    if (declaredBytes != null && declaredBytes > MAX_ATTACHMENT_BYTES) {
+      const declaredMb = (declaredBytes / 1024 / 1024).toFixed(1);
+      const maxMb = (MAX_ATTACHMENT_BYTES / 1024 / 1024).toFixed(0);
+      throw new Error(`Attachment too large: ${declaredMb} MB, max allowed is ${maxMb} MB.`);
+    }
+
+    const response = await this.gmail.users.messages.attachments.get(
+      {
+        userId: "me",
+        messageId,
+        id: attachmentId,
+      },
+      { timeout: ATTACHMENT_TIMEOUT_MS }
+    );
     const encoded = response.data.data ?? "";
     // Gmail returns base64url (URL-safe alphabet); decode explicitly with that
     // alphabet rather than Node's lenient "base64" decoder.
@@ -196,7 +233,7 @@ export class GmailAdapter implements EmailAdapter {
           snippet: detail.data.snippet ?? "",
           unread: detail.data.labelIds?.includes("UNREAD") ?? false,
         };
-      }),
+      })
     );
   }
 
@@ -226,9 +263,8 @@ export class GmailAdapter implements EmailAdapter {
 }
 
 function getHeader(
-  headers:
-    Array<{ name?: string | null; value?: string | null }> | undefined | null,
-  name: string,
+  headers: Array<{ name?: string | null; value?: string | null }> | undefined | null,
+  name: string
 ): string {
   return headers?.find((h) => h.name === name)?.value ?? "";
 }
@@ -248,10 +284,7 @@ interface MimePart {
 // both an attachmentId (downloadable via attachments.get) AND a non-empty
 // filename. Requiring a filename naturally skips inline images and other
 // content-only parts, which Gmail exposes without one.
-function collectAttachments(
-  part: MimePart,
-  acc: EmailAttachment[] = [],
-): EmailAttachment[] {
+function collectAttachments(part: MimePart, acc: EmailAttachment[] = []): EmailAttachment[] {
   const attachmentId = part.body?.attachmentId;
   if (attachmentId && part.filename) {
     acc.push({
@@ -270,10 +303,7 @@ function collectAttachments(
 // Locate the part carrying a given attachmentId anywhere in the MIME tree.
 // Used by getAttachment to recover filename/mimeType, which the attachments.get
 // endpoint does not return.
-function findAttachmentPart(
-  part: MimePart,
-  attachmentId: string,
-): MimePart | null {
+function findAttachmentPart(part: MimePart, attachmentId: string): MimePart | null {
   if (part.body?.attachmentId === attachmentId) return part;
   if (part.parts) {
     for (const child of part.parts) {
@@ -287,7 +317,8 @@ function findAttachmentPart(
 function extractBody(payload: MimePart): string {
   // Single-part message
   if (!payload.parts && payload.body?.data) {
-    return decodeBase64url(payload.body.data);
+    const decoded = decodeBase64url(payload.body.data);
+    return payload.mimeType === "text/html" ? stripHtml(decoded) : decoded;
   }
 
   // Multipart: recursively search for text/plain, fallback to text/html
@@ -296,9 +327,13 @@ function extractBody(payload: MimePart): string {
     return decodeBase64url(plain.body.data);
   }
 
+  // The html fallback used to be returned as raw markup. That is the same
+  // defect the Graph adapter had: an html-only message (common for anything
+  // machine-generated) reached the model as a wall of tags, and a marketing
+  // mail's markup is mostly styling the model then has to read past.
   const html = findPart(payload, "text/html");
   if (html?.body?.data) {
-    return decodeBase64url(html.body.data);
+    return stripHtml(decodeBase64url(html.body.data));
   }
 
   return "";
@@ -327,9 +362,62 @@ function sanitizeHeader(value: string): string {
   return value.replace(/[\r\n\0]/g, "");
 }
 
+/** Longest RFC 2047 encoded-word payload in bytes: 75 characters minus the
+ * 12 of `=?UTF-8?B?…?=` leave 63 base64 characters, i.e. 45 bytes — whose 60
+ * base64 characters make a 72-character word. */
+const ENCODED_WORD_BYTES = 45;
+/** RFC 2047 §2: a header line that carries an encoded-word is at most 76
+ * characters long. `To: ` plus one 72-character word is exactly that. */
+const MAX_ENCODED_LINE = 76;
+const FOLD = "\r\n ";
+
+/**
+ * A non-ASCII display name as RFC 2047 encoded-words. Split on code-point
+ * boundaries, so no word ends inside a UTF-8 sequence, and folded onto one
+ * line each (CRLF + space), which a decoder drops between adjacent
+ * encoded-words. On one line, a long name ran past the 76-character limit.
+ */
+function encodeDisplayName(name: string): string[] {
+  const words: string[] = [];
+  let chunk = "";
+  for (const char of name) {
+    if (Buffer.byteLength(chunk + char, "utf8") > ENCODED_WORD_BYTES) {
+      words.push(chunk);
+      chunk = "";
+    }
+    chunk += char;
+  }
+  if (chunk) words.push(chunk);
+  return words.map((word) => `=?UTF-8?B?${Buffer.from(word, "utf8").toString("base64")}?=`);
+}
+
+/**
+ * Encoded words, one per header line, then the address — on the last word's
+ * line when it fits within MAX_ENCODED_LINE, on a line of its own otherwise.
+ * `prefix` is what precedes the value on the first line (`To: `).
+ */
+function foldEncodedMailbox(prefix: string, words: string[], address: string): string {
+  const last = words.length === 1 ? prefix + words[0] : ` ${words[words.length - 1]}`;
+  const addressPart = `<${address}>`;
+  const sep = last.length + 1 + addressPart.length <= MAX_ENCODED_LINE ? " " : FOLD;
+  return `${words.join(FOLD)}${sep}${addressPart}`;
+}
+
+/**
+ * The `To:` header value. A raw header is parsed by Gmail as an address LIST,
+ * so the display name is never left for it to read as syntax: an ASCII name
+ * is quoted, a non-ASCII one is encoded (RFC 2047).
+ */
+function formatRecipientHeader(to: string): string {
+  const { name, address } = splitMailbox(sanitizeHeader(to));
+  if (!name) return address;
+  if (/^[\x20-\x7E]*$/.test(name)) return `"${name.replace(/[\\"]/g, "\\$&")}" <${address}>`;
+  return foldEncodedMailbox("To: ", encodeDisplayName(name), address);
+}
+
 function buildRawMessage(opts: ComposeOptions): string {
   const lines: string[] = [
-    `To: ${sanitizeHeader(opts.to)}`,
+    `To: ${formatRecipientHeader(opts.to)}`,
     `Subject: ${sanitizeHeader(opts.subject)}`,
     `Content-Type: text/plain; charset="UTF-8"`,
   ];

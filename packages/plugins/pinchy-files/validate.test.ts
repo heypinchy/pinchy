@@ -18,39 +18,29 @@ const agentConfig = {
 
 describe("validateAccess", () => {
   it("should allow paths within allowed directories", () => {
-    expect(() =>
-      validateAccess(agentConfig, "/data/hr-docs/vacation.md")
-    ).not.toThrow();
+    expect(() => validateAccess(agentConfig, "/data/hr-docs/vacation.md")).not.toThrow();
   });
 
   it("should reject paths outside allowed directories", () => {
-    expect(() =>
-      validateAccess(agentConfig, "/data/finance/report.md")
-    ).toThrow("Access denied");
+    expect(() => validateAccess(agentConfig, "/data/finance/report.md")).toThrow("Access denied");
   });
 
   it("should reject paths with null bytes", () => {
-    expect(() =>
-      validateAccess(agentConfig, "/data/hr-docs/\0evil")
-    ).toThrow("Invalid path");
+    expect(() => validateAccess(agentConfig, "/data/hr-docs/\0evil")).toThrow("Invalid path");
   });
 
   it("should reject dotfiles", () => {
-    expect(() => validateAccess(agentConfig, "/data/hr-docs/.env")).toThrow(
-      "Hidden files"
-    );
+    expect(() => validateAccess(agentConfig, "/data/hr-docs/.env")).toThrow("Hidden files");
   });
 
   it("should reject paths not under /data/", () => {
-    expect(() => validateAccess(agentConfig, "/etc/passwd")).toThrow(
-      "Access denied"
-    );
+    expect(() => validateAccess(agentConfig, "/etc/passwd")).toThrow("Access denied");
   });
 
   it("should reject traversal attempts", () => {
-    expect(() =>
-      validateAccess(agentConfig, "/data/hr-docs/../../etc/passwd")
-    ).toThrow("Access denied");
+    expect(() => validateAccess(agentConfig, "/data/hr-docs/../../etc/passwd")).toThrow(
+      "Access denied"
+    );
   });
 });
 
@@ -82,18 +72,14 @@ describe("multi-root + mode validation", () => {
   });
 
   it("rejects paths outside both allowed roots", () => {
-    expect(() =>
-      validateAccess({ allowed_paths: ["/data/kb"] }, "/etc/passwd", "read")
-    ).toThrow(/outside.*allowed root/i);
+    expect(() => validateAccess({ allowed_paths: ["/data/kb"] }, "/etc/passwd", "read")).toThrow(
+      /outside.*allowed root/i
+    );
   });
 
   it("rejects write to read-only path when write_paths excludes it", () => {
     expect(() =>
-      validateAccess(
-        { allowed_paths: ["/data/kb"], write_paths: [] },
-        "/data/kb/file.txt",
-        "write"
-      )
+      validateAccess({ allowed_paths: ["/data/kb"], write_paths: [] }, "/data/kb/file.txt", "write")
     ).toThrow(/not in.*write/i);
   });
 
@@ -164,11 +150,7 @@ describe("write-mode rejection lists allowed write paths (LLM hint)", () => {
 
   it("read-mode rejection still mentions allowed directories", () => {
     try {
-      validateAccess(
-        { allowed_paths: ["/data/kb/"] },
-        "/data/other/x.csv",
-        "read"
-      );
+      validateAccess({ allowed_paths: ["/data/kb/"] }, "/data/other/x.csv", "read");
       throw new Error("expected validateAccess to throw");
     } catch (e) {
       const message = (e as Error).message;
@@ -180,11 +162,7 @@ describe("write-mode rejection lists allowed write paths (LLM hint)", () => {
   it("does not include write_paths when none are configured", () => {
     // No write_paths configured → don't dangle an empty list in the error.
     try {
-      validateAccess(
-        { allowed_paths: ["/data/kb/"], write_paths: [] },
-        "/data/kb/x.csv",
-        "write"
-      );
+      validateAccess({ allowed_paths: ["/data/kb/"], write_paths: [] }, "/data/kb/x.csv", "write");
       throw new Error("expected validateAccess to throw");
     } catch (e) {
       const message = (e as Error).message;
@@ -212,9 +190,7 @@ describe("agent memory write paths (file-granular MEMORY.md, instructions protec
   });
 
   it("allows writing a daily note under memory/", () => {
-    expect(() =>
-      validateAccess(memoryConfig, `${ws}/memory/2026-06-01.md`, "write")
-    ).not.toThrow();
+    expect(() => validateAccess(memoryConfig, `${ws}/memory/2026-06-01.md`, "write")).not.toThrow();
   });
 
   it("allows reading MEMORY.md back", () => {
@@ -294,11 +270,7 @@ describe("path-boundary matching (sibling-directory escape)", () => {
   it("still allows allow-list entries that already end with a slash", () => {
     // Pre-existing entries (admin-configured KB paths) commonly end with /.
     expect(() =>
-      validateAccess(
-        { allowed_paths: ["/data/hr-docs/"] },
-        "/data/hr-docs/vacation.md",
-        "read"
-      )
+      validateAccess({ allowed_paths: ["/data/hr-docs/"] }, "/data/hr-docs/vacation.md", "read")
     ).not.toThrow();
   });
 });
@@ -362,9 +334,12 @@ describe("assertNoSymlinkEscape (write-path symlink containment)", () => {
       mkdirSync(outside);
       symlinkSync(outside, join(sandbox, "link"));
 
-      expect(() =>
-        assertNoSymlinkEscape(join(sandbox, "link", "secret.txt"), [sandbox])
-      ).toThrow(/escapes the sandbox/);
+      // This is the proof the fix does not weaken the guard: a genuine
+      // symlink escape (write root exists, an ancestor symlinks outside it)
+      // must still be rejected.
+      expect(() => assertNoSymlinkEscape(join(sandbox, "link", "secret.txt"), [sandbox])).toThrow(
+        /not under any configured write path/
+      );
     } finally {
       rmSync(base, { recursive: true, force: true });
     }
@@ -378,6 +353,88 @@ describe("assertNoSymlinkEscape (write-path symlink containment)", () => {
       const sandbox = join(base, "sandbox");
       mkdirSync(sandbox);
       expect(() => assertNoSymlinkEscape(join(sandbox, "ok.txt"), [sandbox])).not.toThrow();
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("allows write when the configured write root is itself a symlink resolving to the target's real location", () => {
+    // Explicit macOS `/var` -> `/private/var` shape: the configured root is a
+    // symlink, the requested path is already the real (non-symlinked)
+    // location. Both sides must resolve to the same place and be allowed.
+    const base = mkdtempSync(join(tmpdir(), "pinchy-escape-"));
+    try {
+      const realRoot = join(base, "real-root");
+      mkdirSync(realRoot);
+      const rootLink = join(base, "root-link");
+      symlinkSync(realRoot, rootLink);
+
+      expect(() => assertNoSymlinkEscape(join(realRoot, "file.txt"), [rootLink])).not.toThrow();
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("allows a write target under a write root that does not exist yet (missing root ≠ symlink escape)", () => {
+    // The production bug: build.ts grants write_paths like
+    // `<workspace>/memory` and `<workspace>/MEMORY.md` before
+    // ensureWorkspace creates them. realpathSync(root) then throws ENOENT,
+    // and the old `catch { return false }` made a merely-absent write root
+    // indistinguishable from a genuine symlink escape, denying every write.
+    const base = mkdtempSync(join(tmpdir(), "pinchy-escape-"));
+    try {
+      const workspace = join(base, "workspace"); // exists
+      mkdirSync(workspace);
+      const memoryRoot = join(workspace, "memory"); // configured write root, NOT created yet
+      const memoryFile = join(workspace, "MEMORY.md"); // configured write root (file), NOT created yet
+
+      expect(() =>
+        assertNoSymlinkEscape(join(memoryRoot, "2026-07-15.md"), [memoryRoot, memoryFile])
+      ).not.toThrow();
+
+      expect(() => assertNoSymlinkEscape(memoryFile, [memoryRoot, memoryFile])).not.toThrow();
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("allows a write under a later valid root when an earlier root cannot be resolved", () => {
+    // A root that exists but cannot be resolved (here ELOOP; EACCES on a
+    // mount behaves the same) must not decide the outcome for the OTHER
+    // roots. `some()` short-circuits in list order, so letting the error
+    // propagate would make an unrelated broken root deny a legitimate write
+    // and make the verdict depend on write_paths ordering.
+    const base = mkdtempSync(join(tmpdir(), "pinchy-escape-"));
+    try {
+      const loopRoot = join(base, "loop-a");
+      symlinkSync(join(base, "loop-b"), loopRoot);
+      symlinkSync(loopRoot, join(base, "loop-b"));
+      const sandbox = join(base, "sandbox");
+      mkdirSync(sandbox);
+
+      expect(() =>
+        assertNoSymlinkEscape(join(sandbox, "ok.txt"), [loopRoot, sandbox])
+      ).not.toThrow();
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("denies with the normal access message when a write root cannot be resolved", () => {
+    // An unresolvable root is skipped, not swallowed into a raw fs error:
+    // the caller still gets the actionable allow-list message it can retry
+    // against, and the write stays denied.
+    const base = mkdtempSync(join(tmpdir(), "pinchy-escape-"));
+    try {
+      const loopRoot = join(base, "loop-a");
+      symlinkSync(join(base, "loop-b"), loopRoot);
+      symlinkSync(loopRoot, join(base, "loop-b"));
+      const sandbox = join(base, "sandbox");
+      mkdirSync(sandbox);
+
+      expect(() => assertNoSymlinkEscape(join(sandbox, "ok.txt"), [loopRoot])).toThrow(
+        /not under any configured write path/
+      );
     } finally {
       rmSync(base, { recursive: true, force: true });
     }

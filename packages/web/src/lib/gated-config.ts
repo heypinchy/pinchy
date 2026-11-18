@@ -1,6 +1,7 @@
 import { count, and, eq, isNull } from "drizzle-orm";
 import { db } from "@/db";
 import { agents, groups } from "@/db/schema";
+import type { LicenseState } from "@/lib/license-state";
 
 const RESTRICTED_SHARED_AGENTS = and(
   eq(agents.visibility, "restricted"),
@@ -12,11 +13,18 @@ const RESTRICTED_SHARED_AGENTS = and(
  * Whether any license-gated configuration exists: groups, or shared agents
  * with restricted visibility. Used to decide if the "Remove all
  * license-gated configuration" escape hatch (pricing concept § 5) applies.
+ *
+ * On a community instance a restricted agent is not configuration: every new
+ * shared agent is stored that way, and community shows it to everyone
+ * (`effectiveVisibility`). Counting it there told a never-licensed admin their
+ * "restrictions stay enforced" (#1278). Only groups count in that state.
  */
-export async function hasGatedConfig(): Promise<boolean> {
+export async function hasGatedConfig(state: LicenseState): Promise<boolean> {
   const [groupRows, restrictedAgentRows] = await Promise.all([
     db.select({ count: count() }).from(groups),
-    db.select({ count: count() }).from(agents).where(RESTRICTED_SHARED_AGENTS),
+    state === "community"
+      ? Promise.resolve([{ count: 0 }])
+      : db.select({ count: count() }).from(agents).where(RESTRICTED_SHARED_AGENTS),
   ]);
   return groupRows[0].count > 0 || restrictedAgentRows[0].count > 0;
 }

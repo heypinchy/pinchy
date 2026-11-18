@@ -184,6 +184,14 @@ test.describe("tab refocus reconcile", () => {
       .toBeGreaterThanOrEqual(2);
     // The reconcile's setMessages → React commit (where the pre-fix crash throws)
     // lands one task after delivery; a short, bounded settle covers that commit.
+    //
+    // Sleep exemption (pinchy/no-untracked-sleeps), tracked in #952: this bounds
+    // a NEGATIVE window — the assertions below check that no crash happened, and
+    // "no error boundary engaged" has no event to wait on. The positive
+    // assertions cannot serve as the wait either: they were already satisfied
+    // before the refocus, so they are true on both sides of the commit and never
+    // block. The deterministic replacement is a commit-level counter alongside
+    // `__historyDelivered`; #952 owns building it.
     await page.waitForTimeout(200);
 
     // The error boundary must NOT have replaced the chat view, and no

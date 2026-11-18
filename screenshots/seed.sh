@@ -59,14 +59,17 @@ echo "✅ Admin account created ($ADMIN_NAME)"
 # 3. Configure provider (unencrypted for demo)
 # =====================================================
 echo "🔌 Configuring demo provider..."
+# The Anthropic key exists only so the provider grid has a second, configured
+# tile to show. Deliberately NOT default_provider: /api/setup/provider treats
+# `default_provider IS NULL` as "first provider" and only then sets the default
+# and repoints the seeded agent, so writing a default here would silently stop
+# the real provider (fake-ollama, step 3b) from becoming the one agents use —
+# and every chat would fail at request time with no visible cause.
 docker compose exec -T db psql -U pinchy -d pinchy -c "
-  INSERT INTO settings (key, value, encrypted)
-  VALUES ('default_provider', 'anthropic', false)
-  ON CONFLICT (key) DO UPDATE SET value = 'anthropic';
   INSERT INTO settings (key, value, encrypted)
   VALUES ('anthropic_api_key', 'sk-ant-demo-key-for-screenshots', false)
   ON CONFLICT (key) DO UPDATE SET value = 'sk-ant-demo-key-for-screenshots', encrypted = false;
-" > /dev/null 2>&1 && echo "  ✅ Provider configured (Anthropic)" || echo "  ⚠️  Provider config failed"
+" > /dev/null 2>&1 && echo "  ✅ Anthropic key seeded (configured tile)" || echo "  ⚠️  Provider config failed"
 
 # =====================================================
 # 4. Login
@@ -86,6 +89,44 @@ fi
 echo "✅ Logged in as $ADMIN_EMAIL"
 
 ADMIN_ID=$(docker compose exec -T db psql -U pinchy -d pinchy -t -A -c "SELECT id FROM \"user\" WHERE email = '$ADMIN_EMAIL';")
+
+# =====================================================
+# 4b. Point the stack at a model that actually answers
+# =====================================================
+# Only present when docker-compose.screenshots.yml is layered on, so the
+# capture run can screenshot a real agent answer instead of an empty composer.
+# Saved through the API rather than psql on purpose: the route regenerates
+# openclaw.json, which is what carries the base URL to the runtime. A direct
+# settings INSERT would leave OpenClaw with no provider and fail at chat time.
+# Probed from inside the pinchy container, with node: the alias only resolves
+# on the compose network, and the image has no curl — which is also why the
+# service healthcheck uses `node -e fetch(...)`.
+if docker compose exec -T pinchy node -e "
+  fetch('http://fake-ollama.local:11435/api/tags')
+    .then(r => process.exit(r.ok ? 0 : 1))
+    .catch(() => process.exit(1))
+" > /dev/null 2>&1; then
+  echo "🤖 Wiring the deterministic model..."
+  # Read the status code instead of trusting the exit code: `api` is `curl -s`
+  # WITHOUT `-f`, so a 422 from validateProviderUrl or a 502 from the model
+  # probe still exits 0. Every other call here lives with that; this one must
+  # not, because its failure is invisible downstream — the agent keeps a
+  # non-ollama model, and the capture's own guard would then have nothing to
+  # distinguish "no overlay" from "overlay, broken seed".
+  PROVIDER_HTTP=$(api -o /dev/null -w '%{http_code}' -X POST "$BASE_URL/api/setup/provider" \
+    -d '{"provider":"ollama-local","url":"http://fake-ollama.local:11435"}' 2>/dev/null || echo "000")
+  if [ "$PROVIDER_HTTP" = "200" ]; then
+    echo "  ✅ fake-ollama is the default provider"
+  else
+    echo "❌ /api/setup/provider answered $PROVIDER_HTTP — fake-ollama is reachable but" >&2
+    echo "   could not be made the default provider, so no answer can be photographed." >&2
+    exit 1
+  fi
+  HAS_FAKE_OLLAMA=1
+else
+  echo "ℹ️  No fake-ollama reachable — skipping the answer-bearing screenshots."
+  HAS_FAKE_OLLAMA=0
+fi
 
 # =====================================================
 # 5. Enterprise key (if available)
@@ -151,22 +192,31 @@ echo "  ✅ Presets applied"
 echo "📁 Configuring directories and permissions..."
 
 # Create directories in OpenClaw container with human-friendly names
-# scan_data_directories() uses basename as label, so name the folders nicely
+# The picker labels each folder with its own name, so name the folders nicely
 docker compose exec -T openclaw sh -c '
   mkdir -p "/data/Reactor Operations" "/data/Safety Protocols" "/data/Employee Handbook" \
            "/data/NRC Inspections" "/data/Executive Memos" "/data/Budget Reports"
 '
-# Trigger rescan so data-directories.json picks them up
-docker compose exec -T openclaw sh -c '
-  ls -d /data/*/ 2>/dev/null | sed "s|/$||" | \
-    node -e "const lines=require(\"fs\").readFileSync(\"/dev/stdin\",\"utf8\").trim().split(\"\n\").filter(Boolean); \
-    const dirs=lines.map(p=>({path:p,name:require(\"path\").basename(p)})); \
-    console.log(JSON.stringify({directories:dirs}))" \
-    > /root/.openclaw/data-directories.json
-'
 
-# Verify
-DIR_COUNT=$(docker compose exec -T pinchy sh -c 'cat /openclaw-config/data-directories.json' 2>/dev/null | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('directories',[])))" 2>/dev/null || echo "0")
+# Two real documents for the Knowledge Base shot. PDFs because ingest's
+# extension allowlist is PDF + Office-converted-to-PDF; a .md here would be
+# walked straight past and the index would come out empty. Their contents are
+# the ground truth the scripted answer in fake-ollama-server.ts cites — change
+# one and the other stops being true.
+#
+# stdout is discarded but NOT stderr: `set -e` aborts the seed if a copy fails,
+# and an abort whose reason went to /dev/null is a stack trace with the message
+# cut off. The echo below is what says these two files are in place, so it must
+# not be reachable when they are not.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+docker compose cp "$SCRIPT_DIR/fixtures/emergency-shutdown-procedure.pdf" \
+  "openclaw:/data/Safety Protocols/emergency-shutdown-procedure.pdf" > /dev/null
+docker compose cp "$SCRIPT_DIR/fixtures/coolant-system-overview.pdf" \
+  "openclaw:/data/Reactor Operations/coolant-system-overview.pdf" > /dev/null
+echo "  ✅ Knowledge Base fixtures placed"
+# Verify. The picker lists /data live from the pinchy container (#1363), so
+# the count read there is the count the screenshots will show.
+DIR_COUNT=$(docker compose exec -T pinchy sh -c 'ls -d /data/*/ 2>/dev/null | wc -l' 2>/dev/null | tr -d ' ' || echo "0")
 echo "  ✅ $DIR_COUNT directories configured"
 
 # Web Search integration (enables hasApiKey path in Web Search UI for screenshots)
@@ -181,7 +231,7 @@ api -X POST "$BASE_URL/api/integrations" -d '{
 # Frink: files (3/6 directories) + web search with mixed domain restrictions
 if [ -n "$FRINK_ID" ]; then
   api -X PATCH "$BASE_URL/api/agents/$FRINK_ID" -d '{
-    "allowedTools": ["pinchy_ls", "pinchy_read", "pinchy_web_search", "pinchy_web_fetch"],
+    "allowedTools": ["knowledge_search", "pinchy_ls", "pinchy_read", "pinchy_web_search", "pinchy_web_fetch"],
     "pluginConfig": {
       "pinchy-files": { "allowed_paths": ["/data/Reactor Operations", "/data/Safety Protocols", "/data/Employee Handbook"] },
       "pinchy-web": {
@@ -195,6 +245,52 @@ if [ -n "$FRINK_ID" ]; then
   }' > /dev/null 2>&1 && echo "  ✅ Frink: files + web search with domain restrictions" || echo "  ⚠️  Frink config failed"
 fi
 
+# Index Frink's documents so the Knowledge Base shot has something to cite.
+# Two one-page PDFs, embedded in-process by the bundled embeddinggemma — a
+# handful of chunks, seconds of CPU, not the hours a real corpus takes.
+if [ "${HAS_FAKE_OLLAMA:-0}" = "1" ] && [ -n "$FRINK_ID" ]; then
+  echo "📚 Indexing the knowledge base..."
+  # Status-checked for the same reason as the provider save above, and this one
+  # is the switch the capture reads: validateAgentModel rejects a model whose
+  # provider isn't configured, and a swallowed 400 would leave Frink on its
+  # seeded model — which is exactly what the capture uses to decide whether a
+  # deterministic model is present at all.
+  MODEL_HTTP=$(api -o /dev/null -w '%{http_code}' -X PATCH "$BASE_URL/api/agents/$FRINK_ID" \
+    -d '{"model":"ollama/llama3.2"}' 2>/dev/null || echo "000")
+  if [ "$MODEL_HTTP" != "200" ]; then
+    echo "❌ Pointing Frink at ollama/llama3.2 answered $MODEL_HTTP — the Knowledge Base" >&2
+    echo "   screenshot has no model to answer with." >&2
+    exit 1
+  fi
+  # `-d '{}'` is required, not decoration: the route runs parseRequestBody, and
+  # a POST with a JSON content-type but no body fails validation with a 400.
+  # Printed rather than discarded, because the first version of this swallowed
+  # exactly that 400 and left "the reindex did nothing" with no way to see why.
+  KB_POST=$(api -X POST "$BASE_URL/api/agents/$FRINK_ID/knowledge/reindex" -d '{}' 2>&1)
+  echo "  → $KB_POST"
+
+  # Poll rather than sleep: a fixed wait is either too short on a loaded
+  # runner or wasted time on a fast one, and a half-built index produces a
+  # screenshot of an agent saying it couldn't find anything.
+  KB_STATUS=""
+  for _ in $(seq 1 60); do
+    KB_STATUS=$(api "$BASE_URL/api/agents/$FRINK_ID/knowledge/reindex" 2>/dev/null \
+      | python3 -c "import sys,json; print(json.load(sys.stdin).get('job',{}).get('status',''))" 2>/dev/null || echo "")
+    # "succeeded", not "completed" — the terminal value the job actually
+    # reports. Guessing it wrong is silent: the loop simply times out and the
+    # index is fine, so the only symptom is a misleading warning.
+    case "$KB_STATUS" in
+      succeeded|failed) break ;;
+    esac
+    sleep 2
+  done
+  if [ "$KB_STATUS" = "succeeded" ]; then
+    echo "  ✅ Knowledge base indexed"
+  else
+    echo "  ⚠️  Reindex ended as '${KB_STATUS:-unknown}' — the KB screenshot will fail loudly"
+  fi
+fi
+
 # Tibor: safe + powerful tools
 if [ -n "$TIBOR_ID" ]; then
   api -X PATCH "$BASE_URL/api/agents/$TIBOR_ID" -d '{
@@ -206,14 +302,38 @@ fi
 # =====================================================
 # 8. Create users (directly in DB for active status)
 # =====================================================
+# Every account here must look the way a real one does: the setup admin first,
+# everyone else through an invite they claimed. Settings → Users flags any
+# other account as one "nobody invited" (lib/user-provenance.ts), and the
+# capture would photograph that banner into user-management.png.
+# scripts/lib/screenshots-seed-provenance.test.mjs fails if a user inserted
+# here has no claimed invite.
 echo "👥 Creating demo users..."
 
 docker compose exec -T db psql -U pinchy -d pinchy <<'SQL'
+-- Monty ran setup on day 1 of the audit-trail story below, before anyone
+-- else joined. /api/setup stamps him NOW(); move him to where the story has him.
+UPDATE "user" SET created_at = NOW() - interval '14 days 3 hours'
+  WHERE email = 'monty@snpp.com';
+
 INSERT INTO "user" (id, name, email, role, email_verified, created_at, updated_at) VALUES
-  ('usr_carl_carlson', 'Carl Carlson', 'carl@snpp.com', 'admin', true, NOW() - interval '14 days', NOW() - interval '2 hours'),
+  ('usr_carl_carlson', 'Carl Carlson', 'carl@snpp.com', 'admin', true, NOW() - interval '12 days 20 hours', NOW() - interval '2 hours'),
   ('usr_homer_jay', 'Homer Jay', 'homer@snpp.com', 'member', true, NOW() - interval '10 days', NOW() - interval '1 day'),
-  ('usr_lenny_leonard', 'Lenny Leonard', 'lenny@snpp.com', 'member', true, NOW() - interval '7 days', NOW() - interval '3 days')
+  ('usr_lenny_leonard', 'Lenny Leonard', 'lenny@snpp.com', 'member', true, NOW() - interval '6 days 20 hours', NOW() - interval '3 days')
 ON CONFLICT (email) DO NOTHING;
+
+-- The invites they claimed, sent by Monty at the times the audit trail shows.
+INSERT INTO invites (id, token_hash, email, role, type, created_by, created_at, expires_at, claimed_at, claimed_by_user_id) VALUES
+  ('inv_carl', 'hash_carl', 'carl@snpp.com', 'admin', 'invite',
+   (SELECT id FROM "user" WHERE email = 'monty@snpp.com'),
+   NOW() - interval '13 days', NOW() - interval '6 days', NOW() - interval '12 days 20 hours', 'usr_carl_carlson'),
+  ('inv_homer', 'hash_homer', 'homer@snpp.com', 'member', 'invite',
+   (SELECT id FROM "user" WHERE email = 'monty@snpp.com'),
+   NOW() - interval '12 days', NOW() - interval '5 days', NOW() - interval '10 days', 'usr_homer_jay'),
+  ('inv_lenny', 'hash_lenny', 'lenny@snpp.com', 'member', 'invite',
+   (SELECT id FROM "user" WHERE email = 'monty@snpp.com'),
+   NOW() - interval '7 days', NOW(), NOW() - interval '6 days 20 hours', 'usr_lenny_leonard')
+ON CONFLICT DO NOTHING;
 
 -- Pending invite (Frank hasn't joined yet)
 INSERT INTO invites (id, token_hash, email, role, type, created_by, created_at, expires_at) VALUES

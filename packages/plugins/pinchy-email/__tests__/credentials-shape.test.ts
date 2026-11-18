@@ -1,15 +1,10 @@
 // @vitest-environment node
 import { describe, it, expect } from "vitest";
-import {
-  assertOAuthCredentialsShape,
-  assertImapCredentialsShape,
-} from "../index";
+import { assertOAuthCredentialsShape, assertImapCredentialsShape } from "../index";
 
 describe("assertOAuthCredentialsShape", () => {
   it("accepts a payload with a string accessToken", () => {
-    expect(() =>
-      assertOAuthCredentialsShape({ accessToken: "tok-123" }),
-    ).not.toThrow();
+    expect(() => assertOAuthCredentialsShape({ accessToken: "tok-123" })).not.toThrow();
   });
 
   it("throws when accessToken is missing", () => {
@@ -17,9 +12,7 @@ describe("assertOAuthCredentialsShape", () => {
   });
 
   it("throws when accessToken is not a string", () => {
-    expect(() =>
-      assertOAuthCredentialsShape({ accessToken: 12345 }),
-    ).toThrow(/must be a string/);
+    expect(() => assertOAuthCredentialsShape({ accessToken: 12345 })).toThrow(/must be a string/);
   });
 
   it("REGRESSION (#209): gives a clear hint for SecretRef-shaped payloads", () => {
@@ -58,66 +51,56 @@ describe("assertImapCredentialsShape", () => {
 
   it("throws naming imapHost when missing", () => {
     const { imapHost: _imapHost, ...rest } = validImap;
-    expect(() => assertImapCredentialsShape(rest)).toThrow(
-      /credentials\.imapHost/,
-    );
+    expect(() => assertImapCredentialsShape(rest)).toThrow(/credentials\.imapHost/);
   });
 
   it("throws naming imapHost when empty string", () => {
-    expect(() =>
-      assertImapCredentialsShape({ ...validImap, imapHost: "" }),
-    ).toThrow(/credentials\.imapHost/);
+    expect(() => assertImapCredentialsShape({ ...validImap, imapHost: "" })).toThrow(
+      /credentials\.imapHost/
+    );
   });
 
   it("throws naming imapPort when not a number", () => {
-    expect(() =>
-      assertImapCredentialsShape({ ...validImap, imapPort: "993" }),
-    ).toThrow(/credentials\.imapPort/);
+    expect(() => assertImapCredentialsShape({ ...validImap, imapPort: "993" })).toThrow(
+      /credentials\.imapPort/
+    );
   });
 
   it("throws naming smtpHost when missing", () => {
     const { smtpHost: _smtpHost, ...rest } = validImap;
-    expect(() => assertImapCredentialsShape(rest)).toThrow(
-      /credentials\.smtpHost/,
-    );
+    expect(() => assertImapCredentialsShape(rest)).toThrow(/credentials\.smtpHost/);
   });
 
   it("throws naming smtpPort when not a number", () => {
-    expect(() =>
-      assertImapCredentialsShape({ ...validImap, smtpPort: "587" }),
-    ).toThrow(/credentials\.smtpPort/);
+    expect(() => assertImapCredentialsShape({ ...validImap, smtpPort: "587" })).toThrow(
+      /credentials\.smtpPort/
+    );
   });
 
   it("throws naming username when missing", () => {
     const { username: _username, ...rest } = validImap;
-    expect(() => assertImapCredentialsShape(rest)).toThrow(
-      /credentials\.username/,
-    );
+    expect(() => assertImapCredentialsShape(rest)).toThrow(/credentials\.username/);
   });
 
   it("throws naming password when missing", () => {
     const { password: _password, ...rest } = validImap;
-    expect(() => assertImapCredentialsShape(rest)).toThrow(
-      /credentials\.password/,
-    );
+    expect(() => assertImapCredentialsShape(rest)).toThrow(/credentials\.password/);
   });
 
   it("throws naming security when invalid", () => {
-    expect(() =>
-      assertImapCredentialsShape({ ...validImap, security: "ssl" }),
-    ).toThrow(/credentials\.security/);
+    expect(() => assertImapCredentialsShape({ ...validImap, security: "ssl" })).toThrow(
+      /credentials\.security/
+    );
   });
 
   it("throws naming security when missing", () => {
     const { security: _security, ...rest } = validImap;
-    expect(() => assertImapCredentialsShape(rest)).toThrow(
-      /credentials\.security/,
-    );
+    expect(() => assertImapCredentialsShape(rest)).toThrow(/credentials\.security/);
   });
 
   it("accepts a valid senderName string", () => {
     expect(() =>
-      assertImapCredentialsShape({ ...validImap, senderName: "Clemens Helm" }),
+      assertImapCredentialsShape({ ...validImap, senderName: "Clemens Helm" })
     ).not.toThrow();
   });
 
@@ -126,8 +109,8 @@ describe("assertImapCredentialsShape", () => {
   });
 
   it("throws naming senderName when present but not a string", () => {
-    expect(() =>
-      assertImapCredentialsShape({ ...validImap, senderName: 123 }),
-    ).toThrow(/credentials\.senderName/);
+    expect(() => assertImapCredentialsShape({ ...validImap, senderName: 123 })).toThrow(
+      /credentials\.senderName/
+    );
   });
 });

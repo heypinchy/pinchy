@@ -1,4 +1,10 @@
-import { createFolderMapper, escapeDoubleQuoted } from "./email-adapter.js";
+import {
+  createFolderMapper,
+  escapeDoubleQuoted,
+  resolveInsecureMockBaseUrl,
+  stripHtml,
+  MAX_ATTACHMENT_BYTES,
+} from "./email-adapter.js";
 import type {
   EmailAdapter,
   EmailAttachment,
@@ -8,6 +14,35 @@ import type {
   EmailSummary,
   EmailFull,
 } from "./email-adapter.js";
+// Graph takes the display name and the address as two fields; `Name <addr>`
+// in `address` alone is not an address Graph can deliver to.
+import { splitMailbox } from "./recipient.js";
+
+// Graph's attachment-get endpoint wraps the file's base64 payload inside a
+// JSON body — GET /me/messages/{id}/attachments/{id} — so a naive
+// `await res.json()` fully materializes that whole body in memory BEFORE
+// index.ts's post-decode length check on the returned buffer ever runs. A
+// 500 MB attachment (or a provider that misreports its own size) would OOM
+// the process before the 25 MB cap (MAX_ATTACHMENT_BYTES) ever gets a chance
+// to fire.
+//
+// Base64 inflates the decoded byte count by ~4/3 (with padding), so
+// MAX_ATTACHMENT_BYTES worth of file content becomes MAX_ATTACHMENT_BYTES *
+// 4/3 ≈ 33.3 MB of base64 text inside the response; 40 MB leaves headroom for
+// the surrounding JSON envelope (id/name/contentType/... fields) on top of
+// that.
+//
+// Every source of error here points the same way — the wire size can only be
+// SMALLER than the payload this bound reasons about, never larger — so the
+// check fails open to index.ts's post-decode cap rather than rejecting a legal
+// attachment. Content-Length counts the COMPRESSED bytes when Graph answers
+// `content-encoding: gzip` (undici decompresses transparently, so `res.json()`
+// still sees the full text), and gzip on base64 recovers roughly the original
+// binary size — a 500 MB attachment still declares hundreds of MB and is still
+// caught. Exported so the tests can pin the exact boundary instead of asserting
+// a value far from it.
+export const MAX_ATTACHMENT_RESPONSE_BYTES =
+  Math.ceil((MAX_ATTACHMENT_BYTES * 4) / 3) + 7 * 1024 * 1024;
 
 const mapFolder = createFolderMapper({
   INBOX: "inbox",
@@ -17,8 +52,7 @@ const mapFolder = createFolderMapper({
   SPAM: "junkemail",
 });
 
-const SUMMARY_SELECT =
-  "id,subject,bodyPreview,receivedDateTime,from,toRecipients,isRead";
+const SUMMARY_SELECT = "id,subject,bodyPreview,receivedDateTime,from,toRecipients,isRead";
 
 // Escape a value for use inside an OData single-quoted string literal. OData
 // escapes a single quote by doubling it; without this an apostrophe in a search
@@ -78,6 +112,17 @@ interface GraphAttachment {
 
 const FILE_ATTACHMENT_TYPE = "#microsoft.graph.fileAttachment";
 
+// External API call — bounds a hung Microsoft Graph endpoint / network
+// blackhole.
+const FETCH_TIMEOUT_MS = 30_000;
+
+// The attachment download carries the whole file as base64 inside the JSON
+// body — up to the 25 MB the tools layer accepts, ~33 MB on the wire. An
+// AbortSignal covers the body read too, not just the response headers, so the
+// bound that is generous for a metadata call would abort a working-but-slow
+// download well before it finishes. Give that one path its own.
+const ATTACHMENT_TIMEOUT_MS = 120_000;
+
 // Microsoft Graph v1.0 message-listing endpoints require every property named
 // in $orderby to also appear in $filter, in the same order, ahead of any other
 // filter properties — violating this returns HTTP 400 InefficientFilter ("The
@@ -91,22 +136,32 @@ const RECEIVED_DATE_TIME_SENTINEL = "receivedDateTime ge 1970-01-01T00:00:00Z";
 
 function buildOrderedFilter(filters: string[]): string | undefined {
   if (filters.length === 0) return undefined;
-  const hasReceivedDateTime = filters.some((f) =>
-    f.startsWith("receivedDateTime "),
-  );
-  const ordered = hasReceivedDateTime
-    ? filters
-    : [RECEIVED_DATE_TIME_SENTINEL, ...filters];
+  const hasReceivedDateTime = filters.some((f) => f.startsWith("receivedDateTime "));
+  const ordered = hasReceivedDateTime ? filters : [RECEIVED_DATE_TIME_SENTINEL, ...filters];
   return ordered.join(" and ");
+}
+
+// Microsoft Graph returns `body.content` verbatim in whatever
+// `body.contentType` ("text" or "html") the message was stored in, and most
+// Outlook mail is stored as html — so without this the model reads raw markup
+// where IMAP hands it text. The size ceiling that keeps `email_read` out of
+// OpenClaw's blind mid-JSON truncation is NOT here: it is applied once at the
+// tool boundary (`truncateEmailBody`, see index.ts) because every adapter's
+// body is equally unbounded, and a per-adapter cap is a list that goes stale
+// the first time a fourth provider lands.
+function extractBody(body: { contentType?: string; content?: string } | undefined): string {
+  const raw = body?.content ?? "";
+  // Graph documents the enum as lowercase `text`/`html`, but a case-sensitive
+  // compare is one unexpected payload away from handing the model a body of
+  // pure markup — cheap to not depend on.
+  return body?.contentType?.toLowerCase() === "html" ? stripHtml(raw) : raw;
 }
 
 function toSummary(m: GraphMessage): EmailSummary {
   return {
     id: m.id,
     from: m.from?.emailAddress?.address ?? "",
-    to:
-      m.toRecipients?.map((r) => r.emailAddress?.address ?? "").join(", ") ??
-      "",
+    to: m.toRecipients?.map((r) => r.emailAddress?.address ?? "").join(", ") ?? "",
     subject: m.subject ?? "",
     date: m.receivedDateTime ?? "",
     snippet: m.bodyPreview ?? "",
@@ -114,25 +169,59 @@ function toSummary(m: GraphMessage): EmailSummary {
   };
 }
 
+/**
+ * Carries the HTTP status Graph answered with, so the plugin's auth-error
+ * classifier can read it instead of hunting for digits in the message
+ * (#1077). Graph stamps a GUID request-id into every error body, and roughly
+ * one in seventy of those contains "401" by chance — which the old substring
+ * matcher read as an expired token.
+ */
+export class GraphRequestError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "GraphRequestError";
+    this.status = status;
+  }
+}
+
 export class GraphAdapter implements EmailAdapter {
   constructor(private opts: { accessToken: string }) {}
 
+  // GRAPH_API_BASE_URL allows E2E tests to redirect Graph API calls to a
+  // local mock server instead of https://graph.microsoft.com. Only takes
+  // effect alongside PINCHY_INSECURE_MAIL_MOCK=1 — see
+  // resolveInsecureMockBaseUrl in email-adapter.ts.
   private graphBase(): string {
-    return process.env.GRAPH_API_BASE_URL ?? "https://graph.microsoft.com";
+    return (
+      resolveInsecureMockBaseUrl("GRAPH_API_BASE_URL", "PINCHY_INSECURE_MAIL_MOCK") ??
+      "https://graph.microsoft.com"
+    );
   }
 
-  private async req(path: string, init?: RequestInit): Promise<Response> {
+  // `signal` is deliberately not accepted. The earlier shape took one and did
+  // `init.signal ?? AbortSignal.timeout(...)`, which reads like a harmless
+  // escape hatch and is a trap: the first caller to pass a cancellation signal
+  // would silently lose the timeout, with no test able to see it. A caller
+  // that needs a different bound asks for one by name instead.
+  private async req(
+    path: string,
+    init?: Omit<RequestInit, "signal"> & { timeoutMs?: number }
+  ): Promise<Response> {
+    const { timeoutMs = FETCH_TIMEOUT_MS, ...rest } = init ?? {};
     const res = await fetch(`${this.graphBase()}/v1.0${path}`, {
-      ...init,
+      ...rest,
       headers: {
         Authorization: `Bearer ${this.opts.accessToken}`,
         "Content-Type": "application/json",
         ...(init?.headers ?? {}),
       },
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (!res.ok) {
       const txt = await res.text().catch(() => "");
-      throw new Error(`Graph ${res.status}: ${txt || res.statusText}`);
+      throw new GraphRequestError(`Graph ${res.status}: ${txt || res.statusText}`, res.status);
     }
     return res;
   }
@@ -149,9 +238,7 @@ export class GraphAdapter implements EmailAdapter {
       `$select=${encodeURIComponent(SUMMARY_SELECT)}`,
       `$orderby=${encodeURIComponent("receivedDateTime desc")}`,
     ];
-    const filter = buildOrderedFilter(
-      opts.unreadOnly ? ["isRead eq false"] : [],
-    );
+    const filter = buildOrderedFilter(opts.unreadOnly ? ["isRead eq false"] : []);
     if (filter) parts.push(`$filter=${encodeURIComponent(filter)}`);
     const res = await this.req(`${path}?${parts.join("&")}`);
     const data = (await res.json()) as { value: GraphMessage[] };
@@ -163,9 +250,7 @@ export class GraphAdapter implements EmailAdapter {
       $select:
         "id,subject,bodyPreview,receivedDateTime,from,toRecipients,ccRecipients,isRead,body,hasAttachments",
     });
-    const res = await this.req(
-      `/me/messages/${encodeURIComponent(id)}?${params.toString()}`,
-    );
+    const res = await this.req(`/me/messages/${encodeURIComponent(id)}?${params.toString()}`);
     const m = (await res.json()) as GraphMessage & {
       ccRecipients?: Array<{ emailAddress?: { address?: string } }>;
       body?: { contentType?: string; content?: string };
@@ -173,10 +258,8 @@ export class GraphAdapter implements EmailAdapter {
     };
     return {
       ...toSummary(m),
-      cc:
-        m.ccRecipients?.map((r) => r.emailAddress?.address ?? "").join(", ") ??
-        "",
-      body: m.body?.content ?? "",
+      cc: m.ccRecipients?.map((r) => r.emailAddress?.address ?? "").join(", ") ?? "",
+      body: extractBody(m.body),
       // Only pay for the second round trip when the message actually has
       // attachments — the common no-attachment case stays a single request.
       attachments: m.hasAttachments ? await this.listAttachments(id) : [],
@@ -188,7 +271,7 @@ export class GraphAdapter implements EmailAdapter {
       $select: "id,name,contentType,size,isInline",
     });
     const res = await this.req(
-      `/me/messages/${encodeURIComponent(messageId)}/attachments?${params.toString()}`,
+      `/me/messages/${encodeURIComponent(messageId)}/attachments?${params.toString()}`
     );
     const data = (await res.json()) as { value: GraphAttachment[] };
     return data.value
@@ -203,16 +286,48 @@ export class GraphAdapter implements EmailAdapter {
 
   async getAttachment(
     messageId: string,
-    attachmentId: string,
+    attachmentId: string
   ): Promise<{ filename: string; mimeType: string; data: Buffer }> {
     const res = await this.req(
       `/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`,
+      { timeoutMs: ATTACHMENT_TIMEOUT_MS }
     );
+
+    // Precheck against Content-Length BEFORE res.json() buffers the whole
+    // body — see MAX_ATTACHMENT_RESPONSE_BYTES above. Best-effort only: a
+    // missing header (chunked transfer, or a provider that omits it) or an
+    // unparseable one falls straight through to res.json(), same as before
+    // this check existed — index.ts's post-decode length check is what
+    // protects the process in that case.
+    const declaredLength = res.headers.get("content-length");
+    if (declaredLength != null) {
+      const declaredBytes = Number(declaredLength);
+      if (Number.isFinite(declaredBytes) && declaredBytes > MAX_ATTACHMENT_RESPONSE_BYTES) {
+        // Never read the body we just proved is too large — cancel/drain it
+        // instead of letting it sit un-consumed on the connection. Swallow a
+        // cancel failure (an already-errored stream rejects): the caller needs
+        // the size diagnosis below, not a stream error that hides it.
+        await res.body?.cancel().catch(() => {});
+        // Report the cap the CALLER can act on (the 25 MB attachment limit),
+        // not the ~40 MB wire bound this check actually compares against —
+        // MAX_ATTACHMENT_RESPONSE_BYTES is a base64-inflated derivative of it,
+        // and an agent told "max allowed is 40 MB" would reasonably conclude a
+        // 30 MB attachment is fine when index.ts will reject it too.
+        const declaredMb = (declaredBytes / 1024 / 1024).toFixed(1);
+        const maxMb = (MAX_ATTACHMENT_BYTES / 1024 / 1024).toFixed(0);
+        throw new Error(
+          `Attachment too large: the provider's response declares ${declaredMb} MB on the wire ` +
+            `(base64-encoded), over the ceiling a ${maxMb} MB attachment can occupy. ` +
+            `Max allowed is ${maxMb} MB.`
+        );
+      }
+    }
+
     const a = (await res.json()) as GraphAttachment;
     if (a.contentBytes == null) {
       throw new Error(
         `attachment ${attachmentId} is an embedded item (e.g. an attached email or a cloud reference) ` +
-          `and cannot be downloaded as a file.`,
+          `and cannot be downloaded as a file.`
       );
     }
     // Graph fileAttachment.contentBytes is standard base64 (not base64url).
@@ -235,9 +350,7 @@ export class GraphAdapter implements EmailAdapter {
     if (opts.to) searchTerms.push(kqlTerm("to", opts.to));
     if (opts.subject) searchTerms.push(kqlTerm("subject", opts.subject));
     if (opts.sinceDays != null) {
-      const cutoff = new Date(
-        Date.now() - opts.sinceDays * 86_400_000,
-      ).toISOString();
+      const cutoff = new Date(Date.now() - opts.sinceDays * 86_400_000).toISOString();
       filters.push(`receivedDateTime ge ${cutoff}`);
     }
     if (opts.unread) filters.push("isRead eq false");
@@ -255,16 +368,10 @@ export class GraphAdapter implements EmailAdapter {
     if (searchTerms.length > 0 && filters.length > 0) {
       // Microsoft Graph v1.0 does not allow $search and $filter together.
       // Convert text terms to OData $filter predicates instead.
-      if (opts.from)
-        filters.push(
-          `from/emailAddress/address eq '${odataString(opts.from)}'`,
-        );
+      if (opts.from) filters.push(`from/emailAddress/address eq '${odataString(opts.from)}'`);
       if (opts.to)
-        filters.push(
-          `toRecipients/any(r: r/emailAddress/address eq '${odataString(opts.to)}')`,
-        );
-      if (opts.subject)
-        filters.push(`contains(subject, '${odataString(opts.subject)}')`);
+        filters.push(`toRecipients/any(r: r/emailAddress/address eq '${odataString(opts.to)}')`);
+      if (opts.subject) filters.push(`contains(subject, '${odataString(opts.subject)}')`);
       params.set("$filter", buildOrderedFilter(filters)!);
       params.set("$orderby", "receivedDateTime desc");
     } else if (searchTerms.length > 0) {
@@ -330,20 +437,17 @@ export class GraphAdapter implements EmailAdapter {
 
   async draft(opts: ComposeOptions): Promise<{ draftId: string }> {
     if (opts.replyTo) {
-      const reply = await this.req(
-        `/me/messages/${encodeURIComponent(opts.replyTo)}/createReply`,
-        {
-          method: "POST",
-          body: JSON.stringify({}),
-        },
-      );
+      const reply = await this.req(`/me/messages/${encodeURIComponent(opts.replyTo)}/createReply`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
       const created = (await reply.json()) as { id: string };
       await this.req(`/me/messages/${encodeURIComponent(created.id)}`, {
         method: "PATCH",
         body: JSON.stringify({
           subject: opts.subject,
           body: { contentType: "text", content: opts.body },
-          toRecipients: [{ emailAddress: { address: opts.to } }],
+          toRecipients: [{ emailAddress: splitMailbox(opts.to) }],
         }),
       });
       return { draftId: created.id };
@@ -353,7 +457,7 @@ export class GraphAdapter implements EmailAdapter {
       body: JSON.stringify({
         subject: opts.subject,
         body: { contentType: "text", content: opts.body },
-        toRecipients: [{ emailAddress: { address: opts.to } }],
+        toRecipients: [{ emailAddress: splitMailbox(opts.to) }],
       }),
     });
     const created = (await res.json()) as { id: string };
@@ -378,7 +482,7 @@ export class GraphAdapter implements EmailAdapter {
         message: {
           subject: opts.subject,
           body: { contentType: "text", content: opts.body },
-          toRecipients: [{ emailAddress: { address: opts.to } }],
+          toRecipients: [{ emailAddress: splitMailbox(opts.to) }],
         },
         saveToSentItems: true,
       }),

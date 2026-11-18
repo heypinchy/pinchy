@@ -1,9 +1,13 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+// @vitest-environment jsdom
+import { onTestFinished, describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { Mock } from "vitest";
-import { render, screen, waitFor, act } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
+import { flushPendingRenders } from "@/test-helpers/react";
 import { NewAgentForm } from "@/components/new-agent-form";
+import { toast } from "sonner";
+import { jsonResponse } from "@/test-helpers/fetch";
 
 const { mockPush, mockReplace, mockSearchParams } = vi.hoisted(() => {
   const searchParamsRef = { current: new URLSearchParams() };
@@ -68,12 +72,9 @@ describe("NewAgentForm — name max length", () => {
     mockSearchParams.current = new URLSearchParams();
     fetchSpy = vi.spyOn(global, "fetch").mockImplementation(async (url) => {
       if (String(url) === "/api/templates") {
-        return {
-          ok: true,
-          json: async () => ({ templates: mockTemplates }),
-        } as Response;
+        return jsonResponse({ templates: mockTemplates });
       }
-      return { ok: false, json: async () => ({}) } as Response;
+      return jsonResponse({}, { status: 400 });
     });
   });
 
@@ -106,12 +107,9 @@ describe("NewAgentForm — cancel button", () => {
     mockSearchParams.current = new URLSearchParams();
     fetchSpy = vi.spyOn(global, "fetch").mockImplementation(async (url) => {
       if (String(url) === "/api/templates") {
-        return {
-          ok: true,
-          json: async () => ({ templates: mockTemplates }),
-        } as Response;
+        return jsonResponse({ templates: mockTemplates });
       }
-      return { ok: false, json: async () => ({}) } as Response;
+      return jsonResponse({}, { status: 400 });
     });
   });
 
@@ -160,12 +158,9 @@ describe("NewAgentForm — URL history", () => {
 
     fetchSpy = vi.spyOn(global, "fetch").mockImplementation(async (url) => {
       if (String(url) === "/api/templates") {
-        return {
-          ok: true,
-          json: async () => ({ templates: mockTemplates }),
-        } as Response;
+        return jsonResponse({ templates: mockTemplates });
       }
-      return { ok: false, json: async () => ({}) } as Response;
+      return jsonResponse({}, { status: 400 });
     });
   });
 
@@ -186,6 +181,30 @@ describe("NewAgentForm — URL history", () => {
       expect(mockPush).toHaveBeenCalledWith(expect.stringContaining("template=custom"));
     });
     expect(mockReplace).not.toHaveBeenCalled();
+  });
+
+  // #1280: picking a template far down the list only changes a search param,
+  // so Next keeps the AppShell scroller where it was. The form rendered into
+  // that offset with its heading scrolled up under the banner above it.
+  it("brings the top of the form into view when a template is picked", async () => {
+    const scrollIntoView = vi.fn();
+    const original = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    onTestFinished(() => {
+      HTMLElement.prototype.scrollIntoView = original;
+    });
+    render(<NewAgentForm />);
+    await waitFor(() => {
+      expect(screen.getByText(/start from scratch/i)).toBeInTheDocument();
+    });
+    scrollIntoView.mockClear();
+
+    await userEvent.click(screen.getByText(/start from scratch/i));
+
+    await waitFor(() => expect(screen.getByRole("heading", { level: 1 })).toBeInTheDocument());
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: "start" });
+    const target = scrollIntoView.mock.contexts.at(-1) as Element;
+    expect(target.contains(screen.getByRole("heading", { level: 1 }))).toBe(true);
   });
 
   it("returns to template selector when searchParams lose the template parameter (browser Back)", async () => {
@@ -224,18 +243,12 @@ describe("NewAgentForm — tagline field", () => {
     mockSearchParams.current = new URLSearchParams();
     fetchSpy = vi.spyOn(global, "fetch").mockImplementation(async (url) => {
       if (String(url) === "/api/templates") {
-        return {
-          ok: true,
-          json: async () => ({ templates: mockTemplates }),
-        } as Response;
+        return jsonResponse({ templates: mockTemplates });
       }
       if (String(url) === "/api/data-directories") {
-        return {
-          ok: true,
-          json: async () => ({ directories: [] }),
-        } as Response;
+        return jsonResponse({ directories: [] });
       }
-      return { ok: false, json: async () => ({}) } as Response;
+      return jsonResponse({}, { status: 400 });
     });
   });
 
@@ -274,7 +287,7 @@ describe("NewAgentForm — tagline field", () => {
 
     // Flush remaining async effects (name prefill + fetchDirectories) so they
     // complete before the mock is torn down in afterEach.
-    await act(async () => {});
+    await flushPendingRenders();
   });
 
   it("shows empty tagline field when template has null defaultTagline", async () => {
@@ -306,24 +319,15 @@ describe("NewAgentForm — tagline field", () => {
 
     fetchSpy.mockImplementation(async (url, init) => {
       if (String(url) === "/api/templates") {
-        return {
-          ok: true,
-          json: async () => ({ templates: emailTemplates }),
-        } as Response;
+        return jsonResponse({ templates: emailTemplates });
       }
       if (String(url) === "/api/integrations") {
-        return {
-          ok: true,
-          json: async () => [{ id: "email-conn-1", name: "Gmail Work", type: "google" }],
-        } as Response;
+        return jsonResponse([{ id: "email-conn-1", name: "Gmail Work", type: "google" }]);
       }
       if (String(url) === "/api/agents" && init?.method === "POST") {
-        return {
-          ok: true,
-          json: async () => ({ id: "new-agent-id" }),
-        } as Response;
+        return jsonResponse({ id: "new-agent-id" });
       }
-      return { ok: false, json: async () => ({}) } as Response;
+      return jsonResponse({}, { status: 400 });
     });
 
     render(<NewAgentForm />);
@@ -358,18 +362,12 @@ describe("NewAgentForm — tagline field", () => {
   it("includes tagline in POST body on submit", async () => {
     fetchSpy.mockImplementation(async (url, init) => {
       if (String(url) === "/api/templates") {
-        return {
-          ok: true,
-          json: async () => ({ templates: mockTemplates }),
-        } as Response;
+        return jsonResponse({ templates: mockTemplates });
       }
       if (String(url) === "/api/agents" && init?.method === "POST") {
-        return {
-          ok: true,
-          json: async () => ({ id: "new-agent-id" }),
-        } as Response;
+        return jsonResponse({ id: "new-agent-id" });
       }
-      return { ok: false, json: async () => ({}) } as Response;
+      return jsonResponse({}, { status: 400 });
     });
 
     render(<NewAgentForm />);
@@ -402,6 +400,44 @@ describe("NewAgentForm — tagline field", () => {
       expect(body.tagline).toBe("My custom tagline");
     });
   });
+
+  it("navigates and shows a warning toast when creation reports a runtime warning (#880)", async () => {
+    fetchSpy.mockImplementation(async (url, init) => {
+      if (String(url) === "/api/templates") {
+        return jsonResponse({ templates: mockTemplates });
+      }
+      if (String(url) === "/api/agents" && init?.method === "POST") {
+        return jsonResponse({
+          id: "new-agent-id",
+          warning: "Agent created. Applying it to the runtime failed.",
+        });
+      }
+      return jsonResponse({}, { status: 400 });
+    });
+
+    render(<NewAgentForm />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/start from scratch/i)).toBeInTheDocument();
+    });
+    await userEvent.click(screen.getByText(/start from scratch/i));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/name/i)).toBeInTheDocument();
+    });
+    await userEvent.type(screen.getByLabelText(/name/i), "My Bot");
+    await userEvent.click(screen.getByRole("button", { name: /create/i }));
+
+    // Still a success flow: the user is navigated to the new agent's chat, and
+    // the warning surfaces non-blockingly (no inline error).
+    await waitFor(() => {
+      expect(mockPush).toHaveBeenCalledWith("/chat/new-agent-id");
+      expect(toast.warning).toHaveBeenCalledWith(
+        "Agent created. Applying it to the runtime failed."
+      );
+    });
+    expect(toast.error).not.toHaveBeenCalled();
+  });
 });
 
 describe("NewAgentForm — email mailbox picker", () => {
@@ -425,24 +461,15 @@ describe("NewAgentForm — email mailbox picker", () => {
   function mockApis(connections: Array<{ id: string; name: string; type: string }>) {
     fetchSpy.mockImplementation(async (url, init) => {
       if (String(url) === "/api/templates") {
-        return {
-          ok: true,
-          json: async () => ({ templates: emailTemplates }),
-        } as Response;
+        return jsonResponse({ templates: emailTemplates });
       }
       if (String(url) === "/api/integrations") {
-        return {
-          ok: true,
-          json: async () => connections,
-        } as Response;
+        return jsonResponse(connections);
       }
       if (String(url) === "/api/agents" && init?.method === "POST") {
-        return {
-          ok: true,
-          json: async () => ({ id: "new-agent-id" }),
-        } as Response;
+        return jsonResponse({ id: "new-agent-id" });
       }
-      return { ok: false, json: async () => ({}) } as Response;
+      return jsonResponse({}, { status: 400 });
     });
   }
 
@@ -554,12 +581,9 @@ describe("NewAgentForm — intro text", () => {
     mockSearchParams.current = new URLSearchParams();
     fetchSpy = vi.spyOn(global, "fetch").mockImplementation(async (url) => {
       if (String(url) === "/api/templates") {
-        return {
-          ok: true,
-          json: async () => ({ templates: mockTemplates }),
-        } as Response;
+        return jsonResponse({ templates: mockTemplates });
       }
-      return { ok: false, json: async () => ({}) } as Response;
+      return jsonResponse({}, { status: 400 });
     });
   });
 
@@ -586,12 +610,9 @@ describe("NewAgentForm — tagline helper", () => {
     mockSearchParams.current = new URLSearchParams();
     fetchSpy = vi.spyOn(global, "fetch").mockImplementation(async (url) => {
       if (String(url) === "/api/templates") {
-        return {
-          ok: true,
-          json: async () => ({ templates: mockTemplates }),
-        } as Response;
+        return jsonResponse({ templates: mockTemplates });
       }
-      return { ok: false, json: async () => ({}) } as Response;
+      return jsonResponse({}, { status: 400 });
     });
   });
 
@@ -637,30 +658,18 @@ describe("NewAgentForm — permission preview", () => {
     mockSearchParams.current = new URLSearchParams();
     fetchSpy = vi.spyOn(global, "fetch").mockImplementation(async (url) => {
       if (String(url) === "/api/templates") {
-        return {
-          ok: true,
-          json: async () => ({ templates: odooTemplates }),
-        } as Response;
+        return jsonResponse({ templates: odooTemplates });
       }
       if (String(url) === "/api/data-directories") {
-        return {
-          ok: true,
-          json: async () => ({ directories: [] }),
-        } as Response;
+        return jsonResponse({ directories: [] });
       }
       if (String(url) === "/api/integrations") {
-        return {
-          ok: true,
-          json: async () => [{ id: "conn-1", name: "My Odoo", type: "odoo", data: {} }],
-        } as Response;
+        return jsonResponse([{ id: "conn-1", name: "My Odoo", type: "odoo", data: {} }]);
       }
       if (String(url) === "/api/agents") {
-        return {
-          ok: true,
-          json: async () => [],
-        } as Response;
+        return jsonResponse([]);
       }
-      return { ok: false, json: async () => ({}) } as Response;
+      return jsonResponse({}, { status: 400 });
     });
   });
 
@@ -754,24 +763,15 @@ describe("NewAgentForm — no connections link", () => {
     mockSearchParams.current = new URLSearchParams();
     fetchSpy = vi.spyOn(global, "fetch").mockImplementation(async (url) => {
       if (String(url) === "/api/templates") {
-        return {
-          ok: true,
-          json: async () => ({ templates: odooTemplates }),
-        } as Response;
+        return jsonResponse({ templates: odooTemplates });
       }
       if (String(url) === "/api/integrations") {
-        return {
-          ok: true,
-          json: async () => [],
-        } as Response;
+        return jsonResponse([]);
       }
       if (String(url) === "/api/agents") {
-        return {
-          ok: true,
-          json: async () => [],
-        } as Response;
+        return jsonResponse([]);
       }
-      return { ok: false, json: async () => ({}) } as Response;
+      return jsonResponse({}, { status: 400 });
     });
   });
 
@@ -808,24 +808,15 @@ describe("NewAgentForm — suggested name", () => {
     mockSearchParams.current = new URLSearchParams();
     fetchSpy = vi.spyOn(global, "fetch").mockImplementation(async (url) => {
       if (String(url) === "/api/templates") {
-        return {
-          ok: true,
-          json: async () => ({ templates: mockTemplates }),
-        } as Response;
+        return jsonResponse({ templates: mockTemplates });
       }
       if (String(url) === "/api/agents") {
-        return {
-          ok: true,
-          json: async () => [{ name: "Ada" }],
-        } as Response;
+        return jsonResponse([{ name: "Ada" }]);
       }
       if (String(url) === "/api/data-directories") {
-        return {
-          ok: true,
-          json: async () => ({ directories: [] }),
-        } as Response;
+        return jsonResponse({ directories: [] });
       }
-      return { ok: false, json: async () => ({}) } as Response;
+      return jsonResponse({}, { status: 400 });
     });
   });
 
@@ -969,31 +960,25 @@ describe("NewAgentForm — optional Odoo models do not block creation", () => {
     mockSearchParams.current = new URLSearchParams();
     fetchSpy = vi.spyOn(global, "fetch").mockImplementation(async (url) => {
       if (String(url) === "/api/templates") {
-        return {
-          ok: true,
-          json: async () => ({ templates: approvalManagerInList }),
-        } as Response;
+        return jsonResponse({ templates: approvalManagerInList });
       }
       if (String(url) === "/api/data-directories") {
-        return { ok: true, json: async () => ({ directories: [] }) } as Response;
+        return jsonResponse({ directories: [] });
       }
       if (String(url) === "/api/integrations") {
-        return {
-          ok: true,
-          json: async () => [
-            {
-              id: "conn-community",
-              name: "Odoo Community",
-              type: "odoo",
-              data: { models: communityConnectionModels },
-            },
-          ],
-        } as Response;
+        return jsonResponse([
+          {
+            id: "conn-community",
+            name: "Odoo Community",
+            type: "odoo",
+            data: { models: communityConnectionModels },
+          },
+        ]);
       }
       if (String(url) === "/api/agents") {
-        return { ok: true, json: async () => [] } as Response;
+        return jsonResponse([]);
       }
-      return { ok: false, json: async () => ({}) } as Response;
+      return jsonResponse({}, { status: 400 });
     });
   });
 
@@ -1026,10 +1011,336 @@ describe("NewAgentForm — optional Odoo models do not block creation", () => {
     // not gating, and the alert is only for blocking (non-optional) misses.
     expect(screen.queryByText(/Missing Odoo modules/i)).not.toBeInTheDocument();
   });
+
+  // #1208's sibling case. The model IS in the catalogue, so nothing blocks and
+  // nothing used to be said — the admin found out from a "Permission denied"
+  // mid-conversation. Reported, not blocked: the agent is still useful for
+  // everything else, which is why `validateOdooTemplate` leaves `valid` true.
+  it("warns about operations the connection denies, without blocking the create", async () => {
+    fetchSpy.mockImplementation(async (url) => {
+      if (String(url) === "/api/templates") {
+        return jsonResponse({ templates: approvalManagerInList });
+      }
+      if (String(url) === "/api/data-directories") {
+        return jsonResponse({ directories: [] });
+      }
+      if (String(url) === "/api/integrations") {
+        return jsonResponse([
+          {
+            id: "conn-readonly",
+            name: "Odoo Read-Only",
+            type: "odoo",
+            data: {
+              models: communityConnectionModels.map((m) =>
+                // The template needs write on hr.expense.sheet to approve.
+                m.model === "hr.expense.sheet" ? { ...m, access: readAccess() } : m
+              ),
+            },
+          },
+        ]);
+      }
+      if (String(url) === "/api/agents") {
+        return jsonResponse([]);
+      }
+      return jsonResponse({}, { status: 400 });
+    });
+
+    render(<NewAgentForm />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Approval Manager")).toBeInTheDocument();
+    });
+    await userEvent.click(screen.getByText("Approval Manager"));
+
+    expect(await screen.findByText(/Limited Odoo access/i)).toBeInTheDocument();
+    expect(await screen.findByText(/hr\.expense\.sheet \(write\)/)).toBeInTheDocument();
+
+    // Reported, not blocked.
+    expect(screen.queryByText(/Missing Odoo modules/i)).not.toBeInTheDocument();
+    const createButton = await screen.findByRole("button", { name: /create/i });
+    await waitFor(() => {
+      expect(createButton).not.toBeDisabled();
+    });
+  });
+});
+
+/**
+ * Every background load in this form is fire-and-forget from React's point of
+ * view: nothing awaits the promise the effect starts. A rejection therefore has
+ * nowhere to go — it surfaces as a suite-level unhandled rejection that ends a
+ * full `pnpm test` run with `Errors 1 error` and exit 1 while every test passes,
+ * which is very expensive to read off a CI log. It is nondeterministic too: the
+ * effect has to fire after the test's fetch mock was restored, so it reproduces
+ * in a full run and not in isolation.
+ *
+ * Four claims per loader. The request is cancelled when the form goes away, and
+ * that cancellation stays quiet — asserted by aborting for real rather than by
+ * handing the component an AbortError while its signal is untouched, which is a
+ * state it cannot reach and would leave the reachable branch untested. Then the
+ * two ways a load actually fails: the request rejects, and the server answers a
+ * status. Both have to reach the user, because an empty list and a failed list
+ * look identical on screen.
+ */
+describe("NewAgentForm — background loads are cancelled, their failures surfaced", () => {
+  // `ReturnType<typeof vi.spyOn>` erases the concrete `fetch` signature
+  // (spyOn is generic/overloaded), leaving every mock-callback parameter
+  // implicitly `any`. Annotate with the real global `fetch` signature instead.
+  let fetchSpy: Mock<typeof fetch>;
+
+  /**
+   * Every signal the component passed for a URL, in order.
+   *
+   * A list rather than one entry per URL: `/api/integrations` is loaded by both
+   * the Odoo and the mailbox effect, and any effect that re-runs starts a second
+   * request. Keeping only the last would let a leaked controller pass unchecked
+   * behind the one that happened to be recorded.
+   */
+  let signals: Map<string, Array<AbortSignal | undefined>>;
+
+  /** Stands in for one route's response. Receives the component's own init. */
+  type Override = (init?: RequestInit) => Promise<Response>;
+
+  /** Never settles, so the request is still in flight when the test acts. */
+  const pending: Override = () => new Promise<Response>(() => {});
+
+  /** Rejects the way a real `fetch` does once its signal is aborted. */
+  const rejectsOnAbort: Override = (init) =>
+    new Promise<Response>((_, reject) => {
+      init?.signal?.addEventListener("abort", () =>
+        reject(new DOMException("The user aborted a request.", "AbortError"))
+      );
+    });
+
+  const allTemplates = [
+    ...mockTemplates,
+    {
+      id: "odoo-sales-analyst",
+      name: "Sales Analyst",
+      description: "Analyze revenue",
+      requiresDirectories: false,
+      requiresOdooConnection: true,
+      odooAccessLevel: "read-only",
+      defaultTagline: "Analyze revenue",
+    },
+    {
+      id: "email-assistant",
+      name: "Email Assistant",
+      description: "Read, search, and draft emails",
+      requiresDirectories: false,
+      requiresEmailConnection: true,
+      defaultTagline: "Read, search, and draft emails from your inbox",
+    },
+  ];
+
+  /**
+   * Answer every route the form loads. `overrides` replaces one URL's response
+   * — with a rejection, with a status, or with a promise that only settles when
+   * the component aborts it.
+   */
+  function mockApis(overrides: Map<string, Override> = new Map()) {
+    fetchSpy.mockImplementation(async (url, init) => {
+      const key = String(url);
+      const seen = signals.get(key) ?? [];
+      seen.push(init?.signal ?? undefined);
+      signals.set(key, seen);
+
+      const override = overrides.get(key);
+      if (override) return override(init);
+      if (key === "/api/templates") return jsonResponse({ templates: allTemplates });
+      if (key === "/api/integrations") return jsonResponse([]);
+      if (key === "/api/agents") return jsonResponse([]);
+      if (key === "/api/data-directories") return jsonResponse({ directories: [] });
+      return jsonResponse({}, { status: 400 });
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    signals = new Map();
+    fetchSpy = vi.spyOn(global, "fetch");
+    mockApis();
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+  });
+
+  const LOADERS = [
+    {
+      what: "the template list",
+      url: "/api/templates",
+      template: null,
+      failureText: /templates/i,
+    },
+    {
+      what: "the directory list",
+      url: "/api/data-directories",
+      template: "knowledge-base",
+      failureText: /directories/i,
+    },
+    {
+      what: "the Odoo connection list",
+      url: "/api/integrations",
+      template: "odoo-sales-analyst",
+      failureText: /odoo connections/i,
+    },
+    {
+      what: "the mailbox list",
+      url: "/api/integrations",
+      template: "email-assistant",
+      failureText: /mailboxes/i,
+    },
+  ] as const;
+
+  describe.each(LOADERS)("$what", ({ url, template, failureText }) => {
+    beforeEach(() => {
+      mockSearchParams.current = new URLSearchParams(template ? `template=${template}` : "");
+    });
+
+    it("aborts the request that is still in flight when the form unmounts", async () => {
+      mockApis(new Map([[url, pending]]));
+
+      const { unmount } = render(<NewAgentForm />);
+      await waitFor(() => expect(signals.get(url)?.length).toBeGreaterThan(0));
+
+      unmount();
+
+      const seen = signals.get(url) ?? [];
+      expect(seen.length).toBeGreaterThan(0);
+      expect(seen.map((s) => s?.aborted)).toEqual(seen.map(() => true));
+    });
+
+    it("says nothing when the form unmounts while the request is in flight", async () => {
+      mockApis(new Map([[url, rejectsOnAbort]]));
+
+      const { unmount } = render(<NewAgentForm />);
+      await waitFor(() => expect(signals.get(url)?.length).toBeGreaterThan(0));
+
+      unmount();
+      await flushPendingRenders();
+
+      expect(toast.error).not.toHaveBeenCalled();
+    });
+
+    it("tells the user when the request fails", async () => {
+      mockApis(new Map([[url, () => Promise.reject(new TypeError("fetch failed"))]]));
+
+      render(<NewAgentForm />);
+
+      await waitFor(() =>
+        expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(failureText))
+      );
+    });
+
+    it("tells the user when the server answers an error", async () => {
+      mockApis(new Map([[url, async () => jsonResponse({}, { status: 500 })]]));
+
+      render(<NewAgentForm />);
+
+      await waitFor(() =>
+        expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(failureText))
+      );
+    });
+  });
+
+  it("shows the server's own wording when a failing route sends some", async () => {
+    mockSearchParams.current = new URLSearchParams("template=knowledge-base");
+    mockApis(
+      new Map([
+        [
+          "/api/data-directories",
+          async () => jsonResponse({ error: "Data root is not mounted" }, { status: 503 }),
+        ],
+      ])
+    );
+
+    render(<NewAgentForm />);
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(expect.stringContaining("Data root is not mounted"))
+    );
+  });
+
+  it("cancels the suggested-name lookup when the form goes away", async () => {
+    mockSearchParams.current = new URLSearchParams("template=knowledge-base");
+    mockApis(new Map([["/api/agents", pending]]));
+
+    const { unmount } = render(<NewAgentForm />);
+    await waitFor(() => expect(signals.get("/api/agents")?.length).toBeGreaterThan(0));
+
+    unmount();
+
+    const seen = signals.get("/api/agents") ?? [];
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.map((s) => s?.aborted)).toEqual(seen.map(() => true));
+  });
+});
+
+// #1297: a web template on an instance without a search provider must say so
+// and link to the setup, without blocking creation (page fetch still works).
+describe("NewAgentForm — web template without a search provider", () => {
+  let fetchSpy: Mock<typeof fetch>;
+
+  function webTemplate(webSearchConfigured: boolean) {
+    return {
+      id: "market-monitor",
+      name: "Market & News Monitor",
+      description: "Watch the web",
+      requiresDirectories: false,
+      requiresOdooConnection: false,
+      requiresWeb: true,
+      webSearchConfigured,
+      defaultTagline: "Watches the web",
+      iconName: "Globe",
+    };
+  }
+
+  function stubTemplates(webSearchConfigured: boolean) {
+    fetchSpy = vi.spyOn(global, "fetch").mockImplementation(async (url) => {
+      if (String(url) === "/api/templates") {
+        return jsonResponse({ templates: [...mockTemplates, webTemplate(webSearchConfigured)] });
+      }
+      return jsonResponse({}, { status: 400 });
+    });
+  }
+
+  beforeEach(() => {
+    mockSearchParams.current = new URLSearchParams();
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+  });
+
+  it("warns that web search is not set up, links to it, and still allows creating", async () => {
+    stubTemplates(false);
+    render(<NewAgentForm />);
+
+    await userEvent.click(await screen.findByText("Market & News Monitor"));
+
+    expect(await screen.findByText("Web search isn't set up")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /set up web search/i })).toHaveAttribute(
+      "href",
+      "/settings?tab=integrations"
+    );
+    expect(screen.getByText("Search the public web (not set up yet)")).toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText(/name/i), "Scout");
+    expect(screen.getByRole("button", { name: "Create" })).toBeEnabled();
+  });
+
+  it("shows no warning when a search provider is configured", async () => {
+    stubTemplates(true);
+    render(<NewAgentForm />);
+
+    await userEvent.click(await screen.findByText("Market & News Monitor"));
+
+    expect(await screen.findByText("Search the public web")).toBeInTheDocument();
+    expect(screen.queryByText("Web search isn't set up")).not.toBeInTheDocument();
+  });
 });
 
 describe("NewAgentForm — MCP skipped-tool notice", () => {
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  let fetchSpy: Mock<typeof fetch>;
 
   const mcpTemplates = [
     {
@@ -1048,15 +1359,12 @@ describe("NewAgentForm — MCP skipped-tool notice", () => {
   function mockCreateReturning(skippedMcpTools: string[]) {
     fetchSpy.mockImplementation(async (url, init) => {
       if (String(url) === "/api/templates") {
-        return { ok: true, json: async () => ({ templates: mcpTemplates }) } as Response;
+        return jsonResponse({ templates: mcpTemplates });
       }
       if (String(url) === "/api/agents" && init?.method === "POST") {
-        return {
-          ok: true,
-          json: async () => ({ id: "new-agent-id", skippedMcpTools }),
-        } as Response;
+        return jsonResponse({ id: "new-agent-id", skippedMcpTools }, { status: 201 });
       }
-      return { ok: false, json: async () => ({}) } as Response;
+      return jsonResponse({}, { status: 400 });
     });
   }
 
@@ -1132,12 +1440,12 @@ describe("NewAgentForm — MCP skipped-tool notice", () => {
     // Non-MCP creates must not grow a spurious toast.
     fetchSpy.mockImplementation(async (url, init) => {
       if (String(url) === "/api/templates") {
-        return { ok: true, json: async () => ({ templates: mcpTemplates }) } as Response;
+        return jsonResponse({ templates: mcpTemplates });
       }
       if (String(url) === "/api/agents" && init?.method === "POST") {
-        return { ok: true, json: async () => ({ id: "new-agent-id" }) } as Response;
+        return jsonResponse({ id: "new-agent-id" }, { status: 201 });
       }
-      return { ok: false, json: async () => ({}) } as Response;
+      return jsonResponse({}, { status: 400 });
     });
 
     await createAgent();

@@ -1,6 +1,6 @@
 import { db } from "@/db";
 import { agents, users } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { writeWorkspaceFileInternal } from "@/lib/workspace";
 import { getOnboardingPrompt } from "@/lib/onboarding-prompt";
 
@@ -9,12 +9,18 @@ export async function migrateExistingSmithers(): Promise<void> {
     where: eq(agents.isPersonal, true),
   });
 
+  // Single batched owner lookup instead of one findFirst per agent.
+  const ownerIds = [...new Set(personalAgents.map((a) => a.ownerId).filter((id) => id !== null))];
+  const owners =
+    ownerIds.length > 0
+      ? await db.query.users.findMany({ where: inArray(users.id, ownerIds) })
+      : [];
+  const ownerById = new Map(owners.map((u) => [u.id, u]));
+
   for (const agent of personalAgents) {
     if (!agent.ownerId) continue;
 
-    const user = await db.query.users.findFirst({
-      where: eq(users.id, agent.ownerId),
-    });
+    const user = ownerById.get(agent.ownerId);
 
     if (!user || user.context !== null) continue;
 

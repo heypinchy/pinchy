@@ -10,7 +10,7 @@
 #   4. runtime  — a clean node:22-slim that copies in ONLY what the server
 #      needs at boot: pruned node_modules, the built `.next` (minus the
 #      build-only `.next/cache`), the TypeScript source `tsx` executes
-#      directly, the drizzle migrations `drizzle-kit migrate` applies, the
+#      directly, the drizzle migrations `pnpm db:migrate` applies, the
 #      `scripts/` the entrypoint runs, and the 8 Pinchy plugins.
 #
 # Why this is correct for THIS app (no Next.js standalone, no compiled
@@ -18,10 +18,12 @@
 #   NODE_ENV=production node -r ./server-preload.cjs --import tsx server.ts
 # run from /app/packages/web. The server runs the TypeScript source directly
 # via `tsx` — so `tsx`, the TS source, and the `.next` build all have to be
-# present at runtime. `tsx` and `drizzle-kit` are therefore genuine RUNTIME
-# dependencies (the entrypoint runs `drizzle-kit migrate` at boot) and live
-# in `dependencies`, not `devDependencies`, so `pnpm install --prod` keeps
-# them.
+# present at runtime. `tsx` is therefore a genuine RUNTIME dependency and
+# lives in `dependencies`, not `devDependencies`, so `pnpm install --prod`
+# keeps it. `drizzle-kit` sits there too, but no longer needs to: the boot
+# migration is `node scripts/db-migrate.mjs` (drizzle-orm's migrator, which
+# reports failures — drizzle-kit's CLI swallowed them), and drizzle-kit is
+# now only a `db:generate` / `db:studio` tool. Prunable, separately.
 
 # ---------------------------------------------------------------------------
 # Stage: base — shared layout + corepack-enabled pnpm.
@@ -35,6 +37,25 @@ FROM mirror.gcr.io/library/node:22-slim AS base
 # without re-downloading on every container start.
 ENV COREPACK_HOME=/app/.cache/corepack
 RUN corepack enable
+
+# python3 + build-essential make better-sqlite3's DOCUMENTED fallback real.
+# Its install script is `prebuild-install || node-gyp rebuild --release`: the
+# first half downloads a prebuilt binary, the second compiles one when that
+# download is unusable. Without a toolchain the second half cannot run, so a
+# transient network hiccup — `prebuild-install warn install Request timed out`,
+# observed in CI on 2026-08-05 — is not a slower build, it is a HARD build
+# failure, and a rerun only heals it for as long as the next download happens
+# to succeed (CI run 30994369292 on PR #1110).
+#
+# They sit in `base` and therefore reach ONLY prod-deps and build. The runtime
+# stage is a separate `FROM node:22-slim` that copies the already-installed
+# node_modules, so the 306 MB toolchain never ships — the same builder/runtime
+# split Dockerfile.openclaw makes for this exact module. Keep it here rather
+# than in `runtime`: native-build-toolchain.test.mjs asserts both halves.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 \
+      build-essential \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -70,6 +91,26 @@ COPY packages/web packages/web
 # plugin-manifest-loader.ts imports these JSON manifests at Next.js build time
 # (static imports bundled by Turbopack). They must be present before `pnpm build`.
 COPY packages/plugins/pinchy-files/openclaw.plugin.json packages/plugins/pinchy-files/
+# The scanned-PDF reader the knowledge-base ingest SHARES with pinchy-files
+# (#941): the scan rule and the vision-API client. Both are deliberately
+# import-free, and the canonical copy lives in the plugin because a plugin is
+# deployed as a self-contained directory and can import nothing outside itself —
+# see packages/plugins/pinchy-files/pdf-scan-rule.ts. `pnpm build` compiles them
+# (web imports them with a relative path that climbs out of the package), and
+# `tsx` resolves them again as a LIVE require at runtime, on the index worker's
+# path. The runtime stage inherits them through its `COPY --from=build
+# /app/packages/plugins`. Pinned by scripts/lib/prepush-build-gate.test.mjs.
+#
+# The zip guard (#424) rides the same COPY: the Office preflight checks an
+# archive's declared AND real sizes with it, and hands exceljs, mammoth and
+# LibreOffice only the copy it verified. It imports
+# Node built-ins only (`node:path`, `node:zlib`).
+COPY packages/plugins/pinchy-files/pdf-scan-rule.ts packages/plugins/pinchy-files/pdf-vision-api.ts packages/plugins/pinchy-files/docx-zip-guard.ts packages/plugins/pinchy-files/
+# The IP-address classifier the admin-facing SSRF guards (url-validation.ts,
+# mail-host-guard.ts) SHARE with the web_fetch tool, so the two cannot drift
+# apart. Import-free, canonical copy in the plugin for the same reason as above;
+# see packages/plugins/pinchy-web/ip-address.ts.
+COPY packages/plugins/pinchy-web/ip-address.ts packages/plugins/pinchy-web/
 COPY packages/plugins/pinchy-context/openclaw.plugin.json packages/plugins/pinchy-context/
 COPY packages/plugins/pinchy-audit/openclaw.plugin.json packages/plugins/pinchy-audit/
 COPY packages/plugins/pinchy-transcript/openclaw.plugin.json packages/plugins/pinchy-transcript/
@@ -77,6 +118,8 @@ COPY packages/plugins/pinchy-docs/openclaw.plugin.json packages/plugins/pinchy-d
 COPY packages/plugins/pinchy-email/openclaw.plugin.json packages/plugins/pinchy-email/
 COPY packages/plugins/pinchy-odoo/openclaw.plugin.json packages/plugins/pinchy-odoo/
 COPY packages/plugins/pinchy-web/openclaw.plugin.json packages/plugins/pinchy-web/
+COPY packages/plugins/pinchy-knowledge/openclaw.plugin.json packages/plugins/pinchy-knowledge/
+COPY packages/plugins/pinchy-approvals/openclaw.plugin.json packages/plugins/pinchy-approvals/
 
 RUN cd packages/web && pnpm build
 
@@ -84,6 +127,35 @@ RUN cd packages/web && pnpm build
 # `.next/cache` is regenerated on the next build and is frequently the single
 # biggest directory in `.next`; it is useless at runtime.
 RUN rm -rf packages/web/.next/cache
+
+# ---------------------------------------------------------------------------
+# Stage: embedding-model — fetch the pinned embeddinggemma GGUF the knowledge
+# base embeds with in-process (node-llama-cpp, provider "local"). Isolated in
+# its own stage so the ~300 MB blob and the curl/apt tooling never land in the
+# runtime image — the runtime stage COPYs only the verified file.
+#
+# Same pinned HuggingFace revision + sha256 as the agent-memory model in
+# Dockerfile.openclaw: both features load the identical GGUF, so the two must
+# stay in lockstep (enforced by memory-embedding-pin-drift.test.ts). curl's
+# retry flags matter because this is a large, uncached blob whose transient HF
+# hiccup would otherwise redden an unrelated PR; the sha256sum -c enforces
+# integrity regardless of how many retries it took.
+#
+# No --retry-delay, for the reason spelled out over the same command in
+# Dockerfile.openclaw: a fixed delay disables curl's exponential backoff, which
+# is what turned an HF 429 into a red build on 2026-08-06. It does NOT disable
+# Retry-After compliance — curl honours that header either way — and
+# --retry-max-time bounds when a retry may still start, not the total wall
+# clock. Keep these flags in step with that file.
+# ---------------------------------------------------------------------------
+FROM mirror.gcr.io/library/node:22-slim AS embedding-model
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /opt/embedding-models \
+    && curl -fsSL --retry 8 --retry-all-errors --retry-max-time 600 \
+       -o /opt/embedding-models/embeddinggemma-300m-qat-Q8_0.gguf \
+       https://huggingface.co/ggml-org/embeddinggemma-300m-qat-q8_0-GGUF/resolve/66f974f8cd48cc3b9c41c516b95508e75b4bee64/embeddinggemma-300m-qat-Q8_0.gguf \
+    && echo "6fa0c02a9c302be6f977521d399b4de3a46310a4f2621ee0063747881b673f67  /opt/embedding-models/embeddinggemma-300m-qat-Q8_0.gguf" | sha256sum -c -
 
 # ---------------------------------------------------------------------------
 # Stage: runtime — minimal image that actually boots the server.
@@ -109,12 +181,56 @@ LABEL org.opencontainers.image.source="https://github.com/heypinchy/pinchy" \
 ENV COREPACK_HOME=/app/.cache/corepack
 RUN corepack enable
 
+# LibreOffice: the knowledge base converts page-shaped Office documents
+# (.doc/.docx/.ppt/.pptx) to PDF before indexing them (#936, lib/knowledge/
+# office-convert.ts). This is the only toolchain that reads the LEGACY binary
+# formats — 13 of the 19 Office files in the reference corpus are .doc/.ppt,
+# and the entire modern parsing ecosystem (Docling, MarkItDown, Unstructured,
+# python-docx/python-pptx) is OOXML-only. Conversion also produces the single
+# renderable artifact the citation chain needs, so a citation can never point
+# at something the reader cannot open.
+#
+# Measured on node:22-slim (247 MB): writer+impress+fonts-liberation = 669 MB
+# (+422 MB); the full `libreoffice` metapackage would be 772 MB. We install
+# the two page-shaped filters plus Calc:
+#   - libreoffice-calc is here for ONE job: turning a legacy BIFF `.xls` into
+#     an `.xlsx` (#1373). A sheet is still never made into a PDF — a sheet is
+#     not a page, and the spreadsheet reader takes cells, not pages (#937/#940).
+#     It is needed because nothing on npm reads BIFF safely: exceljs cannot,
+#     and SheetJS publishes its security fixes off the npm registry.
+#   - fonts-liberation is not optional. Without a metric-compatible font set
+#     LibreOffice substitutes, re-flows, and can drop glyphs — and the corpus
+#     is full of Central/Eastern European diacritics (GODIČ TORKAR, Domžale).
+#   - catdoc (~1 MB) ships catdoc/catppt, the INDEPENDENT text extractors the
+#     conversion's lower-bound word check compares against for the legacy
+#     formats. An oracle derived from LibreOffice would agree with LibreOffice
+#     about text it dropped and verify nothing.
+# `--no-install-recommends` matters here: the recommends pull in a JRE.
+#
+# The web process never runs it. This image is ALSO the `office-converter`
+# service (docker-compose.yml) — no network, no secrets, no volume but the
+# spool — and that container is the only place LibreOffice opens a file.
+# KB_OFFICE_SPOOL_DIR below is what sends the web process there. One image
+# instead of two means nothing extra to build, publish, pull, or mirror into
+# an air-gapped install; the binary on disk is inert in the web container.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       libreoffice-writer libreoffice-impress libreoffice-calc fonts-liberation catdoc \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 EXPOSE 7777
 
 ENV PORT=7777
 ENV NODE_ENV=production
+
+# Office-to-PDF conversion happens in the office-converter sidecar, never in
+# this process. The spool is the volume both containers mount at this path;
+# the converter listens on a Unix socket inside it. There is deliberately no
+# fallback to converting in-process when the sidecar is missing
+# (lib/knowledge/office-convert.ts → defaultConverter).
+ENV KB_OFFICE_SPOOL_DIR=/var/spool/pinchy-office
 
 # Workspace manifests + patches: pnpm reads these to resolve workspace scripts
 # (`pnpm start`, `pnpm db:migrate`) and the patched-dependency map at runtime.
@@ -136,9 +252,11 @@ COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=prod-deps /app/packages/web/node_modules ./packages/web/node_modules
 
 # The runtime TypeScript source that `tsx` executes directly, plus the config
-# the server + drizzle-kit read at boot (next.config.ts, drizzle.config.ts,
-# tsconfig.json), the scripts/ the entrypoint calls (resolve-db-password.mjs),
-# the drizzle migrations drizzle-kit applies, server.ts and server-preload.cjs,
+# the server reads at boot (next.config.ts, tsconfig.json; drizzle.config.ts
+# rides along for `db:generate`/`db:studio` — the boot migration resolves its
+# folder from its own path, not from the config), the scripts/ the entrypoint
+# calls (resolve-db-password.mjs, db-migrate.mjs), the drizzle migrations
+# db-migrate.mjs applies, server.ts and server-preload.cjs,
 # and the public/ assets. The source tree is small; node_modules and
 # .next/cache (the bloat) are handled separately above. Build-only configs
 # (postcss.config.mjs, components.json) are intentionally NOT copied — PostCSS
@@ -154,6 +272,12 @@ COPY --from=build /app/packages/web/next.config.ts /app/packages/web/drizzle.con
 # The built Next.js app, WITHOUT the build-only `.next/cache` (stripped in the
 # build stage). This is the compiled production app the custom server serves.
 COPY --from=build /app/packages/web/.next ./packages/web/.next
+
+# The embeddinggemma GGUF the KB index worker + search route load in-process
+# (kbEmbeddingConfig reads EMBEDDING_MODEL_PATH = /opt/embedding-models/...).
+# Verified in the embedding-model stage; copied here so the running web process
+# can embed without any network/Ollama dependency (#715).
+COPY --from=embedding-model /opt/embedding-models /opt/embedding-models
 
 # Plugin manifests at /app/packages/plugins/<name>/openclaw.plugin.json.
 # plugin-manifest-loader.ts statically imports these via the relative path
@@ -175,6 +299,8 @@ COPY packages/plugins/pinchy-docs /app/pinchy-plugins/pinchy-docs
 COPY packages/plugins/pinchy-odoo /app/pinchy-plugins/pinchy-odoo
 COPY packages/plugins/pinchy-web /app/pinchy-plugins/pinchy-web
 COPY packages/plugins/pinchy-email /app/pinchy-plugins/pinchy-email
+COPY packages/plugins/pinchy-knowledge /app/pinchy-plugins/pinchy-knowledge
+COPY packages/plugins/pinchy-approvals /app/pinchy-plugins/pinchy-approvals
 
 WORKDIR /app/packages/web
 
@@ -182,13 +308,34 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD node -e "fetch('http://localhost:7777/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
 
 # Create non-root user (entrypoint drops privileges after fixing volume permissions)
-RUN groupadd -r -g 999 pinchy && useradd -r -u 999 -g pinchy -d /app pinchy
-RUN mkdir -p /app/secrets /openclaw-config/workspaces && chown -R pinchy:pinchy /app /app/secrets /openclaw-config/workspaces
+# — and the office-converter's own user, in the same group. Its own uid so the
+# directories the web process stages a batch in stay the web process's: the
+# converter reads and writes there only where the group may (see below and
+# lib/knowledge/office-converter-sidecar.ts).
+RUN groupadd -r -g 999 pinchy && useradd -r -u 999 -g pinchy -d /app pinchy \
+    && useradd -r -u 998 -g pinchy -d /nonexistent -M -s /usr/sbin/nologin pinchy-office
+# /var/cache/pinchy-kb-artifacts is the converted-Office-PDF store (#936). It
+# is a named volume in docker-compose.yml precisely so nothing is ever written
+# next to the original: /data is mounted read-only and the docs state that as a
+# product promise. Mirrors the openclaw container's pinchy-pdf-cache.
+# /var/spool/pinchy-office is the hand-over to the office-converter sidecar,
+# owned by the web process. Group-writable so the converter (pinchy-office, in
+# group pinchy) can create its socket there; sticky so it cannot rename or
+# remove the web process's batches. A fresh named volume copies this
+# directory's ownership and mode; entrypoint.sh repairs a volume that already
+# exists or was created some other way.
+RUN mkdir -p /app/secrets /openclaw-config/workspaces /var/cache/pinchy-kb-artifacts /var/spool/pinchy-office \
+    && chown -R pinchy:pinchy /app /app/secrets /openclaw-config/workspaces /var/cache/pinchy-kb-artifacts /var/spool/pinchy-office \
+    && chmod 1770 /var/spool/pinchy-office
 
 COPY entrypoint.sh /entrypoint.sh
 # Plugin-source sync helper the entrypoint runs on every boot. Extracted from
 # entrypoint.sh so its node_modules-preservation invariant is unit-testable.
 COPY config/sync-plugins.sh /sync-plugins.sh
-RUN chmod +x /entrypoint.sh /sync-plugins.sh
+# Shared-volume ownership repair the entrypoint runs before dropping privileges.
+# Extracted for the same reason: the path it must LEAVE root-owned
+# (/openclaw-config/npm, OpenClaw's plugin store) is unit-testable there.
+COPY config/fix-volume-ownership.sh /fix-volume-ownership.sh
+RUN chmod +x /entrypoint.sh /sync-plugins.sh /fix-volume-ownership.sh
 
 ENTRYPOINT ["/entrypoint.sh"]

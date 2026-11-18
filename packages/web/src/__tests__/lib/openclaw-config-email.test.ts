@@ -28,6 +28,14 @@ vi.mock("fs", async (importOriginal) => {
   };
 });
 
+// OpenAI-compatible custom providers (#894) are DB-backed and now queried
+// during config regeneration. The shared @/db mock here returns agent rows
+// for every table, so stub this module to an empty list to keep the test hermetic.
+vi.mock("@/lib/openai-compatible-providers", () => ({
+  listOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
+  listProvidersWithApiKeys: vi.fn().mockResolvedValue([]),
+}));
+
 vi.mock("@/db", () => ({
   db: {
     select: vi.fn().mockImplementation(() => ({
@@ -87,6 +95,7 @@ import { writeFileSync, readFileSync, existsSync } from "fs";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
 import { getSetting } from "@/lib/settings";
+import { mockJoinedPermissionsDb } from "@/test-helpers/db-mock";
 
 const mockedWriteFileSync = vi.mocked(writeFileSync);
 const mockedReadFileSync = vi.mocked(readFileSync);
@@ -94,7 +103,7 @@ const mockedExistsSync = vi.mocked(existsSync);
 const mockedDb = vi.mocked(db);
 const mockedGetSetting = vi.mocked(getSetting);
 
-// The regenerate writes more than one file (TOOLS.md mailbox context precedes
+// The regenerate writes more than one file (the IDENTITY.md mailbox context precedes
 // the config write for email agents), so locate the openclaw.json write by
 // path instead of assuming it is the first writeFileSync call.
 function getWrittenConfigString(): string {
@@ -152,18 +161,7 @@ describe("pinchy-email config generation", () => {
       },
     ];
 
-    mockedDb.select.mockReturnValue({
-      from: vi.fn().mockImplementation(() =>
-        Object.assign(Promise.resolve(agentsData), {
-          innerJoin: vi.fn().mockReturnValue(
-            Object.assign(Promise.resolve(permissionsData), {
-              where: vi.fn().mockResolvedValue(permissionsData),
-            })
-          ),
-          where: vi.fn().mockResolvedValue([]),
-        })
-      ),
-    } as never);
+    mockedDb.select.mockReturnValue(mockJoinedPermissionsDb(agentsData, permissionsData) as never);
 
     mockedReadFileSync.mockReturnValue(
       JSON.stringify({
@@ -237,18 +235,7 @@ describe("pinchy-email config generation", () => {
       },
     ];
 
-    mockedDb.select.mockReturnValue({
-      from: vi.fn().mockImplementation(() =>
-        Object.assign(Promise.resolve(agentsData), {
-          innerJoin: vi.fn().mockReturnValue(
-            Object.assign(Promise.resolve(permissionsData), {
-              where: vi.fn().mockResolvedValue(permissionsData),
-            })
-          ),
-          where: vi.fn().mockResolvedValue([]),
-        })
-      ),
-    } as never);
+    mockedDb.select.mockReturnValue(mockJoinedPermissionsDb(agentsData, permissionsData) as never);
 
     mockedReadFileSync.mockReturnValue(
       JSON.stringify({
@@ -330,18 +317,7 @@ describe("pinchy-email config generation", () => {
       },
     ];
 
-    mockedDb.select.mockReturnValue({
-      from: vi.fn().mockImplementation(() =>
-        Object.assign(Promise.resolve(agentsData), {
-          innerJoin: vi.fn().mockReturnValue(
-            Object.assign(Promise.resolve(permissionsData), {
-              where: vi.fn().mockResolvedValue(permissionsData),
-            })
-          ),
-          where: vi.fn().mockResolvedValue([]),
-        })
-      ),
-    } as never);
+    mockedDb.select.mockReturnValue(mockJoinedPermissionsDb(agentsData, permissionsData) as never);
 
     mockedReadFileSync.mockReturnValue(
       JSON.stringify({
@@ -396,18 +372,7 @@ describe("pinchy-email config generation", () => {
       },
     ];
 
-    mockedDb.select.mockReturnValue({
-      from: vi.fn().mockImplementation(() =>
-        Object.assign(Promise.resolve(agentsData), {
-          innerJoin: vi.fn().mockReturnValue(
-            Object.assign(Promise.resolve(permissionsData), {
-              where: vi.fn().mockResolvedValue(permissionsData),
-            })
-          ),
-          where: vi.fn().mockResolvedValue([]),
-        })
-      ),
-    } as never);
+    mockedDb.select.mockReturnValue(mockJoinedPermissionsDb(agentsData, permissionsData) as never);
 
     mockedReadFileSync.mockReturnValue(
       JSON.stringify({
@@ -474,18 +439,7 @@ describe("pinchy-email config generation", () => {
       },
     ];
 
-    mockedDb.select.mockReturnValue({
-      from: vi.fn().mockImplementation(() =>
-        Object.assign(Promise.resolve(agentsData), {
-          innerJoin: vi.fn().mockReturnValue(
-            Object.assign(Promise.resolve(permissionsData), {
-              where: vi.fn().mockResolvedValue(permissionsData),
-            })
-          ),
-          where: vi.fn().mockResolvedValue([]),
-        })
-      ),
-    } as never);
+    mockedDb.select.mockReturnValue(mockJoinedPermissionsDb(agentsData, permissionsData) as never);
 
     await regenerateOpenClawConfig();
 
@@ -567,18 +521,7 @@ describe("pinchy-email config generation", () => {
       },
     ];
 
-    mockedDb.select.mockReturnValue({
-      from: vi.fn().mockImplementation(() =>
-        Object.assign(Promise.resolve(agentsData), {
-          innerJoin: vi.fn().mockReturnValue(
-            Object.assign(Promise.resolve(permissionsData), {
-              where: vi.fn().mockResolvedValue(permissionsData),
-            })
-          ),
-          where: vi.fn().mockResolvedValue([]),
-        })
-      ),
-    } as never);
+    mockedDb.select.mockReturnValue(mockJoinedPermissionsDb(agentsData, permissionsData) as never);
 
     mockedReadFileSync.mockReturnValue(
       JSON.stringify({
@@ -617,7 +560,7 @@ describe("pinchy-email config generation", () => {
     expect(written).not.toContain("secret-password");
   });
 
-  // MIGRATION TEST (AGENTS.md § "Test Migrations Against Pre-Existing Data"):
+  // MIGRATION TEST (agent-rules/testing.md § "Test Migrations Against Pre-Existing Data"):
   // pre-#328 agent template creation stored raw per-tool operations (list,
   // read, search, draft) directly as agent_connection_permissions rows (see
   // ebe6b47a2's "Operation vocabulary mismatch" fix, which corrected the
@@ -659,18 +602,7 @@ describe("pinchy-email config generation", () => {
       },
     ];
 
-    mockedDb.select.mockReturnValue({
-      from: vi.fn().mockImplementation(() =>
-        Object.assign(Promise.resolve(agentsData), {
-          innerJoin: vi.fn().mockReturnValue(
-            Object.assign(Promise.resolve(permissionsData), {
-              where: vi.fn().mockResolvedValue(permissionsData),
-            })
-          ),
-          where: vi.fn().mockResolvedValue([]),
-        })
-      ),
-    } as never);
+    mockedDb.select.mockReturnValue(mockJoinedPermissionsDb(agentsData, permissionsData) as never);
 
     mockedReadFileSync.mockReturnValue(
       JSON.stringify({
@@ -698,7 +630,7 @@ describe("pinchy-email config generation", () => {
     expect(agentConfig.permissions).toEqual({ email: ["search"] });
   });
 
-  // MIGRATION TEST (AGENTS.md § "Test Migrations Against Pre-Existing Data"):
+  // MIGRATION TEST (agent-rules/testing.md § "Test Migrations Against Pre-Existing Data"):
   // "list" is the OTHER legacy per-tool operation pre-#328 template creation
   // stored directly as agent_connection_permissions rows (see
   // ebe6b47a2's "Operation vocabulary mismatch" fix, which corrected the
@@ -741,18 +673,7 @@ describe("pinchy-email config generation", () => {
       },
     ];
 
-    mockedDb.select.mockReturnValue({
-      from: vi.fn().mockImplementation(() =>
-        Object.assign(Promise.resolve(agentsData), {
-          innerJoin: vi.fn().mockReturnValue(
-            Object.assign(Promise.resolve(permissionsData), {
-              where: vi.fn().mockResolvedValue(permissionsData),
-            })
-          ),
-          where: vi.fn().mockResolvedValue([]),
-        })
-      ),
-    } as never);
+    mockedDb.select.mockReturnValue(mockJoinedPermissionsDb(agentsData, permissionsData) as never);
 
     mockedReadFileSync.mockReturnValue(
       JSON.stringify({

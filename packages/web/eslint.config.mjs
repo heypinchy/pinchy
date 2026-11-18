@@ -7,6 +7,9 @@ import requireParseRequestBody from "./eslint-rules/require-parse-request-body.j
 import noDirectSession from "./eslint-rules/no-direct-session.js";
 import noPiiInAuditDetail from "./eslint-rules/no-pii-in-audit-detail.js";
 import noUntrackedSkips from "./eslint-rules/no-untracked-skips.js";
+import noUntrackedSleeps from "./eslint-rules/no-untracked-sleeps.js";
+import noRawFetchMutation from "./eslint-rules/no-raw-fetch-mutation.js";
+import noUnguardedEffectFetch from "./eslint-rules/no-unguarded-effect-fetch.js";
 
 const pinchyPlugin = {
   rules: {
@@ -15,6 +18,9 @@ const pinchyPlugin = {
     "no-pii-in-audit-detail": noPiiInAuditDetail,
     "require-parse-request-body": requireParseRequestBody,
     "no-untracked-skips": noUntrackedSkips,
+    "no-untracked-sleeps": noUntrackedSleeps,
+    "no-raw-fetch-mutation": noRawFetchMutation,
+    "no-unguarded-effect-fetch": noUnguardedEffectFetch,
   },
 };
 
@@ -73,7 +79,9 @@ const eslintConfig = defineConfig([
   //   tracking-issue reference (`#NNN` or a github.com issue URL). The
   //   companion vitest drift-guard in
   //   src/__tests__/lib/no-untracked-skips.test.ts enforces the same
-  //   contract at test time. `.skipIf(...)` is always allowed.
+  //   contract at test time. `.skipIf(...)` is always allowed. A skip that is
+  //   aliased rather than called (`const d = describe.skip`) is reported too —
+  //   that form was invisible to both checkers until #1071.
   {
     files: [
       "src/**/*.{test,spec}.{ts,tsx,js,jsx}",
@@ -83,6 +91,27 @@ const eslintConfig = defineConfig([
     plugins: { pinchy: pinchyPlugin },
     rules: {
       "pinchy/no-untracked-skips": "error",
+    },
+  },
+  // Pinchy custom rules — Playwright specs and their helpers:
+  // - no-untracked-sleeps: forbid `page.waitForTimeout(...)` unless the
+  //   comment block directly above the statement references a tracking issue.
+  //   (Narrower than no-untracked-skips' 40-line window on purpose: a sleep is
+  //   one statement and its reason belongs on it — a wide scan around the two
+  //   sleeps this rule was written for picked up `request #2` and
+  //   `openclaw#42172` from unrelated comments.) Every Playwright config
+  //   here pins `retries: 0, workers: 1` on purpose, so a flake is a signal
+  //   rather than something a rerun hides — a fixed sleep trades that away
+  //   for a wait that is green on a fast host and red on a loaded runner.
+  //   Wait on a real signal instead (web-first assertions, expect.poll,
+  //   waitForURL, waitForResponse). Same exemption contract as the skip
+  //   policy: a bounded negative window with no event to wait for is
+  //   allowed, but an issue has to be on the hook for removing it (#834).
+  {
+    files: ["e2e/**/*.{ts,tsx,js,jsx}"],
+    plugins: { pinchy: pinchyPlugin },
+    rules: {
+      "pinchy/no-untracked-sleeps": "error",
     },
   },
   // Pinchy custom rules — API route handlers only:
@@ -99,6 +128,29 @@ const eslintConfig = defineConfig([
     rules: {
       "pinchy/no-direct-session": "error",
       "pinchy/require-parse-request-body": "error",
+    },
+  },
+  // Pinchy custom rules — client components, hooks and client pages:
+  // - no-raw-fetch-mutation: a state-changing call goes through the typed
+  //   helpers in @/lib/api-client (apiPost/apiPut/apiPatch/apiDelete), never
+  //   raw `fetch(url, { method: "POST" })`. agent-rules/web-routes.md § "Shared Schemas And
+  //   Typed Client" promises that payload drift is a compile-time error rather
+  //   than a runtime 400 — a promise `JSON.stringify(anything)` cannot keep —
+  //   and the helper is also what surfaces the route's own error wording
+  //   instead of a generic toast (#1075). The rule's own scope check lives
+  //   inside the rule so it stays honest under RuleTester; this glob is the
+  //   outer bound. Opt out per statement with `// raw-fetch-exempt: <reason>`.
+  // - no-unguarded-effect-fetch: a load awaited from a useEffect has a catch
+  //   around it. Nothing awaits the promise an effect starts, so without one a
+  //   failure renders as an empty result and ends a test run with an unhandled
+  //   rejection (#1216). Opt out per statement with
+  //   `// unguarded-load-exempt: <reason>`.
+  {
+    files: ["src/components/**/*.{ts,tsx}", "src/hooks/**/*.{ts,tsx}", "src/app/**/*.tsx"],
+    plugins: { pinchy: pinchyPlugin },
+    rules: {
+      "pinchy/no-raw-fetch-mutation": "error",
+      "pinchy/no-unguarded-effect-fetch": "error",
     },
   },
   // Override default ignores of eslint-config-next.

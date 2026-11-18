@@ -1,0 +1,55 @@
+name: Docs Freshness
+
+on:
+  schedule:
+    # Monday 06:00 UTC — a failure lands at the start of the week, when
+    # somebody is around to act on it, rather than on a Saturday.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: read
+
+jobs:
+  freshness:
+    name: Forward-looking claims whose issue has closed
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      # Deliberately NOT a PR gate. The question needs the network, the answer
+      # changes without anyone touching the repo, and a check that can go red
+      # between two identical commits does not belong in front of a merge
+      # button. See agent-rules/docs.md § "Forward-looking claims need an issue".
+      - name: Check docs freshness
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/check-docs-freshness.mjs
+
+  version-pins:
+    name: main's version pins vs. the latest release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      # Same rationale as the freshness job above — network-dependent,
+      # deliberately not a PR gate. See scripts/lib/main-version-pins.mjs and
+      # the cut-pinchy-release skill's "After the release" section, step 2
+      # ("Forward-port the version pins to main") — #1079.
+      - name: Check main's version pins
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/check-main-version-pins.mjs

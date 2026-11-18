@@ -10,13 +10,23 @@ description: Use when bumping the pinned OpenClaw core version (openclaw npm pac
 Pinchy pins the OpenClaw core runtime version in two places that a drift
 guard keeps in lockstep:
 
-- `packages/web/package.json` → `dependencies.openclaw`
-- `Dockerfile.openclaw` → `RUN npm install -g openclaw@<version>`
+- `packages/web/package.json` → `devDependencies.openclaw` (feeds `/api/version`)
+- `packages/openclaw-runtime/package.json` → `dependencies.openclaw` — the
+  runtime the `pinchy-openclaw` image ships. `Dockerfile.openclaw` installs it
+  from `pnpm-lock.yaml` (`pnpm install --frozen-lockfile --filter
+@pinchy/openclaw-runtime`), so the image's tree is the one `vuln-scan` checks
+  and the root `pnpm.overrides` apply to it.
 
-`packages/web/src/__tests__/lib/openclaw-version-pin-drift.test.ts` greps
-`Dockerfile.openclaw` for the literal `npm install -g openclaw@` line and
-fails if it doesn't match `package.json`. Both places also feed
-`/api/version`.
+Plus the `@openclaw/llama-cpp-provider@<release>` pin in `Dockerfile.openclaw`,
+published in lockstep with OpenClaw (a `-N` repack suffix on the OpenClaw pin
+maps to the base release).
+
+`packages/web/src/__tests__/lib/openclaw-version-pin-drift.test.ts` fails if
+the two manifests disagree, if the provider pin does not match, or if the
+Dockerfile ever installs openclaw from the registry directly. Never go back to
+`npm install -g openclaw@…`: npm honours the npm-shrinkwrap.json OpenClaw
+publishes (its whole transitive tree) and ignores this repo's lockfile and
+overrides — the image then ships versions no scanner here ever sees.
 
 **Core principle: OpenClaw upgrades have repeatedly broken Pinchy in ways
 `pnpm test`/`tsc` don't catch**, because the breakage is in runtime protocol
@@ -29,6 +39,7 @@ version between current and target first.
 ## Procedure
 
 1. **Check current vs. latest.**
+
    ```bash
    grep openclaw packages/web/package.json
    npm view openclaw version
@@ -38,10 +49,12 @@ version between current and target first.
 2. **Read every release's notes between current (exclusive) and target
    (inclusive)** — not just the target's diff summary, since intermediate
    point releases can carry changes too:
+
    ```bash
    gh release list --repo openclaw/openclaw --limit 20
    gh release view v<version> --repo openclaw/openclaw
    ```
+
    Read the full text, not just headline "Highlights" — the "Additional ...
    fixes" subsections often contain the entry that actually matters to us.
    Work through it against these four questions, in this order, and write
@@ -55,6 +68,16 @@ version between current and target first.
    Packaging", and any breaking/migration language anywhere else. **Watch
    especially for new gateway-startup / config self-healing behavior** — these
    don't show up in `pnpm test`/`tsc` at all and only fail in the docker E2Es.
+   **Keeping a shared agent's `MEMORY.md` out of group sessions (#369) is one
+   of these silent dependencies.** OpenClaw's own `filterBootstrapFilesForSession`
+   does it (group, channel, subagent and cron sessions);
+   `packages/web/src/__tests__/lib/openclaw-config-hooks.test.ts` runs the
+   installed function against those session keys and turns red if a bump
+   stops filtering one of them. If it does, the fix is a Pinchy-side filter
+   again — and then check the gateway log that OpenClaw actually **loaded**
+   it. The hook Pinchy shipped for this until v0.10 never ran: OpenClaw loads
+   only `handler.ts`/`handler.js`/`index.ts`/`index.js`, the hook was
+   `handler.mjs`, and its unit tests proved the filter logic, not the loading.
    Real example the 2026.6.11 bump tripped: OpenClaw 2026.6.x added startup
    config auto-restore — on a size-drop / missing-meta vs last-known-good it
    restores `openclaw.json.last-good` over `openclaw.json` at gateway start
@@ -67,11 +90,13 @@ version between current and target first.
    **b. Resolved issues we have workarounds for.** Grep our own code for
    the upstream issue/PR numbers and version-guard comments before reading
    notes:
+
    ```bash
    git grep -rniE "openclaw/openclaw#[0-9]+|openclaw issue|version.?guard|workaround|TODO\(#" -- packages/ config/ | grep -vi node_modules
    ```
+
    For each hit, check the upstream issue state (`gh issue view <n> --repo
-   openclaw/openclaw --json state,closedAt`). But **"issue closed" is
+openclaw/openclaw --json state,closedAt`). But **"issue closed" is
    necessary, not sufficient** — a closed issue is where naive audits go
    wrong. Before removing any workaround, confirm ALL of:
 
@@ -82,7 +107,7 @@ version between current and target first.
       the fixed code, not just the changelog.
    2. **The fix targets OUR code path**, not a sibling. Real example: openclaw
       #75534 (config.apply no-op restart, tracked on our side by #215) fixed
-      OpenClaw's *own* `writeConfigFile` short-circuit — but Pinchy writes the
+      OpenClaw's _own_ `writeConfigFile` short-circuit — but Pinchy writes the
       config file itself and then calls `config.apply`, a different path whose
       `env.*`→default-`restart` mechanism was still present verbatim in
       2026.6.11. Issue closed, workaround NOT removable.
@@ -91,7 +116,7 @@ version between current and target first.
       after the bug is fixed. Real examples that are NOT removable-on-close:
       the `thought_signature` error classifier (`model-error-classifier.ts`,
       #338 — renders graceful UX whenever the upstream error surfaces, and its
-      removal is gated on an *empirical* live-path condition, not the issue
+      removal is gated on an _empirical_ live-path condition, not the issue
       state), and the Telegram store-based `allowFrom` (#47458 — a
       restart-avoiding design choice, see
       `reference_ollama_local_rewrite_decoupling.md` for the "decoupling, not a
@@ -101,7 +126,7 @@ version between current and target first.
       bundle archaeology. Bundle-reading can prove a workaround is STILL needed
       (mechanism present) but is weak evidence that one is safe to REMOVE —
       that needs the prescribed test. Memory: `reference_config_apply_rate_limit_drop.md`
-      warns version guards can *become* bugs after an upstream fix, so this
+      warns version guards can _become_ bugs after an upstream fix, so this
       cuts both ways.
 
    If all four hold, remove the workaround in the same change with a test
@@ -120,7 +145,7 @@ version between current and target first.
    append, publish, lock), which sounds like it could replace `pinchy-transcript`.
    But its methods are all keyed by `{ agentId, sessionKey, sessionId }` —
    **session-scoped**. Pinchy owns `channel_messages` precisely because it
-   needs a *channel-lifetime* record that survives `/new`/reset/compaction
+   needs a _channel-lifetime_ record that survives `/new`/reset/compaction
    (per PR #553 / `reference_pinchy_owned_transcript.md`); adopting the
    session-scoped SDK would reintroduce the exact blank-on-`/new` bug it fixed.
    So: not adoptable. If a native capability genuinely covers the reason,
@@ -142,9 +167,26 @@ version between current and target first.
    the bump if small), (c)/(d) as things worth a tracked issue or a
    `spawn_task`-style follow-up rather than silently doing nothing with them.
 
-4. **Bump both pinned locations** to the same target version:
-   - `packages/web/package.json` → `dependencies.openclaw`
-   - `Dockerfile.openclaw` → the `npm install -g openclaw@...` line
+4. **Bump all pinned locations** to the same target version:
+   - `packages/web/package.json` → `devDependencies.openclaw`
+   - `packages/openclaw-runtime/package.json` → `dependencies.openclaw`
+   - `Dockerfile.openclaw` → `@openclaw/llama-cpp-provider@<release>`
+   - Run `pnpm install` and read the "Ignored build scripts" box: every new
+     entry is a dependency install script the image build will now REFUSE
+     (`strict-dep-builds`). Read the script, then either allow it
+     (`pnpm.onlyBuiltDependencies`) or record that skipping it is safe
+     (`pnpm.ignoredBuiltDependencies`).
+   - `openclaw-runtime-closure.test.ts` fails if a root override now pushes a
+     dependency of the new tree outside its declared major; bound the
+     override rather than accepting it.
+   - A green scan does not cover what OpenClaw **inlines** into its `dist/`
+     (zod, protobufjs, semver, qs, …): overrides cannot reach those copies.
+     Re-check the open cases in `osv-scanner.toml`'s header (zod inlined at
+     4.4.3 as of 2026.7.1-2) against the new release's `dist/` and drop a
+     note once its inlined version is fixed.
+   - Check `npm view openclaw@<target> engines.node` against `.nvmrc` —
+     2026.9.x requires Node >=24.16, which means a repo-wide Node bump
+     (`scripts/lib/node-version-pin.mjs`) before the OpenClaw bump.
 
 5. **Check `openclaw-node`** (`packages/web/package.json` →
    `dependencies["openclaw-node"]`, our own client library in
@@ -159,12 +201,26 @@ version between current and target first.
    Pinchy pin.
 
 6. **Install and verify:**
+
    ```bash
    pnpm install
    pnpm -C packages/web vitest run src/__tests__/lib/openclaw-version-pin-drift.test.ts
    pnpm test
    pnpm build
    ```
+
+   `openclaw-config-hooks.test.ts` (part of `pnpm test`) checks the native
+   #369 memory filter against the installed OpenClaw.
+
+   **`pinchy-knowledge`'s language note pins the version too.** Its
+   `before_prompt_build` hook adds a per-turn note to the user's message,
+   which OpenClaw does not store, so later turns replay a different prefix
+   (#1296). That's safe only while Claude Haiku 5.5, the one preserved-thinking
+   model Pinchy offers, runs with thinking off. The test "is re-checked when
+   OpenClaw is bumped" in `packages/plugins/pinchy-knowledge/index.test.ts`
+   fails on a bump. Check on staging that a Haiku 5.5 KB agent with thinking
+   answers a second turn after a non-English first one, or drop the note,
+   before updating the pinned version in that test.
 
 7. **Don't commit automatically.** Report the diff (`git status --short`,
    `git diff --stat`) and let the user decide to commit/PR — this touches a
@@ -173,6 +229,7 @@ version between current and target first.
 ## If a release note flags something sensitive
 
 Don't just bump anyway. Options, in order of preference:
+
 - Pin to the last version before the risky change and note why in a commit
   message / to the user.
 - Do the bump on a branch, add/adjust a regression test for the specific

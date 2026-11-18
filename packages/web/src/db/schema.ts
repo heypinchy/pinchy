@@ -15,6 +15,7 @@ import {
   pgView,
   primaryKey,
   check,
+  unique,
 } from "drizzle-orm/pg-core";
 import { isNull, sql, relations } from "drizzle-orm";
 import {
@@ -36,8 +37,20 @@ import {
   type ProcessedEmailStatus,
   NOTIFICATION_STATUSES,
   type NotificationStatus,
+  KB_INDEX_JOB_STATUSES,
+  KB_INDEX_JOB_ACTIVE_STATUSES,
+  KB_INDEX_JOB_TRIGGERS,
+  type KbIndexJobStatus,
+  type KbIndexJobTrigger,
+  BUDGET_ACTIONS,
+  type BudgetAction,
 } from "./enums";
 import type { EmailWorkflowFilter, ProcessedEmailOutcome } from "@/lib/email-workflows/types";
+import type { FolderPlanSegment } from "@/lib/knowledge/folder-plan";
+import type { IngestResult } from "@/lib/knowledge/ingest";
+import type { ChunkLocator } from "@/lib/knowledge/locator";
+import type { OpenClawModelDefinition } from "@/lib/openclaw-builtin-models";
+import { vector } from "./vector";
 
 // Render `IN ('a', 'b')` from an enum const (db/enums.ts) so a CHECK constraint
 // and its TypeScript source of truth can never drift. The values are enum-safe
@@ -69,6 +82,25 @@ export type AgentPluginConfig = {
     language?: string;
     country?: string;
     freshness?: string;
+  };
+  /**
+   * Tools that require an inline human confirmation before the agent may
+   * execute them (#124 Tier 2). The acting user approves their own call;
+   * the gate (pinchy-approvals) enforces it server-side.
+   */
+  "pinchy-approvals"?: {
+    /**
+     * Per tool, optionally per resource: `"odoo_delete"` covers the tool,
+     * `"odoo_delete:account.move"` is an exception for one model (#1133).
+     * See `lib/approvals/policy.ts` for how the two resolve.
+     */
+    confirm?: Record<string, "confirm" | "allow">;
+    /**
+     * Pre-#1133 shape, still READ so an agent configured before the switch
+     * keeps its policy (`getConfirmMap`). Nothing writes it any more; an agent
+     * converges to `confirm` the first time it is saved.
+     */
+    confirmTools?: string[];
   };
 };
 
@@ -119,7 +151,13 @@ export const users = pgTable(
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
-  (table) => [check("users_role_check", sql`${table.role} ${inEnum(USER_ROLES)}`)]
+  (table) => [
+    check("users_role_check", sql`${table.role} ${inEnum(USER_ROLES)}`),
+    // The approvals gate resolves the lowercased session-key principal back to
+    // the case-preserved user id via `lower(id) = ?` (resolveRequesterUserId in
+    // the gate-check route); this keeps that per-gated-call lookup off a seq scan.
+    index("users_lower_id_idx").on(sql`lower(${table.id})`),
+  ]
 );
 
 export const sessions = pgTable(
@@ -135,6 +173,10 @@ export const sessions = pgTable(
     expiresAt: timestamp("expires_at").notNull(),
     ipAddress: text("ip_address"),
     userAgent: text("user_agent"),
+    // Better Auth `admin` plugin column (impersonation). Pinchy never impersonates,
+    // so it stays NULL — but better-auth >=1.7 checks the Drizzle schema against
+    // what its plugins declare at first use and refuses to run with this missing.
+    impersonatedBy: text("impersonated_by"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
@@ -176,6 +218,66 @@ export const verification = pgTable("verification", {
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
+/**
+ * Better Auth `@better-auth/api-key` plugin table (#572).
+ *
+ * Hand-written to match the plugin's `apiKeySchema` field definitions exactly
+ * (dist/index.mjs — `apiKeySchema`, `API_KEY_TABLE_NAME = "apikey"`). Pinchy
+ * maintains every Better Auth table by hand (see users/sessions/accounts above)
+ * rather than via `@better-auth/cli generate`, then diffs it with drizzle-kit.
+ * The plugin resolves its `apikey` model to this table via the explicit adapter
+ * mapping in lib/auth.ts (`apikey: schema.apiKeys`).
+ *
+ * Fidelity rules applied: plugin `required: true` → `.notNull()`; `required:
+ * false` → nullable; static `defaultValue` → `.default(...)`. The rate-limit
+ * VALUE columns (`rateLimitTimeWindow`, `rateLimitMax`) intentionally carry no
+ * DB default — the plugin computes their defaults from runtime options and
+ * writes them on insert, so a static DB default would be wrong.
+ *
+ * No FK on `reference_id`: the plugin schema deliberately keeps it a plain
+ * string (it supports non-user owners upstream), so we follow suit rather than
+ * add `.references(users.id)`.
+ */
+export const apiKeys = pgTable(
+  "apikey",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    name: text("name"),
+    start: text("start"),
+    prefix: text("prefix"),
+    key: text("key").notNull(),
+    referenceId: text("reference_id").notNull(),
+    configId: text("config_id").notNull().default("default"),
+    refillInterval: integer("refill_interval"),
+    refillAmount: integer("refill_amount"),
+    lastRefillAt: timestamp("last_refill_at"),
+    enabled: boolean("enabled").default(true),
+    rateLimitEnabled: boolean("rate_limit_enabled").default(true),
+    rateLimitTimeWindow: integer("rate_limit_time_window"),
+    rateLimitMax: integer("rate_limit_max"),
+    requestCount: integer("request_count").default(0),
+    remaining: integer("remaining"),
+    lastRequest: timestamp("last_request"),
+    expiresAt: timestamp("expires_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+    // The plugin serializes these to JSON strings — do NOT "improve" to jsonb.
+    // permissions: Record<resource, action[]>; metadata: arbitrary object.
+    permissions: text("permissions"),
+    metadata: text("metadata"),
+  },
+  (table) => [
+    // `key` is hashed and looked up on every verify; `reference_id` drives
+    // per-owner listing. The plugin also flags `config_id` as indexed, but we
+    // run a single config so it is always "default" — a non-selective, useless
+    // index — so we omit it.
+    index("apikey_key_idx").on(table.key),
+    index("apikey_reference_id_idx").on(table.referenceId),
+  ]
+);
+
 // ── Application tables ─────────────────────────────────────────────────
 
 export const agents = pgTable(
@@ -199,8 +301,9 @@ export const agents = pgTable(
     visibility: text("visibility").$type<AgentVisibility>().notNull().default("restricted"),
     greetingMessage: text("greeting_message").notNull(),
     tagline: text("tagline"),
-    // Per-agent starter prompts (#570): clickable suggestion chips shown in
-    // the empty chat to lower the entry barrier for role-specific agents.
+    // Per-agent starter prompts (#570): clickable suggestion chips shown below
+    // the greeting of a new conversation to lower the entry barrier for
+    // role-specific agents.
     // Empty array = no chips (the default).
     starterPrompts: jsonb("starter_prompts").$type<string[]>().notNull().default([]),
     avatarSeed: text("avatar_seed"),
@@ -256,6 +359,87 @@ export const agentGroups = pgTable(
   ]
 );
 
+// ── Tool-call approvals (pinchy-approvals, #124) ────────────────────────
+//
+// A durable, server-enforced human-in-the-loop confirmation record. Tier 2
+// (`confirm`) — the acting user approves their own gated tool call inline in
+// chat. `escalate` is reserved for the deferred four-eyes tier and is not yet
+// used. A grant is bound to (agentId, requesterId, argsDigest, sessionKey) and
+// consumed exactly once — never shared across users of a shared agent, and
+// never shared across tools (two gated tools can receive identical params).
+export const approvalTierEnum = pgEnum("approval_tier", ["confirm", "escalate"]);
+export const approvalStatusEnum = pgEnum("approval_status", [
+  "pending",
+  "approved",
+  "denied",
+  "consumed",
+  "expired",
+]);
+
+export const toolApproval = pgTable(
+  "tool_approval",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    // requesterId / approverId are the acting principal derived from the OpenClaw
+    // session key (agent:<id>:direct:<userId>) — the same identity `audit_log`
+    // stores in `actorId`. Like actorId, they are plain text with NO FK to
+    // `user.id`: a chat principal is not guaranteed to be a Better-Auth user row
+    // (Telegram senderId, group principals, …), so an FK here would reject
+    // legitimate confirmations. User-specificity is still enforced by matching
+    // requesterId against approverId (both are `session.user.id`).
+    requesterId: text("requester_id").notNull(),
+    sessionKey: text("session_key").notNull(),
+    toolName: text("tool_name").notNull(),
+    // The OpenClaw tool call this confirmation is holding up. It is what the
+    // `plugin.approval.requested` broadcast is keyed on, so it is how a card
+    // the user clicks finds the suspended call to resume — (agent, requester,
+    // session, tool, argsDigest) cannot do that, because one turn can emit the
+    // same call twice and both would match. Nullable: a run context can carry
+    // no call id, and every row written before #1132 has none.
+    toolCallId: text("tool_call_id"),
+    // OpenClaw's own id for the suspended call, learned from the
+    // `plugin.approval.requested` broadcast. Resolving the run needs it.
+    //
+    // Stored on the row rather than in process memory on purpose: OpenClaw
+    // keeps an accepted approval pending until its timeout and never discards
+    // one because the reviewing connection dropped, and an `operator.admin`
+    // client may resolve it from ANY connection — so a Pinchy restart mid
+    // confirmation stays recoverable, and the card the user is looking at
+    // keeps working.
+    openclawApprovalId: text("openclaw_approval_id"),
+    argsDigest: text("args_digest").notNull(),
+    argsSummary: jsonb("args_summary").$type<Record<string, unknown>>(),
+    tier: approvalTierEnum("tier").notNull().default("confirm"),
+    status: approvalStatusEnum("status").notNull().default("pending"),
+    approverId: text("approver_id"),
+    decisionReason: text("decision_reason"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    // The gate's hot path looks up an unconsumed grant for an exact call.
+    index("tool_approval_lookup_idx").on(
+      table.agentId,
+      table.requesterId,
+      table.toolName,
+      table.argsDigest,
+      table.status
+    ),
+    // The chat UI lists a requester's pending confirmations.
+    index("tool_approval_requester_status_idx").on(table.requesterId, table.status),
+    // An arriving `plugin.approval.requested` broadcast carries only the tool
+    // call id, so this is the lookup that turns it into our row.
+    index("tool_approval_call_idx").on(table.toolCallId),
+  ]
+);
+
 export const invites = pgTable(
   "invites",
   {
@@ -299,7 +483,13 @@ export const inviteGroups = pgTable(
       .notNull()
       .references(() => groups.id, { onDelete: "cascade" }),
   },
-  (table) => [primaryKey({ columns: [table.inviteId, table.groupId] })]
+  (table) => [
+    primaryKey({ columns: [table.inviteId, table.groupId] }),
+    // Deleting a group cascades here, and `gated-config.ts` deletes EVERY group
+    // in one statement when the enterprise gate lapses. The PK leads with
+    // inviteId, so each of those deletes scanned the whole table.
+    index("invite_groups_group_idx").on(table.groupId),
+  ]
 );
 
 // ── Relations ───────────────────────────────────────────────────────────
@@ -413,7 +603,7 @@ export const settings = pgTable("settings", {
 
 // ── Audit Trail ──────────────────────────────────────────────────────
 
-export const actorTypeEnum = pgEnum("actor_type", ["user", "agent", "system"]);
+export const actorTypeEnum = pgEnum("actor_type", ["user", "agent", "system", "api_key"]);
 
 export const auditLog = pgTable(
   "audit_log",
@@ -443,6 +633,18 @@ export const auditLog = pgTable(
     // Typical audit query: filter by resource, order by time descending. A
     // backward scan of this composite index serves it without a sort.
     index("idx_audit_resource_timestamp").on(table.resource, table.timestamp),
+    // "When was tampering last detected?" — GET /api/audit/verify/status.
+    // Partial, because the rows it indexes are the ones that should never
+    // exist: on a healthy instance this index stays empty (8 KB) and the
+    // lookup is an index-only scan that touches one page. Without it the
+    // planner reads the `LIMIT 1` as "the match will turn up early", walks
+    // idx_audit_timestamp backwards, and — finding nothing, which is the
+    // healthy case — scans the entire audit_log on every call (measured: 55 ms
+    // and 13k buffers at 500k rows, growing linearly with a log that never
+    // shrinks).
+    index("idx_audit_integrity_violation")
+      .on(table.timestamp.desc())
+      .where(sql`${table.eventType} = 'audit.integrity_check' AND ${table.outcome} = 'failure'`),
     check(
       "audit_log_v2_outcome_required",
       sql`${table.version} = 1 OR ${table.outcome} IS NOT NULL`
@@ -528,7 +730,15 @@ export const emailWorkflows = pgTable(
     enabled: boolean("enabled").notNull().default(false),
     status: text("status").$type<EmailWorkflowStatus>().notNull().default("pending"),
     openclawJobId: text("openclaw_job_id"),
-    createdBy: text("created_by").references(() => users.id),
+    // `set null` (not cascade): deleting the user who created a workflow must
+    // not take the workflow (and its mailbox connections) down with them —
+    // `loadDispatchableWorkflows` treats a null `createdBy` as "no creator
+    // recipient" and drops the workflow from the shared-agent fan-out rather
+    // than crashing on it. It also *reports* the drop as `unrunnable`, and the
+    // sweep turns that into the workflow's `error` status: the row survives
+    // still `enabled`, so without that this FK would have traded a hard failure
+    // (the old rejected DELETE) for a silent one.
+    createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
@@ -540,6 +750,11 @@ export const emailWorkflows = pgTable(
     index("email_workflows_enabled_idx")
       .on(table.enabled)
       .where(sql`${table.enabled}`),
+    // `set null` above still has to FIND these rows when a user row goes away,
+    // exactly as a cascade would — and the partial index right above cannot
+    // serve that scan (it covers only enabled rows). Guarded by
+    // cascade-index-coverage.integration.test.ts.
+    index("email_workflows_created_by_idx").on(table.createdBy),
     check("email_workflows_status_check", sql`${table.status} ${inEnum(EMAIL_WORKFLOW_STATUSES)}`),
   ]
 );
@@ -559,7 +774,19 @@ export const emailWorkflowConnections = pgTable(
     sinceTs: timestamp("since_ts").notNull(),
     addedAt: timestamp("added_at").notNull().defaultNow(),
   },
-  (table) => [primaryKey({ columns: [table.workflowId, table.connectionId] })]
+  (table) => [
+    primaryKey({ columns: [table.workflowId, table.connectionId] }),
+    // Disconnecting an integration hard-deletes the connection row
+    // (`DELETE /api/integrations/:connectionId`), cascading here. The PK leads
+    // with workflowId, so that cascade had no usable index.
+    //
+    // That cascade can take away a workflow's LAST connection, leaving it
+    // enabled with nothing to watch. `loadDispatchableWorkflows` LEFT-joins this
+    // table so such a workflow still surfaces (reported `watches-no-mailbox`)
+    // instead of vanishing from the query — an inner join dropped it before the
+    // sweep could mark it, and it went on displaying `active` while idle.
+    index("email_workflow_connections_connection_idx").on(table.connectionId),
+  ]
 );
 
 // The ledger is the source of truth for processed-tracking. A claim is an atomic
@@ -658,6 +885,11 @@ export const notificationRecipients = pgTable(
   (table) => [
     primaryKey({ columns: [table.userId, table.notificationId] }),
     index("notification_recipients_user_unread_idx").on(table.userId, table.readAt),
+    // Deleting a notification cascades here; the PK leads with userId, so that
+    // delete would otherwise fall back to a full-table scan for the matching
+    // notificationId rows. Leading with notificationId gives the cascade a
+    // usable index.
+    index("notification_recipients_notification_idx").on(table.notificationId),
   ]
 );
 
@@ -683,10 +915,34 @@ export const usageRecords = pgTable(
     }),
     // Per-turn accounting (#483): the OpenClaw run id of the `model.completed`
     // turn this row records, plus the trajectory `seq` watermark. Both nullable
-    // so the gauge poller (system sessions) and the /api/internal/usage/record
-    // sink (plugin vision tokens) keep inserting without a run id.
+    // so the /api/internal/usage/record sink (plugin vision tokens) keeps
+    // inserting without a run id — and so the gauge-poller rows written before
+    // #767 moved system sessions onto the per-turn path stay readable.
     runId: text("run_id"),
     seq: integer("seq"),
+    // How full the model's context window got on this turn — the size of the
+    // prompt on the turn's LAST call, which is what the window has to hold.
+    // Deliberately distinct from input_tokens: a turn drives a whole tool loop
+    // and input_tokens sums every call in it (~11x larger in practice), so it
+    // says nothing about context pressure.
+    //
+    // Counts every prompt class of that call — input + cacheRead + cacheWrite,
+    // which the usage payload shows to be disjoint — since all three are tokens
+    // the model read, differing only in how they are billed.
+    //
+    // Nullable: only the per-turn trajectory path can know it. The
+    // /api/internal/usage/record sink leaves it NULL, as do events with no
+    // usable promptCache and every row the gauge poller wrote before #767 —
+    // NULL means "unknown", never "empty".
+    //
+    // This is the read-side of the 2026-07-15 "Piper" incident: the agent ran at
+    // ~170k context with compaction never firing (its window was configured at
+    // 1M, so OpenClaw's shouldCompact threshold sat at ~1.03M) and started
+    // fabricating tool results. Recovering those numbers meant SSHing into prod
+    // and parsing trajectory JSONL by hand; with this column it is one query.
+    // A drop between consecutive turns of a session is also how compaction
+    // becomes visible — OpenClaw emits no compaction trajectory event.
+    contextTokens: integer("context_tokens"),
   },
   (table) => [
     index("idx_usage_timestamp").on(table.timestamp),
@@ -700,10 +956,43 @@ export const usageRecords = pgTable(
     index("idx_usage_agent_timestamp").on(table.agentId, table.timestamp),
     // Idempotent per-turn inserts: one row per (session, run). A plain unique
     // index suffices — Postgres treats NULLs as distinct (default NULLS
-    // DISTINCT), so per-turn rows (run_id NOT NULL) dedup while the gauge poller
-    // and the /api/internal/usage/record sink (run_id NULL) insert freely.
+    // DISTINCT), so per-turn rows (run_id NOT NULL) dedup while the
+    // /api/internal/usage/record sink (run_id NULL) inserts freely — and the
+    // pre-#767 gauge rows (also run_id NULL) never collide with a real run id.
     // onConflictDoNothing(target [sessionKey, runId]) relies on this index.
     uniqueIndex("uq_usage_session_run").on(table.sessionKey, table.runId),
+  ]
+);
+
+// ── Cost Budgets (#36) ───────────────────────────────────────────────
+
+// A monthly USD limit on what usage_records says an agent — or, with agent_id
+// NULL, the whole instance — has spent this calendar month (org timezone).
+// Design of record: plans/2026-10-16-cost-governance-design.md.
+//
+// `warned_period` / `exceeded_period` hold the 'YYYY-MM' an alert last fired
+// for. They are claimed with a conditional UPDATE (… WHERE period IS DISTINCT
+// FROM $p RETURNING), so a restart or two overlapping sweeps can never write
+// the same alert twice — the reason budgets are a table and not settings keys.
+export const costBudgets = pgTable(
+  "cost_budgets",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    agentId: text("agent_id").references(() => agents.id, { onDelete: "cascade" }),
+    monthlyLimitUsd: numeric("monthly_limit_usd", { precision: 12, scale: 2 }).notNull(),
+    onExceeded: text("on_exceeded").$type<BudgetAction>().notNull(),
+    warnedPeriod: text("warned_period"),
+    exceededPeriod: text("exceeded_period"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    // One instance budget (agent_id NULL) and one per agent. NULLS NOT
+    // DISTINCT is what makes the first half true: by default Postgres would
+    // accept any number of NULL rows.
+    unique("cost_budgets_agent_id_unique").on(table.agentId).nullsNotDistinct(),
+    check("cost_budgets_on_exceeded_check", sql`${table.onExceeded} ${inEnum(BUDGET_ACTIONS)}`),
+    check("cost_budgets_limit_positive_check", sql`${table.monthlyLimitUsd} > 0`),
   ]
 );
 
@@ -726,6 +1015,31 @@ export const models = pgTable(
   },
   (t) => [uniqueIndex("uq_models_provider_modelid").on(t.provider, t.modelId)]
 );
+
+// A generic "OpenAI-compatible" provider instance (#894): a self-declared
+// endpoint (base URL + API key) whose model catalogue Pinchy discovers and
+// persists, so any OpenAI-API-shaped backend (Swisscom, vLLM, LiteLLM, a
+// private gateway, …) can be used without a first-class provider integration.
+// `slug` is the stable identity used in the emitted OpenClaw provider key.
+export const openaiCompatibleProviders = pgTable("openai_compatible_providers", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  slug: text("slug").notNull().unique(),
+  displayName: text("display_name").notNull(),
+  baseUrl: text("base_url").notNull(),
+  // AES-256-GCM ciphertext (encrypt() from @/lib/encryption). Never plaintext.
+  apiKey: text("api_key").notNull(),
+  // Last-known-good OpenClawModelDefinition[] SNAPSHOT, written only at save
+  // time (POST discovers server-side and persists the result here). This is
+  // NOT the live read path: both the agent model dropdown and openclaw.json
+  // emission fetch the endpoint's `/models` live (see
+  // `resolveCustomProviderModels` in openai-compatible-discovery.ts, mirroring
+  // ollama-local) and fall back to this column only when the live call fails
+  // or returns zero models — i.e. an offline/unreachable-endpoint fallback,
+  // not the source of truth for what the picker shows.
+  models: jsonb("models").$type<OpenClawModelDefinition[]>().notNull().default([]),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
 
 // ── Views ────────────────────────────────────────────────────────────
 
@@ -762,6 +1076,75 @@ export const uploadedFiles = pgTable(
   (t) => [
     index("idx_uploaded_files_gc").on(t.status, t.expiresAt),
     index("idx_uploaded_files_user_agent_draft").on(t.userId, t.agentId, t.draftId),
+    // The serving route's authorization lookup: (agentId, filename, userId) —
+    // mirrors idx_agent_delivered_files_lookup below. Leading with agentId also
+    // gives the agent-delete cascade a usable index.
+    index("idx_uploaded_files_lookup").on(t.agentId, t.filename, t.userId),
+  ]
+);
+
+/**
+ * Agent → user file delivery grants (#703). When an agent produces or fetches a
+ * file into its workspace and hands it to the user in chat, a row here records
+ * WHO may download it. This is the read-side authorization source for
+ * `GET /api/agents/:agentId/artifacts/:filename` — the delivered-file analogue
+ * of `uploadedFiles` for the user-upload route.
+ *
+ * Why a dedicated grant table (not reuse `uploadedFiles`): uploads model the
+ * user→agent direction (staging, GC, draft/message lifecycle, content hash);
+ * a delivery has none of that. Reusing that row would conflate provenance and
+ * muddy the audit trail. Here the row is a pure capability: "user U may fetch
+ * file F (in zone Z) from agent A".
+ *
+ * IDOR safety mirrors the uploads route: the serving route requires a row
+ * matching `(agentId, filename, userId = caller)`. A shared agent's other
+ * members hold no grant, so a predictable filename does not leak across users.
+ * The bytes live under the agent workspace; the serving route searches the known
+ * workspace zones (`workbench` for agent-generated files, `uploads` for
+ * agent-fetched files) for the granted filename. `sessionKey` is the full
+ * `agent:{agentId}:direct:{userId}` key the delivery happened in, kept for
+ * history re-attachment and correlation (never read as a prefix).
+ */
+export const agentDeliveredFiles = pgTable(
+  "agent_delivered_files",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    sessionKey: text("session_key").notNull(),
+    filename: text("filename").notNull(),
+    mimeType: text("mime_type").notNull(),
+    // What was delivered, as opposed to what it was called (#903). A grant used
+    // to name a file, while the promise it makes is about bytes: "this user may
+    // fetch the file that was handed to them". On a shared agent every member's
+    // chats write into one workspace, so anything that changes the bytes behind
+    // a granted name serves those new bytes under the old grant — including
+    // another user's. Two reachable paths: `pinchy_write(overwrite=true)` inside
+    // `workbench/`, and plain creation of `workbench/x.pdf` shadowing an
+    // `uploads/x.pdf` delivery, since the serving route searched the zones in
+    // order.
+    //
+    // Both are closed by recording where the file was and what it contained.
+    // Nullable because grants written before this existed cannot be pinned
+    // honestly — see the serving route for what they still get.
+    zone: text("zone"),
+    contentHash: text("content_hash"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    // The serving route's authorization lookup: (agentId, filename, userId).
+    index("idx_agent_delivered_files_lookup").on(t.agentId, t.filename, t.userId),
+    // History re-attachment reads all grants for one session.
+    index("idx_agent_delivered_files_session").on(t.sessionKey),
+    // Neither index above leads with userId, so deleting a user would fall
+    // back to a full-table scan to find their grants for the cascade.
+    index("idx_agent_delivered_files_user").on(t.userId),
   ]
 );
 
@@ -784,6 +1167,20 @@ export const uploadedFiles = pgTable(
  * the triggering user message, the anchor for both supersede (the same message
  * later succeeds) and a safe retry. `sideEffects` records whether the failed
  * run already executed a tool call, so the UI can warn about duplicate writes.
+ *
+ * `runStartedAt` is the lower bound `sideEffects` was derived over, and it is
+ * what makes the answer re-derivable LATER (#1013). OpenClaw fires its
+ * `after_tool_call` hook without awaiting it, so `pinchy-audit`'s `tool.*` row
+ * is ordered against nothing and can land after the run has already failed —
+ * the derivation at error time therefore reads `false` for a run that did act.
+ * Storing the window lets the retry gate ask the same question again when the
+ * user actually presses Retry, by which point the row is long committed.
+ *
+ * `showBanner` separates "record this failed run" from "re-surface it as a
+ * paused banner". They used to be the same decision (`shouldPersistDurableError`
+ * gated the INSERT), which meant the classes that get no banner also got no
+ * stored window — and therefore no re-derivable retry gate. Every failed run is
+ * recorded now; only banner-worthy ones are read back by the banner.
  */
 export const chatSessionErrors = pgTable(
   "chat_session_errors",
@@ -806,6 +1203,11 @@ export const chatSessionErrors = pgTable(
     transientReason: text("transient_reason"),
     providerError: text("provider_error").notNull(),
     sideEffects: boolean("side_effects").notNull().default(false),
+    // Nullable on purpose: rows written before #1013 have no window, and the
+    // retry gate must fall back to the stored `sideEffects` for them rather
+    // than invent a bound and re-derive over the wrong range.
+    runStartedAt: timestamp("run_started_at"),
+    showBanner: boolean("show_banner").notNull().default(true),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     supersededAt: timestamp("superseded_at"),
     dismissedAt: timestamp("dismissed_at"),
@@ -815,6 +1217,9 @@ export const chatSessionErrors = pgTable(
     index("idx_chat_session_errors_session").on(t.sessionKey, t.createdAt),
     // GC sweep: reap resolved (superseded/dismissed) rows by age.
     index("idx_chat_session_errors_gc").on(t.createdAt),
+    // Both FKs cascade, and neither index above leads with either column.
+    index("idx_chat_session_errors_user").on(t.userId),
+    index("idx_chat_session_errors_agent").on(t.agentId),
   ]
 );
 
@@ -835,3 +1240,217 @@ export const auditVerifyState = pgTable("audit_verify_state", {
   lastStatus: text("last_status"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+// ── Knowledge Base (RAG) ─────────────────────────────────────────────
+//
+// kb_documents is the per-org, per-file source of truth for ingested
+// knowledge-base content. (org_id, source_path) is the identity/idempotency
+// key — re-ingesting the same path updates one row. content_hash is a
+// change-detection column (same hash => skip, different hash => re-ingest),
+// NOT an identity key. status lets later freshness work (Task 5+) archive
+// stale docs without deleting history.
+export const kbDocuments = pgTable(
+  "kb_documents",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    orgId: text("org_id").notNull(),
+    contentHash: text("content_hash").notNull(),
+    sourcePath: text("source_path").notNull(),
+    status: text("status", { enum: ["active", "archived"] })
+      .notNull()
+      .default("active"),
+    lang: text("lang"),
+    pageCount: integer("page_count"),
+    mtime: timestamp("mtime"),
+    // Which extractor last read this content and found no text in it, as
+    // "<extractor version>|<reader>" — the reader being "ocr:<model>",
+    // "no-ocr", "sheets" or "converter". Null when the document has chunks,
+    // when its last read is still owed a retry (`incompleteReads`), and on a
+    // row a crash left before its chunks were written or that predates the
+    // column — every case where reading it again could turn out differently.
+    // It is what lets the ingest skip an unchanged blank scan instead of
+    // sending it to the vision model on every run (ingest.ts).
+    emptyExtractionBy: text("empty_extraction_by"),
+    // How many reads in a row did not finish their job: a vision call that
+    // failed, or a conversion that gave up. Such a document is read again on
+    // the next run — chunks or not — until a read finishes or the retries run
+    // out (MAX_INCOMPLETE_READS in ingest.ts). 0 for a read that finished.
+    incompleteReads: integer("incomplete_reads").notNull().default(0),
+    // For an Office document converted to PDF, the artifact format version
+    // (OFFICE_ARTIFACT_FORMAT_VERSION) its chunks were read from; null for
+    // every other format. An unchanged document whose version is not the
+    // current one — including null, on a row written before this was recorded
+    // — is converted and read again, so a change to the conversion rules
+    // reaches documents that never change (ingest.ts).
+    artifactFormatVersion: integer("artifact_format_version"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    // A document is keyed by its PATH: (org_id, source_path) is unique, so
+    // re-ingesting the same path updates one row. content_hash is a
+    // non-unique change-detection column — two different paths with
+    // byte-identical content (e.g. an OLD/ archive copy) are DISTINCT
+    // documents, which per-path allowed_paths filtering (Task 7) requires;
+    // cross-path content dedup would break that filtering. The plain
+    // (org_id, content_hash) index just speeds change-detection lookups.
+    uniqueIndex("uq_kb_doc_org_path").on(t.orgId, t.sourcePath),
+    index("idx_kb_doc_org_hash").on(t.orgId, t.contentHash),
+  ]
+);
+
+// kb_unsupported_files is the list behind the "not supported" count (#1267):
+// files under a granted folder whose type the indexer cannot read (an `.rtf`, a
+// binary `.xlsb`). They have no kb_documents row — ingest
+// never opens them — so without this table nothing in the database says they
+// exist, and a gap in the agent's answers reads as a model problem.
+//
+// Current state, not history: each run replaces the rows under the folders it
+// walked (unsupported-files.ts), so the table is as large as the share's
+// unsupported files and never grows by night. A row per file rather than a list
+// on the job or in the audit row, because a real share holds 100k+ such files —
+// far past the 2 KB audit `detail` budget — and the CSV export pages through
+// them by path.
+export const kbUnsupportedFiles = pgTable(
+  "kb_unsupported_files",
+  {
+    orgId: text("org_id").notNull(),
+    sourcePath: text("source_path").notNull(),
+    // The file's extension, lowercased, with its dot (".tif"); "" for a file
+    // with none. What the admin sorts the download by to see what to convert.
+    fileType: text("file_type").notNull(),
+    seenAt: timestamp("seen_at").notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.orgId, t.sourcePath] })]
+);
+
+// kb_chunks denormalizes org_id and source_path from the parent document so
+// retrieval (Task 7) can filter by allowed_paths without a join. embedding
+// is vector(768) (embeddinggemma-300m, see ./vector); the FTS tsv generated
+// column + GIN index and the HNSW vector index are hand-added raw SQL in the
+// generated migration (drizzle-kit cannot express either).
+export const kbChunks = pgTable(
+  "kb_chunks",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    documentId: text("document_id")
+      .notNull()
+      .references(() => kbDocuments.id, { onDelete: "cascade" }),
+    orgId: text("org_id").notNull(),
+    sourcePath: text("source_path").notNull(),
+    chunkText: text("chunk_text").notNull(),
+    // Where in the document this chunk sits — a closed union (page / slide /
+    // heading path / sheet+rows), not a page number, because only PDFs have
+    // pages and Word pagination is a rendering result rather than a property
+    // of the file (see lib/knowledge/locator.ts, #933). Null when the format
+    // offers no stable anchor at all; a citation then names the document and
+    // says nothing more, which beats inventing a page.
+    locator: jsonb("locator").$type<ChunkLocator>(),
+    lang: text("lang"),
+    embedding: vector("embedding"),
+  },
+  (t) => [
+    index("idx_kb_chunks_doc").on(t.documentId),
+    index("idx_kb_chunks_org_path").on(t.orgId, t.sourcePath),
+  ]
+);
+
+// kb_index_jobs is the queue behind the async reindex (#714): the admin route
+// enqueues a row, an in-process worker (src/server/kb-index-worker.ts) claims
+// and runs it. Deliberately a plain table, not a queue engine — ingest is
+// content-hash idempotent, so a crashed run recovers by re-running, which is
+// the only guarantee a queue would have bought us.
+//
+// `paths` is a SNAPSHOT of the agent's granted folders resolved at enqueue
+// time, not a pointer to them: the worker must index what was authorized when
+// the admin asked, and re-reading the grants at run time would let a permission
+// change silently widen a job already in flight.
+export const kbIndexJobs = pgTable(
+  "kb_index_jobs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: text("org_id").notNull(),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    // Snapshotted beside the id so the completion audit row can carry the
+    // {id, name} pair (AGENTS.md) without re-querying an agent that may have
+    // been renamed or deleted while the job ran.
+    agentName: text("agent_name").notNull(),
+    requestedBy: text("requested_by").notNull(),
+    paths: jsonb("paths").$type<string[]>().notNull(),
+    status: text("status").$type<KbIndexJobStatus>().notNull().default("pending"),
+    // `manual` for an admin's request, `scheduled` for the nightly sweep. The
+    // default is what every job that predates the schedule was.
+    trigger: text("trigger").$type<KbIndexJobTrigger>().notNull().default("manual"),
+    // The nightly sweep this job belongs to; null for a manual job. Ties one
+    // night's per-agent jobs together in the audit trail (the sweepId rule for
+    // batched maintenance), and is how a restarted scheduler recognises an
+    // agent it already queued that night.
+    sweepId: uuid("sweep_id"),
+    // How many folders the run had to leave as they were — granted folders it
+    // could not read, and folders that came up empty while the index still
+    // held their documents (a share that failed to mount). Written when the
+    // run finishes. On the job rather than only the audit row so the Index
+    // section can say a successful run had a hole in it.
+    unavailableFolders: integer("unavailable_folders").notNull().default(0),
+    // Progress, in documents. `total` stays null until discovery has walked
+    // every root — a total that grew as we went would make the progress bar
+    // run backwards, so it is written once, upfront.
+    total: integer("total"),
+    processed: integer("processed").notNull().default(0),
+    // Progress, in BYTES of the corpus — the work-proportional counters a
+    // time-to-completion estimate is computed from (#907). A document is not a
+    // unit of work (one compilation PDF measured 38% of a 193-document
+    // corpus's chunks), so `processed`/`total` above can only ever drive an
+    // honest "how many files are behind us", never an ETA.
+    //
+    // bigint, not integer: a real corpus passes 2.1 GB long before it passes
+    // 2.1 billion documents. Null until discovery has walked every root, for
+    // the same reason `total` is.
+    totalBytes: bigint("total_bytes", { mode: "number" }),
+    processedBytes: bigint("processed_bytes", { mode: "number" }).notNull().default(0),
+    // The ingest's findings (IngestResult), written when the job reaches a
+    // terminal state — on failure too, since partial counts are the operator's
+    // only evidence of how far the run got.
+    counts: jsonb("counts").$type<IngestResult>(),
+    // Which folder each queued file belongs to, as run-length segments in
+    // queue order (lib/knowledge/folder-plan.ts). Written once, when discovery
+    // has walked every root — the same moment `total` is. It is how the
+    // folder status (#1386) knows how many files a folder holds and which one
+    // the run is in right now, without walking the share on every read. Null
+    // until then, and on every job that ran before it was recorded.
+    folderPlan: jsonb("folder_plan").$type<FolderPlanSegment[]>(),
+    error: text("error"),
+    // The Office artifact format version (OFFICE_ARTIFACT_FORMAT_VERSION) the
+    // run converted under, written when it reaches a terminal state; null on a
+    // job that has not, and on every job finished before this was recorded. A
+    // run under earlier rules converted nothing under the current ones, so it
+    // does not excuse its folders from the run a format bump owes them
+    // (office-format-upgrade.ts).
+    artifactFormatVersion: integer("artifact_format_version"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    startedAt: timestamp("started_at"),
+    finishedAt: timestamp("finished_at"),
+  },
+  (t) => [
+    // At most one active index job per org. The index is corpus-wide and
+    // embedding is CPU-bound on a 1.5-core container, so two concurrent runs
+    // would race on the same (org_id, source_path) documents and thrash the
+    // CPU for no throughput. This is the constraint the enqueue path relies on
+    // to answer "busy" instead of queueing a duplicate — application code alone
+    // could not make that atomic.
+    uniqueIndex("uq_kb_index_jobs_active")
+      .on(t.orgId)
+      .where(sql`${t.status} ${inEnum(KB_INDEX_JOB_ACTIVE_STATUSES)}`),
+    // Serves both the worker's claim ("oldest pending") and the status route's
+    // "latest job for this agent".
+    index("idx_kb_index_jobs_status_created").on(t.status, t.createdAt),
+    index("idx_kb_index_jobs_agent_created").on(t.agentId, t.createdAt),
+    check("kb_index_jobs_status_check", sql`${t.status} ${inEnum(KB_INDEX_JOB_STATUSES)}`),
+    check("kb_index_jobs_trigger_check", sql`${t.trigger} ${inEnum(KB_INDEX_JOB_TRIGGERS)}`),
+  ]
+);

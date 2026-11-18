@@ -1,5 +1,16 @@
+import { refusingUnknownParams } from "./unknown-params.js";
 import { braveSearch, type BraveSearchConfig } from "./brave-search.js";
 import { webFetch, type WebFetchConfig } from "./web-fetch.js";
+import {
+  credentialCacheKey,
+  isAuthError,
+  postAuthFailure,
+  requestCredentials,
+} from "./credential-client.js";
+
+// The two Pinchy-internal calls this plugin makes (credentials fetch,
+// auth-failure report) are bounded inside credential-client.ts. webFetch and
+// braveSearch bound their OWN external calls (web-fetch.ts, brave-search.ts).
 
 interface PluginToolContext {
   agentId?: string;
@@ -14,7 +25,7 @@ interface PluginApi {
   pluginConfig?: PluginConfig;
   registerTool: (
     factory: (ctx: PluginToolContext) => AgentTool | null,
-    opts?: { name?: string },
+    opts?: { name?: string }
   ) => void;
 }
 
@@ -26,8 +37,29 @@ interface AgentTool {
   execute: (
     toolCallId: string,
     params: Record<string, unknown>,
-    signal?: AbortSignal,
-  ) => Promise<{ content: ContentBlock[]; isError?: boolean }>;
+    signal?: AbortSignal
+  ) => Promise<{ content: ContentBlock[]; isError?: boolean; details?: unknown }>;
+}
+
+/**
+ * Build an MCP-style error result. Every error result MUST carry
+ * `details.error`, not just the `isError` flag: OpenClaw strips `isError`
+ * before forwarding the result to `/api/internal/audit/tool-use` (OC bug
+ * #404), and the audit endpoint then falls back to `result.details.error` to
+ * record `outcome: failure`. Without it, a failed pinchy-web tool call is
+ * silently audited as success. Route ALL error results through this helper
+ * so that invariant cannot be forgotten at an individual call site.
+ */
+function toolError(text: string): {
+  content: ContentBlock[];
+  isError: true;
+  details: { error: string };
+} {
+  return {
+    isError: true,
+    content: [{ type: "text", text }],
+    details: { error: text },
+  };
 }
 
 interface PluginConfig {
@@ -36,7 +68,8 @@ interface PluginConfig {
   /** ID of the web-search integration connection in Pinchy. The Brave
    * apiKey is fetched on-demand from Pinchy's internal credentials API
    * — never written into openclaw.json. See #209 for the bug class
-   * that prompted this pattern. */
+   * that prompted this pattern. Absent when no web-search provider is
+   * configured (#1297): fetch still works, search answers "not configured". */
   connectionId?: string;
   agents?: Record<string, AgentWebConfig>;
 }
@@ -63,7 +96,7 @@ function assertBraveCredentialsShape(creds: unknown): asserts creds is BraveCred
   if (actual !== "string") {
     throw new Error(
       `pinchy-web: credentials.apiKey must be a string, got ${actual}` +
-        (actual === "object" ? " (looks like an unresolved SecretRef — see #209)" : ""),
+        (actual === "object" ? " (looks like an unresolved SecretRef — see #209)" : "")
     );
   }
 }
@@ -72,63 +105,17 @@ async function fetchBraveCredentials(
   apiBaseUrl: string,
   gatewayToken: string,
   connectionId: string,
+  agentId: string
 ): Promise<BraveCredentials> {
-  const response = await fetch(
-    `${apiBaseUrl}/api/internal/integrations/${connectionId}/credentials`,
-    { headers: { Authorization: `Bearer ${gatewayToken}` } },
-  );
-  if (!response.ok) {
-    // The credentials route puts an actionable message in the JSON body (e.g. a
-    // 404 "This integration is no longer connected …") — surface it so the agent
-    // reports something a user can act on, not a bare HTTP status. Read the body
-    // tolerantly: a non-JSON body must not mask the original status.
-    const body = await (async () => {
-      try {
-        return (await response.json()) as { error?: unknown };
-      } catch {
-        return null;
-      }
-    })();
-    const detail = body && typeof body.error === "string" ? `: ${body.error}` : "";
-    throw new Error(
-      `Failed to fetch Brave credentials: HTTP ${response.status} ${response.statusText}${detail}`,
-    );
-  }
-  const data = (await response.json()) as { credentials?: unknown };
+  const data = await requestCredentials({
+    apiBaseUrl,
+    gatewayToken,
+    connectionId,
+    agentId,
+    label: "Brave",
+  });
   assertBraveCredentialsShape(data.credentials);
   return data.credentials;
-}
-
-/**
- * Best-effort POST to Pinchy's report-auth-failure endpoint when a
- * retry-once cycle fails with a permanent auth error. This lets Pinchy
- * surface a clear "re-authorise" banner to admins rather than requiring
- * them to trawl through agent error messages.
- *
- * Errors are swallowed — never mask the original tool error.
- */
-async function reportAuthFailure(
-  apiBaseUrl: string,
-  connectionId: string,
-  gatewayToken: string,
-  reason: string,
-): Promise<void> {
-  try {
-    await fetch(
-      `${apiBaseUrl}/api/internal/integrations/${connectionId}/report-auth-failure`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${gatewayToken}`,
-          "Content-Type": "application/json",
-          "X-Plugin-Id": "pinchy-web",
-        },
-        body: JSON.stringify({ reason: reason.slice(0, 500) }),
-      },
-    );
-  } catch {
-    // best-effort — never mask the original tool error
-  }
 }
 
 const plugin = {
@@ -136,7 +123,9 @@ const plugin = {
   name: "Pinchy Web",
   description: "Web search and page fetching with domain filtering.",
 
-  register(api: PluginApi) {
+  register(pluginApi: PluginApi) {
+    // Every tool refuses a parameter it does not declare (unknown-params.ts).
+    const api = refusingUnknownParams(pluginApi);
     const config = api.pluginConfig;
     const apiBaseUrl = config?.apiBaseUrl ?? "";
     const gatewayToken = config?.gatewayToken ?? "";
@@ -148,40 +137,68 @@ const plugin = {
     // without an OpenClaw restart. On a 401 from Brave we invalidate
     // and retry once.
     const CREDENTIALS_TTL_MS = 5 * 60 * 1000;
-    let cached: { apiKey: string; expiresAt: number } | null = null;
+    const cache = new Map<string, { apiKey: string; expiresAt: number }>();
 
-    async function getBraveApiKey(): Promise<string> {
-      if (cached && cached.expiresAt > Date.now()) return cached.apiKey;
+    // The Brave key is instance-wide, so an entry could serve every agent —
+    // and that would be safe here, because only `pinchy_web_search` reaches
+    // this function, and an agent without it never gets that tool registered
+    // (see the factories below). `pinchy_web_fetch` needs no key and never
+    // asks for one; Pinchy's credentials route refuses the key to a
+    // fetch-only agent (WEB_SEARCH_KEY_TOOLS in packages/web).
+    // It is still keyed per agent and connection, for the reason pinchy-odoo
+    // was (#1077): a key that omits the connection outlives a connection
+    // swap by a full TTL, and "this one happens to be instance-wide" is a
+    // property of today's config, not of the cache.
+    async function getBraveApiKey(agentId: string): Promise<string> {
+      const key = credentialCacheKey(agentId, connectionId);
+      const hit = cache.get(key);
+      if (hit && hit.expiresAt > Date.now()) return hit.apiKey;
       if (!connectionId || !apiBaseUrl || !gatewayToken) {
         throw new Error(
-          "pinchy-web: missing connectionId/apiBaseUrl/gatewayToken in plugin config",
+          "pinchy-web: missing connectionId/apiBaseUrl/gatewayToken in plugin config"
         );
       }
-      const creds = await fetchBraveCredentials(apiBaseUrl, gatewayToken, connectionId);
-      cached = { apiKey: creds.apiKey, expiresAt: Date.now() + CREDENTIALS_TTL_MS };
+      const creds = await fetchBraveCredentials(apiBaseUrl, gatewayToken, connectionId, agentId);
+      cache.set(key, { apiKey: creds.apiKey, expiresAt: Date.now() + CREDENTIALS_TTL_MS });
       return creds.apiKey;
     }
 
-    function invalidateCache() {
-      cached = null;
+    function invalidateCache(agentId: string) {
+      cache.delete(credentialCacheKey(agentId, connectionId));
     }
 
-    async function withAuthRetry<T>(fn: (apiKey: string) => Promise<T>): Promise<T> {
-      const apiKey = await getBraveApiKey();
+    /**
+     * Only `pinchy_web_search` reaches this — `pinchy_web_fetch` needs no key,
+     * and routing it through here would get every fetch-only agent a 403 from
+     * the credentials route. A Brave search is a read, so there is no mutation
+     * to guard against — unlike pinchy-odoo and pinchy-email, this one does
+     * not wrap the closure in `trackMutations`.
+     */
+    async function withAuthRetry<T>(
+      agentId: string,
+      fn: (apiKey: string) => Promise<T>
+    ): Promise<T> {
+      const apiKey = await getBraveApiKey(agentId);
       try {
         return await fn(apiKey);
       } catch (err) {
-        const msg = err instanceof Error ? err.message.toLowerCase() : "";
-        if (!(msg.includes("401") || msg.includes("unauthor") || msg.includes("invalid api"))) {
-          throw err;
-        }
-        invalidateCache();
-        const fresh = await getBraveApiKey();
+        if (!isAuthError(err)) throw err;
+        invalidateCache(agentId);
+        const fresh = await getBraveApiKey(agentId);
         try {
           return await fn(fresh);
         } catch (retryErr) {
+          // Only an auth error says the fresh key is bad; a Brave outage on
+          // the retry must not flag a healthy connection.
+          if (!isAuthError(retryErr)) throw retryErr;
           const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-          await reportAuthFailure(apiBaseUrl, connectionId, gatewayToken, retryMsg);
+          await postAuthFailure({
+            apiBaseUrl,
+            connectionId,
+            gatewayToken,
+            pluginId: "pinchy-web",
+            reason: retryMsg,
+          });
           throw retryErr;
         }
       }
@@ -211,18 +228,12 @@ const plugin = {
           },
           async execute(_toolCallId, params) {
             if (!haveCredentialsConfig) {
-              return {
-                isError: true,
-                content: [
-                  {
-                    type: "text",
-                    text: "Web search is not configured. Ask an admin to add a Brave Search API key in Settings \u2192 Integrations.",
-                  },
-                ],
-              };
+              return toolError(
+                "Web search is not configured. Ask an admin to add a Brave Search API key in Settings \u2192 Integrations."
+              );
             }
             try {
-              const result = await withAuthRetry((apiKey) => {
+              const result = await withAuthRetry(agentId, (apiKey) => {
                 const searchConfig: BraveSearchConfig = {
                   apiKey,
                   allowedDomains: agentConfig.allowedDomains,
@@ -233,26 +244,34 @@ const plugin = {
                 };
                 return braveSearch(params.query as string, searchConfig);
               });
+              // Name the *restriction*, not the allow-list: a result is also
+              // dropped when it lands on an excluded domain, or when its URL
+              // can't be parsed at all, and "outside the allowed domains" is
+              // plainly false in both of those cases — an agent configured
+              // with only an exclude list has no allowed domains to be
+              // outside of.
+              const filterNote =
+                result.filteredCount === 1
+                  ? "\n\n(1 result was filtered out by this agent's domain restrictions.)"
+                  : result.filteredCount
+                    ? `\n\n(${result.filteredCount} results were filtered out by this agent's domain restrictions.)`
+                    : "";
               return {
                 content: [
                   {
                     type: "text",
-                    text: JSON.stringify(result.results, null, 2),
+                    text: JSON.stringify(result.results, null, 2) + filterNote,
                   },
                 ],
               };
             } catch (error) {
-              const msg =
-                error instanceof Error ? error.message : String(error);
-              return {
-                isError: true,
-                content: [{ type: "text", text: `Search failed: ${msg}` }],
-              };
+              const msg = error instanceof Error ? error.message : String(error);
+              return toolError(`Search failed: ${msg}`);
             }
           },
         };
       },
-      { name: "pinchy_web_search" },
+      { name: "pinchy_web_search" }
     );
 
     // pinchy_web_fetch
@@ -281,26 +300,21 @@ const plugin = {
                 allowedDomains: agentConfig.allowedDomains,
                 excludedDomains: agentConfig.excludedDomains,
               };
-              const result = await webFetch(
-                params.url as string,
-                fetchConfig,
-              );
+              const result = await webFetch(params.url as string, fetchConfig);
+              if (result.isError) {
+                return toolError(result.content);
+              }
               return {
-                isError: result.isError,
                 content: [{ type: "text", text: result.content }],
               };
             } catch (error) {
-              const msg =
-                error instanceof Error ? error.message : String(error);
-              return {
-                isError: true,
-                content: [{ type: "text", text: `Fetch failed: ${msg}` }],
-              };
+              const msg = error instanceof Error ? error.message : String(error);
+              return toolError(`Fetch failed: ${msg}`);
             }
           },
         };
       },
-      { name: "pinchy_web_fetch" },
+      { name: "pinchy_web_fetch" }
     );
   },
 };

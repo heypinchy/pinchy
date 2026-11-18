@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // Regression guard for the clipboard-paste attachment path.
 //
 // Bug history: pasting a screenshot into the composer (Cmd+V or right-click →

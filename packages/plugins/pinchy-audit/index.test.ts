@@ -47,6 +47,108 @@ describe("pinchy-audit plugin", () => {
     expect(hookNames).toContain("after_tool_call");
   });
 
+  it("registers pinchy.trajectory.read for admin clients, reading under the runtime's state dir", async () => {
+    const { default: plugin } = await import("./index");
+    const resolveStateDir = vi.fn(() => "/nonexistent-state-dir");
+    const api = {
+      ...createMockApi({ apiBaseUrl: "http://pinchy:7777", gatewayToken: "gw-token" }),
+      runtime: { state: { resolveStateDir } },
+    };
+    plugin.register?.(api as any);
+
+    expect(api.registerGatewayMethod).toHaveBeenCalledWith(
+      "pinchy.trajectory.read",
+      expect.any(Function),
+      { scope: "operator.admin" }
+    );
+    const handler = api.registerGatewayMethod.mock.calls[0][1];
+    const respond = vi.fn();
+    handler({ params: { agentId: "smithers", sessionKey: "agent:smithers:direct:u" }, respond });
+    expect(resolveStateDir).toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith(true, { sessionId: null, jsonl: null });
+  });
+
+  // Usage tracking and the diagnostics export depend on this method, not on
+  // the audit forwarding, so a missing audit config must not take it down.
+  it("registers pinchy.trajectory.read even when the audit config is missing", async () => {
+    const { default: plugin } = await import("./index");
+    const api = {
+      ...createMockApi(undefined),
+      runtime: { state: { resolveStateDir: () => "/nonexistent-state-dir" } },
+    };
+    plugin.register?.(api as any);
+
+    expect(api.registerGatewayMethod).toHaveBeenCalledWith(
+      "pinchy.trajectory.read",
+      expect.any(Function),
+      { scope: "operator.admin" }
+    );
+  });
+
+  // Telegram linking and access go through these since OpenClaw 2026.9 keeps
+  // pairing state in its own database; like the trajectory read, they must
+  // not depend on the audit config.
+  it("registers the pairing store methods for admin clients, even without audit config", async () => {
+    const { default: plugin } = await import("./index");
+    const resolveStateDir = vi.fn(() => "/nonexistent-state-dir");
+    const api = { ...createMockApi(undefined), runtime: { state: { resolveStateDir } } };
+    plugin.register?.(api as any);
+
+    for (const method of [
+      "pinchy.pairing.findByCode",
+      "pinchy.pairing.removeRequests",
+      "pinchy.pairing.setAllowFrom",
+    ]) {
+      expect(api.registerGatewayMethod).toHaveBeenCalledWith(method, expect.any(Function), {
+        scope: "operator.admin",
+      });
+    }
+    const findByCode = api.registerGatewayMethod.mock.calls.find(
+      (c) => c[0] === "pinchy.pairing.findByCode"
+    )![1];
+    const respond = vi.fn();
+    findByCode({ params: { channel: "telegram", code: "ABCD1234" }, respond });
+    expect(resolveStateDir).toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith(true, { request: null });
+  });
+
+  // The allow-list write holds back a sender until OpenClaw routes them to the
+  // agent Pinchy meant, asking OpenClaw's own routing with the live config.
+  it("checks setAllowFrom's routeTo against OpenClaw's routing for the running config", async () => {
+    const { default: plugin } = await import("./index");
+    const liveConfig = { bindings: [] };
+    const resolveAgentRoute = vi.fn(() => ({ agentId: "agent-owner" }));
+    const api = {
+      ...createMockApi(undefined),
+      runtime: {
+        state: { resolveStateDir: () => "/nonexistent-state-dir" },
+        config: { current: () => liveConfig },
+        channel: { routing: { resolveAgentRoute } },
+      },
+    };
+    plugin.register?.(api as any);
+
+    const setAllowFrom = api.registerGatewayMethod.mock.calls.find(
+      (c) => c[0] === "pinchy.pairing.setAllowFrom"
+    )![1];
+    setAllowFrom({
+      params: {
+        channel: "telegram",
+        allowFrom: { "bot-a": ["111"] },
+        routeTo: { "bot-a": { "111": "agent-alice" } },
+        replaceAll: false,
+      },
+      respond: vi.fn(),
+    });
+
+    expect(resolveAgentRoute).toHaveBeenCalledWith({
+      cfg: liveConfig,
+      channel: "telegram",
+      accountId: "bot-a",
+      peer: { kind: "direct", id: "111" },
+    });
+  });
+
   it("posts start events from before_tool_call", async () => {
     const { default: plugin } = await import("./index");
     plugin.register?.(
@@ -92,6 +194,7 @@ describe("pinchy-audit plugin", () => {
         sessionKey: "agent:agent-1:user-user-1",
         sessionId: "session-1",
       }),
+      signal: expect.any(AbortSignal),
     });
   });
 
@@ -145,6 +248,7 @@ describe("pinchy-audit plugin", () => {
         error: "Request failed",
         durationMs: 123,
       }),
+      signal: expect.any(AbortSignal),
     });
   });
 
@@ -190,6 +294,7 @@ describe("pinchy-audit plugin", () => {
         error: undefined,
         durationMs: undefined,
       }),
+      signal: expect.any(AbortSignal),
     });
   });
 
@@ -254,6 +359,7 @@ describe("pinchy-audit plugin", () => {
         error: undefined,
         durationMs: undefined,
       }),
+      signal: expect.any(AbortSignal),
     });
   });
 
@@ -424,6 +530,104 @@ describe("pinchy-audit plugin", () => {
       expect(body.result).toContain("[REDACTED]");
     });
 
+    it("truncates values beyond max depth instead of leaking them unredacted (SYNC with web)", async () => {
+      const { default: plugin } = await import("./index");
+      plugin.register?.(
+        createMockApi({
+          apiBaseUrl: "http://pinchy:7777",
+          gatewayToken: "gw-token",
+        }) as any
+      );
+
+      const afterHook = mockOn.mock.calls.find((c) => c[0] === "after_tool_call")?.[1];
+
+      // Build a 12-level deep object: depth 0 is outermost, secret lives at depth 12.
+      // The depth cap is a cycle/stack-depth guard, not a redaction bypass — a
+      // real Odoo command tuple nests to depth ~6, well within reach of a
+      // secret this cap must not pass through verbatim.
+      let nested: any = { password: "deep-secret" };
+      for (let i = 0; i < 12; i++) {
+        nested = { nested };
+      }
+
+      await afterHook(
+        {
+          toolName: "odoo_write",
+          params: nested,
+          result: "ok",
+          durationMs: 5,
+        },
+        {
+          agentId: "agent-1",
+          sessionKey: "agent:agent-1:user-user-1",
+          toolName: "odoo_write",
+        }
+      );
+
+      const body = JSON.parse((fetch as any).mock.calls[0][1].body);
+      expect(JSON.stringify(body.params)).not.toContain("deep-secret");
+      // The MAX_DEPTH (10) check fires 10 hops in, at the object whose own
+      // subtree still holds the secret two levels further down.
+      let level = body.params;
+      for (let i = 0; i < 10; i++) {
+        level = level.nested;
+      }
+      expect(level).toBe("[TRUNCATED]");
+    });
+
+    it("truncates only the containers it could not inspect, keeping leaves at the cap (SYNC with web)", async () => {
+      const { default: plugin } = await import("./index");
+      plugin.register?.(
+        createMockApi({
+          apiBaseUrl: "http://pinchy:7777",
+          gatewayToken: "gw-token",
+        }) as any
+      );
+
+      const afterHook = mockOn.mock.calls.find((c) => c[0] === "after_tool_call")?.[1];
+
+      // A container past the cap is replaced because we never get to look
+      // inside it. A leaf has no inside: its key was checked by the object one
+      // level up, and pattern redaction is depth-independent — so it is exactly
+      // as sanitized at depth 10 as at depth 1, and keeping it is what leaves a
+      // diagnostics bundle's deepest tool arguments readable.
+      let nested: any = {
+        opcode: 6,
+        password: "boundary-secret",
+        note: "the model echoed sk-abcdefghijklmnopqrstuvwx back",
+        child: { deep: "unreachable" },
+      };
+      // 9 wrappers put this object at depth 9, so its own values land on the
+      // depth-10 boundary the cap governs.
+      for (let i = 0; i < 9; i++) {
+        nested = { nested };
+      }
+
+      await afterHook(
+        {
+          toolName: "odoo_write",
+          params: nested,
+          result: "ok",
+          durationMs: 5,
+        },
+        {
+          agentId: "agent-1",
+          sessionKey: "agent:agent-1:user-user-1",
+          toolName: "odoo_write",
+        }
+      );
+
+      const body = JSON.parse((fetch as any).mock.calls[0][1].body);
+      let level = body.params;
+      for (let i = 0; i < 9; i++) {
+        level = level.nested;
+      }
+      expect(level.opcode).toBe(6);
+      expect(level.password).toBe("[REDACTED]");
+      expect(level.note).toBe("the model echoed [REDACTED] back");
+      expect(level.child).toBe("[TRUNCATED]");
+    });
+
     it("also sanitizes params in before_tool_call events", async () => {
       const { default: plugin } = await import("./index");
       plugin.register?.(
@@ -506,10 +710,7 @@ describe("pinchy-audit plugin", () => {
     });
 
     it("throws after all retries are exhausted (fail-closed)", async () => {
-      vi.stubGlobal(
-        "fetch",
-        vi.fn().mockRejectedValue(new Error("network down"))
-      );
+      vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
 
       const { default: plugin } = await import("./index");
       plugin.register?.(
@@ -529,10 +730,7 @@ describe("pinchy-audit plugin", () => {
     });
 
     it("throws after all retries exhausted on non-ok HTTP responses", async () => {
-      vi.stubGlobal(
-        "fetch",
-        vi.fn().mockResolvedValue({ ok: false, status: 500 })
-      );
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 500 }));
 
       const { default: plugin } = await import("./index");
       plugin.register?.(
@@ -549,6 +747,249 @@ describe("pinchy-audit plugin", () => {
           { toolName: "pinchy_read", agentId: "agent-1" }
         )
       ).rejects.toThrow(/audit endpoint returned 500/);
+    });
+
+    it("aborts a hung audit POST via AbortSignal.timeout(10_000) instead of blocking every tool call forever", async () => {
+      // A server that never responds and never resets the connection — the
+      // "hung endpoint" / "network blackhole" case the fetch timeout exists
+      // to bound. The mock fetch only ever settles via the AbortSignal the
+      // plugin passes in, exactly like real `fetch` does. AbortSignal.timeout
+      // itself is intercepted so the test proves the SAME behavior a real
+      // 10-second hang would produce, without the test taking 10+ seconds:
+      // it still asserts the plugin requests a 10_000ms bound and reacts
+      // correctly when that signal fires.
+      const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockImplementation((_ms: number) => {
+        const controller = new AbortController();
+        setTimeout(
+          () => controller.abort(new DOMException("The operation timed out.", "TimeoutError")),
+          1
+        );
+        return controller.signal;
+      });
+
+      const fetchMock = vi.fn((_url: string | URL, init?: RequestInit) => {
+        return new Promise((_resolve, reject) => {
+          const signal = init?.signal;
+          signal?.addEventListener("abort", () => {
+            reject(signal.reason ?? new Error("The operation was aborted"));
+          });
+        });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { default: plugin } = await import("./index");
+      plugin.register?.(
+        createMockApi({
+          apiBaseUrl: "http://pinchy:7777",
+          gatewayToken: "gw-token",
+        }) as any
+      );
+
+      const beforeHook = mockOn.mock.calls.find((c) => c[0] === "before_tool_call")?.[1];
+      await expect(
+        beforeHook(
+          { toolName: "pinchy_read", params: {}, runId: "run-1", toolCallId: "tool-1" },
+          { toolName: "pinchy_read" }
+        )
+      ).rejects.toThrow();
+
+      // MAX_RETRIES = 2, so 3 total attempts, each racing its own timeout —
+      // never a single hang that blocks forever. Only a 401 earns the longer
+      // retry run: a hang already costs 10s per attempt.
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(timeoutSpy).toHaveBeenCalledWith(10_000);
+      timeoutSpy.mockRestore();
+    });
+
+    it("does not retry a definitive 4xx response and quotes the response body in the thrown error", async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 400,
+        text: () => Promise.resolve(JSON.stringify({ error: "unknown toolName" })),
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { default: plugin } = await import("./index");
+      plugin.register?.(
+        createMockApi({
+          apiBaseUrl: "http://pinchy:7777",
+          gatewayToken: "gw-token",
+        }) as any
+      );
+
+      const beforeHook = mockOn.mock.calls.find((c) => c[0] === "before_tool_call")?.[1];
+      await expect(
+        beforeHook(
+          { toolName: "pinchy_read", params: {}, runId: "run-1", toolCallId: "tool-1" },
+          { toolName: "pinchy_read" }
+        )
+      ).rejects.toThrow(/400.*unknown toolName/);
+
+      // A definitive 4xx is our own bug and retrying it never helps — one
+      // attempt only.
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      [429, "Too Many Requests"],
+      [408, "Request Timeout"],
+    ])(
+      "retries a %i despite it being a 4xx, because the status means 'try again'",
+      async (status) => {
+        // The 4xx shortcut above must not swallow the two statuses that ask for
+        // a retry by definition. Getting this wrong is worse here than in
+        // pinchy-transcript, which drops the message: this hook fails CLOSED, so
+        // classifying a load-shedding 429 as "our own bug" would abort the tool
+        // call of every agent for as long as the shedding lasts.
+        vi.useFakeTimers();
+        try {
+          const fetchMock = vi
+            .fn()
+            .mockResolvedValueOnce({ ok: false, status })
+            .mockResolvedValueOnce({ ok: true });
+          vi.stubGlobal("fetch", fetchMock);
+
+          const { default: plugin } = await import("./index");
+          plugin.register?.(
+            createMockApi({
+              apiBaseUrl: "http://pinchy:7777",
+              gatewayToken: "gw-token",
+            }) as any
+          );
+
+          const beforeHook = mockOn.mock.calls.find((c) => c[0] === "before_tool_call")?.[1];
+          const resultPromise = beforeHook(
+            { toolName: "pinchy_read", params: {}, runId: "run-1", toolCallId: "tool-1" },
+            { toolName: "pinchy_read" }
+          );
+
+          await vi.advanceTimersByTimeAsync(250);
+          expect(fetchMock).toHaveBeenCalledTimes(2);
+          await expect(resultPromise).resolves.toBeUndefined();
+        } finally {
+          vi.useRealTimers();
+        }
+      }
+    );
+
+    it("keeps retrying through a burst of 401s (config-apply window) with growing backoff, then succeeds", async () => {
+      // Right after a config apply Pinchy could not read the shared gateway
+      // token for a moment and answered every internal call 401. The token is
+      // one bootstrap secret shared by Pinchy and every plugin, so a 401 here
+      // is that moment, not a revoked credential: treating it as definitive
+      // made this fail-closed hook block the tool call on the first attempt.
+      vi.useFakeTimers();
+      try {
+        const fetchMock = vi
+          .fn()
+          .mockResolvedValueOnce({ ok: false, status: 401 })
+          .mockResolvedValueOnce({ ok: false, status: 401 })
+          .mockResolvedValueOnce({ ok: false, status: 401 })
+          .mockResolvedValueOnce({ ok: false, status: 401 })
+          .mockResolvedValueOnce({ ok: true });
+        vi.stubGlobal("fetch", fetchMock);
+
+        const { default: plugin } = await import("./index");
+        plugin.register?.(
+          createMockApi({
+            apiBaseUrl: "http://pinchy:7777",
+            gatewayToken: "gw-token",
+          }) as any
+        );
+
+        const beforeHook = mockOn.mock.calls.find((c) => c[0] === "before_tool_call")?.[1];
+        const resultPromise = beforeHook(
+          { toolName: "pinchy_read", params: {}, runId: "run-1", toolCallId: "tool-1" },
+          { toolName: "pinchy_read" }
+        );
+
+        // Exponential backoff — 250, 500, 1000, 2000 ms — so the attempts
+        // spread across several seconds instead of landing in one window.
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(250);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        await vi.advanceTimersByTimeAsync(500);
+        expect(fetchMock).toHaveBeenCalledTimes(3);
+        await vi.advanceTimersByTimeAsync(999);
+        expect(fetchMock).toHaveBeenCalledTimes(3);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(fetchMock).toHaveBeenCalledTimes(4);
+        await vi.advanceTimersByTimeAsync(2000);
+        expect(fetchMock).toHaveBeenCalledTimes(5);
+
+        await expect(resultPromise).resolves.toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("still fails closed when the 401s outlast every retry", async () => {
+      vi.useFakeTimers();
+      try {
+        const fetchMock = vi.fn().mockResolvedValue({
+          ok: false,
+          status: 401,
+          text: () => Promise.resolve(JSON.stringify({ error: "Unauthorized" })),
+        });
+        vi.stubGlobal("fetch", fetchMock);
+
+        const { default: plugin } = await import("./index");
+        plugin.register?.(
+          createMockApi({
+            apiBaseUrl: "http://pinchy:7777",
+            gatewayToken: "gw-token",
+          }) as any
+        );
+
+        const beforeHook = mockOn.mock.calls.find((c) => c[0] === "before_tool_call")?.[1];
+        const resultPromise = beforeHook(
+          { toolName: "pinchy_read", params: {}, runId: "run-1", toolCallId: "tool-1" },
+          { toolName: "pinchy_read" }
+        );
+        const settled = expect(resultPromise).rejects.toThrow(/401/);
+        await vi.advanceTimersByTimeAsync(250 + 500 + 1000 + 2000);
+        await settled;
+        expect(fetchMock).toHaveBeenCalledTimes(5);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("retries a 5xx response with backoff between attempts, then succeeds", async () => {
+      vi.useFakeTimers();
+      try {
+        const fetchMock = vi
+          .fn()
+          .mockResolvedValueOnce({ ok: false, status: 503 })
+          .mockResolvedValueOnce({ ok: false, status: 503 })
+          .mockResolvedValueOnce({ ok: true });
+        vi.stubGlobal("fetch", fetchMock);
+
+        const { default: plugin } = await import("./index");
+        plugin.register?.(
+          createMockApi({
+            apiBaseUrl: "http://pinchy:7777",
+            gatewayToken: "gw-token",
+          }) as any
+        );
+
+        const beforeHook = mockOn.mock.calls.find((c) => c[0] === "before_tool_call")?.[1];
+        const resultPromise = beforeHook(
+          { toolName: "pinchy_read", params: {}, runId: "run-1", toolCallId: "tool-1" },
+          { toolName: "pinchy_read" }
+        );
+
+        // First retry waits 250ms, second waits 500ms (exponential) before succeeding.
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(250);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        await vi.advanceTimersByTimeAsync(500);
+        expect(fetchMock).toHaveBeenCalledTimes(3);
+
+        await expect(resultPromise).resolves.toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });

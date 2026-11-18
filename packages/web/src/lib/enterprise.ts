@@ -1,6 +1,8 @@
 import { getSetting } from "@/lib/settings";
 import { validateLicense, type LicenseStatus } from "@/lib/license";
 import { deriveLicenseState, type LicenseState } from "@/lib/license-state";
+import { DEVELOPMENT_PUBLIC_KEY, PRODUCTION_PUBLIC_KEY } from "@/lib/license-keys";
+import { hasFields, processWideCache } from "@/lib/process-wide-cache";
 
 export type { LicenseStatus, LicenseType } from "@/lib/license";
 export type { LicenseState } from "@/lib/license-state";
@@ -19,17 +21,38 @@ export interface LicenseInfo {
   hasGatedConfig: boolean;
 }
 
-// Production public key (ES256 / P-256)
-// Generated with: npx tsx scripts/generate-license.ts --generate-keypair
-const PRODUCTION_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
-MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaPYaiLnn7Z+EUywhGX4vOitboyzJ
-ce3W+NnSsTlbVzMRnXALwqra86Orhk9Sl4UWKEuebwltk+3OIuVy33oTWA==
------END PUBLIC KEY-----`;
-
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 
-let cachedStatus: LicenseStatus | null = null;
-let cacheTimestamp = 0;
+interface LicenseCache {
+  status: LicenseStatus | null;
+  timestamp: number;
+  /**
+   * Bumped by every clear, so a read that started before it cannot store its
+   * answer. Unlike the counters `process-wide-cache.ts` warns about, this one
+   * may be lost when the cache object is replaced: a read compares against
+   * and writes to the object it captured, so a replacement only orphans it.
+   */
+  generation: number;
+}
+
+/**
+ * The cached license status, shared by every module instance in the process.
+ *
+ * It must not be module-level. The custom server (`server.ts` → ClientRouter,
+ * the WS chat path) and Next's route bundles load this module separately, and
+ * `PUT /api/enterprise/key` clears the cache through the route's copy. With a
+ * private cache per instance that clear never reached the chat server, which
+ * kept answering "community" — and so treated every "restricted" agent as
+ * "all" — for up to the TTL after an admin entered their first license
+ * (#1277). See `process-wide-cache.ts`.
+ */
+function licenseCache(): LicenseCache {
+  return processWideCache<LicenseCache>(
+    "__pinchyLicenseStatusCache",
+    () => ({ status: null, timestamp: 0, generation: 0 }),
+    hasFields("status", "timestamp", "generation")
+  );
+}
 
 /**
  * Load the license token. Env var always wins (immutable config).
@@ -51,29 +74,104 @@ export function isKeyFromEnv(): boolean {
 }
 
 /**
+ * Whether a license signed by the DEVELOPMENT key is honoured.
+ *
+ * False in production, which is the whole point: the development license is
+ * committed to this repository, so anything that honours it is unlocked for
+ * everyone who can read the repository (#1083). A dev stack (`next dev`, the
+ * E2E web server) runs outside production and honours it.
+ *
+ * Read per call rather than captured at module load — NODE_ENV is stubbed per
+ * test, and a module-level constant would freeze whatever the first import saw.
+ */
+function developmentLicensesHonoured(): boolean {
+  return process.env.NODE_ENV !== "production";
+}
+
+/**
+ * Validate against the key ring rather than a single key: the production key
+ * always, the development key only where development licenses are honoured.
+ *
+ * Order matters. The production key is asked first and its verdict wins when
+ * it recognises the token at all (`active` or the authentic-but-`expired`
+ * case), so a real customer license can never be re-read under the dev key.
+ */
+async function validateAgainstKeyRing(
+  token: string,
+  productionKeyPem: string
+): Promise<LicenseStatus> {
+  const status = await validateLicense(token, productionKeyPem);
+  if (status.active || status.expired) return status;
+  if (!developmentLicensesHonoured()) return status;
+
+  const dev = await validateLicense(token, DEVELOPMENT_PUBLIC_KEY, { honourDevSubject: true });
+  return dev.active || dev.expired ? dev : status;
+}
+
+/**
+ * Validate a candidate token without storing it or touching the cache.
+ *
+ * This is the entry point for "would this key work?", which is a different
+ * question from "what is this install licensed for?" and must be answerable
+ * without changing the answer to the second one. `PUT /api/enterprise/key`
+ * used to conflate them: it wrote the submitted key, asked `getLicenseStatus`,
+ * and deleted the setting when the verdict came back inactive — so a typo cost
+ * an admin the working license that had been there.
+ *
+ * It is deliberately the same code path `getLicenseStatus` takes, not a second
+ * copy of it. The route decides with this function what the app then reads
+ * through that one; a change to how a token is verified must reach both or the
+ * route would accept a key the app treats as community.
+ *
+ * That invariant is why the key ring lives HERE and not in `getLicenseStatus`
+ * (#1083). Put it one level down and the two diverge in the other direction:
+ * on a dev stack the route would reject the development license while the app
+ * honours it — the same class of bug, arriving as "your key is invalid" for a
+ * key that demonstrably works.
+ */
+export async function validateLicenseToken(
+  token: string,
+  publicKeyPem: string = PRODUCTION_PUBLIC_KEY
+): Promise<LicenseStatus> {
+  return validateAgainstKeyRing(token, publicKeyPem);
+}
+
+/**
  * Get the full license status. Cached for 1 hour.
- * Pass publicKeyPem only in tests — production uses the hardcoded key.
+ * Pass publicKeyPem only in tests — production uses the hardcoded key. The
+ * cache is not keyed on it: a non-default key would read, and seed, the
+ * verdict for the whole process.
  */
 export async function getLicenseStatus(
   publicKeyPem: string = PRODUCTION_PUBLIC_KEY
 ): Promise<LicenseStatus> {
+  const cache = licenseCache();
   const now = Date.now();
-  if (cachedStatus && now - cacheTimestamp < CACHE_TTL_MS) {
-    return cachedStatus;
+  if (cache.status && now - cache.timestamp < CACHE_TTL_MS) {
+    return cache.status;
   }
 
+  // A key saved while this read is in flight clears the cache; the answer
+  // computed here may be from the old key and must not be stored for an hour.
+  const generation = cache.generation;
   const token = await loadToken();
-  cachedStatus = await validateLicense(token, publicKeyPem);
-  cacheTimestamp = now;
-  return cachedStatus;
+  const status = await validateLicenseToken(token, publicKeyPem);
+  if (cache.generation === generation) {
+    cache.status = status;
+    cache.timestamp = now;
+  }
+  return status;
 }
 
 /**
  * Clear the cached license status. Call after key changes (e.g. via Settings UI).
+ * Reaches every module instance in the process, the WS chat server included.
  */
 export function clearLicenseCache(): void {
-  cachedStatus = null;
-  cacheTimestamp = 0;
+  const cache = licenseCache();
+  cache.status = null;
+  cache.timestamp = 0;
+  cache.generation += 1;
 }
 
 /**

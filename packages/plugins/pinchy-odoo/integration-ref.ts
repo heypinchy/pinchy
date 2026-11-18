@@ -6,6 +6,25 @@ const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 12;
 const DEFAULT_SECRETS_PATH = "/openclaw-secrets/secrets.json";
 const HEX_64 = /^[0-9a-fA-F]{64}$/;
+/**
+ * A ref exactly as {@link encodeRef} writes it: the prefix, unpadded base64url,
+ * and nothing after it. Checked before decoding because Node's base64url
+ * decoder is lenient — it stops at the first `=` and drops whatever follows,
+ * skips whitespace, and ignores the unused bits of the last character — so
+ * `<valid ref>=\n\n<any text>` decodes to the same record. Pinchy's
+ * confirmation card shows a decoded ref as the record it names; a lenient
+ * decode here would let the text after it reach this tool unseen. Pinchy's
+ * own decoder (`approvals/call-models.ts`) applies the
+ * same rule.
+ */
+const REF_SHAPE = /^pinchy_ref:v1:[A-Za-z0-9_-]+$/;
+
+/** True only for the exact string {@link encodeRef} would produce for its bytes. */
+function isCanonicalRef(ref: string): boolean {
+  if (!REF_SHAPE.test(ref)) return false;
+  const body = ref.slice(PREFIX.length);
+  return Buffer.from(body, "base64url").toString("base64url") === body;
+}
 
 export interface IntegrationRefPayload {
   integrationType: "odoo";
@@ -19,6 +38,32 @@ export interface IntegrationRefPayload {
   // Odoo round-trip. Both fields appear together or not at all.
   companyId?: number;
   companyLabel?: string;
+}
+
+/**
+ * Thrown by {@link decodeRef} whenever the ref string itself cannot be
+ * decoded — bad prefix, anything but the exact unpadded base64url encodeRef
+ * writes (padding, trailing text), truncated/corrupted payload, a failed
+ * AES-GCM auth tag check, unparsable JSON, or a payload that fails shape
+ * validation. Distinct from "decoded fine but doesn't match this deployment"
+ * (see `decodeOdooRefForConnection` in index.ts), which throws a plain
+ * `Error` instead. Callers that need to tell a corrupted ref apart from a
+ * cross-connection ref (e.g. `decodeTargetRef`) check `instanceof` this
+ * class rather than matching on message text — every decode failure shares
+ * the same generic message, so type is the only signal.
+ *
+ * Why the distinction earns a class: on 2026-07-15 agent "Piper" reported
+ * all 11 of its failed calls as "ref does not belong to this Odoo
+ * connection", which sent the investigation down a connection-config and
+ * key-rotation trail. 111 other calls decoded fine against that same
+ * connectionId. The refs were simply garbled by the model — a different
+ * problem with a different, model-actionable fix.
+ */
+export class MalformedIntegrationRefError extends Error {
+  constructor(message = "Invalid integration reference") {
+    super(message);
+    this.name = "MalformedIntegrationRefError";
+  }
 }
 
 let cachedKey: Buffer | null = null;
@@ -118,7 +163,7 @@ function getKey(): Buffer {
   if (bundleKey) {
     if (!HEX_64.test(bundleKey)) {
       throw new Error(
-        "plugins['pinchy-odoo'].refTokenKey in secrets.json is invalid: expected 64 hex characters",
+        "plugins['pinchy-odoo'].refTokenKey in secrets.json is invalid: expected 64 hex characters"
       );
     }
     cachedKey = Buffer.from(bundleKey, "hex");
@@ -129,7 +174,7 @@ function getKey(): Buffer {
     "PINCHY_REF_TOKEN_KEY environment variable is required (64 hex characters) " +
       "or pinchy-web must have written secrets.json with plugins['pinchy-odoo'].refTokenKey. " +
       "If you upgraded an existing deployment, restart the pinchy service to trigger " +
-      "regenerateOpenClawConfig() and provision the key.",
+      "regenerateOpenClawConfig() and provision the key."
   );
 }
 
@@ -150,8 +195,8 @@ export function encodeRef(payload: IntegrationRefPayload): string {
 }
 
 export function decodeRef(ref: string): IntegrationRefPayload {
-  if (!ref.startsWith(PREFIX)) {
-    throw new Error("Invalid integration reference");
+  if (!isCanonicalRef(ref)) {
+    throw new MalformedIntegrationRefError();
   }
 
   try {
@@ -164,17 +209,16 @@ export function decodeRef(ref: string): IntegrationRefPayload {
     const ciphertext = raw.subarray(IV_LENGTH + 16);
     const decipher = createDecipheriv(ALGORITHM, getKey(), iv);
     decipher.setAuthTag(tag);
-    const plaintext = Buffer.concat([
-      decipher.update(ciphertext),
-      decipher.final(),
-    ]).toString("utf8");
+    const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString(
+      "utf8"
+    );
     const payload = JSON.parse(plaintext) as unknown;
     if (!isPayload(payload)) {
       throw new Error("invalid payload");
     }
     return payload;
   } catch {
-    throw new Error("Invalid integration reference");
+    throw new MalformedIntegrationRefError();
   }
 }
 

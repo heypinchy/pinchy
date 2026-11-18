@@ -38,7 +38,7 @@ An agent with read access can also download an email's attachments into its own 
 
 A few operational details worth knowing:
 
-- **Size cap**: attachments over 25 MB are rejected — the same cap `odoo_attach_file` uses, so anything the agent downloads here is always small enough to hand off downstream.
+- **Size cap**: attachments over 25 MB are rejected — the same cap `odoo_attach_file` uses, so anything the agent downloads here is always small enough to hand off downstream. On an [IMAP mailbox](/guides/connect-email-imap/#troubleshooting) there's a second, coarser limit: the protocol only hands over whole messages, so one over 50 MB is refused before it's downloaded and neither its body nor its attachments can be read.
 - **Filename sanitization**: the sender picks the attachment's original filename, so Pinchy sanitizes it before saving — stripping path separators and unsafe characters — rather than trusting it outright. International characters are kept intact (an `Abschätzung.pdf` stays `Abschätzung.pdf`) and normalized to a consistent Unicode form, so the agent can read the file back reliably afterward.
 - **Collision handling**: if a file with that name already exists in the agent's workspace, Pinchy appends `-1`, `-2`, and so on rather than overwriting anything.
 - **Use the returned filename**: because sanitization or a collision suffix can change the name, always use the filename the tool actually returns — not the original attachment name — for any hand-off to another tool, such as `odoo_attach_file`.
@@ -49,7 +49,7 @@ An agent with email permissions automatically knows which mailbox it works with:
 
 ## Email agent templates
 
-Pinchy ships three email agent templates: **Email Assistant**, **Sales Email Assistant**, and **Support Email Assistant**. All three need a connected mailbox to work with, so they only appear as available templates once you've connected at least one Gmail or Microsoft 365 mailbox — before that, they're listed but grayed out with a link back to **Settings → Integrations**.
+Pinchy ships three email agent templates: **Email Assistant**, **Sales Email Assistant**, and **Support Email Assistant**. All three need a connected mailbox to work with, so they only appear as available templates once you've connected at least one mailbox (Gmail, Microsoft 365 or IMAP) — before that, they sit behind a collapsed "3 templates available with an email connection · Set up connection →" line that links to **Settings → Integrations**.
 
 When you create an agent from one of these templates, the **New Agent** form asks you to pick a **Mailbox**. If you have only one mailbox connected, it's selected automatically; with several, you choose which one this agent should use.
 

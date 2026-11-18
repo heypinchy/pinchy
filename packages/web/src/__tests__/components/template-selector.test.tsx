@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import "@testing-library/jest-dom";
@@ -161,7 +162,7 @@ describe("TemplateSelector", () => {
     // to an external system — while the Odoo card beside it honestly said
     // "Odoo · Read & Write". A template that grants something must say so.
     const mcpTemplates = [
-      {
+      makeTemplateItem({
         id: "github-pr-reviewer",
         name: "GitHub PR Reviewer",
         description: "Reviews pull requests",
@@ -173,7 +174,7 @@ describe("TemplateSelector", () => {
           "pull_request_review_write",
         ],
         available: true,
-      },
+      }),
     ];
 
     render(<TemplateSelector templates={mcpTemplates} onSelect={vi.fn()} />);
@@ -184,7 +185,7 @@ describe("TemplateSelector", () => {
     // The card is the last honest surface before an agent gets external
     // access. Pin "has a badge" independently of its exact wording.
     const mcpTemplates = [
-      {
+      makeTemplateItem({
         id: "linear-triage",
         name: "Linear Triage",
         description: "Triages issues",
@@ -192,7 +193,7 @@ describe("TemplateSelector", () => {
         requiresMcpConnection: "linear" as const,
         mcpRecommendedTools: ["list_issues", "update_issue"],
         available: true,
-      },
+      }),
     ];
 
     render(<TemplateSelector templates={mcpTemplates} onSelect={vi.fn()} />);
@@ -270,6 +271,9 @@ describe("TemplateSelector", () => {
     const link = screen.getByText(/Set up connection/);
     expect(link).toBeInTheDocument();
     expect(link.closest("a")).toHaveAttribute("href", "/settings?tab=integrations");
+    // A link inside the collapsible's <button> is a nested interactive
+    // control (axe `nested-interactive`, #1300): it sits beside the trigger.
+    expect(link.closest("button")).toBeNull();
   });
 
   it("expands to show unavailable template cards on trigger click", () => {

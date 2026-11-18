@@ -1,0 +1,320 @@
+// @vitest-environment jsdom
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+const { mockSignOut } = vi.hoisted(() => ({ mockSignOut: vi.fn() }));
+vi.mock("@/lib/auth-client", () => ({ authClient: { signOut: mockSignOut } }));
+
+const { mockSweepStaleShares } = vi.hoisted(() => ({ mockSweepStaleShares: vi.fn() }));
+vi.mock("@/lib/share-target/share-cache", () => ({
+  CACHE_NAME: "share-target",
+  sweepStaleShares: (...args: unknown[]) => mockSweepStaleShares(...args),
+}));
+
+const TEN_MINUTES = 10 * 60 * 1000;
+
+import {
+  claimAccount,
+  enterAccount,
+  leaveAccount,
+  navigation,
+  watchAccount,
+} from "@/lib/account-switch";
+
+/**
+ * A shared browser must not hand one person's client-side state to the next
+ * (#1286). Drafts, staged-upload draft ids and the last-chat pointer live in
+ * localStorage under `pinchy:` with no user in the key, and module-level caches
+ * (the chat list, in-memory drafts) survive a client-side navigation. So
+ * leaving an account wipes that storage and reloads the page, and entering one
+ * does the same when someone else was signed in here last — which also covers
+ * a session that expired without anybody signing out.
+ */
+describe("account switch on a shared browser (#1286)", () => {
+  let assign: ReturnType<typeof vi.spyOn>;
+  let reload: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    localStorage.clear();
+    sessionStorage.clear();
+    mockSignOut.mockReset().mockResolvedValue(undefined);
+    mockSweepStaleShares.mockReset().mockResolvedValue(undefined);
+    assign = vi.spyOn(navigation, "assign").mockImplementation(() => {});
+    reload = vi.spyOn(navigation, "reload").mockImplementation(() => {});
+  });
+
+  function seedPreviousUsersState() {
+    localStorage.setItem("pinchy:composer:draft:agent-1", "half-written reply");
+    localStorage.setItem("pinchy:composer:agent-1:draftId", "draft-uuid");
+    localStorage.setItem("pinchy:lastChat:agent-1", "chat-9");
+    localStorage.setItem("theme", "dark");
+    sessionStorage.setItem("pinchy:instruction-draft:agent-1", "secret instruction");
+  }
+
+  it("signs out, wipes this browser's Pinchy storage, and reloads into the login page", async () => {
+    seedPreviousUsersState();
+
+    await leaveAccount();
+
+    expect(mockSignOut).toHaveBeenCalledTimes(1);
+    expect(localStorage.getItem("pinchy:composer:draft:agent-1")).toBeNull();
+    expect(localStorage.getItem("pinchy:composer:agent-1:draftId")).toBeNull();
+    expect(localStorage.getItem("pinchy:lastChat:agent-1")).toBeNull();
+    expect(sessionStorage.length).toBe(0);
+    // Not Pinchy's to clear: a device preference, not a person's data.
+    expect(localStorage.getItem("theme")).toBe("dark");
+    // A full load, not a client-side push: module-level caches must not survive.
+    expect(assign).toHaveBeenCalledWith("/login");
+  });
+
+  it("wipes the previous person's storage when someone else signs in here", async () => {
+    await enterAccount("user-a", "/");
+    seedPreviousUsersState();
+
+    await enterAccount("user-b", "/chat");
+
+    expect(localStorage.getItem("pinchy:composer:draft:agent-1")).toBeNull();
+    expect(sessionStorage.length).toBe(0);
+    expect(localStorage.getItem("theme")).toBe("dark");
+    expect(assign).toHaveBeenLastCalledWith("/chat");
+  });
+
+  it("keeps the person's own drafts when they sign back in after their session expired", async () => {
+    await enterAccount("user-a", "/");
+    seedPreviousUsersState();
+
+    await enterAccount("user-a", "/");
+
+    expect(localStorage.getItem("pinchy:composer:draft:agent-1")).toBe("half-written reply");
+    expect(assign).toHaveBeenLastCalledWith("/");
+  });
+
+  it("wipes when it cannot tell who was here before", async () => {
+    seedPreviousUsersState();
+
+    await enterAccount("user-a", "/");
+
+    expect(localStorage.getItem("pinchy:composer:draft:agent-1")).toBeNull();
+  });
+
+  it("wipes and records nobody when the sign-in answer carries no user id", async () => {
+    await enterAccount("user-a", "/");
+    seedPreviousUsersState();
+
+    await enterAccount(undefined, "/");
+
+    expect(localStorage.getItem("pinchy:composer:draft:agent-1")).toBeNull();
+    expect(localStorage.getItem("pinchy:account")).toBeNull();
+    expect(assign).toHaveBeenLastCalledWith("/");
+  });
+
+  it("wipes even when the server refuses the sign-out, so the next person still starts clean", async () => {
+    // Better Auth reports a failed sign-out as { error } rather than throwing.
+    mockSignOut.mockResolvedValue({ error: { status: 500 } });
+    seedPreviousUsersState();
+
+    await leaveAccount();
+
+    expect(localStorage.getItem("pinchy:composer:draft:agent-1")).toBeNull();
+    expect(assign).toHaveBeenCalledWith("/login");
+  });
+
+  it("forgets unsent PWA shares before the page moves on", async () => {
+    // A file shared into the installed app and never sent waits in the
+    // service worker's cache; the next person must not be able to open it.
+    const order: string[] = [];
+    const cacheDelete = vi.fn(async () => {
+      order.push("delete");
+      return true;
+    });
+    vi.stubGlobal("caches", { delete: cacheDelete });
+    assign.mockImplementation(() => order.push("assign"));
+    mockSweepStaleShares.mockImplementation(async () => {
+      order.push("keep-recent");
+    });
+    try {
+      await leaveAccount();
+      expect(cacheDelete).toHaveBeenCalledWith("share-target");
+      expect(order).toEqual(["delete", "assign"]);
+
+      // Signing in after a sign-out keeps only recent shares (see the next
+      // test); when someone else's session merely expired here, everything goes.
+      order.length = 0;
+      await enterAccount("user-a", "/");
+      await enterAccount("user-b", "/");
+      expect(order).toEqual(["keep-recent", "assign", "delete", "assign"]);
+
+      // The same person again: likewise only recent shares stay.
+      order.length = 0;
+      await enterAccount("user-b", "/");
+      expect(order).toEqual(["keep-recent", "assign"]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps only a recent share made while signed out, for whoever signs in to send it", async () => {
+    // Sharing into the installed app while signed out redirects to the login
+    // page with the share's id in returnTo. Nothing can tell who shared it, so
+    // only a share young enough to belong to the person at the keyboard stays.
+    const cacheDelete = vi.fn(async () => true);
+    vi.stubGlobal("caches", { delete: cacheDelete });
+    try {
+      await enterAccount("user-a", "/");
+      await leaveAccount();
+      cacheDelete.mockClear();
+      seedPreviousUsersState();
+
+      await enterAccount("user-a", "/share?share_id=s1");
+
+      expect(cacheDelete).not.toHaveBeenCalled();
+      expect(mockSweepStaleShares).toHaveBeenCalledWith(TEN_MINUTES);
+      // Storage is still wiped: the marker says nobody's state belongs here.
+      expect(localStorage.getItem("pinchy:composer:draft:agent-1")).toBeNull();
+      expect(assign).toHaveBeenLastCalledWith("/share?share_id=s1");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps a recent share on the first sign-in in a browser with no record yet", async () => {
+    // Installed from the login page and shared before ever signing in: no one
+    // else's state can be here, and the share is what the person came to send.
+    const cacheDelete = vi.fn(async () => true);
+    vi.stubGlobal("caches", { delete: cacheDelete });
+    try {
+      await enterAccount("user-a", "/share?share_id=s1");
+
+      expect(cacheDelete).not.toHaveBeenCalled();
+      expect(mockSweepStaleShares).toHaveBeenCalledWith(TEN_MINUTES);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("still wipes and moves on when the sign-out request itself fails", async () => {
+    // Offline or a restarting server: the fetch rejects instead of answering.
+    mockSignOut.mockRejectedValue(new TypeError("Failed to fetch"));
+    seedPreviousUsersState();
+
+    await leaveAccount();
+
+    expect(localStorage.getItem("pinchy:composer:draft:agent-1")).toBeNull();
+    expect(localStorage.getItem("pinchy:account")).toMatch(/^signed-out:/);
+    expect(assign).toHaveBeenCalledWith("/login");
+  });
+
+  it("drops an unsaved-changes prompt before leaving, so the load is never cancelled", async () => {
+    // The agent settings page sets window.onbeforeunload while it has unsaved
+    // edits. "Stay" would leave the signed-out tab showing this person's page.
+    const prompt = () => true;
+    window.onbeforeunload = prompt;
+    const promptAtAssign: unknown[] = [];
+    assign.mockImplementation(() => promptAtAssign.push(window.onbeforeunload));
+
+    await leaveAccount();
+    window.onbeforeunload = prompt;
+    await enterAccount("user-a", "/");
+
+    expect(promptAtAssign).toEqual([null, null]);
+  });
+
+  describe("other open tabs", () => {
+    // Cookies are shared across tabs, but a tab's in-memory state is not: a
+    // second tab of the previous person keeps their chat list and drafts, and
+    // would write a draft back into storage after the wipe.
+    function storageEvent(key: string | null, newValue: string | null) {
+      // Built from a plain Event: only `key` and `newValue` are read.
+      window.dispatchEvent(Object.assign(new Event("storage"), { key, newValue }));
+    }
+
+    it("leaving writes a marker another tab can see, even if nobody was recorded", async () => {
+      await leaveAccount();
+      expect(localStorage.getItem("pinchy:account")).toMatch(/^signed-out:/);
+    });
+
+    it("reloads a tab when another tab switches to a different account or signs out", () => {
+      window.onbeforeunload = () => true;
+      sessionStorage.setItem("pinchy:instruction-draft:agent-1", "unconsumed handoff");
+      // Nothing may hold the reload back, and the reload keeps this tab's
+      // sessionStorage, which only this tab can clear.
+      const atReload: Array<{ prompt: unknown; session: number }> = [];
+      reload.mockImplementation(() => {
+        atReload.push({ prompt: window.onbeforeunload, session: sessionStorage.length });
+      });
+      const stop = watchAccount("user-a");
+      try {
+        storageEvent("pinchy:account", "user-b");
+        expect(reload).toHaveBeenCalledTimes(1);
+        storageEvent("pinchy:account", "signed-out:123");
+        expect(reload).toHaveBeenCalledTimes(2);
+        expect(atReload[0]).toEqual({ prompt: null, session: 0 });
+      } finally {
+        stop();
+      }
+    });
+
+    it("leaves a tab alone when the same account is recorded again or another key changes", () => {
+      const stop = watchAccount("user-a");
+      try {
+        storageEvent("pinchy:account", "user-a");
+        storageEvent("pinchy:lastChat:agent-1", "chat-2");
+        expect(reload).not.toHaveBeenCalled();
+      } finally {
+        stop();
+      }
+      storageEvent("pinchy:account", "user-b");
+      expect(reload).not.toHaveBeenCalled();
+    });
+
+    it("claims the browser for the signed-in person, wiping what someone else left", async () => {
+      await enterAccount("user-a", "/");
+      seedPreviousUsersState();
+
+      // A tab that loads with user-b's session (one that never went through
+      // the login page here, e.g. it predates this check).
+      await claimAccount("user-b");
+      expect(localStorage.getItem("pinchy:composer:draft:agent-1")).toBeNull();
+      expect(localStorage.getItem("pinchy:account")).toBe("user-b");
+
+      seedPreviousUsersState();
+      await claimAccount("user-b");
+      expect(localStorage.getItem("pinchy:composer:draft:agent-1")).toBe("half-written reply");
+    });
+
+    it("wipes and records synchronously, before the share cache is awaited", () => {
+      // AccountGuard claims during its first render, so the wipe must be done
+      // by the time the call returns, not after a microtask.
+      seedPreviousUsersState();
+      void claimAccount("user-a");
+      expect(localStorage.getItem("pinchy:composer:draft:agent-1")).toBeNull();
+      expect(localStorage.getItem("pinchy:account")).toBe("user-a");
+    });
+
+    it("records the new owner before waiting on the share cache", async () => {
+      // Another tab reading the record mid-claim must see the new owner, not
+      // nobody (which would make it wipe the share being kept).
+      let seenDuringSweep: string | null = "unset";
+      mockSweepStaleShares.mockImplementation(async () => {
+        seenDuringSweep = localStorage.getItem("pinchy:account");
+      });
+      await leaveAccount();
+
+      await enterAccount("user-a", "/");
+
+      expect(seenDuringSweep).toBe("user-a");
+    });
+  });
+
+  it("still signs in when storage is unavailable", async () => {
+    const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("SecurityError");
+    });
+    try {
+      await enterAccount("user-a", "/");
+      expect(assign).toHaveBeenCalledWith("/");
+    } finally {
+      getItem.mockRestore();
+    }
+  });
+});

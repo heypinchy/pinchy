@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // Behavioural guard for the share → composer intake: the /share picker
 // hands off to `/chat/<agentId>?keep&share=<id>` (see share-picker.tsx), and
 // this hook is what actually reads that payload back out of the cache and

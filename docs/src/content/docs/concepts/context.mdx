@@ -68,6 +68,12 @@ Only admins can see and edit the organization context section, labeled **"Organi
   with the context they started with.
 </Aside>
 
+### How long can context be?
+
+Each context is capped at **16,000 characters** — roughly 2,500 words, and well past what most teams write. The editor shows a character count once you get close, and saving is blocked above the limit.
+
+The cap exists because context is not stored and forgotten: it goes into the prompt of every conversation that uses it, so every character is paid for again on every turn. Keeping it tight keeps agents fast and cheap. If you have more background than fits, put the details in a [knowledge base agent](/guides/create-knowledge-base-agent/) and keep context for the essentials.
+
 ## How Smithers collects context during onboarding
 
 When a new user first opens Pinchy, their personal Smithers agent has an onboarding mission: learn about the user through natural conversation. Smithers asks about your role, preferred language, and communication style, then uses the `pinchy-context` plugin to save what it learned as your user context.

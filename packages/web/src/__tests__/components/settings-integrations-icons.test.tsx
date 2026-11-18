@@ -1,6 +1,8 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { SettingsIntegrations } from "@/components/settings-integrations";
+import { jsonResponse } from "@/test-helpers/fetch";
 
 // Wiring test for the integrations-card icon: a GitHub MCP connection must
 // render the GitHub brand icon, not a fallback another type happens to use.
@@ -44,9 +46,9 @@ function mockFetchConnections(connections: unknown[]) {
   return vi.spyOn(global, "fetch").mockImplementation((input) => {
     const url = typeof input === "string" ? input : (input as Request).url;
     if (url.startsWith("/api/integrations")) {
-      return Promise.resolve({ ok: true, json: async () => connections } as Response);
+      return Promise.resolve(jsonResponse(connections));
     }
-    return Promise.resolve({ ok: true, json: async () => ({}) } as Response);
+    return Promise.resolve(jsonResponse({}));
   });
 }
 
@@ -82,7 +84,7 @@ describe("SettingsIntegrations — connection card icons", () => {
 
 describe("SettingsIntegrations — Add Integration navigation", () => {
   beforeEach(() => {
-    vi.spyOn(global, "fetch").mockResolvedValue({ ok: true, json: async () => [] } as Response);
+    vi.spyOn(global, "fetch").mockImplementation(async () => jsonResponse([]));
   });
 
   afterEach(() => {

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
+import { routeContext } from "@/test-helpers/route";
 
 vi.mock("next/headers", () => ({
   headers: vi.fn().mockResolvedValue(new Headers()),
@@ -45,7 +46,7 @@ vi.mock("@/lib/integrations/mcp-client", () => ({
   },
 }));
 
-function makeRequest(path: string, options?: RequestInit) {
+function makeRequest(path: string, options?: ConstructorParameters<typeof NextRequest>[1]) {
   return new NextRequest(`http://localhost:7777${path}`, options);
 }
 
@@ -82,7 +83,7 @@ describe("POST /api/integrations/test-credentials (type=mcp)", () => {
       method: "POST",
       body: JSON.stringify(validMcpBody),
     });
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -103,7 +104,7 @@ describe("POST /api/integrations/test-credentials (type=mcp)", () => {
       method: "POST",
       body: JSON.stringify({ ...validMcpBody, extraHeaders: { locationId: "loc-123" } }),
     });
-    await POST(request);
+    await POST(request, routeContext());
 
     expect(mockListMcpTools).toHaveBeenCalledWith(
       expect.objectContaining({ extraHeaders: { locationId: "loc-123" } })
@@ -119,7 +120,7 @@ describe("POST /api/integrations/test-credentials (type=mcp)", () => {
       method: "POST",
       body: JSON.stringify(validMcpBody),
     });
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -136,7 +137,7 @@ describe("POST /api/integrations/test-credentials (type=mcp)", () => {
       method: "POST",
       body: JSON.stringify(validMcpBody),
     });
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -150,7 +151,7 @@ describe("POST /api/integrations/test-credentials (type=mcp)", () => {
       method: "POST",
       body: JSON.stringify({ ...validMcpBody, url: "not-a-url" }),
     });
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
 
     expect(response.status).toBe(400);
     expect(mockListMcpTools).not.toHaveBeenCalled();
@@ -163,7 +164,7 @@ describe("POST /api/integrations/test-credentials (type=mcp)", () => {
       method: "POST",
       body: JSON.stringify(validMcpBody),
     });
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
 
     expect(response.status).toBe(404);
     expect(mockListMcpTools).not.toHaveBeenCalled();
@@ -176,7 +177,7 @@ describe("POST /api/integrations/test-credentials (type=mcp)", () => {
       method: "POST",
       body: JSON.stringify(validMcpBody),
     });
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
 
     expect(response.status).toBe(401);
   });
@@ -188,7 +189,7 @@ describe("POST /api/integrations/test-credentials (type=mcp)", () => {
       method: "POST",
       body: JSON.stringify(validMcpBody),
     });
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
 
     expect(response.status).toBe(403);
     expect(mockListMcpTools).not.toHaveBeenCalled();

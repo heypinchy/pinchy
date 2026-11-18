@@ -1,0 +1,2 @@
+ALTER TABLE "kb_index_jobs" DROP CONSTRAINT "kb_index_jobs_trigger_check";--> statement-breakpoint
+ALTER TABLE "kb_index_jobs" ADD CONSTRAINT "kb_index_jobs_trigger_check" CHECK ("kb_index_jobs"."trigger" IN ('manual', 'scheduled', 'upgrade'));

@@ -84,8 +84,8 @@ describe("GET /api/diagnostics", () => {
     expect(data.openclaw).toBe("connected");
   });
 
-  it("should include captured logs when user is authenticated", async () => {
-    mockGetSession.mockResolvedValueOnce({ user: { id: "1" } });
+  it("should include captured logs when user is an admin", async () => {
+    mockGetSession.mockResolvedValueOnce({ user: { id: "1", role: "admin" } });
     mockDb.execute.mockResolvedValueOnce([{ "?column?": 1 }]);
     vi.spyOn(global, "fetch").mockResolvedValueOnce({ ok: true } as Response);
     mockLogCapture.formatAsText.mockReturnValueOnce(
@@ -110,5 +110,80 @@ describe("GET /api/diagnostics", () => {
     const data = await response.json();
 
     expect(data).not.toHaveProperty("logs");
+  });
+
+  it("should omit logs when authenticated user is a plain member (not admin)", async () => {
+    mockGetSession.mockResolvedValueOnce({ user: { id: "1", role: "member" } });
+    mockDb.execute.mockResolvedValueOnce([{ "?column?": 1 }]);
+    vi.spyOn(global, "fetch").mockResolvedValueOnce({ ok: true } as Response);
+    mockLogCapture.formatAsText.mockReturnValueOnce(
+      "2026-03-04T08:00:00Z [ERROR] DB connection failed"
+    );
+
+    const response = await GET();
+    const data = await response.json();
+
+    expect(data).not.toHaveProperty("logs");
+  });
+
+  // A session carrying no `role` at all is the shape this endpoint used to
+  // hand logs to. It must resolve to "not an admin", never to a lenient
+  // fallback — the check has to fail closed on an unexpected session shape,
+  // not on the absence of a known-bad one.
+  it("should omit logs when the session carries no role", async () => {
+    mockGetSession.mockResolvedValueOnce({ user: { id: "1" } });
+    mockDb.execute.mockResolvedValueOnce([{ "?column?": 1 }]);
+    vi.spyOn(global, "fetch").mockResolvedValueOnce({ ok: true } as Response);
+    mockLogCapture.formatAsText.mockReturnValueOnce(
+      "2026-03-04T08:00:00Z [ERROR] DB connection failed"
+    );
+
+    const response = await GET();
+    const data = await response.json();
+
+    expect(data).not.toHaveProperty("logs");
+  });
+
+  // A missing `logs` field has two very different causes, and the bug
+  // reporter that consumes this endpoint has to tell them apart: "your role
+  // may not read these" needs different copy from "there are none". Only the
+  // signed-in non-admin gets the marker.
+  it("should mark logs as withheld for role when the user is a signed-in member", async () => {
+    mockGetSession.mockResolvedValueOnce({ user: { id: "1", role: "member" } });
+    mockDb.execute.mockResolvedValueOnce([{ "?column?": 1 }]);
+    vi.spyOn(global, "fetch").mockResolvedValueOnce({ ok: true } as Response);
+
+    const response = await GET();
+    const data = await response.json();
+
+    expect(data.logsWithheld).toBe("admin-only");
+  });
+
+  it("should not mark logs as withheld when the user is an admin", async () => {
+    mockGetSession.mockResolvedValueOnce({ user: { id: "1", role: "admin" } });
+    mockDb.execute.mockResolvedValueOnce([{ "?column?": 1 }]);
+    vi.spyOn(global, "fetch").mockResolvedValueOnce({ ok: true } as Response);
+
+    const response = await GET();
+    const data = await response.json();
+
+    expect(data).not.toHaveProperty("logsWithheld");
+  });
+
+  // No session means no role to withhold for, so there is nothing to mark.
+  // This is not an assertion that the caller operates the host: it may be the
+  // setup wizard's pre-flight check, or a signed-out member hitting the error
+  // boundary on `/login`. Nothing in the request separates them, which is why
+  // the client's fallback copy names both routes rather than this endpoint
+  // picking one for it.
+  it("should not mark logs as withheld for an anonymous caller", async () => {
+    mockGetSession.mockResolvedValueOnce(null);
+    mockDb.execute.mockResolvedValueOnce([{ "?column?": 1 }]);
+    vi.spyOn(global, "fetch").mockResolvedValueOnce({ ok: true } as Response);
+
+    const response = await GET();
+    const data = await response.json();
+
+    expect(data).not.toHaveProperty("logsWithheld");
   });
 });

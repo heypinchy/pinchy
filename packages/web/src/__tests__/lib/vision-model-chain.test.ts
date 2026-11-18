@@ -36,7 +36,7 @@ function stubStagingProviders() {
   );
   // Live ollama-cloud catalog includes the curated vision model.
   fetchProviderModels.mockResolvedValue([
-    { id: "ollama-cloud", models: [{ id: "ollama-cloud/gemini-3-flash-preview" }] },
+    { id: "ollama-cloud", models: [{ id: "ollama-cloud/minimax-m3" }] },
   ]);
   // Chat default kimi-k2.6 is NOT vision-capable; gpt-5.5 is.
   isModelVisionCapable.mockImplementation((m: string) => m === "openai/gpt-5.5");
@@ -54,7 +54,7 @@ describe("resolveDefaultVisionModelChain", () => {
     // fallback when the openai call fails (e.g. an invalid/expired key — the
     // staging symptom). This is the whole point of #2: a single pdfModel had no
     // fallback, so an unreachable primary silently killed PDF/vision.
-    expect(chain).toEqual(["openai/gpt-5.5", "ollama-cloud/gemini-3-flash-preview"]);
+    expect(chain).toEqual(["openai/gpt-5.5", "ollama-cloud/minimax-m3"]);
   });
 
   it("resolves ollama-cloud to its curated VISION model, not the chat default", async () => {
@@ -66,11 +66,11 @@ describe("resolveDefaultVisionModelChain", () => {
     );
     getDefaultModel.mockResolvedValue("ollama-cloud/kimi-k2.6");
     fetchProviderModels.mockResolvedValue([
-      { id: "ollama-cloud", models: [{ id: "ollama-cloud/gemini-3-flash-preview" }] },
+      { id: "ollama-cloud", models: [{ id: "ollama-cloud/minimax-m3" }] },
     ]);
     isModelVisionCapable.mockReturnValue(false);
     const chain = await resolveDefaultVisionModelChain();
-    expect(chain).toEqual(["ollama-cloud/gemini-3-flash-preview"]);
+    expect(chain).toEqual(["ollama-cloud/minimax-m3"]);
   });
 
   it("returns an empty chain on a text-only stack", async () => {
@@ -89,7 +89,7 @@ describe("resolveDefaultVisionModelChain", () => {
     stubStagingProviders();
     fetchProviderModels.mockClear();
     const chain = await resolveDefaultVisionModelChain();
-    expect(chain).toEqual(["openai/gpt-5.5", "ollama-cloud/gemini-3-flash-preview"]);
+    expect(chain).toEqual(["openai/gpt-5.5", "ollama-cloud/minimax-m3"]);
     expect(fetchProviderModels).toHaveBeenCalledTimes(1);
   });
 });

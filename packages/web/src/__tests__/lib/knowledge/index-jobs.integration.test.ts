@@ -1,0 +1,376 @@
+/**
+ * The kb_index_jobs store: the queue behind the async reindex (#714).
+ *
+ * Exercised against a real Postgres because the two properties that matter are
+ * enforced by the database, not by application code: only one index job per org
+ * may be active at a time (partial unique index), and a claim is an atomic
+ * conditional UPDATE. Both are invisible to a mocked test.
+ */
+import { beforeEach, describe, it, expect } from "vitest";
+import { db } from "@/db";
+import { agents, kbIndexJobs } from "@/db/schema";
+import {
+  claimNextIndexJob,
+  enqueueIndexJob,
+  finishIndexJob,
+  getLatestIndexJobForAgent,
+  getLatestPlannedIndexJobForAgent,
+  recordIndexJobProgress,
+  recordIndexJobFolderPlan,
+  requeueOrphanedIndexJobs,
+} from "@/lib/knowledge/index-jobs";
+import { OFFICE_ARTIFACT_FORMAT_VERSION } from "@/lib/knowledge/office-artifacts";
+
+const ORG_ID = "org-index-jobs-test";
+
+async function makeAgent(name = "Smithers") {
+  const [agent] = await db
+    .insert(agents)
+    .values({ name, model: "test-model", greetingMessage: "Hi" })
+    .returning();
+  return agent;
+}
+
+/** Matches a Postgres constraint violation by name, wherever the driver put it. */
+function violates(pattern: RegExp) {
+  return (err: unknown) => {
+    const e = err as {
+      message?: unknown;
+      cause?: { message?: unknown; constraint?: unknown };
+      constraint?: unknown;
+    };
+    const text = [e?.message, e?.cause?.message, e?.cause?.constraint, e?.constraint]
+      .filter((v): v is string => typeof v === "string")
+      .join(" ");
+    return pattern.test(text);
+  };
+}
+
+function enqueueArgs(
+  agentId: string,
+  overrides: Partial<Parameters<typeof enqueueIndexJob>[0]> = {}
+) {
+  return {
+    orgId: ORG_ID,
+    agentId,
+    agentName: "Smithers",
+    paths: ["/data/hr"],
+    requestedBy: "admin-1",
+    ...overrides,
+  };
+}
+
+describe("kb index job store", () => {
+  beforeEach(async () => {
+    await db.delete(kbIndexJobs);
+  });
+
+  it("enqueues a pending job carrying the scope the worker needs to run it", async () => {
+    const agent = await makeAgent();
+
+    const result = await enqueueIndexJob(
+      enqueueArgs(agent.id, { paths: ["/data/hr", "/data/legal"] })
+    );
+
+    expect(result.status).toBe("queued");
+    expect(result.job.status).toBe("pending");
+    // The worker never re-derives scope from the agent: paths are resolved (and
+    // permission-narrowed) at enqueue time, so a grant revoked mid-queue can't
+    // widen what a job already in flight indexes.
+    expect(result.job.paths).toEqual(["/data/hr", "/data/legal"]);
+    expect(result.job.requestedBy).toBe("admin-1");
+    expect(result.job.processed).toBe(0);
+    expect(result.job.total).toBeNull();
+    expect(result.job.startedAt).toBeNull();
+  });
+
+  // An admin's click is the default: every job that existed before the nightly
+  // schedule was one, and the column's default says so for those rows too.
+  it("records a job as manual unless the caller says otherwise", async () => {
+    const agent = await makeAgent();
+
+    const { job } = await enqueueIndexJob(enqueueArgs(agent.id));
+
+    expect(job.trigger).toBe("manual");
+    expect(job.sweepId).toBeNull();
+  });
+
+  // The nightly sweep queues one job per agent; the sweep id is what ties them
+  // back together, and what keeps a restarted scheduler from queueing an agent
+  // twice for the same night.
+  it("records a scheduled job with the sweep it belongs to", async () => {
+    const agent = await makeAgent();
+    const sweepId = "6f1c2b64-6c3e-4a2f-9c19-5c1d3a1f2e77";
+
+    const { job } = await enqueueIndexJob(
+      enqueueArgs(agent.id, { requestedBy: "kb-index-scheduler", trigger: "scheduled", sweepId })
+    );
+
+    expect(job.trigger).toBe("scheduled");
+    expect(job.sweepId).toBe(sweepId);
+  });
+
+  // Asserted by constraint name, not by "it threw": an insert into a column
+  // that does not exist throws too, and would pass a bare toThrow().
+  it("refuses a trigger the schema does not know", async () => {
+    const agent = await makeAgent();
+
+    await expect(
+      db.insert(kbIndexJobs).values({
+        orgId: ORG_ID,
+        agentId: agent.id,
+        agentName: "Smithers",
+        requestedBy: "admin-1",
+        paths: ["/data/hr"],
+        trigger: "cron" as never,
+      })
+    ).rejects.toSatisfy(violates(/kb_index_jobs_trigger_check/));
+  });
+
+  // The index is corpus-wide and embedding is CPU-bound on a 1.5-core
+  // container: two concurrent runs would race on the same (org, content_hash)
+  // rows and thrash the CPU for no gain. Serializing per org is the point of
+  // the partial unique index, and a second enqueue must say so rather than
+  // silently dropping the request or queueing a duplicate.
+  it("refuses a second active job for the org and hands back the one already in flight", async () => {
+    const agentA = await makeAgent("Agent A");
+    const agentB = await makeAgent("Agent B");
+
+    const first = await enqueueIndexJob(enqueueArgs(agentA.id));
+    const second = await enqueueIndexJob(enqueueArgs(agentB.id, { agentName: "Agent B" }));
+
+    expect(second.status).toBe("busy");
+    // The caller gets the blocking job, not a bare rejection — it is the job
+    // they have to wait on, so it is the job they must be able to poll.
+    expect(second.job.id).toBe(first.job.id);
+    expect(second.job.agentId).toBe(agentA.id);
+
+    expect(await db.select().from(kbIndexJobs)).toHaveLength(1);
+  });
+
+  it("blocks a second enqueue while the first is running, not merely while it is pending", async () => {
+    const agent = await makeAgent();
+    await enqueueIndexJob(enqueueArgs(agent.id));
+    await claimNextIndexJob();
+
+    const second = await enqueueIndexJob(enqueueArgs(agent.id));
+
+    expect(second.status).toBe("busy");
+    expect(second.job.status).toBe("running");
+  });
+
+  it("lets the next job through once the previous one has finished", async () => {
+    const agent = await makeAgent();
+    const first = await enqueueIndexJob(enqueueArgs(agent.id));
+    const claimed = await claimNextIndexJob();
+    await finishIndexJob(claimed!.id, { outcome: "succeeded", counts: zeroCounts() });
+
+    const second = await enqueueIndexJob(enqueueArgs(agent.id));
+
+    expect(second.status).toBe("queued");
+    expect(second.job.id).not.toBe(first.job.id);
+  });
+
+  it("claims a pending job exactly once", async () => {
+    const agent = await makeAgent();
+    await enqueueIndexJob(enqueueArgs(agent.id));
+
+    const claimed = await claimNextIndexJob();
+    expect(claimed?.status).toBe("running");
+    expect(claimed?.startedAt).toBeInstanceOf(Date);
+
+    // Claimed jobs are not re-claimable: the conditional UPDATE is what stops
+    // an overlapping worker tick from running the same corpus twice.
+    expect(await claimNextIndexJob()).toBeNull();
+  });
+
+  it("claims the oldest pending job first", async () => {
+    const agent = await makeAgent();
+    const first = await enqueueIndexJob(enqueueArgs(agent.id));
+    const claimed = await claimNextIndexJob();
+    await finishIndexJob(claimed!.id, { outcome: "succeeded", counts: zeroCounts() });
+    const second = await enqueueIndexJob(enqueueArgs(agent.id));
+    const finished = await claimNextIndexJob();
+    await finishIndexJob(finished!.id, { outcome: "succeeded", counts: zeroCounts() });
+
+    expect(claimed!.id).toBe(first.job.id);
+    expect(finished!.id).toBe(second.job.id);
+  });
+
+  it("returns null when there is nothing to claim", async () => {
+    expect(await claimNextIndexJob()).toBeNull();
+  });
+
+  // Progress and findings land in ONE write, because they answer two questions
+  // an operator asks at the same moment: how far along is it, and is it going
+  // well? A run at 7/42 that has already found 5 unsearchable files is a corpus
+  // problem worth seeing now, not after the remaining 35.
+  it("records discovery total, per-file progress, and the findings so far", async () => {
+    const agent = await makeAgent();
+    await enqueueIndexJob(enqueueArgs(agent.id));
+    const job = await claimNextIndexJob();
+
+    await recordIndexJobProgress(job!.id, {
+      processed: 0,
+      total: 42,
+      processedBytes: 0,
+      totalBytes: 90_000_000,
+      counts: zeroCounts(),
+    });
+    await recordIndexJobProgress(job!.id, {
+      processed: 7,
+      total: 42,
+      processedBytes: 12_500_000,
+      totalBytes: 90_000_000,
+      counts: { ...zeroCounts(), indexed: 2, unsearchable: 5 },
+    });
+
+    const latest = await getLatestIndexJobForAgent(agent.id);
+    expect(latest).toMatchObject({ processed: 7, total: 42, status: "running" });
+    expect(latest?.counts).toEqual({ ...zeroCounts(), indexed: 2, unsearchable: 5 });
+    // The byte pair travels in the same write. It is what a progress bar and a
+    // time-to-completion estimate are built on (#907) — 7 of 42 documents says
+    // nothing about how much work is left, because documents are not equal
+    // units of work. `bigint` columns must come back as numbers, not strings.
+    expect(latest).toMatchObject({ processedBytes: 12_500_000, totalBytes: 90_000_000 });
+  });
+
+  it("records the findings and the terminal status when a job succeeds", async () => {
+    const agent = await makeAgent();
+    await enqueueIndexJob(enqueueArgs(agent.id));
+    const job = await claimNextIndexJob();
+
+    const counts = { indexed: 4, skipped: 2, removed: 1, unsearchable: 3, failed: 1, archived: 2 };
+    await finishIndexJob(job!.id, { outcome: "succeeded", counts });
+
+    const latest = await getLatestIndexJobForAgent(agent.id);
+    expect(latest?.status).toBe("succeeded");
+    expect(latest?.counts).toEqual(counts);
+    expect(latest?.error).toBeNull();
+    expect(latest?.finishedAt).toBeInstanceOf(Date);
+  });
+
+  // The rules the run converted Office documents under. A run finished under
+  // earlier rules converted nothing under these, so it is no reason to leave
+  // its folders' superseded documents for a day (office-format-upgrade.ts).
+  it("records the Office artifact format the run converted under", async () => {
+    const agent = await makeAgent();
+    await enqueueIndexJob(enqueueArgs(agent.id));
+    const job = await claimNextIndexJob();
+    expect(job?.artifactFormatVersion).toBeNull();
+
+    await finishIndexJob(job!.id, {
+      outcome: "succeeded",
+      counts: { indexed: 1, skipped: 0, removed: 0, unsearchable: 0, failed: 0, archived: 0 },
+    });
+
+    const latest = await getLatestIndexJobForAgent(agent.id);
+    expect(latest?.artifactFormatVersion).toBe(OFFICE_ARTIFACT_FORMAT_VERSION);
+  });
+
+  // A systemic failure (embedding endpoint down) still processed some files
+  // before it died. Those counts are the operator's only evidence of how far
+  // the run got, so a failure must not throw them away.
+  it("keeps the partial findings when a job fails", async () => {
+    const agent = await makeAgent();
+    await enqueueIndexJob(enqueueArgs(agent.id));
+    const job = await claimNextIndexJob();
+
+    await finishIndexJob(job!.id, {
+      outcome: "failed",
+      counts: { indexed: 2, skipped: 0, removed: 0, unsearchable: 0, failed: 0, archived: 0 },
+      error: "connect ECONNREFUSED ollama.local:11434",
+    });
+
+    const latest = await getLatestIndexJobForAgent(agent.id);
+    expect(latest?.status).toBe("failed");
+    expect(latest?.counts).toMatchObject({ indexed: 2 });
+    expect(latest?.error).toContain("ECONNREFUSED");
+    expect(latest?.finishedAt).toBeInstanceOf(Date);
+  });
+
+  // Exactly one web container runs the worker, so any job still marked
+  // `running` at boot belongs to a process that no longer exists — nothing
+  // else could be holding it. Ingest is content-hash idempotent, so requeueing
+  // costs a re-discovery and nothing more.
+  it("requeues jobs orphaned by a crash so a restart resumes them", async () => {
+    const agent = await makeAgent();
+    await enqueueIndexJob(enqueueArgs(agent.id));
+    const job = await claimNextIndexJob();
+    await recordIndexJobProgress(job!.id, {
+      processed: 30,
+      total: 42,
+      processedBytes: 30_000_000,
+      totalBytes: 42_000_000,
+      counts: { ...zeroCounts(), indexed: 30 },
+    });
+    await recordIndexJobFolderPlan(job!.id, [{ folder: "/data/hr", files: 42 }]);
+
+    const requeued = await requeueOrphanedIndexJobs();
+
+    expect(requeued).toBe(1);
+    const latest = await getLatestIndexJobForAgent(agent.id);
+    expect(latest?.status).toBe("pending");
+    // Progress AND findings reset, because discovery re-runs from the top.
+    // Reporting 30/42 for a run that restarted at zero would be the same
+    // "processed ≠ real" lie the counters exist to prevent — and leaving
+    // `indexed: 30` next to `processed: 0` would be a row contradicting itself.
+    expect(latest).toMatchObject({ processed: 0, total: null, startedAt: null });
+    // The byte counters reset with them, for the same reason: a resumed run
+    // re-discovers from scratch, and 30 MB behind a total the run has not
+    // re-derived yet would put the progress bar somewhere it has not been.
+    expect(latest).toMatchObject({ processedBytes: 0, totalBytes: null });
+    expect(latest?.counts).toBeNull();
+    // The plan goes too: the resumed run re-discovers, and its queue may differ.
+    expect(latest?.folderPlan).toBeNull();
+    expect(await claimNextIndexJob()).not.toBeNull();
+  });
+
+  it("leaves finished jobs alone when requeueing orphans", async () => {
+    const agent = await makeAgent();
+    await enqueueIndexJob(enqueueArgs(agent.id));
+    const job = await claimNextIndexJob();
+    await finishIndexJob(job!.id, { outcome: "succeeded", counts: zeroCounts() });
+
+    expect(await requeueOrphanedIndexJobs()).toBe(0);
+    expect((await getLatestIndexJobForAgent(agent.id))?.status).toBe("succeeded");
+  });
+
+  it("reports the most recent job for the agent, and nothing for an agent that never ran one", async () => {
+    const agent = await makeAgent();
+    const other = await makeAgent("Other");
+
+    await enqueueIndexJob(enqueueArgs(agent.id));
+    const first = await claimNextIndexJob();
+    await finishIndexJob(first!.id, { outcome: "succeeded", counts: zeroCounts() });
+    const second = await enqueueIndexJob(enqueueArgs(agent.id));
+
+    expect((await getLatestIndexJobForAgent(agent.id))?.id).toBe(second.job.id);
+    expect(await getLatestIndexJobForAgent(other.id)).toBeNull();
+  });
+});
+
+describe("getLatestPlannedIndexJobForAgent", () => {
+  beforeEach(async () => {
+    await db.delete(kbIndexJobs);
+  });
+
+  // A pending job has no plan yet; the folder counts then come from the run before.
+  it("skips a newer job that has not recorded a plan", async () => {
+    const agent = await makeAgent();
+    await enqueueIndexJob(enqueueArgs(agent.id));
+    const first = await claimNextIndexJob();
+    await recordIndexJobFolderPlan(first!.id, [{ folder: "/data/hr", files: 3 }]);
+    await finishIndexJob(first!.id, { outcome: "succeeded", counts: zeroCounts() });
+    await enqueueIndexJob(enqueueArgs(agent.id));
+
+    const planned = await getLatestPlannedIndexJobForAgent(agent.id);
+
+    expect(planned?.id).toBe(first!.id);
+    expect(planned?.folderPlan).toEqual([{ folder: "/data/hr", files: 3 }]);
+  });
+});
+
+function zeroCounts() {
+  return { indexed: 0, skipped: 0, removed: 0, unsearchable: 0, failed: 0, archived: 0 };
+}

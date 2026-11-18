@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -34,21 +35,21 @@ vi.mock("@/lib/github-issue", () => ({
 
 import { SetupForm, PREFLIGHT_CONFIG } from "@/components/setup-form";
 import SetupPage, * as SetupPageModule from "@/app/setup/page";
+import { jsonResponse } from "@/test-helpers/fetch";
 
 global.fetch = vi.fn();
 
 function mockFetchSetupStatus(infrastructure?: { database: string; openclaw: string }) {
   (global.fetch as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
     if (url === "/api/setup/status") {
-      return Promise.resolve({
-        ok: true,
-        json: async () => ({
+      return Promise.resolve(
+        jsonResponse({
           setupComplete: false,
           infrastructure: infrastructure ?? { database: "connected", openclaw: "connected" },
-        }),
-      });
+        })
+      );
     }
-    return Promise.resolve({ ok: true, json: async () => ({}) });
+    return Promise.resolve(jsonResponse({}));
   });
 }
 
@@ -300,18 +301,14 @@ describe("Setup Form", () => {
     const user = userEvent.setup();
     (global.fetch as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
       if (url === "/api/setup/status") {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({
+        return Promise.resolve(
+          jsonResponse({
             setupComplete: false,
             infrastructure: { database: "connected", openclaw: "connected" },
-          }),
-        });
+          })
+        );
       }
-      return Promise.resolve({
-        ok: false,
-        json: async () => ({ error: "Setup already completed" }),
-      });
+      return Promise.resolve(jsonResponse({ error: "Setup already completed" }, { status: 400 }));
     });
 
     render(<SetupForm />);
@@ -334,18 +331,14 @@ describe("Setup Form", () => {
     const user = userEvent.setup();
     (global.fetch as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
       if (url === "/api/setup/status") {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({
+        return Promise.resolve(
+          jsonResponse({
             setupComplete: false,
             infrastructure: { database: "connected", openclaw: "connected" },
-          }),
-        });
+          })
+        );
       }
-      return Promise.resolve({
-        ok: false,
-        json: async () => ({ error: "Setup already completed" }),
-      });
+      return Promise.resolve(jsonResponse({ error: "Setup already completed" }, { status: 400 }));
     });
 
     render(<SetupForm />);
@@ -401,15 +394,14 @@ describe("Setup Form pre-flight checks", () => {
       if (url === "/api/setup/status") {
         callCount++;
         const openclaw = callCount <= 2 ? "unreachable" : "connected";
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({
+        return Promise.resolve(
+          jsonResponse({
             setupComplete: false,
             infrastructure: { database: "connected", openclaw },
-          }),
-        });
+          })
+        );
       }
-      return Promise.resolve({ ok: true, json: async () => ({}) });
+      return Promise.resolve(jsonResponse({}));
     });
 
     render(<SetupForm />);

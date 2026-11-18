@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
 import { render, screen, waitFor } from "@testing-library/react";
@@ -40,6 +41,7 @@ vi.mock("@/components/agent-telegram-settings", () => ({
   AgentTelegramSettings: () => <div data-testid="agent-telegram-settings" />,
 }));
 
+import { jsonResponse } from "@/test-helpers/fetch";
 import { AgentSettingsPageContent } from "@/components/agent-settings-page-content";
 
 const baseAgent = {
@@ -58,9 +60,9 @@ const baseAgent = {
 function mockFetchReturning(agent: object) {
   global.fetch = vi.fn().mockImplementation((url: unknown) => {
     if (url === "/api/agents/agent-1") {
-      return Promise.resolve({ ok: true, json: () => Promise.resolve(agent) });
+      return Promise.resolve(jsonResponse(agent));
     }
-    return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    return Promise.resolve(jsonResponse({}));
   }) as unknown as typeof fetch;
 }
 

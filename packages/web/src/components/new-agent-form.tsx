@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useCallback, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -28,16 +28,20 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { TemplateSelector } from "@/components/template-selector";
 import { DirectoryPicker } from "@/components/directory-picker";
 import { DocsLink } from "@/components/docs-link";
+import { WebSearchNotSetUpNotice } from "@/components/web-search-not-set-up-notice";
 import { ArrowLeft, Check, ExternalLink, Info, AlertTriangle, X } from "lucide-react";
 import { useRestart } from "@/components/restart-provider";
-import { toast } from "sonner";
-import { validateOdooTemplate } from "@/lib/integrations/odoo-template-validation";
+import {
+  validateOdooTemplate,
+  type ValidationResult,
+} from "@/lib/integrations/odoo-template-validation";
 import { getMcpPreset, type McpPresetId } from "@/lib/integrations/mcp-presets";
 import { getTemplate, pickSuggestedName, type OdooTemplateConfig } from "@/lib/agent-templates";
 import { autoSelectConnection, type OdooConnection } from "@/lib/odoo-connection-selection";
 import { EMAIL_CONNECTION_TYPES } from "@/lib/integrations/oauth-providers";
 import { getPermissionPreviewItems } from "@/lib/template-grouping";
 import Link from "next/link";
+import { toast } from "sonner";
 
 const EMAIL_CONNECTION_TYPE_SET = new Set<string>(EMAIL_CONNECTION_TYPES);
 
@@ -53,6 +57,7 @@ interface Template {
   /** Tool names the server auto-grants for this template at creation time. */
   mcpRecommendedTools?: string[];
   requiresWeb?: boolean;
+  webSearchConfigured?: boolean;
   odooAccessLevel?: string;
   defaultTagline: string | null;
 }
@@ -62,14 +67,9 @@ interface Directory {
   name: string;
 }
 
-interface ValidationResult {
-  valid: boolean;
-  warnings: string[];
-  availableModels: Array<{ model: string; operations: string[] }>;
-  missingModels: Array<{ model: string; name: string }>;
-}
-
 import { AGENT_NAME_MAX_LENGTH } from "@/lib/agent-constants";
+import { apiGet, apiPost, errorMessage } from "@/lib/api-client";
+import type { CreateAgentInput } from "@/lib/schemas/agents";
 
 const agentFormSchema = z.object({
   name: z
@@ -93,7 +93,7 @@ function PermissionPreview({ template }: { template?: Template }) {
         {items.map((item) => (
           <li key={item.text} className="flex items-center gap-2 text-sm text-muted-foreground">
             {item.icon === "check" && <Check className="size-4 text-green-600 shrink-0" />}
-            {item.icon === "cross" && <X className="size-4 text-muted-foreground/50 shrink-0" />}
+            {item.icon === "cross" && <X className="size-4 text-muted-foreground shrink-0" />}
             {item.icon === "warning" && (
               <AlertTriangle className="size-4 text-yellow-600 shrink-0" />
             )}
@@ -104,6 +104,46 @@ function PermissionPreview({ template }: { template?: Template }) {
       <p className="text-xs text-muted-foreground">You can adjust permissions after creation.</p>
     </div>
   );
+}
+
+/**
+ * Report a background load that failed — unless it was merely cancelled.
+ *
+ * Nothing awaits the promises the effects below start, so an uncaught rejection
+ * has nowhere to land: in the browser it is a silent dead end, and in a test run
+ * it surfaces as a suite-level unhandled rejection that ends `pnpm test` with
+ * `Errors 1 error` and exit 1 while every test passes. Catching it is the fix.
+ *
+ * Catching it BLINDLY would be the next bug. An aborted request is the expected
+ * outcome of every unmount and every template switch, not something to tell the
+ * user about. The signal is the whole test: `controller.abort()` sets `aborted`
+ * synchronously before the request rejects, and that controller is the only
+ * abort source these requests have, so a real cancellation always arrives with
+ * it already true. Matching on `err.name === "AbortError"` as well reads like
+ * defence in depth and is not: it is unreachable for our own aborts, and the
+ * only errors it can actually catch are AbortError-named failures from some
+ * other layer — precisely the ones the user needs to hear about. Same reading
+ * as `attachment-preview.tsx` and `knowledge/embeddings.ts`.
+ */
+function reportLoadFailure(err: unknown, signal: AbortSignal, fallback: string): void {
+  if (signal.aborted) return;
+  toast.error(errorMessage(err, fallback));
+}
+
+/**
+ * Load the integrations list and hand back the rows a picker can actually use.
+ *
+ * Shared by the Odoo and the mailbox effect, which differ only in which `type`
+ * they accept and what they call the result. Unreadable rows are dropped from
+ * the agent-creation flow in both: they can't be selected and would render as
+ * "undefined URL". Admins clean them up in Settings.
+ */
+async function loadUsableConnections(
+  signal: AbortSignal,
+  accepts: (type: string) => boolean
+): Promise<OdooConnection[]> {
+  const rows = await apiGet<OdooConnection[]>("/api/integrations", { signal });
+  return (rows ?? []).filter((c) => accepts(c.type) && !c.cannotDecrypt);
 }
 
 export function NewAgentForm() {
@@ -140,6 +180,20 @@ export function NewAgentForm() {
     },
     [router, searchParams]
   );
+  // Picking a template (or going back to the list) changes only a search
+  // param, so Next leaves the AppShell scroller where it was — and a template
+  // picked far down the list rendered the form with its heading scrolled up
+  // under whatever sits above the scroller, the trial banner (#1280). Every
+  // switch between list and form starts at the top. Layout effect, so the
+  // shifted frame is never painted.
+  const rootRef = useRef<HTMLDivElement>(null);
+  const shownTemplate = useRef(selectedTemplate);
+  useLayoutEffect(() => {
+    if (shownTemplate.current === selectedTemplate) return;
+    shownTemplate.current = selectedTemplate;
+    rootRef.current?.scrollIntoView?.({ block: "start" });
+  }, [selectedTemplate]);
+
   const [directories, setDirectories] = useState<Directory[]>([]);
   const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -160,23 +214,41 @@ export function NewAgentForm() {
   });
 
   const nameInputRef = useRef<HTMLInputElement | null>(null);
+  // Set when a suggested name has just been applied; the layout effect below
+  // selects the field once, after the commit that puts the value in the DOM.
+  const selectNameAfterCommitRef = useRef(false);
 
-  const fetchData = useCallback(async () => {
-    const templatesRes = await fetch("/api/templates");
-    if (templatesRes.ok) {
-      const data = await templatesRes.json();
-      setTemplates(data.templates);
+  // Select-all after the commit that applies a suggested name, so the user can
+  // overtype. A layout effect runs synchronously after the DOM mutation (unlike
+  // a `setTimeout`, which raced the template-switch re-renders and lost the
+  // selection under load). Later renders don't change the name value, so React
+  // won't reassign `node.value` and the selection survives.
+  useLayoutEffect(() => {
+    if (selectNameAfterCommitRef.current) {
+      selectNameAfterCommitRef.current = false;
+      nameInputRef.current?.select();
+    }
+  });
+
+  const fetchData = useCallback(async (signal: AbortSignal) => {
+    try {
+      const data = await apiGet<{ templates?: Template[] }>("/api/templates", { signal });
+      // The signal doubles as the cancellation flag: a response that lost the
+      // race against an unmount must not write itself into the new state.
+      if (!signal.aborted) setTemplates(data?.templates ?? []);
+    } catch (err) {
+      reportLoadFailure(err, signal, "Couldn't load the agent templates. Try refreshing the page.");
     }
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
     void Promise.resolve().then(() => {
-      if (!cancelled) void fetchData();
+      // The signal is the only cancellation flag here — a separate boolean
+      // would be a second mechanism answering the same question.
+      if (!controller.signal.aborted) void fetchData(controller.signal);
     });
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [fetchData]);
 
   const selectedTemplateObj = templates.find((t) => t.id === selectedTemplate);
@@ -187,16 +259,26 @@ export function NewAgentForm() {
   // Fetch directories when a template requiring them is selected
   useEffect(() => {
     if (!requiresDirectories) return;
+    const controller = new AbortController();
+    const { signal } = controller;
 
     async function fetchDirectories() {
-      const res = await fetch("/api/data-directories");
-      if (res.ok) {
-        const data = await res.json();
-        setDirectories(data.directories || []);
+      try {
+        const data = await apiGet<{ directories?: Directory[] }>("/api/data-directories", {
+          signal,
+        });
+        // The signal doubles as the cancellation flag: a response that lost
+        // the race against an unmount or a template switch must not write
+        // itself into the new state.
+        if (!signal.aborted) setDirectories(data?.directories ?? []);
+      } catch (err) {
+        reportLoadFailure(err, signal, "Couldn't load the directories. Try refreshing the page.");
       }
     }
 
-    fetchDirectories();
+    void fetchDirectories();
+
+    return () => controller.abort();
   }, [requiresDirectories]);
 
   // Reset Odoo state immediately when leaving an Odoo template — uses
@@ -226,68 +308,69 @@ export function NewAgentForm() {
   // Fetch Odoo connections when an Odoo template is selected
   useEffect(() => {
     if (!requiresOdooConnection) return;
-    let cancelled = false;
-    (async () => {
+    const controller = new AbortController();
+    const { signal } = controller;
+    void (async () => {
       setLoadingConnections(true);
       try {
-        const res = await fetch("/api/integrations");
-        if (cancelled) return;
-        if (res.ok) {
-          const data = await res.json();
-          // Hide unreadable rows from the agent-creation flow — they can't be used
-          // and would show as "undefined URL". Admins clean them up in Settings.
-          const odoo = (data as OdooConnection[]).filter(
-            (c: OdooConnection) => c.type === "odoo" && !c.cannotDecrypt
-          );
-          if (!cancelled) {
-            setOdooConnections(odoo);
-            // Auto-select if only one connection
-            const autoSelected = autoSelectConnection(odoo);
-            if (autoSelected) {
-              setSelectedConnectionId(autoSelected);
-            }
-          }
+        const odoo = await loadUsableConnections(signal, (type) => type === "odoo");
+        if (signal.aborted) return;
+        setOdooConnections(odoo);
+        // Auto-select if only one connection
+        const autoSelected = autoSelectConnection(odoo);
+        if (autoSelected) {
+          setSelectedConnectionId(autoSelected);
         }
+      } catch (err) {
+        reportLoadFailure(
+          err,
+          signal,
+          "Couldn't load the Odoo connections. Try refreshing the page."
+        );
       } finally {
-        if (!cancelled) setLoadingConnections(false);
+        if (!signal.aborted) setLoadingConnections(false);
       }
     })();
+    // `loadingConnections` is one flag shared by this effect and the mailbox
+    // one, so clearing it here — rather than only in the `finally`, which an
+    // abort deliberately skips — is what keeps it owned by whichever effect is
+    // currently mounted. React runs every cleanup before any setup, so the
+    // successor's `true` always lands after this `false`.
     return () => {
-      cancelled = true;
+      controller.abort();
+      setLoadingConnections(false);
     };
   }, [requiresOdooConnection]);
 
   // Fetch email connections when an email template is selected
   useEffect(() => {
     if (!requiresEmailConnection) return;
-    let cancelled = false;
-    (async () => {
+    const controller = new AbortController();
+    const { signal } = controller;
+    void (async () => {
       setLoadingConnections(true);
       try {
-        const res = await fetch("/api/integrations");
-        if (cancelled) return;
-        if (res.ok) {
-          const data = await res.json();
-          // Count every email provider (Google and Microsoft alike) and hide
-          // unreadable rows — same reasoning as the Odoo filter above.
-          const email = (data as OdooConnection[]).filter(
-            (c: OdooConnection) => EMAIL_CONNECTION_TYPE_SET.has(c.type) && !c.cannotDecrypt
-          );
-          if (!cancelled) {
-            setEmailConnections(email);
-            // Auto-select if only one mailbox
-            const autoSelected = autoSelectConnection(email);
-            if (autoSelected) {
-              setSelectedConnectionId(autoSelected);
-            }
-          }
+        // Every email provider counts, Google and Microsoft alike.
+        const email = await loadUsableConnections(signal, (type) =>
+          EMAIL_CONNECTION_TYPE_SET.has(type)
+        );
+        if (signal.aborted) return;
+        setEmailConnections(email);
+        // Auto-select if only one mailbox
+        const autoSelected = autoSelectConnection(email);
+        if (autoSelected) {
+          setSelectedConnectionId(autoSelected);
         }
+      } catch (err) {
+        reportLoadFailure(err, signal, "Couldn't load the mailboxes. Try refreshing the page.");
       } finally {
-        if (!cancelled) setLoadingConnections(false);
+        if (!signal.aborted) setLoadingConnections(false);
       }
     })();
+    // Same shared-flag reasoning as the Odoo effect above.
     return () => {
-      cancelled = true;
+      controller.abort();
+      setLoadingConnections(false);
     };
   }, [requiresEmailConnection]);
 
@@ -315,9 +398,13 @@ export function NewAgentForm() {
 
   // Reset directory selection and pre-fill tagline/name when switching templates
   useEffect(() => {
-    let cancelled = false;
+    // One cancellation mechanism for the whole effect: the microtasks below read
+    // the same signal the request is given, so there is no boolean answering the
+    // question a second time and no way for the two to disagree.
+    const controller = new AbortController();
+    const { signal } = controller;
     void Promise.resolve().then(() => {
-      if (cancelled) return;
+      if (signal.aborted) return;
       setSelectedPaths([]);
       setDirectories([]);
       setOdooConnections([]);
@@ -332,48 +419,59 @@ export function NewAgentForm() {
 
     // Pre-fill name with a suggested name (except for custom template)
     if (selectedTemplate && selectedTemplate !== "custom") {
-      (async () => {
+      void (async () => {
+        // The one load here that stays silent when it fails, and deliberately:
+        // the worst an unreadable agent list costs is a suggestion that repeats
+        // a name, which the user is about to overtype anyway. Silence is not a
+        // reason to skip the cancellation — this result lands in the form
+        // itself, so a late one would overwrite a name already being typed.
+        let existingNames: string[] = [];
         try {
-          const res = await fetch("/api/agents");
-          if (cancelled) return;
-          const existingNames: string[] = res.ok
-            ? ((await res.json()) as Array<{ name: string }>).map((a) => a.name)
-            : [];
-          if (cancelled) return;
-          const suggested = pickSuggestedName(selectedTemplate, existingNames);
-          if (suggested && !cancelled) {
-            form.setValue("name", suggested);
-            // Select all text so users can overtype immediately.
-            // Defer past React's commit so the DOM reflects the new value.
-            setTimeout(() => nameInputRef.current?.select(), 0);
-          }
+          const agents = await apiGet<Array<{ name: string }>>("/api/agents", { signal });
+          existingNames = (agents ?? []).map((a) => a.name);
         } catch {
-          // Ignore — user can still type a name manually
+          // Suggest from an empty list — see above.
+        }
+        if (signal.aborted) return;
+        const suggested = pickSuggestedName(selectedTemplate, existingNames);
+        if (suggested) {
+          form.setValue("name", suggested);
+          // Select all text so users can overtype immediately. The layout
+          // effect performs the selection after the value is committed.
+          selectNameAfterCommitRef.current = true;
         }
       })();
     } else if (selectedTemplate === "custom") {
       void Promise.resolve().then(() => {
-        if (!cancelled) form.setValue("name", "");
+        if (!signal.aborted) form.setValue("name", "");
       });
     }
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [selectedTemplate]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function onSubmit(values: AgentFormValues) {
+    // The form — and therefore this handler — only renders inside the
+    // "a template is selected" branch. Stated rather than asserted, because
+    // the create payload is typed against the route's schema and templateId is
+    // required there.
+    if (!selectedTemplate) return;
+
     setError(null);
     setSubmitting(true);
 
     try {
-      // Enable workspace write by default so new agents can save files out of
-      // the box. The API dedups this against the template's own allowedTools;
-      // users can toggle it off later in Agent Settings → Permissions.
-      const body: Record<string, unknown> = {
+      // No defaultAllowedTools: permissions belong to the template, not to this
+      // form. Injecting pinchy_write here gave every agent file-write access
+      // (and, before memory became its own grant, a memory) regardless of what
+      // the chosen template asked for — including "Custom Agent — Start from
+      // scratch", which is supposed to start with nothing.
+      //
+      // createAgent still accepts the field; it is part of the API contract for
+      // external clients. The first-party UI just stops using it.
+      const body: CreateAgentInput = {
         name: values.name.trim(),
         tagline: values.tagline?.trim() || null,
         templateId: selectedTemplate,
-        defaultAllowedTools: ["pinchy_write"],
       };
 
       if (requiresDirectories && selectedPaths.length > 0) {
@@ -384,26 +482,24 @@ export function NewAgentForm() {
         body.connectionId = selectedConnectionId;
       }
 
-      const res = await fetch("/api/agents", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-
-      if (!res.ok) {
-        const data = await res.json();
-        setError(data.error || "Failed to create agent");
-        return;
+      const agent = await apiPost<
+        { id: string; warning?: string; skippedMcpTools?: string[] },
+        CreateAgentInput
+      >("/api/agents", body);
+      // #880 — the route creates the agent even when applying it to the OC
+      // runtime fails, returning a non-blocking `warning` instead of a 500.
+      // Surface it as a warning toast (sonner persists across the navigation
+      // below) so the creation still reads as successful.
+      if (typeof agent?.warning === "string" && agent.warning.length > 0) {
+        toast.warning(agent.warning);
       }
-
-      const agent = await res.json();
 
       // The agent exists — a missing tool must never look like a failed
       // create. But it must not be silent either: without this the user gets
       // an agent quietly short of the tools its template promised and only
       // finds out mid-conversation. Completed action + caveat → toast, not an
       // inline error (AGENTS.md error/notification policy).
-      const skipped: string[] = agent.skippedMcpTools ?? [];
+      const skipped: string[] = agent?.skippedMcpTools ?? [];
       if (skipped.length > 0) {
         const agentName = values.name.trim();
         const preset = selectedTemplateObj?.requiresMcpConnection;
@@ -421,14 +517,20 @@ export function NewAgentForm() {
       triggerRestart();
       router.push(`/chat/${agent.id}`);
       router.refresh();
-    } catch {
-      setError("Failed to create agent");
+    } catch (e) {
+      setError(errorMessage(e, "Failed to create agent"));
     } finally {
       setSubmitting(false);
     }
   }
 
   const hasMissingModels = validationResult !== null && validationResult.missingModels.length > 0;
+  // A model the connection HAS but may not write is not a reason to refuse the
+  // create — `validateOdooTemplate` deliberately leaves `valid` true for it, so
+  // the agent is still useful for everything else. It IS a reason to say so
+  // before the admin finds out from a "Permission denied" mid-conversation
+  // (#1208), which is the same thing the create's audit row records.
+  const deniedOperations = validationResult?.deniedOperations ?? [];
 
   const createDisabled =
     submitting ||
@@ -437,7 +539,7 @@ export function NewAgentForm() {
     hasMissingModels;
 
   return (
-    <div className={"p-4 md:p-8 " + (selectedTemplate ? "max-w-lg" : "max-w-3xl")}>
+    <div ref={rootRef} className={"p-4 md:p-8 " + (selectedTemplate ? "max-w-lg" : "max-w-3xl")}>
       <h1 className="text-2xl font-bold mb-2">Create New Agent</h1>
 
       {!selectedTemplate ? (
@@ -552,8 +654,30 @@ export function NewAgentForm() {
                               template.
                             </p>
                             <ul className="list-disc pl-4 space-y-0.5 text-xs">
-                              {validationResult!.missingModels.map((m) => (
-                                <li key={m.model}>{m.name}</li>
+                              {validationResult!.missingModels.map((model) => (
+                                <li key={model}>{model}</li>
+                              ))}
+                            </ul>
+                          </AlertDescription>
+                        </Alert>
+                      )}
+
+                      {!hasMissingModels && deniedOperations.length > 0 && (
+                        <Alert>
+                          <AlertTriangle className="h-4 w-4" />
+                          <AlertDescription>
+                            <p className="font-medium mb-1">Limited Odoo access</p>
+                            <p className="mb-2">
+                              This connection has the models this template needs, but its Odoo user
+                              may not perform every operation on them. You can still create the
+                              agent — the rest of its work is unaffected. To close the gap, widen
+                              the API user&apos;s rights in Odoo and re-sync the schema.
+                            </p>
+                            <ul className="list-disc pl-4 space-y-0.5 text-xs">
+                              {deniedOperations.map((denied) => (
+                                <li key={denied.model}>
+                                  {denied.model} ({denied.operations.join(", ")})
+                                </li>
                               ))}
                             </ul>
                           </AlertDescription>
@@ -607,11 +731,16 @@ export function NewAgentForm() {
                   {requiresDirectories && (
                     <div className="space-y-3">
                       <h4 className="text-sm font-medium">Data Directories</h4>
-                      <DirectoryPicker
-                        directories={directories}
-                        selected={selectedPaths}
-                        onChange={setSelectedPaths}
-                      />
+                      {/* One empty state, not two: the picker has its own, but
+                          this form's richer box replaces it here. */}
+                      {directories.length > 0 && (
+                        <DirectoryPicker
+                          directories={directories}
+                          selected={selectedPaths}
+                          onChange={setSelectedPaths}
+                          label="Data Directories"
+                        />
+                      )}
 
                       {directories.length === 0 && (
                         <div className="flex items-start gap-2 rounded-md border border-blue-200 bg-blue-50 p-3 dark:border-blue-800 dark:bg-blue-950">
@@ -638,6 +767,13 @@ export function NewAgentForm() {
                       </DocsLink>
                     </div>
                   )}
+
+                  {/* Not a blocker: page fetch works without a search
+                      provider, and search turns on once one is added (#1297). */}
+                  {selectedTemplateObj?.requiresWeb &&
+                    selectedTemplateObj.webSearchConfigured === false && (
+                      <WebSearchNotSetUpNotice />
+                    )}
 
                   <PermissionPreview template={selectedTemplateObj} />
 

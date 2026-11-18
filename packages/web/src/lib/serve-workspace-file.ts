@@ -1,0 +1,192 @@
+import { NextResponse } from "next/server";
+import { open } from "fs/promises";
+import { constants as fsConstants } from "fs";
+import { extname } from "path";
+import { fileTypeFromBuffer } from "file-type";
+import { ALLOWED_ATTACHMENT_MIMES, ALLOWED_TEXT_MIMES } from "@/lib/upload-validation";
+import { EXTENSION_TO_MIME } from "@/lib/attachment-mime";
+import {
+  ifNoneMatchHits,
+  servePosture,
+  sessionScopedRevalidateHeaders,
+  weakFileEtag,
+} from "@/lib/session-scoped-cache";
+
+/**
+ * Binary MIME types that are safe to SERVE for download but are intentionally
+ * absent from ALLOWED_ATTACHMENT_MIMES because that set also gates uploads and
+ * these formats have no reader wired into pinchy_read yet (see the comment
+ * above ALLOWED_ATTACHMENT_MIMES in upload-validation.ts).
+ *
+ * xlsx (#788): the pinchy_generate_file tool renders these itself, so there's
+ * no unreadable-upload risk — the agent never has to read one back, only
+ * write and hand it to the user. xlsx is a zip container, but `file-type`
+ * content-sniffs the internal OOXML parts and returns this specific
+ * spreadsheet MIME rather than the generic `application/zip` (verified
+ * empirically against a real exceljs-rendered buffer, and against a real
+ * docx fixture, which sniffs to a distinct wordprocessingml MIME) — so this
+ * does not widen serving to arbitrary zip/docx/pptx content, only to
+ * spreadsheet-shaped OOXML.
+ */
+const DELIVERY_ONLY_BINARY_MIMES = new Set<string>([
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+]);
+
+/**
+ * Read-only, and refuse to follow a symlink at the final component.
+ *
+ * Every caller has already resolved symlinks and checked containment on the
+ * RESULT (`resolveAllowedFile`, `realpathWithinDir`), so a path arriving here
+ * is never legitimately a link — a realpath's output cannot be one. That makes
+ * `O_NOFOLLOW` free for correct callers and load-bearing for two wrong ones:
+ * a future caller that passes the REQUESTED path instead of the resolved one
+ * (the containment check would then be read once and the link followed again
+ * here, buying nothing), and the window between a caller's check and this
+ * open, in which a link could be swapped in. Both surface as ELOOP → 404
+ * rather than as bytes from outside the workspace.
+ *
+ * `?? 0` because Windows has no `O_NOFOLLOW`: there the flag degrades to a
+ * plain read rather than poisoning the mask with `undefined` (`NaN`).
+ */
+const READ_NO_SYMLINK = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
+
+/**
+ * The MIME types this serving route can actually stream — the union of the
+ * binary (magic-byte) and text allowlists, plus DELIVERY_ONLY_BINARY_MIMES
+ * above. A file whose declared type is not in here will be rejected with 415
+ * on download, so callers that DECIDE to deliver a file (agent → user
+ * delivery, #703) should gate on this first to avoid handing the user a chip
+ * that fails to open. It is a declared-MIME approximation of the route's real
+ * magic-byte check — good enough to filter obviously non-servable types
+ * (docx/zip/octet-stream) without reading the bytes.
+ */
+export const SERVABLE_DELIVERED_MIMES: ReadonlySet<string> = new Set<string>([
+  ...ALLOWED_ATTACHMENT_MIMES,
+  ...ALLOWED_TEXT_MIMES,
+  ...DELIVERY_ONLY_BINARY_MIMES,
+]);
+
+/**
+ * Read a workspace file off disk and stream it back as an inline, MIME-validated
+ * response. Shared by the two agent file-serving routes — user uploads
+ * (`uploads/[filename]`) and agent-delivered artifacts (`artifacts/[filename]`) —
+ * which differ only in how they AUTHORIZE the request; once a caller is
+ * authorized and a concrete on-disk path resolved, the serving posture is
+ * identical (magic-byte MIME allowlist, inline disposition, a SAMEORIGIN
+ * frame posture — see the header comment below for why that posture only
+ * takes effect together with a next.config.ts entry for the route).
+ *
+ * The caller MUST have already sanitized the filename and verified `fullPath`
+ * is contained within the intended workspace zone — this helper does not
+ * re-validate the path. Pass the SYMLINK-RESOLVED path (what
+ * `resolveAllowedFile` and `realpathWithinDir` return), not the requested one:
+ * the open below follows symlinks, so handing it an unresolved path would
+ * re-follow a link the caller's containment check has already read once.
+ *
+ * `request` carries the browser's validator. The response is cached
+ * `no-cache`, so every reuse comes back here as a conditional request, and
+ * the caller's access check has already run by the time it does: an unchanged
+ * file the caller may still see is answered 304 without a body, anyone else
+ * never gets this far (#1286 follow-up).
+ *
+ * Returns 404 if the file is missing/not a regular file, 415 if its content-type
+ * is outside the upload allowlist, 304 if `If-None-Match` names the file as it
+ * is, 200 with the bytes otherwise.
+ */
+export async function streamWorkspaceFile(
+  fullPath: string,
+  safeName: string,
+  request: Request
+): Promise<NextResponse> {
+  // Open FIRST, then fstat the open handle (never re-stat the path) — a
+  // check-then-open on the path is a TOCTOU race (js/file-system-race). A
+  // missing/permission-denied file surfaces as the open throwing → 404. The
+  // handle's own stat is authoritative for the bytes we're about to read.
+  // O_NOFOLLOW (see READ_NO_SYMLINK) makes "the caller passed the resolved
+  // path" a check rather than a comment: a link here is ELOOP → 404.
+  let fh;
+  try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- caller sanitized + containment-checked the path
+    fh = await open(fullPath, READ_NO_SYMLINK);
+  } catch {
+    return new NextResponse("Not found", { status: 404 });
+  }
+  let buffer: Buffer;
+  let stat: { size: number; mtimeMs: number; ctimeMs: number; ino: number };
+  try {
+    const info = await fh.stat();
+    if (!info.isFile()) {
+      return new NextResponse("Not found", { status: 404 });
+    }
+    stat = info;
+    buffer = await fh.readFile();
+  } finally {
+    await fh.close();
+  }
+
+  const detected = await fileTypeFromBuffer(
+    new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength)
+  );
+
+  let servedMime: string;
+  if (!detected) {
+    // Text files have no magic bytes. Derive MIME from extension and verify
+    // against the text allowlist. Null-byte check guards against binary files
+    // renamed to .csv / .txt.
+    const ext = extname(safeName).toLowerCase();
+    const textMime = EXTENSION_TO_MIME[ext];
+    if (!textMime || !ALLOWED_TEXT_MIMES.has(textMime) || buffer.includes(0x00)) {
+      return new NextResponse("Unsupported media type", { status: 415 });
+    }
+    servedMime = textMime;
+  } else {
+    if (
+      !ALLOWED_ATTACHMENT_MIMES.has(detected.mime) &&
+      !DELIVERY_ONLY_BINARY_MIMES.has(detected.mime)
+    ) {
+      return new NextResponse("Unsupported media type", { status: 415 });
+    }
+    servedMime = detected.mime;
+  }
+
+  // The served type is part of what a cached copy stands for (servePosture):
+  // the same bytes served as CSV instead of text are a different response.
+  const etag = weakFileEtag(stat, `file${servePosture(servedMime, "inline", safeName)}`);
+
+  // After the MIME check, so a 304 always vouches for a file this route would
+  // serve — a bare `*` included. Reading first costs a local read of a small
+  // file (uploads are capped at upload time, and the pinned-grant artifacts path has
+  // already hashed it in full); what a 304 saves is the transfer.
+  if (ifNoneMatchHits(request.headers.get("if-none-match"), etag)) {
+    return new NextResponse(null, { status: 304, headers: sessionScopedRevalidateHeaders(etag) });
+  }
+
+  return new NextResponse(Uint8Array.from(buffer), {
+    headers: {
+      "content-type": servedMime,
+      "content-length": String(buffer.byteLength),
+      // Kept, but revalidated on every reuse: the reuse reaches the caller's
+      // access check, so a revoked grant stops it; keyed to the session so a
+      // copy never reaches the next user on the same browser (#1286).
+      ...sessionScopedRevalidateHeaders(etag),
+      // Inline so the browser renders PDFs/images directly instead of forcing a
+      // download. The filename is advisory.
+      "content-disposition": `inline; filename="${safeName.replace(/[^\x20-\x7e]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(safeName)}`,
+      // Declares the posture this response wants: same-origin embedding is
+      // fine (the <embed> thumbnail + lightbox in AttachmentPreview),
+      // cross-origin is not.
+      //
+      // It is NOT what makes the embed work. next.config.ts's `headers()`
+      // applies `X-Frame-Options: DENY` to `/(.*)`, and that value OVERRIDES
+      // whatever a route handler sets here — so what a URL actually receives is
+      // decided in next.config.ts, which carries an explicit SAMEORIGIN
+      // relaxation for each serving route. Adding a new serving route without
+      // that entry yields a valid 200 the browser refuses to render
+      // (net::ERR_BLOCKED_BY_RESPONSE) — which is exactly how the artifacts
+      // route shipped, while this line sat here looking sufficient. See
+      // `describe("X-Frame-Options as a given URL actually receives it")` in
+      // src/__tests__/security/security-headers.test.ts.
+      "x-frame-options": "SAMEORIGIN",
+    },
+  });
+}

@@ -16,7 +16,10 @@ export type ShutdownStopFn = () => void | Promise<void>;
 export interface ShutdownDeps {
   stopUploadGc: ShutdownStopFn;
   stopChatErrorGc: ShutdownStopFn;
+  stopApprovalSweep: ShutdownStopFn;
   stopAuditVerifyJob: ShutdownStopFn;
+  stopKbIndexScheduler: ShutdownStopFn;
+  stopKbIndexWorker: ShutdownStopFn;
   stopUsagePoller: ShutdownStopFn;
   stopMemoryAuditWatcher: ShutdownStopFn;
   getOpenclawClient: () => { disconnect: () => void | Promise<void> } | null;
@@ -35,7 +38,19 @@ export function buildShutdownSteps(deps: ShutdownDeps): ShutdownStopFn[] {
   return [
     () => deps.stopUploadGc(),
     () => deps.stopChatErrorGc(),
+    () => deps.stopApprovalSweep(),
     () => deps.stopAuditVerifyJob(),
+    // Before the worker: the nightly schedule must not queue a job into a
+    // worker that has already stopped. Nothing is lost by stopping it — its
+    // sweep is persisted and the next boot carries on with it.
+    () => deps.stopKbIndexScheduler(),
+    // Stops the poll for NEW index jobs. A run already in flight is not
+    // awaited: it can have hours left, which is far past any container's
+    // kill-grace period. It dies with the process and its job row stays
+    // `running`, which is exactly what the next boot requeues — see
+    // requeueOrphanedIndexJobs. Ingest is content-hash idempotent, so the
+    // resumed run re-discovers and skips everything already done.
+    () => deps.stopKbIndexWorker(),
     () => deps.stopUsagePoller(),
     () => deps.stopMemoryAuditWatcher(),
     // Disconnect from the OpenClaw Gateway cleanly so the WS + its in-flight

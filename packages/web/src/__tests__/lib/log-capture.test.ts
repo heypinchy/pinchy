@@ -53,6 +53,25 @@ describe("logCapture", () => {
     expect(logCapture.getEntries()).toHaveLength(0);
   });
 
+  it("should redact email addresses in captured messages", () => {
+    logCapture.add("error", "Provider rejected request for user@example.com");
+    const entries = logCapture.getEntries();
+
+    expect(entries[0].message).not.toContain("user@example.com");
+    expect(entries[0].message).toContain("<email-redacted>");
+  });
+
+  it("should redact known secret patterns in captured messages", () => {
+    logCapture.add(
+      "error",
+      "OpenAI request failed with key sk-ant-abcdefghijklmnopqrstuvwxyz0123456789"
+    );
+    const entries = logCapture.getEntries();
+
+    expect(entries[0].message).not.toContain("sk-ant-abcdefghijklmnopqrstuvwxyz0123456789");
+    expect(entries[0].message).toContain("[REDACTED]");
+  });
+
   it("should install console hooks", () => {
     const originalError = console.error;
     const originalWarn = console.warn;

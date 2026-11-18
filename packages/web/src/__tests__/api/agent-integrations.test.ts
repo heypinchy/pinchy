@@ -65,6 +65,16 @@ vi.mock("@/db", () => ({
   },
 }));
 
+// The route no longer checks the agent's existence itself: it asks the shared
+// read gate, which additionally withholds another user's personal agent from an
+// admin. Mocking the helper is what lets this file assert the delegation; the
+// helper's own rule is pinned in lib/agent-access.test.ts, and the end-to-end
+// answer against a real DB in agent-admin-routes-visibility.integration.test.ts.
+const mockGetAgentWithAccess = vi.fn();
+vi.mock("@/lib/agent-access", () => ({
+  getAgentWithAccess: (...args: unknown[]) => mockGetAgentWithAccess(...args),
+}));
+
 vi.mock("@/lib/openclaw-config", () => ({
   regenerateOpenClawConfig: vi.fn().mockResolvedValue(undefined),
 }));
@@ -78,11 +88,15 @@ vi.mock("@/lib/audit-deferred", () => ({
 }));
 
 import { GET, PUT, DELETE } from "@/app/api/agents/[agentId]/integrations/route";
-import { NextRequest } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { agentConnectionPermissions, integrationConnections } from "@/db/schema";
 
 const AGENT_ID = "agent-1";
 const CONNECTION_ID = "conn-1";
+
+/** What the read gate hands back for an agent this caller may see. */
+const agentRow = { id: AGENT_ID, name: "Support Agent" };
 
 function makeParams(agentId: string) {
   return { params: Promise.resolve({ agentId }) };
@@ -91,9 +105,27 @@ function makeParams(agentId: string) {
 describe("GET /api/agents/[agentId]/integrations", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetAgentWithAccess.mockResolvedValue(agentRow);
     mockSelectFrom.mockImplementation(() => ({
       where: mockSelectWhere.mockResolvedValue([]),
     }));
+  });
+
+  it("forwards the read gate's refusal and reads no permission row", async () => {
+    // An admin aiming at another user's personal agent. This route never
+    // checked existence at all, so it answered 200 with an empty list — which
+    // is the same answer a real agent with no integrations gives, and a
+    // different one from what a nonexistent id now gives.
+    mockGetAgentWithAccess.mockResolvedValueOnce(
+      NextResponse.json({ error: "Agent not found" }, { status: 404 })
+    );
+
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`);
+    const res = await GET(req, makeParams(AGENT_ID));
+
+    expect(res.status).toBe(404);
+    expect(mockGetAgentWithAccess).toHaveBeenCalledWith(AGENT_ID, "admin-1", "admin");
+    expect(mockSelectWhere).not.toHaveBeenCalled();
   });
 
   it("returns 401 for unauthenticated request", async () => {
@@ -117,10 +149,13 @@ describe("GET /api/agents/[agentId]/integrations", () => {
   });
 
   it("returns empty array when no permissions exist", async () => {
-    mockSelectFrom.mockReturnValueOnce({
-      innerJoin: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue([]),
-      }),
+    // Two-query shape: permissions come back empty, so the connections query
+    // is skipped entirely and grouping yields [].
+    mockSelectFrom.mockImplementation((table: unknown) => {
+      if (table === agentConnectionPermissions) {
+        return { where: vi.fn().mockResolvedValue([]) };
+      }
+      throw new Error(`unexpected table passed to .from(): ${String(table)}`);
     });
 
     const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`);
@@ -132,29 +167,28 @@ describe("GET /api/agents/[agentId]/integrations", () => {
   });
 
   it("returns permissions grouped by connection", async () => {
-    mockSelectFrom.mockReturnValueOnce({
-      innerJoin: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue([
-          {
-            integration_connections: {
+    mockSelectFrom.mockImplementation((table: unknown) => {
+      if (table === agentConnectionPermissions) {
+        return {
+          where: vi.fn().mockResolvedValue([
+            { connectionId: CONNECTION_ID, model: "res.partner", operation: "read" },
+            { connectionId: CONNECTION_ID, model: "res.partner", operation: "create" },
+          ]),
+        };
+      }
+      if (table === integrationConnections) {
+        return {
+          where: vi.fn().mockResolvedValue([
+            {
               id: CONNECTION_ID,
               name: "My Odoo",
               type: "odoo",
               data: { models: [{ model: "res.partner", name: "Contact" }] },
             },
-            agent_connection_permissions: { model: "res.partner", operation: "read" },
-          },
-          {
-            integration_connections: {
-              id: CONNECTION_ID,
-              name: "My Odoo",
-              type: "odoo",
-              data: { models: [{ model: "res.partner", name: "Contact" }] },
-            },
-            agent_connection_permissions: { model: "res.partner", operation: "create" },
-          },
-        ]),
-      }),
+          ]),
+        };
+      }
+      throw new Error(`unexpected table passed to .from(): ${String(table)}`);
     });
 
     const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`);
@@ -171,11 +205,70 @@ describe("GET /api/agents/[agentId]/integrations", () => {
       { model: "res.partner", modelName: "Contact", operation: "create" },
     ]);
   });
+
+  // Regression guard for the same boot-OOM fan-out class fixed in build.ts
+  // (loadAgentConnectionPermissions). The old handler used a projection-less
+  // `.innerJoin(integrationConnections, …)`, which materializes the full
+  // `integrationConnections.data` blob ONCE PER PERMISSION ROW. An agent with
+  // many model permissions on a big-blob Odoo connection would fan a multi-
+  // hundred-kB catalog out across every row in a single admin request. The
+  // fix loads permissions and the referenced connections as two separate
+  // queries and stitches them in memory, so each connection blob is fetched
+  // exactly once. This mock provides NO `.innerJoin` on the permissions query
+  // — a revert to the fan-out join throws here instead of silently passing.
+  it("fetches each connection blob once (no per-permission-row fan-out) and still groups correctly", async () => {
+    const bigBlob = {
+      models: Array.from({ length: 300 }, (_, i) => ({ model: `model.${i}`, name: `Model ${i}` })),
+    };
+    const connection = {
+      id: CONNECTION_ID,
+      name: "Big Odoo",
+      type: "odoo",
+      data: bigBlob,
+    };
+    const permissionRows = Array.from({ length: 40 }, (_, i) => ({
+      agentId: AGENT_ID,
+      connectionId: CONNECTION_ID,
+      model: `model.${i}`,
+      operation: "read",
+    }));
+
+    let integrationConnectionsFromCalls = 0;
+    mockSelectFrom.mockImplementation((table: unknown) => {
+      if (table === agentConnectionPermissions) {
+        return { where: vi.fn().mockResolvedValue(permissionRows) };
+      }
+      if (table === integrationConnections) {
+        integrationConnectionsFromCalls++;
+        return { where: vi.fn().mockResolvedValue([connection]) };
+      }
+      throw new Error(`unexpected table passed to .from(): ${String(table)}`);
+    });
+
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`);
+    const res = await GET(req, makeParams(AGENT_ID));
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // All 40 permissions grouped under the single connection…
+    expect(body).toHaveLength(1);
+    expect(body[0].connectionId).toBe(CONNECTION_ID);
+    expect(body[0].permissions).toHaveLength(40);
+    expect(body[0].permissions[0]).toEqual({
+      model: "model.0",
+      modelName: "Model 0",
+      operation: "read",
+    });
+    // …while the connection (and its blob) is queried exactly once, not once
+    // per permission row.
+    expect(integrationConnectionsFromCalls).toBe(1);
+  });
 });
 
 describe("PUT /api/agents/[agentId]/integrations", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetAgentWithAccess.mockResolvedValue(agentRow);
     mockSelectFrom.mockImplementation(() => ({
       where: mockSelectWhere,
     }));
@@ -259,7 +352,6 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
   });
 
   it("returns 200 for a valid 'read' operation on model 'email'", async () => {
-    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
     mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]); // connection exists
     mockTxSelectWhere.mockResolvedValueOnce([]);
 
@@ -276,7 +368,6 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
   });
 
   it("does not restrict operation vocabulary for non-email models (e.g. Odoo)", async () => {
-    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
     mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]); // connection exists
     mockTxSelectWhere.mockResolvedValueOnce([]);
 
@@ -293,7 +384,9 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
   });
 
   it("returns 404 when agent does not exist", async () => {
-    mockSelectWhere.mockResolvedValueOnce([]); // agent not found
+    mockGetAgentWithAccess.mockResolvedValueOnce(
+      NextResponse.json({ error: "Agent not found" }, { status: 404 })
+    );
 
     const req = new NextRequest(`http://localhost:7777/api/agents/ghost-agent/integrations`, {
       method: "PUT",
@@ -306,8 +399,30 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
     expect(body.error).toBe("Agent not found");
   });
 
+  it("forwards the read gate's refusal and writes no permission row", async () => {
+    // The sharpest of the four families: this is not index management, it is a
+    // permission WRITE. Granting another user's private Smithers live access to
+    // an Odoo or email connection would be invisible to its owner and to every
+    // list the admin can see. The gate runs before the transaction.
+    mockGetAgentWithAccess.mockResolvedValueOnce(
+      NextResponse.json({ error: "Agent not found" }, { status: 404 })
+    );
+
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
+      method: "PUT",
+      body: JSON.stringify({
+        connectionId: CONNECTION_ID,
+        permissions: [{ model: "res.partner", operation: "read" }],
+      }),
+    });
+    const res = await PUT(req, makeParams(AGENT_ID));
+
+    expect(res.status).toBe(404);
+    expect(mockTransaction).not.toHaveBeenCalled();
+    expect(mockAppendAuditLog).not.toHaveBeenCalled();
+  });
+
   it("returns 404 when connection does not exist", async () => {
-    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
     mockSelectWhere.mockResolvedValueOnce([]); // connection not found
 
     const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
@@ -321,7 +436,6 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
 
   it("deletes existing permissions and inserts new ones", async () => {
     // Connection exists (validation query runs outside transaction)
-    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
     mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]); // connection exists
     // Existing permissions for diff (inside transaction)
     mockTxSelectWhere.mockResolvedValueOnce([{ model: "res.partner", operation: "read" }]);
@@ -344,7 +458,6 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
   });
 
   it("does not call regenerateOpenClawConfig (delegated to agent PATCH)", async () => {
-    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
     mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]); // connection exists
     mockTxSelectWhere.mockResolvedValueOnce([]);
 
@@ -362,7 +475,6 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
   });
 
   it("writes audit log with added/removed diff", async () => {
-    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
     mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]); // connection exists
     // Existing permissions (inside transaction)
     mockTxSelectWhere.mockResolvedValueOnce([
@@ -399,7 +511,6 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
 
   it("wraps DELETE+INSERT in a database transaction", async () => {
     // Connection exists (validation query runs outside transaction)
-    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
     mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]); // connection exists
     mockTxSelectWhere.mockResolvedValueOnce([]);
 
@@ -422,7 +533,6 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
   });
 
   it("handles empty permissions (clear all)", async () => {
-    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
     mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]); // connection exists
     mockTxSelectWhere.mockResolvedValueOnce([{ model: "res.partner", operation: "read" }]);
 
@@ -442,7 +552,6 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
   });
 
   it("does not turn a committed change into a 500 when the audit write fails", async () => {
-    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
     mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]); // connection exists
     mockTxSelectWhere.mockResolvedValueOnce([]);
     mockAppendAuditLog.mockRejectedValueOnce(new Error("audit db unavailable"));
@@ -463,7 +572,6 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
   });
 
   it("does not leak the raw DB error text when the permission write fails", async () => {
-    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
     mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]); // connection exists
     mockTransaction.mockRejectedValueOnce(
       new Error(
@@ -503,6 +611,9 @@ describe("MCP permissions via the generic agent_connection_permissions path", ()
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Agent existence is the access gate's job (getAgentWithAccess), so the
+    // only select in PUT is the connection lookup.
+    mockGetAgentWithAccess.mockResolvedValue(agentRow);
     mockSelectFrom.mockImplementation(() => ({
       where: mockSelectWhere,
     }));
@@ -527,7 +638,6 @@ describe("MCP permissions via the generic agent_connection_permissions path", ()
 
   it("accepts an MCP tool name exactly at the 128-char cap", async () => {
     const boundaryName = "x".repeat(128);
-    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
     mockSelectWhere.mockResolvedValueOnce([
       { id: CONNECTION_ID, type: "mcp", data: { tools: [{ name: boundaryName }] } },
     ]); // connection exists
@@ -546,7 +656,6 @@ describe("MCP permissions via the generic agent_connection_permissions path", ()
   });
 
   it("accepts a granted MCP tool that exists in the connection's synced tool list", async () => {
-    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
     mockSelectWhere.mockResolvedValueOnce([MCP_CONNECTION]); // connection exists
     mockTxSelectWhere.mockResolvedValueOnce([]);
 
@@ -571,7 +680,6 @@ describe("MCP permissions via the generic agent_connection_permissions path", ()
   });
 
   it("returns 400 for an MCP grant referencing a tool the connection never synced", async () => {
-    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
     mockSelectWhere.mockResolvedValueOnce([MCP_CONNECTION]); // connection exists
 
     const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
@@ -591,7 +699,6 @@ describe("MCP permissions via the generic agent_connection_permissions path", ()
   });
 
   it("returns 400 for a model:'mcp' permission targeting a non-MCP connection", async () => {
-    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
     mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID, type: "odoo", data: {} }]); // connection exists, wrong type
 
     const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
@@ -610,7 +717,6 @@ describe("MCP permissions via the generic agent_connection_permissions path", ()
   });
 
   it("replaces MCP permissions atomically and writes an audit diff naming the tools", async () => {
-    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
     mockSelectWhere.mockResolvedValueOnce([MCP_CONNECTION]); // connection exists
     mockTxSelectWhere.mockResolvedValueOnce([{ model: "mcp", operation: "list_issues" }]);
 
@@ -645,7 +751,6 @@ describe("MCP permissions via the generic agent_connection_permissions path", ()
   });
 
   it("calls regenerateOpenClawConfig when an MCP grant is REVOKED (permissions: []), not only when one is added", async () => {
-    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
     mockSelectWhere.mockResolvedValueOnce([MCP_CONNECTION]); // connection exists
     mockTxSelectWhere.mockResolvedValueOnce([{ model: "mcp", operation: "list_issues" }]);
 
@@ -664,7 +769,6 @@ describe("MCP permissions via the generic agent_connection_permissions path", ()
   });
 
   it("is idempotent: resubmitting the same MCP grants yields an empty added/removed diff", async () => {
-    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
     mockSelectWhere.mockResolvedValueOnce([MCP_CONNECTION]); // connection exists
     mockTxSelectWhere.mockResolvedValueOnce([{ model: "mcp", operation: "list_issues" }]);
 
@@ -692,21 +796,26 @@ describe("MCP permissions via the generic agent_connection_permissions path", ()
   });
 
   it("GET returns the raw MCP tool name as operation (modelName fallback is cosmetic, T8 scope)", async () => {
-    mockSelectFrom.mockReturnValueOnce({
-      innerJoin: vi.fn().mockReturnValue({
+    // GET reads permissions, then the connections they reference (two
+    // queries, stitched in memory).
+    mockSelectFrom
+      .mockReturnValueOnce({
+        where: vi
+          .fn()
+          .mockResolvedValue([
+            { model: "mcp", operation: "list_issues", connectionId: CONNECTION_ID },
+          ]),
+      })
+      .mockReturnValueOnce({
         where: vi.fn().mockResolvedValue([
           {
-            integration_connections: {
-              id: CONNECTION_ID,
-              name: "GitHub MCP",
-              type: "mcp",
-              data: { tools: [{ name: "list_issues" }], preset: "github" },
-            },
-            agent_connection_permissions: { model: "mcp", operation: "list_issues" },
+            id: CONNECTION_ID,
+            name: "GitHub MCP",
+            type: "mcp",
+            data: { tools: [{ name: "list_issues" }], preset: "github" },
           },
         ]),
-      }),
-    });
+      });
 
     const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`);
     const res = await GET(req, makeParams(AGENT_ID));
@@ -759,7 +868,30 @@ describe("MCP permissions via the generic agent_connection_permissions path", ()
 describe("DELETE /api/agents/[agentId]/integrations", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetAgentWithAccess.mockResolvedValue(agentRow);
+    mockSelectFrom.mockImplementation(() => ({
+      where: mockSelectWhere.mockResolvedValue([]),
+    }));
     mockDeleteWhere.mockResolvedValue(undefined);
+  });
+
+  it("forwards the read gate's refusal and deletes nothing", async () => {
+    // This route never checked existence either: it answered 200 `{success:
+    // true}` and wrote a `config.changed` audit row claiming permissions were
+    // cleared, for an agent the caller may not see — and for ids that were
+    // never issued.
+    mockGetAgentWithAccess.mockResolvedValueOnce(
+      NextResponse.json({ error: "Agent not found" }, { status: 404 })
+    );
+
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
+      method: "DELETE",
+    });
+    const res = await DELETE(req, makeParams(AGENT_ID));
+
+    expect(res.status).toBe(404);
+    expect(mockDeleteWhere).not.toHaveBeenCalled();
+    expect(mockAppendAuditLog).not.toHaveBeenCalled();
   });
 
   it("returns 401 for unauthenticated request", async () => {

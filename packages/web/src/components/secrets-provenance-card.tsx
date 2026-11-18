@@ -79,7 +79,7 @@ export function SecretsProvenanceCard() {
         <div className="flex items-center justify-between gap-4 text-sm">
           <span>Database password</span>
           {defaultDbPassword ? (
-            <span className="flex items-center gap-1.5 text-amber-600">
+            <span className="flex items-center gap-1.5 text-amber-700 dark:text-amber-400">
               <TriangleAlert className="size-4" />
               Default password — set DB_PASSWORD in your .env
             </span>

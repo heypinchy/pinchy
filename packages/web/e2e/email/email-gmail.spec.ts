@@ -29,6 +29,7 @@ import {
 import {
   loginViaUI,
   pollAuditForTool,
+  pollAuditForEvent,
   seedDefaultProviderToOllama,
   waitForOpenClawStable,
 } from "../shared/dispatch-probe";
@@ -400,5 +401,21 @@ test.describe("Email dispatch probe (pinchy-email plugin coverage)", () => {
       reqs.some((r) => typeof r.endpoint === "string" && r.endpoint.includes("/attachments/")),
       `gmail-mock received no attachment request; saw: ${JSON.stringify(reqs)}`
     ).toBe(true);
+
+    // #703: the downloaded attachment is delivered to the user in chat. This is
+    // the ONE integration seam unit tests cannot cover — that the plugin's native
+    // file content block lands in OpenClaw-core's session transcript, is returned
+    // by the `artifacts.list` RPC client-router polls after the run, and records
+    // a per-user download grant. A file.delivered audit row is the proof: no
+    // grant, no delivery, no audit.
+    const delivered = await pollAuditForEvent(page, {
+      eventType: "file.delivered",
+      since,
+      predicate: (entry) => {
+        const detail = entry.detail as { filename?: string } | undefined;
+        return detail?.filename === "invoice.pdf";
+      },
+    });
+    expect(delivered.outcome).toBe("success");
   });
 });

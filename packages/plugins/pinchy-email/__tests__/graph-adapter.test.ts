@@ -1,13 +1,6 @@
-import {
-  describe,
-  it,
-  expect,
-  vi,
-  beforeEach,
-  afterEach,
-  type Mock,
-} from "vitest";
-import { GraphAdapter } from "../graph-adapter.js";
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from "vitest";
+import { GraphAdapter, MAX_ATTACHMENT_RESPONSE_BYTES } from "../graph-adapter.js";
+import { resetInsecureMockWarningsForTest } from "../email-adapter.js";
 
 describe("GraphAdapter.list", () => {
   beforeEach(() => {
@@ -17,6 +10,8 @@ describe("GraphAdapter.list", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     delete process.env.GRAPH_API_BASE_URL;
+    delete process.env.PINCHY_INSECURE_MAIL_MOCK;
+    resetInsecureMockWarningsForTest();
   });
 
   it("list({folder:'INBOX'}) hits /v1.0/me/mailFolders/inbox/messages", async () => {
@@ -28,7 +23,7 @@ describe("GraphAdapter.list", () => {
     await adapter.list({ folder: "INBOX", limit: 5 });
     expect(fetch).toHaveBeenCalledWith(
       expect.stringContaining("/v1.0/me/mailFolders/inbox/messages"),
-      expect.any(Object),
+      expect.any(Object)
     );
   });
 
@@ -44,7 +39,7 @@ describe("GraphAdapter.list", () => {
     await adapter.list({});
     expect(fetch).toHaveBeenCalledWith(
       expect.stringContaining("/v1.0/me/mailFolders/inbox/messages"),
-      expect.any(Object),
+      expect.any(Object)
     );
   });
 
@@ -58,7 +53,7 @@ describe("GraphAdapter.list", () => {
     const url = (fetch as Mock).mock.calls[0][0] as string;
     const decoded = decodeURIComponent(url).replace(/\+/g, " ");
     expect(decoded).toContain(
-      "$filter=receivedDateTime ge 1970-01-01T00:00:00Z and isRead eq false",
+      "$filter=receivedDateTime ge 1970-01-01T00:00:00Z and isRead eq false"
     );
     expect(decoded).toContain("$orderby=receivedDateTime desc");
   });
@@ -78,13 +73,41 @@ describe("GraphAdapter.list", () => {
 
   it("unknown folder throws", async () => {
     const adapter = new GraphAdapter({ accessToken: "tok" });
-    await expect(adapter.list({ folder: "CUSTOM" as never })).rejects.toThrow(
-      /unknown folder/i,
-    );
+    await expect(adapter.list({ folder: "CUSTOM" as never })).rejects.toThrow(/unknown folder/i);
   });
 
-  it("uses GRAPH_API_BASE_URL when set", async () => {
+  it("aborts a hung Graph request via AbortSignal.timeout(30_000) instead of blocking forever", async () => {
+    // Simulates a Graph endpoint that never answers and never resets the
+    // connection (network blackhole) — the mock only ever settles via the
+    // AbortSignal req() passes to fetch, exactly like a real hung `fetch`
+    // would once the signal fires.
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockImplementation((_ms: number) => {
+      const controller = new AbortController();
+      setTimeout(
+        () => controller.abort(new DOMException("The operation timed out.", "TimeoutError")),
+        1
+      );
+      return controller.signal;
+    });
+    (fetch as Mock).mockImplementation((_url: string | URL, init?: RequestInit) => {
+      return new Promise((_resolve, reject) => {
+        const signal = init?.signal;
+        signal?.addEventListener("abort", () => {
+          reject(signal.reason ?? new Error("The operation was aborted"));
+        });
+      });
+    });
+
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    await expect(adapter.list({})).rejects.toThrow();
+
+    expect(timeoutSpy).toHaveBeenCalledWith(30_000);
+    timeoutSpy.mockRestore();
+  });
+
+  it("uses GRAPH_API_BASE_URL when set together with the insecure flag", async () => {
     process.env.GRAPH_API_BASE_URL = "http://graph-mock:9005";
+    process.env.PINCHY_INSECURE_MAIL_MOCK = "1";
     const adapter = new GraphAdapter({ accessToken: "tok" });
     (fetch as Mock).mockResolvedValueOnce({
       ok: true,
@@ -92,12 +115,25 @@ describe("GraphAdapter.list", () => {
     });
     await adapter.list({});
     expect(fetch).toHaveBeenCalledWith(
-      expect.stringContaining(
-        "http://graph-mock:9005/v1.0/me/mailFolders/inbox/messages",
-      ),
-      expect.any(Object),
+      expect.stringContaining("http://graph-mock:9005/v1.0/me/mailFolders/inbox/messages"),
+      expect.any(Object)
     );
-    delete process.env.GRAPH_API_BASE_URL;
+  });
+
+  it("ignores GRAPH_API_BASE_URL and uses the real API host when the insecure flag is absent", async () => {
+    process.env.GRAPH_API_BASE_URL = "http://graph-mock:9005";
+    // No PINCHY_INSECURE_MAIL_MOCK: the mock seam must NOT fire, so a stray
+    // override left over in production can't redirect the bearer token.
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ value: [] }),
+    });
+    await adapter.list({});
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining("https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages"),
+      expect.any(Object)
+    );
   });
 });
 
@@ -124,11 +160,88 @@ describe("GraphAdapter.read", () => {
     const result = await adapter.read("msg1");
     expect(fetch).toHaveBeenCalledWith(
       expect.stringContaining("/v1.0/me/messages/msg1"),
-      expect.any(Object),
+      expect.any(Object)
     );
     expect(result.body).toBe("Hi there, full body");
     expect(result.cc).toBe("charlie@example.com");
     expect(result.unread).toBe(true);
+  });
+
+  // Graph returns `body.content` verbatim in whatever `body.contentType` the
+  // message was stored in, and most Outlook mail is stored as html — so this
+  // was handing the model raw markup where IMAP hands it text. The SIZE
+  // ceiling that keeps email_read out of OpenClaw's blind mid-JSON truncation
+  // is asserted at the tool boundary instead (see tools.test.ts), because it
+  // applies to every adapter's body and not just this one's.
+  it("strips HTML from the body when body.contentType is html", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        id: "msg1",
+        subject: "Hello",
+        bodyPreview: "Hi",
+        receivedDateTime: "2024-01-01T10:00:00Z",
+        from: { emailAddress: { address: "alice@example.com" } },
+        toRecipients: [],
+        isRead: true,
+        body: { contentType: "html", content: "<p>Hello <b>Bob</b>, see attached.</p>" },
+      }),
+    });
+    const result = await adapter.read("msg1");
+    expect(result.body).not.toContain("<p>");
+    expect(result.body).not.toContain("<b>");
+    // Inline tags collapse to a space, so one is left where </b> was, ahead of
+    // the comma.
+    expect(result.body).toContain("Hello Bob , see attached.");
+  });
+
+  // Graph documents the enum as lowercase, but a case-sensitive compare would
+  // silently take the "already plain text" branch on anything else and hand
+  // the model a body of pure markup — the exact defect above, one payload
+  // variation away.
+  it("strips HTML when contentType arrives in a different case", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        id: "msg1",
+        subject: "Hello",
+        bodyPreview: "Hi",
+        receivedDateTime: "2024-01-01T10:00:00Z",
+        from: { emailAddress: { address: "alice@example.com" } },
+        toRecipients: [],
+        isRead: true,
+        body: { contentType: "HTML", content: "<p>Hello <b>Bob</b>.</p>" },
+      }),
+    });
+    const result = await adapter.read("msg1");
+    expect(result.body).not.toContain("<b>");
+    expect(result.body).toContain("Hello Bob");
+  });
+
+  // The control that proves the html branch is a branch: a plain-text body
+  // must reach the model byte-for-byte. It carries a literal "<" and real line
+  // breaks precisely because stripHtml would eat both — an all-prose control
+  // would pass even if stripHtml were applied unconditionally.
+  it("leaves a plain-text body byte-for-byte intact, including line breaks and a literal <", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    const plain = "Line one\n\nLine two: 3 < 4 and a  double space.";
+    (fetch as Mock).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        id: "msg1",
+        subject: "Short",
+        bodyPreview: "short",
+        receivedDateTime: "2024-01-01T10:00:00Z",
+        from: { emailAddress: { address: "alice@example.com" } },
+        toRecipients: [],
+        isRead: true,
+        body: { contentType: "text", content: plain },
+      }),
+    });
+    const result = await adapter.read("msg1");
+    expect(result.body).toBe(plain);
   });
 
   it("non-ok response throws a descriptive error", async () => {
@@ -140,6 +253,21 @@ describe("GraphAdapter.read", () => {
       text: async () => "Message not found",
     });
     await expect(adapter.read("msg1")).rejects.toThrow(/Graph 404/);
+  });
+
+  it("carries the HTTP status on the thrown error (#1077)", async () => {
+    // The plugin's auth classifier reads this status instead of hunting for
+    // "401" in a body that also carries a GUID request-id.
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock).mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+      statusText: "Unauthorized",
+      text: async () => '{"error":{"code":"InvalidAuthenticationToken"}}',
+    });
+
+    const err = (await adapter.read("msg1").catch((e: unknown) => e)) as { status?: number };
+    expect(err.status).toBe(401);
   });
 
   it("URL-encodes the message ID in the path", async () => {
@@ -188,9 +316,7 @@ describe("GraphAdapter.read attachments", () => {
 
   it("requests hasAttachments in the read $select", async () => {
     const adapter = new GraphAdapter({ accessToken: "tok" });
-    (fetch as Mock).mockResolvedValueOnce(
-      messageResponse({ hasAttachments: false }),
-    );
+    (fetch as Mock).mockResolvedValueOnce(messageResponse({ hasAttachments: false }));
     await adapter.read("msg1");
     const url = (fetch as Mock).mock.calls[0][0] as string;
     expect(decodeURIComponent(url)).toContain("hasAttachments");
@@ -198,15 +324,13 @@ describe("GraphAdapter.read attachments", () => {
 
   it("does NOT make a second request when hasAttachments is false", async () => {
     const adapter = new GraphAdapter({ accessToken: "tok" });
-    (fetch as Mock).mockResolvedValueOnce(
-      messageResponse({ hasAttachments: false }),
-    );
+    (fetch as Mock).mockResolvedValueOnce(messageResponse({ hasAttachments: false }));
     const result = await adapter.read("msg1");
     expect(result.attachments).toEqual([]);
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(fetch).not.toHaveBeenCalledWith(
       expect.stringContaining("/attachments"),
-      expect.any(Object),
+      expect.any(Object)
     );
   });
 
@@ -337,6 +461,25 @@ describe("GraphAdapter.getAttachment", () => {
   beforeEach(() => vi.stubGlobal("fetch", vi.fn()));
   afterEach(() => vi.unstubAllGlobals());
 
+  // A real `fetch` Response ALWAYS carries a Headers object — a response with
+  // no declared Content-Length answers `headers.get("content-length") === null`,
+  // it does not lack `headers`. Mocking the latter would let the adapter get
+  // away with `res.headers?.get(...)`, i.e. an optional chain that exists only
+  // because a test lied about the shape. Every mock in this block goes through
+  // this helper so the header lookup under test is the one production performs.
+  const attachmentResponse = (opts: {
+    contentLength?: string | null;
+    json: () => Promise<unknown>;
+    body?: { cancel: () => Promise<void> };
+  }) => ({
+    ok: true,
+    headers: {
+      get: (name: string) => (name === "content-length" ? (opts.contentLength ?? null) : null),
+    },
+    body: opts.body,
+    json: opts.json,
+  });
+
   it("downloads a fileAttachment and reconstructs its raw bytes", async () => {
     const adapter = new GraphAdapter({ accessToken: "tok" });
     // Include high-bit bytes that encode to '+' and '/' in standard base64
@@ -345,22 +488,21 @@ describe("GraphAdapter.getAttachment", () => {
     // base64-vs-base64url specifically — Node's Buffer decoder accepts both
     // alphabets interchangeably; the adapter's choice of "base64" is a
     // correctness-of-intent signal.)
-    const bytes = Buffer.concat([
-      Buffer.from("%PDF-1.7"),
-      Buffer.from([0xfb, 0xff, 0xbf]),
-    ]);
-    (fetch as Mock).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        "@odata.type": "#microsoft.graph.fileAttachment",
-        id: "att-1",
-        name: "invoice.pdf",
-        contentType: "application/pdf",
-        size: bytes.length,
-        isInline: false,
-        contentBytes: bytes.toString("base64"),
-      }),
-    });
+    const bytes = Buffer.concat([Buffer.from("%PDF-1.7"), Buffer.from([0xfb, 0xff, 0xbf])]);
+    (fetch as Mock).mockResolvedValueOnce(
+      attachmentResponse({
+        contentLength: "512",
+        json: async () => ({
+          "@odata.type": "#microsoft.graph.fileAttachment",
+          id: "att-1",
+          name: "invoice.pdf",
+          contentType: "application/pdf",
+          size: bytes.length,
+          isInline: false,
+          contentBytes: bytes.toString("base64"),
+        }),
+      })
+    );
 
     const result = await adapter.getAttachment("msg1", "att-1");
 
@@ -375,15 +517,17 @@ describe("GraphAdapter.getAttachment", () => {
 
   it("URL-encodes message and attachment ids in the path", async () => {
     const adapter = new GraphAdapter({ accessToken: "tok" });
-    (fetch as Mock).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        "@odata.type": "#microsoft.graph.fileAttachment",
-        name: "f.bin",
-        contentType: "application/octet-stream",
-        contentBytes: Buffer.from("x").toString("base64"),
-      }),
-    });
+    (fetch as Mock).mockResolvedValueOnce(
+      attachmentResponse({
+        contentLength: "256",
+        json: async () => ({
+          "@odata.type": "#microsoft.graph.fileAttachment",
+          name: "f.bin",
+          contentType: "application/octet-stream",
+          contentBytes: Buffer.from("x").toString("base64"),
+        }),
+      })
+    );
 
     await adapter.getAttachment("msg/a+b", "att/c+d");
 
@@ -394,22 +538,22 @@ describe("GraphAdapter.getAttachment", () => {
 
   it("throws for an itemAttachment that has no downloadable contentBytes", async () => {
     const adapter = new GraphAdapter({ accessToken: "tok" });
-    (fetch as Mock).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        "@odata.type": "#microsoft.graph.itemAttachment",
-        id: "att-item",
-        name: "Forwarded message",
-        contentType: null,
-        size: 5000,
-        isInline: false,
-        // no contentBytes
-      }),
-    });
-
-    await expect(adapter.getAttachment("msg1", "att-item")).rejects.toThrow(
-      /embedded item/i,
+    (fetch as Mock).mockResolvedValueOnce(
+      attachmentResponse({
+        contentLength: "5000",
+        json: async () => ({
+          "@odata.type": "#microsoft.graph.itemAttachment",
+          id: "att-item",
+          name: "Forwarded message",
+          contentType: null,
+          size: 5000,
+          isInline: false,
+          // no contentBytes
+        }),
+      })
     );
+
+    await expect(adapter.getAttachment("msg1", "att-item")).rejects.toThrow(/embedded item/i);
   });
 
   it("propagates a Graph error response", async () => {
@@ -420,9 +564,129 @@ describe("GraphAdapter.getAttachment", () => {
       statusText: "Not Found",
       text: async () => "attachment not found",
     });
-    await expect(adapter.getAttachment("msg1", "gone")).rejects.toThrow(
-      /Graph 404/,
+    await expect(adapter.getAttachment("msg1", "gone")).rejects.toThrow(/Graph 404/);
+  });
+
+  it("rejects an oversized attachment response by Content-Length WITHOUT ever calling res.json() — the whole point is to never buffer the body", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    const jsonSpy = vi.fn(async () => {
+      throw new Error("res.json() must not be called for an oversized response");
+    });
+    const cancelSpy = vi.fn(async () => {});
+    (fetch as Mock).mockResolvedValueOnce(
+      attachmentResponse({
+        contentLength: String(50 * 1024 * 1024), // 50 MB
+        body: { cancel: cancelSpy },
+        json: jsonSpy,
+      })
     );
+
+    await expect(adapter.getAttachment("msg1", "att-huge")).rejects.toThrow(
+      // The cap quoted back to the caller is the 25 MB ATTACHMENT limit they
+      // can act on, not the ~40 MB wire bound the check compares against.
+      /too large.*50\.0 MB.*max allowed is 25 MB/is
+    );
+    expect(jsonSpy).not.toHaveBeenCalled();
+    expect(cancelSpy).toHaveBeenCalledTimes(1);
+  });
+
+  // The pair below is the actual boundary. Asserting "1000 bytes is allowed"
+  // proves nothing about where the cut sits — a `>=` typo would pass it — so
+  // these pin the exact threshold from both sides.
+  it("allows a response whose Content-Length is EXACTLY the threshold", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    const bytes = Buffer.from("ok");
+    (fetch as Mock).mockResolvedValueOnce(
+      attachmentResponse({
+        contentLength: String(MAX_ATTACHMENT_RESPONSE_BYTES),
+        json: async () => ({
+          "@odata.type": "#microsoft.graph.fileAttachment",
+          id: "att-small",
+          name: "small.txt",
+          contentType: "text/plain",
+          contentBytes: bytes.toString("base64"),
+        }),
+      })
+    );
+
+    const result = await adapter.getAttachment("msg1", "att-small");
+    expect(result.data.equals(bytes)).toBe(true);
+  });
+
+  it("rejects a response ONE byte over the threshold", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    const jsonSpy = vi.fn(async () => ({}));
+    (fetch as Mock).mockResolvedValueOnce(
+      attachmentResponse({
+        contentLength: String(MAX_ATTACHMENT_RESPONSE_BYTES + 1),
+        body: { cancel: vi.fn(async () => {}) },
+        json: jsonSpy,
+      })
+    );
+
+    await expect(adapter.getAttachment("msg1", "att-edge")).rejects.toThrow(/too large/i);
+    expect(jsonSpy).not.toHaveBeenCalled();
+  });
+
+  it("still reports the size when draining the oversized body fails — a stream error must not replace the diagnosis", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock).mockResolvedValueOnce(
+      attachmentResponse({
+        contentLength: String(50 * 1024 * 1024),
+        body: {
+          cancel: vi.fn(async () => {
+            throw new Error("stream already errored");
+          }),
+        },
+        json: async () => ({}),
+      })
+    );
+
+    await expect(adapter.getAttachment("msg1", "att-huge")).rejects.toThrow(
+      /too large.*50\.0 MB/is
+    );
+  });
+
+  it("proceeds to res.json() when Content-Length is absent — the post-download length check in index.ts is the fallback guard", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    const bytes = Buffer.from("no content-length header here");
+    (fetch as Mock).mockResolvedValueOnce(
+      // A chunked-transfer response: `headers` is present, the lookup answers
+      // null. That is what "absent" looks like on the wire.
+      attachmentResponse({
+        contentLength: null,
+        json: async () => ({
+          "@odata.type": "#microsoft.graph.fileAttachment",
+          id: "att-nolen",
+          name: "nolen.txt",
+          contentType: "text/plain",
+          contentBytes: bytes.toString("base64"),
+        }),
+      })
+    );
+
+    const result = await adapter.getAttachment("msg1", "att-nolen");
+    expect(result.data.equals(bytes)).toBe(true);
+  });
+
+  it("proceeds to res.json() when Content-Length is present but unparseable — a broken proxy must not become a download failure", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    const bytes = Buffer.from("garbage header, real body");
+    (fetch as Mock).mockResolvedValueOnce(
+      attachmentResponse({
+        contentLength: "not-a-number",
+        json: async () => ({
+          "@odata.type": "#microsoft.graph.fileAttachment",
+          id: "att-nan",
+          name: "nan.txt",
+          contentType: "text/plain",
+          contentBytes: bytes.toString("base64"),
+        }),
+      })
+    );
+
+    const result = await adapter.getAttachment("msg1", "att-nan");
+    expect(result.data.equals(bytes)).toBe(true);
   });
 });
 
@@ -480,9 +744,7 @@ describe("GraphAdapter.search", () => {
     expect(filterMatch).not.toBeNull();
     const filterValue = filterMatch![1];
     expect(
-      filterValue.startsWith(
-        "receivedDateTime ge 1970-01-01T00:00:00Z and isRead eq false",
-      ),
+      filterValue.startsWith("receivedDateTime ge 1970-01-01T00:00:00Z and isRead eq false")
     ).toBe(true);
     expect(decoded).toContain("$orderby=receivedDateTime desc");
   });
@@ -503,9 +765,7 @@ describe("GraphAdapter.search", () => {
     // URLSearchParams encodes spaces as +; decode both %xx and + before asserting
     const decoded = decodeURIComponent(url).replace(/\+/g, " ");
     expect(decoded).not.toContain("$search");
-    expect(decoded).toContain(
-      "from/emailAddress/address eq 'alice@example.com'",
-    );
+    expect(decoded).toContain("from/emailAddress/address eq 'alice@example.com'");
     expect(decoded).toContain("isRead eq false");
     // receivedDateTime (matching $orderby) must be first, then isRead, then
     // the from-predicate — the exact order of non-receivedDateTime predicates
@@ -514,12 +774,9 @@ describe("GraphAdapter.search", () => {
     const filterMatch = decoded.match(/\$filter=([^&]+)/);
     expect(filterMatch).not.toBeNull();
     const filterValue = filterMatch![1];
+    expect(filterValue.startsWith("receivedDateTime ge 1970-01-01T00:00:00Z")).toBe(true);
     expect(
-      filterValue.startsWith("receivedDateTime ge 1970-01-01T00:00:00Z"),
-    ).toBe(true);
-    expect(
-      filterValue.indexOf("isRead eq false") <
-        filterValue.indexOf("from/emailAddress/address"),
+      filterValue.indexOf("isRead eq false") < filterValue.indexOf("from/emailAddress/address")
     ).toBe(true);
   });
 
@@ -534,9 +791,7 @@ describe("GraphAdapter.search", () => {
     await adapter.search({ from: "o'brien@example.com", unread: true });
     const url = (fetch as Mock).mock.calls[0][0] as string;
     const decoded = decodeURIComponent(url).replace(/\+/g, " ");
-    expect(decoded).toContain(
-      "from/emailAddress/address eq 'o''brien@example.com'",
-    );
+    expect(decoded).toContain("from/emailAddress/address eq 'o''brien@example.com'");
   });
 
   it("folder scopes via mailFolders path", async () => {
@@ -548,7 +803,7 @@ describe("GraphAdapter.search", () => {
     await adapter.search({ from: "alice@example.com", folder: "SENT" });
     expect(fetch).toHaveBeenCalledWith(
       expect.stringContaining("/me/mailFolders/sentitems/messages"),
-      expect.any(Object),
+      expect.any(Object)
     );
   });
 
@@ -763,7 +1018,7 @@ describe("GraphAdapter.draft", () => {
     });
     expect(fetch).toHaveBeenCalledWith(
       expect.stringContaining("/me/messages"),
-      expect.objectContaining({ method: "POST" }),
+      expect.objectContaining({ method: "POST" })
     );
     expect(result.draftId).toBe("draft1");
   });
@@ -781,7 +1036,7 @@ describe("GraphAdapter.draft", () => {
     });
     expect(fetch).toHaveBeenCalledWith(
       expect.stringContaining("/me/messages/original-msg-id/createReply"),
-      expect.objectContaining({ method: "POST" }),
+      expect.objectContaining({ method: "POST" })
     );
     expect(result.draftId).toBe("reply1");
   });
@@ -802,9 +1057,7 @@ describe("GraphAdapter.draft", () => {
     expect(sentBody.subject).toBe("Test Subject");
     expect(sentBody.body.contentType).toBe("text");
     expect(sentBody.body.content).toBe("Hello body");
-    expect(sentBody.toRecipients).toEqual([
-      { emailAddress: { address: "bob@example.com" } },
-    ]);
+    expect(sentBody.toRecipients).toEqual([{ emailAddress: { address: "bob@example.com" } }]);
   });
 });
 
@@ -825,7 +1078,7 @@ describe("GraphAdapter.send", () => {
     });
     expect(fetch).toHaveBeenCalledWith(
       expect.stringContaining("/me/sendMail"),
-      expect.objectContaining({ method: "POST" }),
+      expect.objectContaining({ method: "POST" })
     );
   });
 
@@ -860,7 +1113,7 @@ describe("GraphAdapter.send", () => {
     });
     expect(fetch).toHaveBeenCalledWith(
       expect.stringContaining("/me/messages/reply1/send"),
-      expect.objectContaining({ method: "POST" }),
+      expect.objectContaining({ method: "POST" })
     );
   });
 
@@ -883,5 +1136,99 @@ describe("GraphAdapter.send", () => {
       replyTo: "original-id",
     });
     expect(result.messageId).toBe("reply42");
+  });
+});
+
+// SKILL.md tells the model to write `Name <address>`, and email_send accepts
+// it. Graph takes the name and the address as two fields; putting the whole
+// string into `address` makes Graph reject (or mangle) the recipient.
+describe("GraphAdapter named recipients", () => {
+  beforeEach(() => vi.stubGlobal("fetch", vi.fn()));
+  afterEach(() => vi.unstubAllGlobals());
+
+  const sentRecipients = (callIndex: number) =>
+    JSON.parse(((fetch as Mock).mock.calls[callIndex][1] as RequestInit).body as string);
+
+  it("splits Name <address> into Graph's name and address fields on send", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock).mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+    await adapter.send({ to: "Jos\u00E9 M\u00FCller <jose@example.com>", subject: "S", body: "B" });
+    expect(sentRecipients(0).message.toRecipients).toEqual([
+      { emailAddress: { name: "Jos\u00E9 M\u00FCller", address: "jose@example.com" } },
+    ]);
+  });
+
+  // A quoted name with a comma reaches Graph as one name, the way the card
+  // shows it.
+  it("unquotes a quoted name with a comma into Graph's name field", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock).mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+    await adapter.send({ to: '"M\u00FCller, Hans" <hans@x.de>', subject: "S", body: "B" });
+    expect(sentRecipients(0).message.toRecipients).toEqual([
+      { emailAddress: { name: "M\u00FCller, Hans", address: "hans@x.de" } },
+    ]);
+  });
+
+  it("does the same for a new draft and a reply draft", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: "d1" }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: "r1" }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+    await adapter.draft({ to: "Ada <ada@example.com>", subject: "S", body: "B" });
+    await adapter.draft({ to: "Ada <ada@example.com>", subject: "S", body: "B", replyTo: "m1" });
+    const expected = [{ emailAddress: { name: "Ada", address: "ada@example.com" } }];
+    expect(sentRecipients(0).toRecipients).toEqual(expected);
+    expect(sentRecipients(2).toRecipients).toEqual(expected);
+  });
+});
+
+describe("GraphAdapter request bounds", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("gives the attachment download a longer bound than an ordinary call", async () => {
+    // An AbortSignal covers the body read, not just the response headers, and
+    // getAttachment pulls the whole file as base64 inside the JSON body (up to
+    // the 25 MB the tools layer accepts, ~33 MB on the wire). The bound that is
+    // generous for a metadata call would abort a working-but-slow download, so
+    // this path must ask for its own.
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock).mockResolvedValueOnce({
+      ok: true,
+      // getAttachment reads Content-Length before touching the body; a real
+      // Response always has a Headers object, so the mock must too.
+      headers: { get: () => "512" },
+      json: async () => ({
+        name: "invoice.pdf",
+        contentType: "application/pdf",
+        contentBytes: Buffer.from("%PDF-").toString("base64"),
+      }),
+    });
+
+    await adapter.getAttachment("msg-1", "att-1");
+
+    expect(timeoutSpy).toHaveBeenCalledWith(120_000);
+    expect(timeoutSpy).not.toHaveBeenCalledWith(30_000);
+  });
+
+  it("still bounds an ordinary call at the default", async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ value: [] }),
+    });
+
+    await adapter.list({ folder: "INBOX" });
+
+    expect(timeoutSpy).toHaveBeenCalledWith(30_000);
   });
 });

@@ -40,7 +40,9 @@ const IS_WINDOWS = process.platform === "win32";
 
 const dirs = discoverPluginDirs(PLUGINS_ROOT);
 if (dirs.length === 0) {
-  console.error(`No plugin packages found under ${relative(REPO_ROOT, PLUGINS_ROOT)}`);
+  console.error(
+    `No plugin packages found under ${relative(REPO_ROOT, PLUGINS_ROOT)}`,
+  );
   process.exit(1);
 }
 

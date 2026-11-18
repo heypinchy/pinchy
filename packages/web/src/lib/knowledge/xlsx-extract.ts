@@ -1,0 +1,542 @@
+/**
+ * Spreadsheet extractor for the knowledge-base ingest pipeline.
+ *
+ * Spreadsheets deliberately do NOT go through the Office→PDF conversion path
+ * its sibling formats take. Three reasons, in order of weight:
+ *
+ *  - The anchor would be meaningless. A 40-column sheet laid out onto pages
+ *    becomes dozens of unreadable pages, and a citation saying "page 17" gives
+ *    the reader nothing to verify. Sheet + row range is intrinsic to the
+ *    document rather than to a renderer, so it is both meaningful and stable.
+ *  - Page-fitting is the step that silently clips: text too wide for its
+ *    column is cut when the sheet is paginated. Reading cells skips that step
+ *    entirely, so reading is HIGHER fidelity here, not lower.
+ *  - It keeps LibreOffice out of the read. A legacy `.xls` does pass through
+ *    Calc, but only to become an `.xlsx` (#1373); this module reads that file
+ *    like any other workbook.
+ *
+ * The chunk shape follows current practice for tabular RAG (structure-aware
+ * chunking): each row becomes a self-contained `Label: value` block, and whole
+ * rows are grouped under a token bound. Fixed-size text chunking is documented
+ * to tear row structure apart, and the sheet+row-range anchor falls out of the
+ * row-wise shape for free.
+ *
+ *  - Structure-Aware Chunking for Tabular Data in RAG — arxiv.org/pdf/2605.00318
+ *  - Sheet as Token: multi-sheet spreadsheet understanding — arxiv.org/pdf/2605.05811
+ *
+ * Wiring this into ingest.ts is a separate change; this module is standalone
+ * and knows nothing about documents, chunk rows or embeddings.
+ */
+import ExcelJS from "exceljs";
+
+import { OfficeFileRejectedError } from "./office-formats";
+import { readWorkbookBuffer } from "./office-preflight";
+
+/** A group of whole rows from ONE sheet, anchored on the sheet name and an inclusive row range. */
+export interface XlsxChunk {
+  text: string;
+  /** Sheet name exactly as the workbook spells it — half of the citation anchor. */
+  sheet: string;
+  /** First row in the chunk, 1-based, as Excel's own row gutter numbers it. */
+  startRow: number;
+  /** Last row in the chunk, inclusive, 1-based. */
+  endRow: number;
+}
+
+export interface XlsxExtraction {
+  chunks: XlsxChunk[];
+  /** Sheets that were read, in workbook order. */
+  sheets: string[];
+  /**
+   * Sheets excluded because their author hid them. Reported rather than merely
+   * skipped: without it, a workbook whose every sheet is hidden is
+   * indistinguishable from an empty one, and "0 chunks" is exactly the answer
+   * an unreadable file gives.
+   */
+  hiddenSheets: string[];
+  /** Rows excluded across all read sheets because their author hid them. */
+  hiddenRows: number;
+}
+
+export interface XlsxExtractOptions {
+  /** Approximate chunk size bound in tokens. Defaults to 512, matching chunk.ts. */
+  targetTokens?: number;
+}
+
+/**
+ * This spreadsheet could not be read at all — gone from disk, not permitted,
+ * or a workbook exceljs cannot open. A file the guard refuses for its size or
+ * content is an `OfficeFileRejectedError` instead. Deliberately an exception rather than an empty result: a silent
+ * zero looks exactly like a successfully indexed empty document, and a
+ * document nobody can read must never be booked as one nobody wrote anything
+ * in.
+ */
+export class XlsxExtractionError extends Error {
+  constructor(
+    readonly sourcePath: string,
+    /** Why, without the path — what the isolated reader carries back across the process boundary. */
+    readonly reason: string,
+    options?: { cause?: unknown }
+  ) {
+    super(`Cannot read spreadsheet ${sourcePath}: ${reason}`, options);
+    this.name = "XlsxExtractionError";
+  }
+}
+
+// Same char-per-token heuristic and default target as chunk.ts, so a mixed
+// corpus produces comparably-sized chunks whatever the source format.
+const CHARS_PER_TOKEN = 4;
+const DEFAULT_TARGET_TOKENS = 512;
+
+/**
+ * One visible cell of a row: the sheet column it sits in, the label that
+ * column's header gives it (or its letter), and its rendered text. The column
+ * NUMBER stays on the cell because labels are not identities — two columns
+ * legitimately share a header ("Price" twice), and only the number can keep
+ * them apart when the preview lays cells under columns.
+ */
+interface SheetCell {
+  column: number;
+  label: string;
+  text: string;
+}
+
+/** One kept row: its Excel row number and its visible cells. */
+interface SheetRow {
+  number: number;
+  cells: SheetCell[];
+}
+
+/**
+ * The indexed rendering of one row: `Header: value; Header2: value2`.
+ *
+ * Split out from `readSheet` so the SAME traversal feeds two consumers — the
+ * chunk text the index embeds, and the table the citation preview renders
+ * (#940). A second traversal for the preview would be free to disagree with
+ * the index about hidden rows, hidden columns or which row is the header, and
+ * a preview that shows a reader something the index never read is worse than
+ * no preview at all.
+ */
+function rowText(cells: SheetCell[]): string {
+  return cells.map((cell) => `${cell.label}: ${cell.text}`).join("; ");
+}
+
+interface SheetContent {
+  name: string;
+  rows: SheetRow[];
+}
+
+/** Collapses every whitespace run — newlines included — so one cell can never turn one row into two lines. */
+function normalizeWhitespace(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+/** A date-only cell renders as its calendar date; anything with a time keeps the full ISO stamp. */
+function renderDate(value: Date): string {
+  const iso = value.toISOString();
+  return iso.endsWith("T00:00:00.000Z") ? iso.slice(0, 10) : iso;
+}
+
+/**
+ * Removes everything in a number-format section that is a literal rather than a
+ * directive: quoted runs, backslash-escaped characters, and the bracketed
+ * blocks Excel uses for colours and conditions.
+ *
+ * Three passes, each linear: quoted runs, then escapes, then brackets. The
+ * bracket pass is not the regex `/\[[^\]]*\]/g`, which re-scans to the end of
+ * the string from every unclosed `[`: quadratic on a format code read from the
+ * workbook — 400 000 of them held the web process for two minutes. An
+ * unclosed quote or bracket is kept, exactly as that regex keeps it.
+ */
+function stripFormatLiterals(section: string): string {
+  const withoutQuoted = section.replace(/"[^"]*"/g, "").replace(/\\./g, "");
+  let out = "";
+  let at = 0;
+  while (at < withoutQuoted.length) {
+    const open = withoutQuoted.indexOf("[", at);
+    if (open < 0) break;
+    const close = withoutQuoted.indexOf("]", open + 1);
+    // No `]` anywhere after this `[`, so none after any later one either.
+    if (close < 0) break;
+    out += withoutQuoted.slice(at, open);
+    at = close + 1;
+  }
+  return out + withoutQuoted.slice(at);
+}
+
+/**
+ * Does this number format scale its value by 100? An unquoted `%` is Excel's
+ * multiplier directive; a quoted or escaped one is just a character to print.
+ * Only the first section is consulted — it governs positive numbers, and a
+ * format that switches the multiplier between sections does not occur in
+ * practice.
+ */
+function isPercentFormat(numFmt: string | undefined): boolean {
+  if (!numFmt) return false;
+  return stripFormatLiterals(numFmt.split(";")[0]).includes("%");
+}
+
+/**
+ * A percent-formatted cell stores 0.15 and shows `15%`. Indexing the stored
+ * number would answer with a value that is wrong by two orders of magnitude,
+ * not merely unformatted, so the multiplier is applied. Other formats
+ * (currency, thousands separators) only change how the same number looks and
+ * are deliberately left alone.
+ */
+function renderNumber(value: number, numFmt: string | undefined): string {
+  if (!isPercentFormat(numFmt)) return String(value);
+  // 0.15 * 100 is 15.000000000000002 in binary floating point. Re-rounding to
+  // the ~15 significant digits a double actually carries drops the artefact
+  // without touching a legitimately long value.
+  return `${Number.parseFloat((value * 100).toPrecision(15))}%`;
+}
+
+/**
+ * Renders a cell the way its reader sees it, or "" for a cell that carries no
+ * readable content.
+ *
+ * Formula cells contribute their CACHED RESULT, never the formula source: the
+ * reader sees `20`, not `=B2*10`, and indexing the source would make the
+ * document answer questions with text that appears nowhere on screen. A
+ * formula the writer never calculated has no result to show and contributes
+ * nothing — same rule, applied honestly.
+ */
+function renderCellValue(value: ExcelJS.CellValue, numFmt?: string): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return normalizeWhitespace(value);
+  if (typeof value === "number") return renderNumber(value, numFmt);
+  if (typeof value === "boolean") return String(value);
+  if (value instanceof Date) return renderDate(value);
+  if (typeof value !== "object") return "";
+
+  // An error cell (#DIV/0!, #N/A) is a broken cell, not knowledge. Indexing
+  // the code would put hundreds of identical error strings into the corpus.
+  if ("error" in value) return "";
+
+  if ("richText" in value) {
+    return normalizeWhitespace(value.richText.map((run) => run.text).join(""));
+  }
+  if ("hyperlink" in value) {
+    // `text` is typed as a string but is not always one: a link whose label
+    // carries mixed formatting reads back as a richText object, and a link on a
+    // numeric cell as a number. Recursing renders every one of those shapes
+    // instead of assuming the declared type and throwing on the rest.
+    const text = renderCellValue(value.text ?? null, numFmt);
+    const href = normalizeWhitespace(String(value.hyperlink ?? ""));
+    if (!href || href === text) return text;
+    return text ? `${text} (${href})` : href;
+  }
+  if ("formula" in value || "sharedFormula" in value) {
+    return renderCellValue(value.result ?? null, numFmt);
+  }
+  return "";
+}
+
+/** "B7" -> "B". The fallback label for a column with no header cell. */
+function columnLetter(address: string): string {
+  return address.replace(/\d+$/, "");
+}
+
+/** Is this cell's raw value a text value? Only an all-text row can be a header row. */
+function isTextCell(value: ExcelJS.CellValue): boolean {
+  return (
+    typeof value === "string" ||
+    (typeof value === "object" && value !== null && "richText" in value)
+  );
+}
+
+/**
+ * Reads one worksheet into rendered rows, applying the two exclusions this
+ * module makes on governance grounds (hidden rows, hidden columns) and turning
+ * the first row into column labels when it looks like a header.
+ */
+function readSheet(worksheet: ExcelJS.Worksheet): { rows: SheetRow[]; hiddenRows: number } {
+  const isHiddenColumn = (col: number) => worksheet.getColumn(col).hidden === true;
+
+  const rows: SheetRow[] = [];
+  let hiddenRows = 0;
+  let headers: Map<number, string> | null = null;
+  let headerDecided = false;
+
+  worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+    if (row.hidden) {
+      hiddenRows++;
+      return;
+    }
+
+    // Collect the row's visible, non-empty cells once; both the header
+    // decision and the rendered block are built from this.
+    const cells: Array<{ column: number; letter: string; raw: ExcelJS.CellValue; text: string }> =
+      [];
+    row.eachCell({ includeEmpty: false }, (cell, colNumber) => {
+      if (isHiddenColumn(colNumber)) return;
+      const text = renderCellValue(cell.value, cell.numFmt);
+      if (!text) return;
+      cells.push({ column: colNumber, letter: columnLetter(cell.address), raw: cell.value, text });
+    });
+
+    if (cells.length === 0) return;
+
+    // The first row with content decides: an all-text row is the header and
+    // becomes the labels; anything else (a number, a date, a formula) means
+    // the sheet starts straight into data and columns are labelled by letter.
+    if (!headerDecided) {
+      headerDecided = true;
+      if (cells.every((cell) => isTextCell(cell.raw))) {
+        headers = new Map(cells.map((cell) => [cell.column, cell.text]));
+        return;
+      }
+    }
+
+    rows.push({
+      number: rowNumber,
+      cells: cells.map((cell) => ({
+        column: cell.column,
+        label: headers?.get(cell.column) ?? cell.letter,
+        text: cell.text,
+      })),
+    });
+  });
+
+  return { rows, hiddenRows };
+}
+
+/**
+ * Groups whole rows of one sheet into chunks under `targetChars`.
+ *
+ * Unlike the PDF chunker there is NO overlap between consecutive chunks: a row
+ * is the atomic unit of a spreadsheet, so repeating one would duplicate a fact
+ * and leave the row-range anchor ambiguous about where that fact lives. A row
+ * that alone exceeds the bound is emitted intact as its own oversized chunk
+ * rather than being cut — a half row is a wrong row, not a smaller one.
+ */
+function chunkSheet(sheet: SheetContent, targetChars: number): XlsxChunk[] {
+  const prefix = `Sheet: ${sheet.name}`;
+  const chunks: XlsxChunk[] = [];
+
+  let rows: string[] = [];
+  let startRow = 0;
+  let endRow = 0;
+  let length = 0;
+
+  const flush = () => {
+    if (rows.length === 0) return;
+    chunks.push({ text: [prefix, ...rows].join("\n"), sheet: sheet.name, startRow, endRow });
+    rows = [];
+  };
+
+  for (const row of sheet.rows) {
+    const text = rowText(row.cells);
+    if (rows.length > 0 && length + 1 + text.length <= targetChars) {
+      rows.push(text);
+      endRow = row.number;
+      length += 1 + text.length;
+      continue;
+    }
+    flush();
+    rows = [text];
+    startRow = row.number;
+    endRow = row.number;
+    length = prefix.length + 1 + text.length;
+  }
+  flush();
+
+  return chunks;
+}
+
+/**
+ * Opens a workbook the way both entry points need it: vetted first, then parsed
+ * from the very bytes that were vetted.
+ *
+ * exceljs inflates every zip entry whole and builds the entire cell model, so a
+ * few hundred bytes declaring gigabytes can exhaust the heap of whatever
+ * process reads them. The central directory is read first (nothing is
+ * inflated); a workbook past the limits — one sheet part over 16 MiB among
+ * them — is refused with `OfficeFileRejectedError("too_large")` instead of
+ * letting the process find out the hard way, and one that is not a sound
+ * workbook archive, or declares what exceljs would choke on, with
+ * `OfficeFileRejectedError("unexpected_content")`.
+ * In production that process is a heap-capped child (`xlsx-isolated.ts`), not
+ * the web server: the cell model of an honest workbook inside these limits
+ * still costs ~20x its sheet XML.
+ *
+ * @throws OfficeFileRejectedError when the guard refuses the file.
+ * @throws XlsxExtractionError when it cannot be read (gone, not permitted) or
+ *   exceljs cannot open what the guard let through.
+ */
+async function openWorkbook(absPath: string): Promise<ExcelJS.Workbook> {
+  const unreadable = (cause: unknown) =>
+    new XlsxExtractionError(absPath, "the file could not be opened as a workbook", { cause });
+
+  let buffer: Buffer;
+  try {
+    buffer = await readWorkbookBuffer(absPath);
+  } catch (err) {
+    // A refusal is a verdict on these bytes — too large, or not the workbook
+    // its name says — and reading them again changes nothing, so it travels as
+    // one: ingest lists the file as unsearchable and leaves it alone until it
+    // changes. Anything else (gone, not permitted) says nothing about the
+    // content and stays unreadable, which ingest retries.
+    if (err instanceof OfficeFileRejectedError) throw err;
+    throw unreadable(err);
+  }
+
+  const workbook = new ExcelJS.Workbook();
+  try {
+    // exceljs's typings name the older `Buffer` shape (no ArrayBufferLike
+    // generic); the value is a plain Node Buffer either way.
+    await workbook.xlsx.load(buffer as unknown as Parameters<typeof workbook.xlsx.load>[0]);
+  } catch (err) {
+    throw unreadable(err);
+  }
+  return workbook;
+}
+
+/**
+ * Extracts row-wise chunks from the spreadsheet at `absPath`, anchored on sheet
+ * name and row range.
+ *
+ * Hidden sheets, rows and columns are excluded. That is a governance decision,
+ * not a formatting one: indexing what the author hid makes the citation
+ * unverifiable for the reader, who opens the file and does not see it. The
+ * result reports what was excluded so a zero-chunk workbook can still explain
+ * itself.
+ *
+ * Only OOXML `.xlsx` is readable — exceljs has no BIFF reader, so a legacy
+ * binary `.xls` (an OLE2 container, not a zip) fails at the opener like any
+ * other unreadable file. That is the intended outcome: loud, with a reason.
+ *
+ * @throws XlsxExtractionError if the file cannot be read as a workbook.
+ * @throws OfficeFileRejectedError if the guard refuses it (see `openWorkbook`).
+ */
+export async function extractXlsx(
+  absPath: string,
+  opts: XlsxExtractOptions = {}
+): Promise<XlsxExtraction> {
+  const workbook = await openWorkbook(absPath);
+
+  const targetChars = (opts.targetTokens ?? DEFAULT_TARGET_TOKENS) * CHARS_PER_TOKEN;
+
+  const sheets: string[] = [];
+  const hiddenSheets: string[] = [];
+  const chunks: XlsxChunk[] = [];
+  let hiddenRows = 0;
+
+  // The walk runs on shapes exceljs's own typings understate (see the hyperlink
+  // branch), so an unexpected cell can still raise from library internals. That
+  // is a fault of THIS document and has to read as one: an unwrapped TypeError
+  // is indistinguishable from a systemic fault, which a caller would reasonably
+  // treat as a reason to abort the whole run rather than skip one file.
+  try {
+    // Excel cannot save a workbook without a sheet, so zero worksheets means we
+    // opened something that merely LOOKS like one — a .docx renamed .xlsx unzips
+    // fine and lands exactly here. exceljs reports that as a clean, empty
+    // success, which is the silent-zero this extractor exists to refuse.
+    if (workbook.worksheets.length === 0) {
+      throw new XlsxExtractionError(absPath, "the file opened but contains no worksheets");
+    }
+
+    for (const worksheet of workbook.worksheets) {
+      if (worksheet.state === "hidden" || worksheet.state === "veryHidden") {
+        hiddenSheets.push(worksheet.name);
+        continue;
+      }
+      sheets.push(worksheet.name);
+      const sheet = readSheet(worksheet);
+      hiddenRows += sheet.hiddenRows;
+      chunks.push(...chunkSheet({ name: worksheet.name, rows: sheet.rows }, targetChars));
+    }
+  } catch (err) {
+    // A diagnosis we already made keeps its own, more specific reason.
+    if (err instanceof XlsxExtractionError) throw err;
+    throw new XlsxExtractionError(absPath, "the workbook could not be read to the end", {
+      cause: err,
+    });
+  }
+
+  return { chunks, sheets, hiddenSheets, hiddenRows };
+}
+
+/** The slice of a workbook one citation points at. */
+export interface SheetRange {
+  sheet: string;
+  /**
+   * Column labels in the sheet's own left-to-right order, restricted to the
+   * columns the selected rows actually fill (a 40-column sheet whose cited
+   * rows fill four should render four columns, not 36 empty ones). Labels may
+   * repeat — two columns headed "Price" are two columns — which is why rows
+   * align to columns by POSITION, not by label.
+   */
+  columns: string[];
+  /** Each row's cell texts, index-aligned to `columns`; "" where the row has no cell there. */
+  rows: Array<{ number: number; cells: string[] }>;
+}
+
+/** How many rows one preview may return, however wide a range a citation names. */
+export const SHEET_RANGE_MAX_ROWS = 200;
+
+/**
+ * Reads the rows one citation names, for the preview a `.xlsx` citation opens.
+ *
+ * Goes through the SAME `readSheet` traversal the index uses, which is the
+ * point: hidden rows, hidden columns and the header decision are made once, so
+ * the preview cannot show a reader a row the index never read — or hide one it
+ * did. A preview that disagrees with the index is worse than none, because it
+ * makes a correct citation look fabricated.
+ *
+ * The range is INCLUSIVE and clamped rather than validated: a citation is model
+ * output, so a range running past the end of the sheet is an ordinary thing to
+ * receive, not an error to raise at the reader. An empty result is a legitimate
+ * answer and the caller renders it as such.
+ *
+ * `sheetName: null` means no sheet was named at all — a bare workbook mention —
+ * and resolves to the first VISIBLE sheet, where the workbook itself would
+ * open. It never falls back to a hidden sheet: the index skipped those, and
+ * the preview must not show what the index never read.
+ *
+ * @throws XlsxExtractionError if the file cannot be read as a workbook.
+ * @throws OfficeFileRejectedError if the guard refuses it (see `openWorkbook`).
+ */
+export async function readSheetRange(
+  absPath: string,
+  sheetName: string | null,
+  startRow: number,
+  endRow: number
+): Promise<SheetRange | null> {
+  const workbook = await openWorkbook(absPath);
+
+  // Hidden sheets are skipped here exactly as they are during indexing, so a
+  // citation naming one resolves to nothing rather than to content the index
+  // deliberately never read.
+  const worksheet = workbook.worksheets.find(
+    (candidate) =>
+      (sheetName === null || candidate.name === sheetName) &&
+      candidate.state !== "hidden" &&
+      candidate.state !== "veryHidden"
+  );
+  if (!worksheet) return null;
+
+  const { rows } = readSheet(worksheet);
+  const selected = rows
+    .filter((row) => row.number >= startRow && row.number <= endRow)
+    .slice(0, SHEET_RANGE_MAX_ROWS);
+
+  // The columns the selected rows fill, in the sheet's own left-to-right
+  // order, keyed on the column NUMBER: labels may repeat, so they cannot
+  // identify a column (see the test with two "Price" headers).
+  const columnNumbers = [
+    ...new Set(selected.flatMap((row) => row.cells.map((c) => c.column))),
+  ].sort((a, b) => a - b);
+  const labelFor = new Map(selected.flatMap((row) => row.cells.map((c) => [c.column, c.label])));
+
+  return {
+    sheet: worksheet.name,
+    columns: columnNumbers.map((column) => labelFor.get(column)!),
+    rows: selected.map((row) => ({
+      number: row.number,
+      cells: columnNumbers.map(
+        (column) => row.cells.find((cell) => cell.column === column)?.text ?? ""
+      ),
+    })),
+  };
+}

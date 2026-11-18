@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("next/navigation", () => ({
@@ -107,5 +108,35 @@ describe("Home page", () => {
     mockHeadersGet.mockReturnValue(null);
 
     await expect(Home()).rejects.toThrow("REDIRECT:/chat/agent-1");
+  });
+
+  describe("first landing order", () => {
+    const desktop = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36";
+
+    it("lands on the personal agent even when a shared agent comes first from the DB", async () => {
+      mockGetVisibleAgents.mockResolvedValue([
+        { id: "alpha-files", name: "Alpha Files", isPersonal: false, visibility: "all" },
+        {
+          id: "my-smithers",
+          name: "Smithers",
+          isPersonal: true,
+          ownerId: "user-1",
+          visibility: "all",
+        },
+      ]);
+      mockHeadersGet.mockReturnValue(desktop);
+
+      await expect(Home()).rejects.toThrow("REDIRECT:/chat/my-smithers");
+    });
+
+    it("lands on the alphabetically first agent when only shared agents are visible", async () => {
+      mockGetVisibleAgents.mockResolvedValue([
+        { id: "zeta", name: "Zeta", isPersonal: false, visibility: "all" },
+        { id: "alpha", name: "Alpha", isPersonal: false, visibility: "all" },
+      ]);
+      mockHeadersGet.mockReturnValue(desktop);
+
+      await expect(Home()).rejects.toThrow("REDIRECT:/chat/alpha");
+    });
   });
 });

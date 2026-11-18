@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // Integration test for fetchAuditEntriesForSession against a real Postgres DB.
 //
 // Verifies the real production audit row shape: every chat/tool/agent event

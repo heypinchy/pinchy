@@ -64,6 +64,17 @@ vi.mock("@/lib/openclaw-config", () => ({
   regenerateOpenClawConfig: vi.fn().mockResolvedValue(undefined),
 }));
 
+// The only OpenClaw round trip this route can reach is `config.get`. Handing a
+// test a controllable one is what lets it model the state #1150 describes: a
+// `config.apply` parked in OpenClaw's rate-limit window, so the runtime does
+// not yet carry Smithers and a poll for him would never finish.
+const { openClawConfigGet } = vi.hoisted(() => ({
+  openClawConfigGet: vi.fn(),
+}));
+vi.mock("@/server/openclaw-client", () => ({
+  getOpenClawClient: () => ({ config: { get: openClawConfigGet } }),
+}));
+
 vi.mock("@/lib/audit", () => ({
   appendAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
@@ -83,8 +94,11 @@ vi.mock("@/lib/provider-models", () => ({
   ]),
 }));
 
-vi.mock("@/lib/model-resolver", () => ({
-  resolveModelForTemplate: vi.fn().mockResolvedValue({
+// The route resolves Smithers' model through the live-availability wrapper
+// (#883); mock that. TemplateCapabilityUnavailableError is imported from the
+// real ./types module below, so the barrel stays unmocked.
+vi.mock("@/lib/model-resolver/resolve-available", () => ({
+  resolveAvailableModelForTemplate: vi.fn().mockResolvedValue({
     model: "anthropic/claude-sonnet-4-6",
     reason: "balanced",
     fallbackUsed: false,
@@ -118,6 +132,7 @@ import { validateProviderKey, validateProviderUrl } from "@/lib/providers";
 import { getSetting, setSetting } from "@/lib/settings";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { appendAuditLog } from "@/lib/audit";
+import { getAuditWriteFailedCount, resetAuditWriteFailedCount } from "@/lib/audit-deferred";
 import { db } from "@/db";
 import { requireAdmin } from "@/lib/api-auth";
 import {
@@ -126,13 +141,42 @@ import {
   fetchOllamaLocalModelsFromUrl,
   setOllamaLocalModels,
 } from "@/lib/provider-models";
-import { resolveModelForTemplate } from "@/lib/model-resolver";
+import { resolveAvailableModelForTemplate } from "@/lib/model-resolver/resolve-available";
 import { TemplateCapabilityUnavailableError } from "@/lib/model-resolver/types";
 import { SMITHERS_MODEL_HINT } from "@/lib/personal-agent";
+
+/**
+ * Race `promise` against a 2 s timer and fail with a message that names the
+ * defect rather than "test timed out after 20000ms".
+ *
+ * The timer only ever runs to completion on the red path — a handler that
+ * answers wins the race immediately — so the budget is free on green and can
+ * be generous enough to survive a loaded machine.
+ */
+const BLOCKED = Symbol("blocked");
+async function answersWithoutBlocking(promise: Promise<Response>): Promise<Response> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const blocked = new Promise<typeof BLOCKED>((resolve) => {
+    timer = setTimeout(() => resolve(BLOCKED), 2000);
+  });
+  const settled = await Promise.race([promise, blocked]);
+  clearTimeout(timer);
+  if (settled === BLOCKED) {
+    throw new Error(
+      "POST /api/setup/provider did not answer within 2 s while OpenClaw's runtime was " +
+        "unreachable. The handler is waiting on the runtime inside the request — that wait " +
+        "belongs to the wizard, which can render it (#1150)."
+    );
+  }
+  return settled;
+}
 
 describe("POST /api/setup/provider", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    openClawConfigGet.mockResolvedValue({
+      config: { agents: { list: [{ id: "agent-1" }] } },
+    });
     vi.mocked(getSetting).mockResolvedValue(null);
     vi.mocked(db.query.agents.findFirst).mockResolvedValue({
       id: "agent-1",
@@ -176,6 +220,19 @@ describe("POST /api/setup/provider", () => {
     expect(data.success).toBe(true);
   });
 
+  it("should still return 200 and count the failure when the audit write fails after the key is saved", async () => {
+    resetAuditWriteFailedCount();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("audit db down"));
+
+    const response = await POST(
+      makeRequest({ provider: "anthropic", apiKey: "sk-ant-valid" }) as any
+    );
+
+    expect(response.status).toBe(200);
+    expect(getAuditWriteFailedCount()).toBe(1);
+  });
+
   it("should validate the API key", async () => {
     await POST(
       makeRequest({
@@ -212,9 +269,12 @@ describe("POST /api/setup/provider", () => {
   });
 
   it("should not update agent model when a second provider is added", async () => {
-    // OpenAI is already configured
+    // A provider is already configured, so a default is set. "First provider"
+    // is gated on `default_provider` being null (mirrors the custom route), not
+    // on a built-in-only key scan.
     vi.mocked(getSetting).mockImplementation(async (key: string) => {
       if (key === "openai_api_key") return "sk-openai-existing";
+      if (key === "default_provider") return "openai";
       return null;
     });
 
@@ -228,6 +288,32 @@ describe("POST /api/setup/provider", () => {
     expect(db.update).not.toHaveBeenCalled();
   });
 
+  it("does not repoint Smithers or steal the default when a custom provider is already configured (#894 regression)", async () => {
+    // The instance was first set up with a custom OpenAI-compatible provider,
+    // so `default_provider` holds its slug (no built-in key exists). The old
+    // built-in-only "first provider" scan saw no configured built-in, wrongly
+    // treated Ollama Cloud as the first provider, stole the default, and
+    // repointed the existing Smithers agent onto ollama-cloud/kimi-k2.6 —
+    // contradicting the documented contract that only NEW agents follow a
+    // default change.
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "default_provider") return "litellm-local";
+      return null;
+    });
+
+    await POST(
+      makeRequest({
+        provider: "ollama-cloud",
+        apiKey: "sk-ollama-key",
+      }) as any
+    );
+
+    // Existing agent left untouched...
+    expect(db.update).not.toHaveBeenCalled();
+    // ...and the default is NOT stolen by the newly added built-in.
+    expect(setSetting).not.toHaveBeenCalledWith("default_provider", "ollama-cloud", false);
+  });
+
   it("should regenerate full OpenClaw config including agent list", async () => {
     await POST(
       makeRequest({
@@ -237,6 +323,119 @@ describe("POST /api/setup/provider", () => {
     );
 
     expect(regenerateOpenClawConfig).toHaveBeenCalled();
+  });
+
+  it("should still return 200 with a warning when config regeneration fails", async () => {
+    // Regression for #880: the DB write already committed, so a failed
+    // runtime apply must not surface as a hard 500 that implies nothing saved.
+    vi.mocked(regenerateOpenClawConfig).mockRejectedValueOnce(
+      new Error("EACCES: permission denied, open '/config/openclaw.json'")
+    );
+
+    const response = await POST(
+      makeRequest({
+        provider: "anthropic",
+        apiKey: "sk-ant-key",
+      }) as any
+    );
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.success).toBe(true);
+    expect(typeof data.warning).toBe("string");
+    expect(data.warning.length).toBeGreaterThan(0);
+    // The persisted change must still have committed.
+    expect(setSetting).toHaveBeenCalledWith("anthropic_api_key", "sk-ant-key", true);
+    // ...and the audit trail records that it did not reach the runtime.
+    const auditDetail = vi.mocked(appendAuditLog).mock.calls[0][0].detail as Record<
+      string,
+      unknown
+    >;
+    expect(auditDetail.configRegenerated).toBe(false);
+  });
+
+  it("should not include a warning when config regeneration succeeds", async () => {
+    const response = await POST(
+      makeRequest({
+        provider: "anthropic",
+        apiKey: "sk-ant-key",
+      }) as any
+    );
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.success).toBe(true);
+    expect(data.warning).toBeUndefined();
+  });
+
+  // #1150 — the wizard's provider step sat on a disabled "Validating..." button
+  // until the request came back, and the request came back when OpenClaw's
+  // runtime did. On a fresh install those are tens of seconds apart: the first
+  // secrets.json provisioning restarts the gateway, the restarts spend the
+  // ~3-per-45 s `config.apply` budget, and Pinchy's push is then parked for the
+  // advertised retry-after (49 s in the reported run). Nothing crashed and no
+  // timeout fired — the handler was simply waiting, behind a spinner
+  // indistinguishable from a hang.
+  describe("runtime readiness is the wizard's wait, not the request's (#1150)", () => {
+    it("answers while OpenClaw's runtime has not caught up yet", async () => {
+      // A `config.get` that never settles is what a parked push looks like from
+      // inside the request: the agent is not in `agents.list` and no poll for
+      // him can finish.
+      openClawConfigGet.mockReturnValue(new Promise(() => {}));
+
+      const response = await answersWithoutBlocking(
+        POST(makeRequest({ provider: "anthropic", apiKey: "sk-ant-key" }) as any)
+      );
+
+      expect(response.status).toBe(200);
+      const data = await response.json();
+      expect(data.success).toBe(true);
+    });
+
+    it("hands the wizard the agent id it needs to poll readiness itself", async () => {
+      const response = await POST(
+        makeRequest({ provider: "anthropic", apiKey: "sk-ant-key" }) as any
+      );
+
+      const data = await response.json();
+      // `GET /api/health/openclaw?agentId=…` answers `agentDispatchable`, which
+      // is the same question `waitForAgentInRuntime` used to ask in here.
+      expect(data.agentId).toBe("agent-1");
+    });
+
+    it("omits the agent id when the config never regenerated", async () => {
+      // Nothing was pushed, so OpenClaw's runtime will not change and polling it
+      // would only burn the wizard's budget before letting the user through. The
+      // warning already tells them the runtime did not get the change.
+      vi.mocked(regenerateOpenClawConfig).mockRejectedValueOnce(new Error("EACCES"));
+
+      const response = await POST(
+        makeRequest({ provider: "anthropic", apiKey: "sk-ant-key" }) as any
+      );
+
+      const data = await response.json();
+      expect(data.agentId).toBeUndefined();
+      expect(typeof data.warning).toBe("string");
+    });
+
+    it("omits the agent id when this is not the instance's first provider", async () => {
+      // Despite the path, this route also serves Settings → AI Provider, where
+      // the instance has many agents and `findFirst()` answers whichever row
+      // comes back first. An id picked that way names nobody in particular, and
+      // the API reference tells callers to poll it — so it is only sent on the
+      // wizard's first-provider path, where the route already treats that row as
+      // Smithers.
+      vi.mocked(getSetting).mockResolvedValue("anthropic");
+
+      const response = await POST(
+        makeRequest({ provider: "openai", apiKey: "sk-openai-key" }) as any
+      );
+
+      const data = await response.json();
+      expect(data.success).toBe(true);
+      expect(data.warning).toBeUndefined();
+      expect(data.agentId).toBeUndefined();
+    });
   });
 
   it("should reset model cache after saving provider", async () => {
@@ -540,7 +739,7 @@ describe("POST /api/setup/provider", () => {
   });
 
   it("updates Smithers' model using SMITHERS_MODEL_HINT when provider is configured as first provider", async () => {
-    vi.mocked(resolveModelForTemplate).mockResolvedValueOnce({
+    vi.mocked(resolveAvailableModelForTemplate).mockResolvedValueOnce({
       model: "anthropic/claude-sonnet-4-6",
       reason: "balanced tier",
       fallbackUsed: false,
@@ -553,7 +752,7 @@ describe("POST /api/setup/provider", () => {
       }) as any
     );
 
-    expect(resolveModelForTemplate).toHaveBeenCalledWith({
+    expect(resolveAvailableModelForTemplate).toHaveBeenCalledWith({
       hint: SMITHERS_MODEL_HINT,
       provider: "anthropic",
     });
@@ -563,7 +762,7 @@ describe("POST /api/setup/provider", () => {
   });
 
   it("updates Smithers' model via SMITHERS_MODEL_HINT for ollama-local as first provider", async () => {
-    vi.mocked(resolveModelForTemplate).mockResolvedValueOnce({
+    vi.mocked(resolveAvailableModelForTemplate).mockResolvedValueOnce({
       model: "ollama/qwen2.5:7b",
       reason: "balanced tier",
       fallbackUsed: false,
@@ -576,7 +775,7 @@ describe("POST /api/setup/provider", () => {
       }) as any
     );
 
-    expect(resolveModelForTemplate).toHaveBeenCalledWith({
+    expect(resolveAvailableModelForTemplate).toHaveBeenCalledWith({
       hint: SMITHERS_MODEL_HINT,
       provider: "ollama-local",
     });
@@ -600,6 +799,8 @@ describe("POST /api/setup/provider", () => {
     expect(call.detail).toMatchObject({
       provider: { id: "anthropic", name: "Anthropic" },
       authType: "api-key",
+      // On the happy path the setting also reached the runtime (#880).
+      configRegenerated: true,
     });
   });
 
@@ -668,7 +869,7 @@ describe("POST /api/setup/provider", () => {
   it("succeeds with 200 even when resolveModelForTemplate throws TemplateCapabilityUnavailableError", async () => {
     // Provider is being added as the first provider, but resolver finds no
     // matching model — e.g. an Ollama instance with only text-only models.
-    vi.mocked(resolveModelForTemplate).mockRejectedValueOnce(
+    vi.mocked(resolveAvailableModelForTemplate).mockRejectedValueOnce(
       new TemplateCapabilityUnavailableError(["tools"], "anthropic", "https://docs.heypinchy.com")
     );
 

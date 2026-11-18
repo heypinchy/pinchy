@@ -42,6 +42,13 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover" as const,
+  // Without this, the browser default `resizes-visual` applies: the on-screen
+  // keyboard shrinks only the visual viewport and leaves the layout viewport at
+  // full height. A `h-dvh` chat column then keeps its height, the composer stays
+  // where it was — underneath the keyboard — and reaching it means scrolling the
+  // whole page, which drags the chat header off screen (#955). `resizes-content`
+  // shrinks the layout viewport, so the flex column reflows on its own.
+  interactiveWidget: "resizes-content",
   themeColor: [
     { media: "(prefers-color-scheme: light)", color: "#ffffff" },
     { media: "(prefers-color-scheme: dark)", color: "#0a0a0a" },

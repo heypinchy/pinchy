@@ -28,6 +28,14 @@ vi.mock("fs", async (importOriginal) => {
   };
 });
 
+// OpenAI-compatible custom providers (#894) are DB-backed and now queried
+// during config regeneration. The shared @/db mock here returns agent rows
+// for every table, so stub this module to an empty list to keep the test hermetic.
+vi.mock("@/lib/openai-compatible-providers", () => ({
+  listOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
+  listProvidersWithApiKeys: vi.fn().mockResolvedValue([]),
+}));
+
 vi.mock("@/db", () => ({
   db: {
     select: vi.fn().mockImplementation(() => ({
@@ -88,6 +96,7 @@ vi.mock("@/lib/provider-models", () => {
 });
 
 import { writeFileSync, readFileSync, existsSync } from "fs";
+import { writtenOpenClawConfig } from "../helpers/openclaw-config-write";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
 import { getSetting } from "@/lib/settings";
@@ -160,7 +169,7 @@ describe("pinchy-web config generation", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect(config.plugins?.entries?.["pinchy-web"]).toBeDefined();
@@ -197,7 +206,7 @@ describe("pinchy-web config generation", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     const webPluginConfig = config.plugins.entries["pinchy-web"].config;
@@ -243,7 +252,7 @@ describe("pinchy-web config generation", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     const agentConfig = config.plugins.entries["pinchy-web"].config.agents["search-only-agent"];
@@ -280,7 +289,7 @@ describe("pinchy-web config generation", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     const agentConfig = config.plugins.entries["pinchy-web"].config.agents["fetch-only-agent"];
@@ -325,7 +334,7 @@ describe("pinchy-web config generation", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     const agents = config.plugins.entries["pinchy-web"].config.agents;
@@ -333,13 +342,16 @@ describe("pinchy-web config generation", () => {
     expect(agents["plain-agent"]).toBeUndefined();
   });
 
-  it("skips pinchy-web plugin when no web-search connection exists", async () => {
+  // #1297: pinchy_web_fetch needs no provider, so a web agent on an instance
+  // without Brave must still load the plugin. Search stays registered and
+  // answers "not configured", which the agent can relay to the user.
+  it("loads pinchy-web without a connectionId when no web-search connection exists", async () => {
     const agentsData = [
       {
         id: "ws-agent",
         name: "Web Agent",
         model: "anthropic/claude-haiku-4-5-20251001",
-        allowedTools: ["pinchy_web_search"],
+        allowedTools: ["pinchy_web_search", "pinchy_web_fetch"],
         pluginConfig: {},
         createdAt: new Date(),
       },
@@ -360,10 +372,19 @@ describe("pinchy-web config generation", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
-    expect(config.plugins?.entries?.["pinchy-web"]).toBeUndefined();
+    const entry = config.plugins?.entries?.["pinchy-web"];
+    expect(entry).toBeDefined();
+    expect(entry.enabled).toBe(true);
+    expect(config.plugins.allow).toContain("pinchy-web");
+    expect(entry.config).not.toHaveProperty("connectionId");
+    expect(entry.config.apiBaseUrl).toBeTruthy();
+    expect(entry.config.agents["ws-agent"].tools).toEqual([
+      "pinchy_web_search",
+      "pinchy_web_fetch",
+    ]);
   });
 
   it("does not decrypt web-search credentials at config-write time (#209)", async () => {
@@ -405,7 +426,7 @@ describe("pinchy-web config generation", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     // Plugin IS registered with the connectionId — the failure surface
@@ -444,7 +465,7 @@ describe("pinchy-web config generation", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     expect(config.plugins?.entries?.["pinchy-web"]).toBeUndefined();
@@ -480,7 +501,7 @@ describe("pinchy-web config generation", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
     const agentConfig = config.plugins.entries["pinchy-web"].config.agents["ws-agent"];

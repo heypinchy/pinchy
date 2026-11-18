@@ -16,7 +16,13 @@ export interface ModelHint {
 
 export interface ResolverInput {
   hint: ModelHint;
-  provider: ProviderName;
+  /**
+   * A fixed built-in `ProviderName` OR a custom OpenAI-compatible instance's
+   * dynamic slug (#894). `default_provider` and an agent's `model` can now
+   * legitimately hold a slug, so the resolver accepts the widened id and routes
+   * unknown-to-the-union values through the custom-provider path.
+   */
+  provider: ProviderName | (string & {});
 }
 
 export interface ResolverResult {
@@ -28,7 +34,12 @@ export interface ResolverResult {
 export class TemplateCapabilityUnavailableError extends Error {
   constructor(
     public missingCapabilities: ModelCapability[],
-    public provider: ProviderName,
+    // Widened to match ResolverInput.provider (#894): callers now throw this for
+    // custom OpenAI-compatible slugs too (e.g. resolve-available.ts passes
+    // `input.provider`), not just the fixed built-in ProviderName union. The
+    // field is only used for the human-readable message, so accepting a slug is
+    // safe; a bare `ProviderName` here breaks the merge with main's resolver.
+    public provider: ProviderName | (string & {}),
     public docsUrl: string
   ) {
     super(

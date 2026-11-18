@@ -3,6 +3,7 @@ import { activeAgents } from "@/db/schema";
 import { getUserGroupIds, getAllAgentGroupIds } from "@/lib/groups";
 import { getLicenseState } from "@/lib/enterprise";
 import { effectiveVisibility } from "@/lib/agent-access";
+import { getInstancePolicy, isPausedPersonalAgent } from "@/lib/instance-policy";
 
 export async function getVisibleAgents(userId: string, userRole: string) {
   const isAdmin = userRole === "admin";
@@ -17,11 +18,19 @@ export async function getVisibleAgents(userId: string, userRole: string) {
     needsGroups ? getAllAgentGroupIds() : Promise.resolve(new Map<string, string[]>()),
   ]);
 
+  // Read only when it can hide something: a member who owns a personal agent.
+  const ownsPersonalAgent = allAgents.some((a) => a.isPersonal && a.ownerId === userId);
+  const policy = !isAdmin && ownsPersonalAgent ? await getInstancePolicy() : null;
+
   const visible: typeof allAgents = [];
   for (const agent of allAgents) {
-    // Personal agents are only visible to their owner, regardless of role
+    // Personal agents are only visible to their owner, regardless of role —
+    // and not even to them while members may not use one (Settings →
+    // Organization → Member access). The agent stays in the database.
     if (agent.isPersonal) {
-      if (agent.ownerId === userId) visible.push(agent);
+      if (agent.ownerId !== userId) continue;
+      if (policy && isPausedPersonalAgent(agent, userRole, policy)) continue;
+      visible.push(agent);
       continue;
     }
     // Admins see all shared agents

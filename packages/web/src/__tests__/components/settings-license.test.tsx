@@ -1,8 +1,15 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { SettingsLicense } from "@/components/settings-license";
+import { jsonResponse } from "@/test-helpers/fetch";
+import { toast } from "sonner";
+
+vi.mock("sonner", () => ({
+  toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn(), dismiss: vi.fn() }),
+}));
 
 const noLicenseStatus = {
   enterprise: false,
@@ -18,16 +25,13 @@ const noLicenseStatus = {
   hasGatedConfig: false,
 };
 
-const statusOkResponse = (data: object) =>
-  ({
-    ok: true,
-    json: async () => data,
-  }) as Response;
+const statusOkResponse = (data: object) => jsonResponse(data);
 
 describe("SettingsLicense", () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
+    vi.mocked(toast.error).mockClear();
     fetchSpy = vi.spyOn(global, "fetch").mockImplementation(vi.fn());
     // Default: status fetch returns no-license (used by tests without initialLicense)
     fetchSpy.mockResolvedValue(statusOkResponse(noLicenseStatus));
@@ -38,9 +42,8 @@ describe("SettingsLicense", () => {
   });
 
   it("shows loading state initially when no initialLicense provided", () => {
-    fetchSpy.mockResolvedValue({
-      ok: true,
-      json: async () => ({
+    fetchSpy.mockResolvedValue(
+      jsonResponse({
         enterprise: false,
         type: null,
         org: null,
@@ -49,10 +52,41 @@ describe("SettingsLicense", () => {
         managedByEnv: false,
         maxUsers: 0,
         seatsUsed: 0,
-      }),
-    } as Response);
+      })
+    );
     render(<SettingsLicense />);
     expect(screen.getByText(/loading/i)).toBeInTheDocument();
+  });
+
+  // A dropped or failed status fetch must not render the community state
+  // ("No active license key…") — that tells an enterprise admin their key is
+  // gone. Unknown stays in the loading state while the hook retries.
+  it.each([
+    ["the status fetch rejects", () => Promise.reject(new TypeError("Failed to fetch"))],
+    [
+      "the status fetch answers 500",
+      async () => jsonResponse({ error: "Internal Server Error" }, { status: 500 }),
+    ],
+  ])("does not render the community state when %s", async (_label, statusResponse) => {
+    fetchSpy.mockImplementation(statusResponse);
+    render(<SettingsLicense />);
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(
+        expect.stringMatching(/license status/i),
+        expect.objectContaining({
+          id: expect.any(String),
+        })
+      );
+    });
+    expect(screen.getByText(/loading/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no active license key/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/see pricing/i)).not.toBeInTheDocument();
+  });
+
+  it("still renders the community state for a real enterprise: false", async () => {
+    render(<SettingsLicense />);
+    expect(await screen.findByText(/no active license key/i)).toBeInTheDocument();
   });
 
   it("shows no-license state when enterprise is false", async () => {
@@ -206,10 +240,7 @@ describe("SettingsLicense", () => {
     expect(screen.getByText(/deletes all groups/i)).toBeInTheDocument();
     expect(screen.getByText(/recorded in the audit log/i)).toBeInTheDocument();
 
-    fetchSpy.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ groupsRemoved: 2, agentsReset: 1 }),
-    } as Response);
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ groupsRemoved: 2, agentsReset: 1 }));
 
     await user.click(screen.getByRole("button", { name: /remove configuration/i }));
     await waitFor(() => {
@@ -408,10 +439,7 @@ describe("SettingsLicense", () => {
   });
 
   it("shows error message when save fails", async () => {
-    fetchSpy.mockResolvedValueOnce({
-      ok: false,
-      json: async () => ({ error: "Invalid license key" }),
-    } as Response);
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ error: "Invalid license key" }, { status: 400 }));
 
     render(<SettingsLicense initialLicense={noLicenseStatus} />);
 
@@ -525,10 +553,7 @@ describe("SettingsLicense", () => {
   });
 
   it("does not dispatch 'license-updated' when save fails", async () => {
-    fetchSpy.mockResolvedValueOnce({
-      ok: false,
-      json: async () => ({ error: "Invalid license key" }),
-    } as Response);
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ error: "Invalid license key" }, { status: 400 }));
     const onLicenseUpdated = vi.fn();
     window.addEventListener("license-updated", onLicenseUpdated);
 
@@ -539,5 +564,152 @@ describe("SettingsLicense", () => {
     await waitFor(() => expect(screen.getByText(/invalid license key/i)).toBeInTheDocument());
     expect(onLicenseUpdated).not.toHaveBeenCalled();
     window.removeEventListener("license-updated", onLicenseUpdated);
+  });
+
+  describe("admin-only shared agents (#1278)", () => {
+    const activePaid = {
+      ...noLicenseStatus,
+      enterprise: true,
+      state: "paid" as const,
+      type: "paid" as const,
+      org: "Acme",
+    };
+
+    it("names them under an active license", () => {
+      render(
+        <SettingsLicense
+          initialLicense={activePaid}
+          initialAdminOnlyAgents={[{ id: "a1", name: "Sales Bot" }]}
+        />
+      );
+      expect(screen.getByText("1 shared agent only admins can use")).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "Sales Bot" })).toBeInTheDocument();
+    });
+
+    it("warns before activation on a community instance", () => {
+      render(
+        <SettingsLicense
+          initialLicense={noLicenseStatus}
+          initialAdminOnlyAgents={[{ id: "a1", name: "Sales Bot" }]}
+        />
+      );
+      expect(screen.getByText("1 shared agent has no group yet")).toBeInTheDocument();
+    });
+
+    it("stays quiet after expiry — the escape hatch covers that state", () => {
+      render(
+        <SettingsLicense
+          initialLicense={{ ...noLicenseStatus, state: "expired" }}
+          initialAdminOnlyAgents={[{ id: "a1", name: "Sales Bot" }]}
+        />
+      );
+      expect(screen.queryByRole("link", { name: "Sales Bot" })).not.toBeInTheDocument();
+    });
+
+    it("re-reads the list right after a key is activated, so the admin sees what changed", async () => {
+      fetchSpy.mockImplementation(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/enterprise/key") return jsonResponse({ enterprise: true });
+        if (url === "/api/agents/admin-only") {
+          return jsonResponse({ agents: [{ id: "a1", name: "Sales Bot" }] });
+        }
+        return jsonResponse(activePaid);
+      });
+
+      render(<SettingsLicense initialLicense={noLicenseStatus} initialAdminOnlyAgents={[]} />);
+
+      await userEvent.type(screen.getByLabelText(/license key/i), "eyJvalid");
+      await userEvent.click(screen.getByRole("button", { name: /save/i }));
+
+      expect(await screen.findByText("1 shared agent only admins can use")).toBeInTheDocument();
+    });
+  });
+
+  it("says '1 day remaining' on the last day, not '1 days'", () => {
+    render(
+      <SettingsLicense
+        initialLicense={{
+          ...noLicenseStatus,
+          enterprise: true,
+          state: "trial",
+          type: "trial",
+          expiresAt: "2026-11-06T00:00:00Z",
+          daysRemaining: 1,
+        }}
+      />
+    );
+    expect(screen.getByText(/\(1 day remaining\)/)).toBeInTheDocument();
+  });
+
+  it("drops agents made visible to everyone even when re-reading the list fails", async () => {
+    fetchSpy.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/agents/admin-only/open-to-all") {
+        return jsonResponse({ agents: [{ id: "a1", name: "Sales Bot" }] });
+      }
+      if (url === "/api/agents/admin-only") throw new TypeError("Failed to fetch");
+      return jsonResponse(noLicenseStatus);
+    });
+    render(
+      <SettingsLicense
+        initialLicense={{ ...noLicenseStatus, enterprise: true, state: "paid", type: "paid" }}
+        initialAdminOnlyAgents={[
+          { id: "a1", name: "Sales Bot" },
+          { id: "a2", name: "HR Bot" },
+        ]}
+      />
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Make visible to everyone" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Make visible" }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("link", { name: "Sales Bot" })).not.toBeInTheDocument()
+    );
+    expect(screen.getByRole("link", { name: "HR Bot" })).toBeInTheDocument();
+  });
+
+  it("re-reads the agent list after removing license-gated configuration", async () => {
+    fetchSpy.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/enterprise/gated-config") {
+        return jsonResponse({ groupsRemoved: 1, agentsReset: 1 });
+      }
+      if (url === "/api/agents/admin-only") return jsonResponse({ agents: [] });
+      return jsonResponse({ ...noLicenseStatus, hasGatedConfig: false });
+    });
+    render(
+      <SettingsLicense
+        initialLicense={{ ...noLicenseStatus, hasGatedConfig: true }}
+        initialAdminOnlyAgents={[{ id: "a1", name: "Sales Bot" }]}
+      />
+    );
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Remove all license-gated configuration" })
+    );
+    await userEvent.click(await screen.findByRole("button", { name: "Remove configuration" }));
+
+    await waitFor(() => expect(screen.queryByText("Sales Bot")).not.toBeInTheDocument());
+  });
+
+  it("on community, says leftover groups have no effect instead of claiming they're enforced", () => {
+    render(<SettingsLicense initialLicense={{ ...noLicenseStatus, hasGatedConfig: true }} />);
+    expect(screen.queryByText(/stay enforced without a license/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/groups from an earlier license are still here/i)).toBeInTheDocument();
+  });
+
+  it("shows no pre-activation notice while the license status is unknown", async () => {
+    fetchSpy.mockResolvedValue(jsonResponse({ error: "boom" }, { status: 500 }));
+    render(<SettingsLicense initialAdminOnlyAgents={[{ id: "a1", name: "Sales Bot" }]} />);
+    // Unknown stays in the loading state; wait until the failed fetch settled.
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(
+        expect.stringMatching(/license status/i),
+        expect.objectContaining({ id: expect.any(String) })
+      );
+    });
+    expect(screen.getByText(/loading/i)).toBeInTheDocument();
+    expect(screen.queryByText("Sales Bot")).not.toBeInTheDocument();
   });
 });

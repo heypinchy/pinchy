@@ -3,7 +3,7 @@ import type { BrowserContext } from "@playwright/test";
 import {
   FAKE_OLLAMA_SLOW_STREAM_TRIGGER,
   FAKE_OLLAMA_SLOW_STREAM_RESPONSE,
-  FAKE_OLLAMA_SLOW_STREAM_DELAY_MS,
+  FAKE_OLLAMA_SLOW_STREAM_DEFAULT_DELAY_MS,
 } from "../shared/fake-ollama/fake-ollama-server";
 import { login, getSmithersAgentId, waitForOpenClawConnected } from "./helpers";
 
@@ -43,7 +43,7 @@ test.describe("In-app navigation chat persistence (#199)", () => {
     await page.goto("/agents");
 
     // Wait for the stream to complete server-side.
-    const remainingStreamMs = FAKE_OLLAMA_SLOW_STREAM_DELAY_MS * RESPONSE_WORDS.length;
+    const remainingStreamMs = FAKE_OLLAMA_SLOW_STREAM_DEFAULT_DELAY_MS * RESPONSE_WORDS.length;
     await new Promise((r) => setTimeout(r, remainingStreamMs + 3000));
 
     // Navigate back to the chat.

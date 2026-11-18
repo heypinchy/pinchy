@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
 
@@ -44,6 +45,7 @@ vi.mock("@/lib/agent-access", async (importOriginal) => {
   return {
     ...actual,
     assertAgentAccess: vi.fn(),
+    isPersonalAgentPausedFor: vi.fn().mockResolvedValue(false),
   };
 });
 
@@ -98,6 +100,7 @@ describe("ChatPage [chatId] segment (#508)", () => {
       name: "Shared Agent",
       ownerId: null,
       isPersonal: false,
+      allowedTools: [],
     };
 
     mockRequireAuth.mockResolvedValue({ user: { id: "user-1", role: "member" } });
@@ -121,6 +124,7 @@ describe("ChatPage [chatId] segment (#508)", () => {
       name: "Personal Agent",
       ownerId: "owner-user",
       isPersonal: true,
+      allowedTools: [],
     };
 
     mockRequireAuth.mockResolvedValue({ user: { id: "other-user", role: "member" } });

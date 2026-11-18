@@ -12,9 +12,7 @@ import { ImapAdapter, type ImapAdapterOptions } from "../imap-adapter.js";
 
 describe("EmailAdapter contract", () => {
   it("Folder is the five canonical values", () => {
-    expectTypeOf<Folder>().toEqualTypeOf<
-      "INBOX" | "SENT" | "DRAFTS" | "TRASH" | "SPAM"
-    >();
+    expectTypeOf<Folder>().toEqualTypeOf<"INBOX" | "SENT" | "DRAFTS" | "TRASH" | "SPAM">();
   });
 
   it("SearchOptions has the V1 DSL fields plus the free-text `text` field", () => {
@@ -46,12 +44,8 @@ describe("EmailAdapter contract", () => {
 
   it("EmailAdapter has a getAttachment method that downloads attachment bytes", () => {
     expectTypeOf<EmailAdapter["getAttachment"]>().toBeFunction();
-    expectTypeOf<EmailAdapter["getAttachment"]>().parameters.toEqualTypeOf<
-      [string, string]
-    >();
-    expectTypeOf<
-      EmailAdapter["getAttachment"]
-    >().returns.resolves.toEqualTypeOf<{
+    expectTypeOf<EmailAdapter["getAttachment"]>().parameters.toEqualTypeOf<[string, string]>();
+    expectTypeOf<EmailAdapter["getAttachment"]>().returns.resolves.toEqualTypeOf<{
       filename: string;
       mimeType: string;
       data: Buffer;

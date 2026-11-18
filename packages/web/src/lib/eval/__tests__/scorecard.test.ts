@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { buildScorecard, computePassCaretK, wilsonInterval } from "../scorecard";
+import {
+  buildScorecard,
+  computePassCaretK,
+  computePassHatK,
+  passHatKCurve,
+  primaryRuns,
+  promptVariantOf,
+  wilsonInterval,
+} from "../scorecard";
 import type { RunResult } from "../types";
 
 function run(overrides: Partial<RunResult> = {}): RunResult {
@@ -34,10 +42,15 @@ describe("wilsonInterval", () => {
     expect(lower).toBeGreaterThanOrEqual(0);
   });
 
-  it("returns [0, 0] for n=0", () => {
+  it("returns the uninformative [0, 1] for n=0, not a point mass at 0", () => {
+    // Zero trials means "we know nothing", not "it fails every time". The
+    // point-mass [0, 0] this used to return reads as CERTAINTY that the model
+    // scores 0, which is how a cell whose every run was an invalid trial
+    // (`run-infra-error`, excluded from n) got declared significantly worse
+    // than the leader in `comparisons.ts` — from no data at all.
     const [lower, upper] = wilsonInterval(0, 0, 1.96);
     expect(lower).toBe(0);
-    expect(upper).toBe(0);
+    expect(upper).toBe(1);
   });
 
   it("clamps into [0, 1]", () => {
@@ -108,6 +121,30 @@ describe("buildScorecard", () => {
     const scorecard = buildScorecard(runs);
     const a = scorecard.find((e) => e.model === "model-a")!;
     expect(a.medianTokens).toBeUndefined();
+  });
+
+  it("computes tokens-per-COMPLETED-task over passing runs only (the #798 metric)", () => {
+    // A failed run that burned few tokens must not make the model look cheaper
+    // at the thing that matters: the cost of a run that actually SUCCEEDED.
+    const runs: RunResult[] = [
+      run({ model: "model-a", passed: true, tokens: { prompt: 200, completion: 100 } }), // 300
+      run({ model: "model-a", passed: true, tokens: { prompt: 300, completion: 100 } }), // 400
+      run({ model: "model-a", passed: false, tokens: { prompt: 10, completion: 5 } }), // 15, excluded
+    ];
+    const a = buildScorecard(runs).find((e) => e.model === "model-a")!;
+    // Median over the two PASSING runs (300, 400) = 350; the cheap failure is out.
+    expect(a.medianTokensPerCompletedTask).toBe(350);
+    // Contrast: the all-runs median includes the failure.
+    expect(a.medianTokens).toBe(300);
+  });
+
+  it("leaves medianTokensPerCompletedTask undefined when no passing run has tokens", () => {
+    const runs: RunResult[] = [
+      run({ model: "model-a", passed: false, tokens: { prompt: 100, completion: 50 } }),
+      run({ model: "model-a", passed: true }), // passed but no token data
+    ];
+    const a = buildScorecard(runs).find((e) => e.model === "model-a")!;
+    expect(a.medianTokensPerCompletedTask).toBeUndefined();
   });
 
   it("computes a Wilson 95% interval for each model", () => {
@@ -184,5 +221,165 @@ describe("computePassCaretK (pure helper)", () => {
 
   it("is 0 for n=0 (no trials, no proven consistency)", () => {
     expect(computePassCaretK([])).toBe(0);
+  });
+});
+
+describe("buildScorecard<Tag> generic boundary", () => {
+  // Proves buildScorecard/computePassCaretK genuinely work with a
+  // NON-invoice tag union with no cast — the type boundary a non-invoice
+  // caller (e.g. the KB eval harness) relies on. Uses a synthetic tag union
+  // here to prove the mechanism in isolation, decoupled from KbFailureTag's
+  // vocabulary; the KB harness itself is exercised end-to-end in
+  // groundedness-pipeline.test.ts.
+  type CustomTag = "custom-a" | "custom-b";
+
+  function customRun(overrides: Partial<RunResult<CustomTag>> = {}): RunResult<CustomTag> {
+    return {
+      model: "model-a",
+      passed: true,
+      tags: [],
+      notes: [],
+      latencyMs: 1000,
+      ...overrides,
+    };
+  }
+
+  it("groups and grades runs typed on a custom tag union with no cast", () => {
+    const runs: RunResult<CustomTag>[] = [
+      customRun({ passed: true }),
+      customRun({ passed: false, tags: ["custom-a"] }),
+      customRun({ passed: false, tags: ["custom-a", "custom-b"] }),
+    ];
+
+    const scorecard = buildScorecard<CustomTag>(runs);
+    const a = scorecard.find((e) => e.model === "model-a")!;
+
+    expect(a.n).toBe(3);
+    expect(a.passes).toBe(1);
+    expect(a.tagHistogram["custom-a"]).toBe(2);
+    expect(a.tagHistogram["custom-b"]).toBe(1);
+    expect(a.passCaretK).toBe(0);
+    expect(computePassCaretK<CustomTag>(runs)).toBe(0);
+  });
+});
+
+describe("computePassHatK (unbiased pass^k, τ-bench estimator)", () => {
+  it("is 1 at any k when every run passed", () => {
+    expect(computePassHatK(12, 12, 8)).toBe(1);
+    expect(computePassHatK(12, 12, 12)).toBe(1);
+  });
+
+  it("equals the pass rate at k=1", () => {
+    expect(computePassHatK(7, 10, 1)).toBeCloseTo(0.7, 10);
+    expect(computePassHatK(6, 12, 1)).toBeCloseTo(0.5, 10);
+  });
+
+  it("matches C(c,k)/C(n,k) for a partial cell", () => {
+    // 6 of 12 passed, k=2: C(6,2)/C(12,2) = 15/66.
+    expect(computePassHatK(6, 12, 2)).toBeCloseTo(15 / 66, 10);
+    // 9 of 12 passed, k=8: C(9,8)/C(12,8) = 9/495.
+    expect(computePassHatK(9, 12, 8)).toBeCloseTo(9 / 495, 10);
+  });
+
+  it("is 0 when fewer than k runs passed (an all-k subset is impossible)", () => {
+    expect(computePassHatK(5, 12, 8)).toBe(0);
+    expect(computePassHatK(0, 12, 2)).toBe(0);
+  });
+
+  it("is 1 at k=0 and 0 for n=0", () => {
+    expect(computePassHatK(3, 12, 0)).toBe(1);
+    expect(computePassHatK(0, 0, 2)).toBe(0);
+  });
+});
+
+describe("passHatKCurve", () => {
+  it("reports every standard k for a full-N cell, all at 1", () => {
+    expect(passHatKCurve(12, 12)).toEqual([
+      { k: 1, value: 1 },
+      { k: 2, value: 1 },
+      { k: 4, value: 1 },
+      { k: 8, value: 1 },
+      { k: 12, value: 1 },
+    ]);
+  });
+
+  it("drops k levels above the cell's n", () => {
+    // n=8: k=12 is undefined (can't draw 12 from 8) and is omitted.
+    expect(passHatKCurve(8, 8).map((p) => p.k)).toEqual([1, 2, 4, 8]);
+  });
+
+  it("rounds values to 3 decimals, showing the reliability decay", () => {
+    const curve = passHatKCurve(6, 12);
+    expect(curve.find((p) => p.k === 1)?.value).toBe(0.5);
+    expect(curve.find((p) => p.k === 2)?.value).toBe(Number((15 / 66).toFixed(3)));
+    expect(curve.find((p) => p.k === 4)?.value).toBe(Number((15 / 495).toFixed(3)));
+    // Only 6 of 12 passed, so an 8-of-8 all-pass subset is impossible: pass^8 = 0.
+    expect(curve.find((p) => p.k === 8)?.value).toBe(0);
+  });
+
+  it("is empty for a cell with no valid trials — no estimate, not an estimated 0", () => {
+    // `aggregate` produces n=0 when every run of a model was a transport error
+    // (all excluded as invalid trials). The curve must not answer 0 there: 0 is
+    // a measured claim ("k in a row never happened"), and we measured nothing.
+    expect(passHatKCurve(0, 0)).toEqual([]);
+  });
+
+  it("never rounds a real estimate down into the impossible-0 at n=12", () => {
+    // The tail is the whole point of the curve, so 3-decimal rounding must not
+    // collapse a nonzero pass^k onto the 0 that means "can't be done". The
+    // scarcest nonzero cell at each k is passes === k.
+    for (const k of [2, 4, 8, 12]) {
+      expect(passHatKCurve(k, 12).find((p) => p.k === k)?.value).toBeGreaterThan(0);
+    }
+  });
+});
+
+/**
+ * The prompt-wording split (#803, PR 3). Every headline aggregation — the
+ * export's scorecards, the sweep's stored `<label>.json`, the offline
+ * re-grader's printout — must reduce to the PRIMARY wording before it counts a
+ * pass rate. Blending a paraphrase run into a capability number is the exact
+ * failure the variant infrastructure exists to prevent, and it fails silently:
+ * the cell just looks like a different model.
+ */
+describe("promptVariantOf", () => {
+  it("reads the recorded wording", () => {
+    expect(promptVariantOf(run({ promptVariant: "v1" }))).toBe("v1");
+    expect(promptVariantOf(run({ promptVariant: "primary" }))).toBe("primary");
+  });
+
+  it('grandfathers a row without the field as "primary"', () => {
+    // Every row persisted before #803 was dispatched with the scenario's
+    // `userPrompt`, which IS `prompts.primary` — absence therefore MEANS
+    // primary, and must never be read as "unknown wording".
+    expect(promptVariantOf(run())).toBe("primary");
+  });
+});
+
+describe("primaryRuns", () => {
+  it("keeps primary and grandfathered rows, drops every paraphrase row", () => {
+    const runs = [
+      run({ model: "a" }), // grandfathered
+      run({ model: "a", promptVariant: "primary" }),
+      run({ model: "a", promptVariant: "v1" }),
+      run({ model: "a", promptVariant: "v2" }),
+    ];
+    expect(primaryRuns(runs).map((r) => r.promptVariant)).toEqual([undefined, "primary"]);
+  });
+
+  it("is a provable no-op on a variant-free run list", () => {
+    const runs = [run({ model: "a" }), run({ model: "b" })];
+    expect(primaryRuns(runs)).toEqual(runs);
+  });
+
+  it("keeps a variant row out of the aggregated cell", () => {
+    // The end-to-end point: a failing v1 run must not depress the model's
+    // published pass rate.
+    const runs = [
+      run({ model: "a", passed: true }),
+      run({ model: "a", passed: false, promptVariant: "v1" }),
+    ];
+    const [cell] = buildScorecard(primaryRuns(runs));
+    expect(cell).toMatchObject({ n: 1, passes: 1, passRate: 1 });
   });
 });

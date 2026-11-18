@@ -6,12 +6,30 @@ vi.mock("node:dns/promises", () => ({
   default: {
     resolve4: vi.fn(),
     resolve6: vi.fn(),
+    // The guard's last word before it gives up. Deliberately distinct from
+    // resolve4/6: only lookup consults /etc/hosts, and only lookup is what
+    // the real request would have used.
+    lookup: vi.fn(),
   },
 }));
+
+// webFetch dispatches through undici's own fetch, never the global one: the
+// Agent it pins comes from the undici npm package, and Node's global fetch is
+// backed by a different, bundled undici that rejects it (see
+// web-fetch-dispatcher.test.ts). So mock the module, not the global — a
+// vi.stubGlobal("fetch", …) here would intercept nothing and every assertion
+// below would silently drift onto the real network.
+vi.mock("undici", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("undici")>();
+  // Keep the real Agent: webFetch constructs one per request, and these tests
+  // assert it gets attached as `init.dispatcher`.
+  return { ...actual, fetch: vi.fn() };
+});
 
 // Import after mock setup
 const { webFetch, pinnedLookup, readBodyCapped, extractReadableContent, visibleTextFromHtml } =
   await import("./web-fetch.js");
+const { fetch: undiciFetchMock } = await import("undici");
 
 // Build a Response whose body streams the given byte chunks, to exercise
 // readBodyCapped's streaming cap path (the text() fallback is used elsewhere).
@@ -21,7 +39,9 @@ function streamResponse(chunks: Uint8Array[]): Response {
     body: {
       getReader: () => ({
         read: async () =>
-          i < chunks.length ? { done: false, value: chunks[i++] } : { done: true, value: undefined },
+          i < chunks.length
+            ? { done: false, value: chunks[i++] }
+            : { done: true, value: undefined },
         cancel: async () => {},
       }),
     },
@@ -48,17 +68,20 @@ describe("webFetch", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
   const resolve4Mock = dns.resolve4 as ReturnType<typeof vi.fn>;
   const resolve6Mock = dns.resolve6 as ReturnType<typeof vi.fn>;
+  const lookupMock = dns.lookup as unknown as ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
-    fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
+    fetchMock = undiciFetchMock as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockReset();
     // Default: resolve to public IPs
     resolve4Mock.mockResolvedValue(["93.184.216.34"]);
     resolve6Mock.mockResolvedValue(["2606:2800:220:1:248:1893:25c8:1946"]);
+    // Default: /etc/hosts knows nothing. Only reached when DNS came back
+    // empty, so it does not affect the cases above.
+    lookupMock.mockResolvedValue([]);
   });
 
   afterEach(() => {
-    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
@@ -308,11 +331,9 @@ describe("webFetch", () => {
       });
       // DNS for redirect target resolves to private IP
       resolve4Mock
-        .mockResolvedValueOnce(["93.184.216.34"])  // initial URL
-        .mockResolvedValueOnce(["10.0.0.5"]);      // redirect target
-      resolve6Mock
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([]);
+        .mockResolvedValueOnce(["93.184.216.34"]) // initial URL
+        .mockResolvedValueOnce(["10.0.0.5"]); // redirect target
+      resolve6Mock.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
 
       const result = await webFetch("https://evil.com/redirect");
 
@@ -338,9 +359,7 @@ describe("webFetch", () => {
       resolve4Mock
         .mockResolvedValueOnce(["93.184.216.34"])
         .mockResolvedValueOnce(["93.184.216.34"]);
-      resolve6Mock
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([]);
+      resolve6Mock.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
 
       const result = await webFetch("https://example.com/old");
 
@@ -420,20 +439,270 @@ describe("webFetch", () => {
       expect(result.isError).toBe(true);
       expect(result.content).toContain("Too many redirects");
     });
+
+    /**
+     * A name DNS cannot answer is not a name the request cannot reach.
+     *
+     * `dns.resolve4/6` query DNS servers; the fetch resolves through
+     * `dns.lookup`, which also reads `/etc/hosts`. A host that lives only
+     * there was therefore classified "unresolvable" — and the guard used to
+     * carry on anyway, with no pinned address, handing resolution straight
+     * back to undici. This stack puts such a host in its own containers:
+     * compose adds `ollama.local:host-gateway`, i.e. the docker host, and
+     * `web_fetch` is a tool an agent calls on model instruction, so the URL
+     * can come from a prompt-injected page.
+     */
+    describe("hosts-file names", () => {
+      beforeEach(() => {
+        // DNS knows nothing about these names.
+        resolve4Mock.mockReset().mockResolvedValue([]);
+        resolve6Mock.mockReset().mockResolvedValue([]);
+      });
+
+      it("blocks a host that only /etc/hosts knows and that points at a private address", async () => {
+        lookupMock.mockResolvedValue([{ address: "172.17.0.1", family: 4 }]);
+        mockHtmlResponse(ROUTING_FIXTURE);
+
+        const result = await webFetch("http://ollama.local:11434/");
+
+        expect(result.isError).toBe(true);
+        expect(result.content).toContain("private network");
+        expect(fetchMock).not.toHaveBeenCalled();
+      });
+
+      it("blocks it via an IPv6 hosts entry too", async () => {
+        lookupMock.mockResolvedValue([{ address: "fd00::1", family: 6 }]);
+
+        const result = await webFetch("http://internal.local/");
+
+        expect(result.isError).toBe(true);
+        expect(result.content).toContain("private network");
+        expect(fetchMock).not.toHaveBeenCalled();
+      });
+
+      it("refuses a name nothing can resolve instead of fetching it unpinned", async () => {
+        lookupMock.mockResolvedValue([]);
+
+        const result = await webFetch("http://nowhere.invalid/");
+
+        expect(result.isError).toBe(true);
+        expect(result.content).toContain("Could not resolve host");
+        expect(fetchMock).not.toHaveBeenCalled();
+      });
+
+      it("pins and allows a public hosts-file entry", async () => {
+        lookupMock.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+        mockHtmlResponse(ROUTING_FIXTURE);
+
+        const result = await webFetch("http://mirror.local/page");
+
+        expect(result.isError).toBeUndefined();
+        const callArgs = fetchMock.mock.calls[0] as [string, Record<string, unknown>];
+        expect(callArgs[1].dispatcher).toBeDefined();
+      });
+
+      /**
+       * The same reasoning, one hop later.
+       *
+       * Every redirect target is re-resolved and re-pinned — except when the
+       * resolution comes back empty, where the loop dropped the dispatcher and
+       * carried on. That is the identical "hand resolution back to undici with
+       * the guard's conclusion thrown away" the initial request no longer
+       * does, and a redirect is the easier half to reach: the first URL can be
+       * domain-filtered, the `Location` is chosen by the server that answered.
+       */
+      it("refuses a redirect hop nothing can resolve instead of following it unpinned", async () => {
+        // Hop 0 resolves publicly and is fetched; the target does not resolve.
+        resolve4Mock.mockResolvedValueOnce(["93.184.216.34"]);
+        lookupMock.mockResolvedValue([]);
+        fetchMock.mockResolvedValueOnce({
+          status: 302,
+          ok: false,
+          headers: new Map([["location", "https://nowhere.invalid/next"]]),
+        });
+
+        const result = await webFetch("https://example.com/start");
+
+        expect(result.isError).toBe(true);
+        expect(result.content).toContain("Could not resolve host");
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    it.each([
+      ["fd00::1", "the fd00::/8 half of ULA, which is the half in actual use"],
+      ["fd12:3456:789a::1", "a routable-looking ULA prefix"],
+      ["fdff:ffff::1", "the top of the ULA range"],
+      ["::", "the unspecified address, which most stacks route to loopback"],
+    ])("blocks %s (%s)", async (address) => {
+      // `/^fc00:/` matched one hextet of one /8. Every fd00::/8 address —
+      // and `::` — classified as public and was fetched.
+      resolve4Mock.mockReset().mockResolvedValue([]);
+      resolve6Mock.mockReset().mockResolvedValue([address]);
+
+      const result = await webFetch("https://ula.example/page");
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("private network");
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * Special-purpose ranges the original private list never named.
+   *
+   * 100.64.0.0/10 is the one that matters in practice: Alibaba Cloud serves
+   * instance metadata (credentials included) from 100.100.100.200, and a docker
+   * host inside a tailnet makes every other Tailscale node a 100.x neighbour.
+   * The rest are not routable on the public internet, so a hit means somebody
+   * is steering the fetch at an internal path. The table lives in the shared
+   * classifier (./ip-address.ts); this block proves web_fetch actually asks it,
+   * for literal URLs AND for DNS answers.
+   */
+  describe("special-purpose ranges (shared classifier)", () => {
+    const BLOCKED_LITERALS = [
+      ["100.100.100.200", "Alibaba Cloud metadata"],
+      ["168.63.129.16", "Azure WireServer"],
+      ["[64:ff9b::a83f:8110]", "NAT64 wrapping Azure WireServer"],
+      ["100.64.0.1", "CGNAT, bottom of 100.64.0.0/10"],
+      ["100.127.255.255", "CGNAT, top of 100.64.0.0/10"],
+      // Private since the classifier reclassified it (admins may opt into it
+      // for Odoo/mail); web_fetch blocks the private class regardless.
+      ["198.18.0.1", "benchmarking 198.18.0.0/15"],
+      ["198.19.255.255", "benchmarking, top of the /15"],
+      ["192.0.0.1", "IETF protocol assignments 192.0.0.0/24"],
+      ["192.0.2.1", "TEST-NET-1"],
+      ["198.51.100.7", "TEST-NET-2"],
+      ["203.0.113.9", "TEST-NET-3"],
+      ["240.0.0.1", "reserved 240.0.0.0/4"],
+      ["255.255.255.255", "limited broadcast"],
+      ["224.0.0.1", "multicast 224.0.0.0/4"],
+      ["239.255.255.250", "multicast, top of the range"],
+      ["[fe80::1]", "link-local, the literal fe80 hextet"],
+      ["[fe90::1]", "link-local fe80::/10, second block"],
+      ["[febf::1]", "link-local fe80::/10, last block"],
+      ["[fe80:abcd::1]", "link-local with a non-zero second hextet"],
+      ["[fec0::1]", "deprecated site-local fec0::/10"],
+      ["[feff::1]", "site-local, top of fec0::/10"],
+      ["[ff02::1]", "IPv6 multicast"],
+      ["[ff00::1]", "IPv6 multicast, bottom of ff00::/8"],
+      ["[::1]", "loopback"],
+      ["[::]", "unspecified"],
+      ["[64:ff9b::7f00:1]", "NAT64 wrapping 127.0.0.1"],
+      ["[64:ff9b::a9fe:a9fe]", "NAT64 wrapping 169.254.169.254"],
+      ["[64:ff9b::6464:64c8]", "NAT64 wrapping 100.100.100.200"],
+      // `private`, not `reserved`, since the local-use prefix can be an
+      // operator's own network — either way never fetchable from here.
+      ["[64:ff9b:1::a9fe:a9fe]", "local-use NAT64 64:ff9b:1::/48"],
+      ["[::ffff:100.64.0.1]", "IPv4-mapped CGNAT"],
+      ["[::ffff:6464:64c8]", "IPv4-mapped CGNAT, hex spelling"],
+      ["[::ffff:169.254.169.254]", "IPv4-mapped metadata"],
+      ["[::7f00:1]", "IPv4-compatible loopback"],
+      ["[::100.100.100.200]", "IPv4-compatible Alibaba metadata"],
+      ["[2002:7f00:1::1]", "6to4 wrapping 127.0.0.1"],
+      ["[fd00:ec2::254]", "EC2 IPv6 metadata"],
+      ["[fd00:ec2::23]", "EKS Pod Identity Agent"],
+      ["[fd20:ce::254]", "GCP IPv6 metadata"],
+      ["[fd00:c1::a9fe:a9fe]", "OCI IPv6 metadata"],
+    ] as const;
+
+    it.each(BLOCKED_LITERALS)("blocks the literal %s (%s)", async (host) => {
+      const result = await webFetch(`http://${host}/latest/meta-data/`);
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("private network");
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it.each(BLOCKED_LITERALS)("blocks a DNS answer of %s (%s)", async (host) => {
+      const address = host.replace(/^\[|\]$/g, "");
+      const isV6 = address.includes(":");
+      resolve4Mock.mockReset().mockResolvedValue(isV6 ? [] : [address]);
+      resolve6Mock.mockReset().mockResolvedValue(isV6 ? [address] : []);
+
+      const result = await webFetch("https://rebind.example.com/page");
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("private network");
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("blocks a name whose records mix a public address with a CGNAT one", async () => {
+      resolve4Mock.mockReset().mockResolvedValue(["93.184.216.34", "100.100.100.200"]);
+      resolve6Mock.mockReset().mockResolvedValue([]);
+
+      const result = await webFetch("https://mixed.example.com/page");
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("private network");
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("blocks a CGNAT address that only /etc/hosts knows", async () => {
+      resolve4Mock.mockReset().mockResolvedValue([]);
+      resolve6Mock.mockReset().mockResolvedValue([]);
+      lookupMock.mockResolvedValue([{ address: "100.100.100.200", family: 4 }]);
+
+      const result = await webFetch("http://metadata.internal/");
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("private network");
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("blocks a redirect that lands on a CGNAT address", async () => {
+      resolve4Mock.mockReset().mockResolvedValueOnce(["93.184.216.34"]);
+      resolve6Mock.mockReset().mockResolvedValue([]);
+      fetchMock.mockResolvedValueOnce({
+        status: 302,
+        ok: false,
+        headers: new Map([["location", "http://100.100.100.200/latest/meta-data/"]]),
+      });
+
+      const result = await webFetch("https://example.com/start");
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("private network");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    // The other half of the table: the boundaries just outside each range, and
+    // ordinary public addresses, must still be fetched.
+    it.each([
+      ["93.184.216.34", "an ordinary public address"],
+      ["8.8.8.8", "a public resolver"],
+      ["100.63.255.255", "one below 100.64.0.0/10"],
+      ["100.128.0.1", "one above 100.64.0.0/10"],
+      ["198.17.255.255", "one below 198.18.0.0/15"],
+      ["198.20.0.1", "one above 198.18.0.0/15"],
+      ["192.0.1.1", "between 192.0.0.0/24 and 192.0.2.0/24"],
+      ["223.255.255.255", "the last unicast address before 224.0.0.0/4"],
+      ["2606:4700:4700::1111", "a public IPv6 address"],
+      ["64:ff9b::808:808", "NAT64 wrapping the public 8.8.8.8"],
+      ["::ffff:8.8.8.8", "IPv4-mapped public"],
+    ])("still fetches %s (%s)", async (address) => {
+      const isV6 = address.includes(":");
+      resolve4Mock.mockReset().mockResolvedValue(isV6 ? [] : [address]);
+      resolve6Mock.mockReset().mockResolvedValue(isV6 ? [address] : []);
+      mockHtmlResponse(ROUTING_FIXTURE);
+
+      const result = await webFetch("https://public.example.com/page");
+
+      expect(result.isError).toBeUndefined();
+      expect(fetchMock).toHaveBeenCalled();
+    });
   });
 
   describe("pinnedLookup", () => {
     it("invokes the callback with the pinned address regardless of hostname", async () => {
       const lookup = pinnedLookup("93.184.216.34", 4);
 
-      const result = await new Promise<{ address: string; family: number }>(
-        (resolve, reject) => {
-          lookup("evil.com", {}, (err, address, family) => {
-            if (err) reject(err);
-            else resolve({ address: address as string, family: family as number });
-          });
-        },
-      );
+      const result = await new Promise<{ address: string; family: number }>((resolve, reject) => {
+        lookup("evil.com", {}, (err, address, family) => {
+          if (err) reject(err);
+          else resolve({ address: address as string, family: family as number });
+        });
+      });
 
       expect(result.address).toBe("93.184.216.34");
       expect(result.family).toBe(4);
@@ -442,14 +711,12 @@ describe("webFetch", () => {
     it("supports IPv6 addresses", async () => {
       const lookup = pinnedLookup("2606:2800:220:1:248:1893:25c8:1946", 6);
 
-      const result = await new Promise<{ address: string; family: number }>(
-        (resolve, reject) => {
-          lookup("example.com", {}, (err, address, family) => {
-            if (err) reject(err);
-            else resolve({ address: address as string, family: family as number });
-          });
-        },
-      );
+      const result = await new Promise<{ address: string; family: number }>((resolve, reject) => {
+        lookup("example.com", {}, (err, address, family) => {
+          if (err) reject(err);
+          else resolve({ address: address as string, family: family as number });
+        });
+      });
 
       expect(result.address).toBe("2606:2800:220:1:248:1893:25c8:1946");
       expect(result.family).toBe(6);
@@ -496,6 +763,44 @@ describe("webFetch", () => {
 
       expect(result.isError).toBe(true);
       expect(result.content).toContain("fetch failed");
+    });
+
+    // undici collapses every transport failure — DNS, TCP, TLS, a dispatcher it
+    // won't accept — into a bare `TypeError: fetch failed` and hangs the real
+    // reason off `.cause`. Reporting only `.message` is what made the undici
+    // handler-contract bug (web-fetch-dispatcher.test.ts) indistinguishable from
+    // an unreachable website: the agent, and its user, had nothing to act on.
+    it("surfaces the cause behind an opaque 'fetch failed'", async () => {
+      const cause = Object.assign(new Error("getaddrinfo ENOTFOUND example.com"), {
+        code: "ENOTFOUND",
+      });
+      fetchMock.mockRejectedValue(new TypeError("fetch failed", { cause }));
+
+      const result = await webFetch("https://example.com/dns-dead");
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("ENOTFOUND");
+      expect(result.content).toContain("getaddrinfo ENOTFOUND example.com");
+    });
+
+    it("falls back to the cause's message when it carries no errno code", async () => {
+      fetchMock.mockRejectedValue(
+        new TypeError("fetch failed", { cause: new Error("Client network socket disconnected") })
+      );
+
+      const result = await webFetch("https://example.com/tls-dead");
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("Client network socket disconnected");
+    });
+
+    it("reports plainly when there is no cause to unwrap", async () => {
+      fetchMock.mockRejectedValue(new Error("boom"));
+
+      const result = await webFetch("https://example.com/plain");
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toBe("Failed to fetch URL: boom");
     });
 
     it("handles non-HTML content gracefully (returns raw text)", async () => {
@@ -586,7 +891,8 @@ describe("extractReadableContent", () => {
   it("returns full visible text when Readability under-extracts a non-article page", () => {
     const sections = Array.from(
       { length: 14 },
-      (_, i) => `<section><div>Heading ${i}</div><div>Distinct marketing line number ${i}.</div></section>`,
+      (_, i) =>
+        `<section><div>Heading ${i}</div><div>Distinct marketing line number ${i}.</div></section>`
     ).join("");
     const html = `<!DOCTYPE html><html><head><title>Marketing</title></head><body><header>Home Pricing Login</header>${sections}</body></html>`;
 

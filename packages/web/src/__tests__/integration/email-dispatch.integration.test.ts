@@ -378,6 +378,7 @@ describe("dispatchEmails × createOpenClawRunAgent — production adapter end-to
       client: client as never,
       loadAgentModel: async () => "ollama-cloud/gemini-3-flash",
       waitForAgentReady: async () => true,
+      isBudgetBlocked: async () => false,
     });
 
     const summary = await dispatchEmails({ workflow, emails: [email()], runAgent });

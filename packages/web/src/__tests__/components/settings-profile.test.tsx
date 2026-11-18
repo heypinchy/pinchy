@@ -1,9 +1,11 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { SettingsProfile } from "@/components/settings-profile";
 import { toast } from "sonner";
+import { jsonResponse } from "@/test-helpers/fetch";
 
 const { mockRouterPush } = vi.hoisted(() => ({
   mockRouterPush: vi.fn(),
@@ -16,6 +18,11 @@ vi.mock("@/lib/auth-client", () => ({
   authClient: {
     signOut: vi.fn().mockResolvedValue(undefined),
   },
+}));
+
+const { mockLeaveAccount } = vi.hoisted(() => ({ mockLeaveAccount: vi.fn() }));
+vi.mock("@/lib/account-switch", () => ({
+  leaveAccount: (...args: unknown[]) => mockLeaveAccount(...args),
 }));
 
 vi.mock("sonner", () => ({
@@ -50,10 +57,7 @@ describe("SettingsProfile", () => {
 
   it("should call PATCH /api/users/me when Save is clicked", async () => {
     const user = userEvent.setup();
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ success: true }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ success: true }));
 
     render(<SettingsProfile userName="Alice" />);
 
@@ -73,10 +77,7 @@ describe("SettingsProfile", () => {
 
   it("should show success toast after saving name", async () => {
     const user = userEvent.setup();
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ success: true }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ success: true }));
 
     render(<SettingsProfile userName="Alice" />);
 
@@ -108,10 +109,7 @@ describe("SettingsProfile", () => {
 
   it("should call POST /api/users/me/password when Change Password is clicked", async () => {
     const user = userEvent.setup();
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ success: true }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ success: true }));
 
     render(<SettingsProfile userName="Alice" />);
 
@@ -131,10 +129,7 @@ describe("SettingsProfile", () => {
 
   it("should show success toast after changing password", async () => {
     const user = userEvent.setup();
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ success: true }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ success: true }));
 
     render(<SettingsProfile userName="Alice" />);
 
@@ -143,17 +138,19 @@ describe("SettingsProfile", () => {
     await user.type(screen.getByLabelText("Confirm Password"), "NewSecret789!");
     await user.click(screen.getByRole("button", { name: "Change Password" }));
 
+    // The change revokes every session this user holds, so the confirmation
+    // has to say so — the sign-out is otherwise invisible until the user's
+    // phone asks for a password they don't expect to have changed there.
     await waitFor(() => {
-      expect(toast.success).toHaveBeenCalledWith("Password updated");
+      expect(toast.success).toHaveBeenCalledWith(
+        "Password updated. Your other devices have been signed out."
+      );
     });
   });
 
   it("should clear password fields after successful password change", async () => {
     const user = userEvent.setup();
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ success: true }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ success: true }));
 
     render(<SettingsProfile userName="Alice" />);
 
@@ -223,10 +220,9 @@ describe("SettingsProfile", () => {
 
   it("should show inline error from API when saving name fails", async () => {
     const user = userEvent.setup();
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: false,
-      json: async () => ({ error: "Name already taken" }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse({ error: "Name already taken" }, { status: 400 })
+    );
 
     render(<SettingsProfile userName="Alice" />);
 
@@ -239,10 +235,7 @@ describe("SettingsProfile", () => {
 
   it("should show fallback inline error when saving name fails without message", async () => {
     const user = userEvent.setup();
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: false,
-      json: async () => ({}),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({}, { status: 400 }));
 
     render(<SettingsProfile userName="Alice" />);
 
@@ -255,10 +248,9 @@ describe("SettingsProfile", () => {
 
   it("should show inline error from API when changing password fails", async () => {
     const user = userEvent.setup();
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: false,
-      json: async () => ({ error: "Current password is incorrect" }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse({ error: "Current password is incorrect" }, { status: 400 })
+    );
 
     render(<SettingsProfile userName="Alice" />);
 
@@ -274,10 +266,7 @@ describe("SettingsProfile", () => {
 
   it("should show fallback inline error when changing password fails without message", async () => {
     const user = userEvent.setup();
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: false,
-      json: async () => ({}),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({}, { status: 400 }));
 
     render(<SettingsProfile userName="Alice" />);
 
@@ -316,10 +305,7 @@ describe("SettingsProfile", () => {
 
     it("should call onDirtyChange(false) after successful password change", async () => {
       const user = userEvent.setup();
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ success: true }),
-      } as Response);
+      vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ success: true }));
 
       const onDirtyChange = vi.fn();
       render(<SettingsProfile userName="Alice" onDirtyChange={onDirtyChange} />);
@@ -352,17 +338,19 @@ describe("SettingsProfile", () => {
     expect(screen.getByRole("button", { name: "Log out" })).toBeInTheDocument();
   });
 
-  it("should call signOut and redirect when Log out is clicked", async () => {
+  it("should leave the account when Log out is clicked", async () => {
     const user = userEvent.setup();
-    const { authClient } = await import("@/lib/auth-client");
 
     render(<SettingsProfile userName="Alice" />);
 
     await user.click(screen.getByRole("button", { name: "Log out" }));
 
-    expect(authClient.signOut).toHaveBeenCalled();
+    // leaveAccount signs out, wipes this browser's Pinchy storage and does a
+    // full load (#1286); a client-side push would keep the previous person's
+    // in-memory state alive for whoever signs in next.
     await waitFor(() => {
-      expect(mockRouterPush).toHaveBeenCalledWith("/login");
+      expect(mockLeaveAccount).toHaveBeenCalledTimes(1);
     });
+    expect(mockRouterPush).not.toHaveBeenCalled();
   });
 });

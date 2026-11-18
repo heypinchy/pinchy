@@ -1,7 +1,7 @@
 // Real-DB integration test for POST /api/agents/[agentId]/uploads.
 //
 // Uses a real PostgreSQL test database (provisioned by global-setup.ts and
-// truncated between tests by setup.ts). File system I/O is redirected to a
+// emptied between tests by the integration reset). File system I/O is redirected to a
 // per-test temp directory via WORKSPACE_BASE_PATH env stubbing so no real
 // openclaw-config directories are touched.
 //
@@ -21,7 +21,7 @@ import { NextRequest } from "next/server";
 import { mkdtempSync, rmSync, existsSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 
 // ── Mocks ──────────────────────────────────────────────────────────────────
 
@@ -162,22 +162,42 @@ describe("POST /api/agents/[agentId]/uploads", () => {
     expect(body.error).toBe("Unauthorized");
   });
 
-  it("returns 403 when the user does not have access to the agent", async () => {
+  it("answers another user's personal agent exactly as it answers an unknown id", async () => {
     const user = await seedUser({ role: "member" });
     mockGetSession.mockResolvedValue({
       user: { id: user.id, email: user.email, role: "member" },
     });
 
-    // Create a personal agent owned by a different user.
+    // A personal agent owned by somebody else. Nobody can list these — not even
+    // an admin — so a distinguishable error would confirm an existence the
+    // caller has no other way to establish. This route used to answer 403 here
+    // and 404 for an id nobody ever issued, which is exactly that confirmation.
+    // See the docblock on getAgentWithAccess.
     const owner = await seedUser({
       email: "owner@example.com",
     });
     const agent = await seedAgent(owner.id, { isPersonal: true });
 
-    const file = new File([VALID_PDF], "doc.pdf", { type: "application/pdf" });
-    const resp = await POST(makeRequest(agent.id, { file }), makeParams(agent.id));
+    const denied = await POST(
+      makeRequest(agent.id, {
+        file: new File([VALID_PDF], "doc.pdf", { type: "application/pdf" }),
+      }),
+      makeParams(agent.id)
+    );
+    const unknown = await POST(
+      makeRequest("no-such-agent", {
+        file: new File([VALID_PDF], "doc.pdf", { type: "application/pdf" }),
+      }),
+      makeParams("no-such-agent")
+    );
 
-    expect(resp.status).toBe(403);
+    // Asserting the literal AND the equality: the first pins which answer it is,
+    // the second is the actual contract and survives a later change of wording.
+    // The access gate runs before header and form validation, so both requests
+    // short-circuit in the same place.
+    expect(denied.status).toBe(404);
+    expect(denied.status).toBe(unknown.status);
+    expect(await denied.json()).toEqual(await unknown.json());
   });
 
   // ── Form data validation ───────────────────────────────────────────────
@@ -262,6 +282,120 @@ describe("POST /api/agents/[agentId]/uploads", () => {
     expect(row.outcome).toBe("failure");
     const detail = row.detail as Record<string, unknown>;
     expect(detail.reason).toBe("oversize");
+    // The per-file check answered, not the body-level one: only that path has
+    // parsed the part and knows its name. A body limit without the multipart
+    // allowance would refuse this request before parsing, with no filename.
+    expect(detail.filename).toBe("big.pdf");
+  });
+
+  it("accepts a file of exactly 15 MB — the body limit leaves room for the multipart framing", async () => {
+    const user = await seedUser();
+    mockGetSession.mockResolvedValue({
+      user: { id: user.id, email: user.email, role: "admin" },
+    });
+    const agent = await seedAgent(null);
+
+    const exact = Buffer.concat([
+      VALID_PDF,
+      Buffer.alloc(15 * 1024 * 1024 - VALID_PDF.length, 0x20),
+    ]);
+    expect(exact.length).toBe(15 * 1024 * 1024);
+    const file = new File([exact], "exact.pdf", { type: "application/pdf" });
+
+    const resp = await POST(makeRequest(agent.id, { file }), makeParams(agent.id));
+
+    expect(resp.status).toBe(201);
+  });
+
+  it("rejects a huge Content-Length with 413 and an audit row, without parsing the body", async () => {
+    const user = await seedUser();
+    mockGetSession.mockResolvedValue({
+      user: { id: user.id, email: user.email, role: "admin" },
+    });
+    const agent = await seedAgent(null);
+    // Both prototypes: the route parses through `new Response(bytes)`, so a
+    // spy on Request alone could only ever see the old `req.formData()` call.
+    const formDataSpy = vi.spyOn(Request.prototype, "formData");
+    const responseFormDataSpy = vi.spyOn(Response.prototype, "formData");
+
+    try {
+      const req = new NextRequest(`http://localhost/api/agents/${agent.id}/uploads`, {
+        method: "POST",
+        headers: {
+          "x-pinchy-draft-id": TEST_DRAFT_ID,
+          "content-type": "multipart/form-data; boundary=x",
+          "content-length": String(1024 * 1024 * 1024),
+        },
+        body: "--x--",
+      });
+      const resp = await POST(req, makeParams(agent.id));
+
+      expect(resp.status).toBe(413);
+      expect(formDataSpy).not.toHaveBeenCalled();
+      expect(responseFormDataSpy).not.toHaveBeenCalled();
+
+      const rows = await db
+        .select()
+        .from(auditLog)
+        .where(eq(auditLog.actorId, user.auditPseudonym));
+      expect(rows).toHaveLength(1);
+      expect(rows[0].eventType).toBe("file.upload.staged");
+      expect(rows[0].outcome).toBe("failure");
+      expect((rows[0].detail as Record<string, unknown>).reason).toBe("oversize");
+    } finally {
+      formDataSpy.mockRestore();
+      responseFormDataSpy.mockRestore();
+    }
+  });
+
+  it("rejects a chunked body over the limit (no Content-Length) with 413 and stops reading", async () => {
+    const user = await seedUser();
+    mockGetSession.mockResolvedValue({
+      user: { id: user.id, email: user.email, role: "admin" },
+    });
+    const agent = await seedAgent(null);
+    const formDataSpy = vi.spyOn(Request.prototype, "formData");
+
+    const chunk = new Uint8Array(1024 * 1024).fill(0x41);
+    let pulled = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        // Far past the limit, but finite: a reader that does not stop at the
+        // limit fails the `pulled` assertion instead of buffering until the
+        // worker runs out of memory.
+        pulled += 1;
+        if (pulled > 200) controller.close();
+        else controller.enqueue(chunk);
+      },
+    });
+
+    try {
+      const req = new NextRequest(`http://localhost/api/agents/${agent.id}/uploads`, {
+        method: "POST",
+        headers: {
+          "x-pinchy-draft-id": TEST_DRAFT_ID,
+          "content-type": "multipart/form-data; boundary=x",
+        },
+        body: stream,
+        duplex: "half",
+      });
+      expect(req.headers.get("content-length")).toBeNull();
+
+      const resp = await POST(req, makeParams(agent.id));
+
+      expect(resp.status).toBe(413);
+      expect(formDataSpy).not.toHaveBeenCalled();
+      expect(pulled).toBeLessThan(40);
+
+      const rows = await db
+        .select()
+        .from(auditLog)
+        .where(eq(auditLog.actorId, user.auditPseudonym));
+      expect(rows).toHaveLength(1);
+      expect((rows[0].detail as Record<string, unknown>).reason).toBe("oversize");
+    } finally {
+      formDataSpy.mockRestore();
+    }
   });
 
   // ── MIME validation ────────────────────────────────────────────────────
@@ -374,5 +508,42 @@ describe("POST /api/agents/[agentId]/uploads", () => {
     expect(detail.sizeBytes).toBe(VALID_PDF.length);
     expect(detail.contentHash).toMatch(/^[a-f0-9]{64}$/);
     expect((detail.agent as { id: string }).id).toBe(agent.id);
+  });
+
+  // #1199 — the naming rule is unit-tested in upload-validation.test.ts; this
+  // pins the WIRING, which is the half that can silently come undone: the
+  // stored file, the DB row, the response body and the audit row all have to
+  // agree, because the agent is handed one of them and the user sees another.
+  it("gives a browser-named 'blob' a real filename everywhere it is recorded", async () => {
+    const user = await seedUser();
+    mockGetSession.mockResolvedValue({
+      user: { id: user.id, email: user.email, role: "admin" },
+    });
+    const agent = await seedAgent(null);
+
+    // What a paste or a drag out of a PDF viewer actually sends.
+    const blob = new File([VALID_PDF], "blob", { type: "application/pdf" });
+
+    const resp = await POST(makeRequest(agent.id, { file: blob }), makeParams(agent.id));
+
+    expect(resp.status).toBe(201);
+    const body = await resp.json();
+    expect(body.filename).toMatch(/^upload-\d{4}-\d{2}-\d{2}-\d{4}\.pdf$/);
+
+    const [dbRow] = await db.select().from(uploadedFiles).where(eq(uploadedFiles.id, body.id));
+    expect(dbRow.filename).toBe(body.filename);
+
+    const uploadId = dbRow.stagingPath!.split("/")[1];
+    expect(existsSync(join(tmpRoot, agent.id, ".staging", uploadId, body.filename))).toBe(true);
+
+    // Ordered and narrowed to the success row: an unordered single-column
+    // select would silently assert against whichever row came back first the
+    // moment anything else audits under this actor.
+    const [auditRow] = await db
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.actorId, user.auditPseudonym), eq(auditLog.outcome, "success")))
+      .orderBy(desc(auditLog.id));
+    expect((auditRow.detail as Record<string, unknown>).filename).toBe(body.filename);
   });
 });

@@ -1,0 +1,1 @@
+ALTER TABLE "usage_records" ADD COLUMN "context_tokens" integer;

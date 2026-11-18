@@ -72,8 +72,8 @@ pnpm install
 # Start database and OpenClaw in Docker
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up db openclaw -d
 
-export DATABASE_URL=postgresql://pinchy:pinchy_dev@localhost:5433/pinchy
-pnpm db:migrate
+export DATABASE_URL=postgresql://pinchy:pinchy_dev@localhost:5434/pinchy
+pnpm -C packages/web db:migrate
 pnpm dev
 ```
 
@@ -84,14 +84,14 @@ pnpm dev
 pnpm test
 
 # DB integration tests (real Postgres, slower — opts you into the DB-backed runner)
-pnpm test:db
+pnpm -C packages/web test:db
 ```
 
 All new features require tests. We practice TDD — write the failing test first, then the implementation.
 
-**Don't silently remove tests.** Two CI guards enforce this: `no-untracked-skips` blocks `.skip`/`.todo` without a tracking issue, and a test-removal guard fails any PR that deletes test cases on net (deleted files or removed `it()`/`test()` blocks). If a removal is genuinely intentional (dead code, a deduplicated test, a removed feature), authorize it explicitly — add a commit trailer `Allow-test-deletion: #<issue>` or apply the `allow-test-deletion` label. Never weaken or delete a test just to make changed code pass; a test that fails after a refactor signals lost coverage. See AGENTS.md § "No Untracked Test Removal".
+**Don't silently remove tests.** Two CI guards enforce this: `no-untracked-skips` blocks `.skip`/`.todo` without a tracking issue, and a test-removal guard fails any PR that deletes test cases on net (deleted files or removed `it()`/`test()` blocks). If a removal is genuinely intentional (dead code, a deduplicated test, a removed feature), authorize it explicitly — add a commit trailer `Allow-test-deletion: #<issue>` or apply the `allow-test-deletion` label. Never weaken or delete a test just to make changed code pass; a test that fails after a refactor signals lost coverage. See agent-rules/testing.md § "No Untracked Test Removal".
 
-`pnpm test:db` provisions a `pinchy_test_vitest` database against the dev-stack Postgres on `localhost:5434`. Start it once with:
+`pnpm -C packages/web test:db` provisions a `pinchy_test_vitest` database against the dev-stack Postgres on `localhost:5434`. Start it once with:
 
 ```bash
 PINCHY_VERSION=dev docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d db
@@ -109,13 +109,13 @@ We're moving away from `vi.mock("@/db", ...)` in route-level tests (see [#229](h
 | Route handlers, lib code whose primary job is to talk to the DB                  | Yes — write `*.integration.test.ts` against the real schema       |
 | External network calls (OpenClaw gateway, Telegram, Anthropic, FS-heavy helpers) | Mock those at the module boundary even inside an integration test |
 
-Convention: any file matching `**/*.integration.test.ts` runs in `pnpm test:db` and is excluded from `pnpm test`. Setup files live in [`packages/web/src/test-helpers/integration/`](packages/web/src/test-helpers/integration/).
+Convention: any file matching `**/*.integration.test.ts` runs in `pnpm -C packages/web test:db` and is excluded from `pnpm test`. Setup files live in [`packages/web/src/test-helpers/integration/`](packages/web/src/test-helpers/integration/).
 
 ## Code Style
 
 - TypeScript strict mode
 - Prettier for formatting, ESLint for linting
-- Run `pnpm lint` and `pnpm format` before submitting
+- Run `pnpm -C packages/web lint` and `pnpm format` before submitting
 - Pre-commit hook runs linting automatically via Husky
 
 ## Schema migration policy
@@ -219,20 +219,22 @@ By participating in this project, you agree to our [Code of Conduct](CODE_OF_CON
 
 ## Releasing
 
-Pinchy uses [Semantic Versioning](https://semver.org/) and tags on `main`.
+Pinchy uses [Semantic Versioning](https://semver.org/). Releases are cut from a `release/X.Y` branch (GitLab-Flow style): `main` stays trunk, a `release/X.Y` branch hosts vX.Y.0 and its patches, and fixes land on `main` first and are cherry-picked to the release branch (see the `cut-pinchy-release` skill § "Release branches" for the full model).
 
 ### Testing a release candidate
 
-Before cutting a tag, the maintainer runs the pre-release build on a dedicated staging instance. Pushes to `main` automatically publish two tags:
+Before cutting a tag, the maintainer runs the pre-release build on a dedicated staging instance. Every push that `pre-release.yml` builds publishes two tags:
 
-- `ghcr.io/heypinchy/pinchy:next` — mutable, always HEAD of `main`
+- a **mutable** moving tag for the branch — `ghcr.io/heypinchy/pinchy:next` for `main`, `:rc-X.Y` for `release/X.Y` (e.g. `release/0.9` → `:rc-0.9`)
 - `ghcr.io/heypinchy/pinchy:sha-<12-chars>` — immutable per commit
 
 Same for `pinchy-openclaw`.
 
-The staging instance is set up once (see [Staging instance setup](#staging-instance-setup) below for the one-time bootstrap) and pins `PINCHY_VERSION=next`.
+**Pin staging to the branch you are cutting from.** `:next` tracks `main`, so for a candidate on `release/X.Y` it is the wrong image by however far `main` has moved since the branch point — you would verify something other than what you are about to tag. `pnpm release:preflight <version>` prints the correct pin for the current branch; use `:rc-X.Y` for the latest on the branch or `:sha-<short12>` to nail an exact ref. Each release branch gets its own moving tag so two concurrent ones never clobber each other's candidate.
 
-**Before each release**, refresh staging to pick up the latest `:next` build, then click through the key flows: Smithers chat, one live integration, one custom agent with chat history.
+The staging instance is set up once (see [Staging instance setup](#staging-instance-setup) below for the one-time bootstrap) and pins `PINCHY_VERSION=next` by default; change that line to the release branch's tag while verifying a release-branch candidate.
+
+**Before each release**, set `PINCHY_VERSION` to the candidate image for the branch you are cutting from, refresh staging to pick it up, then click through the key flows: Smithers chat, one live integration, one custom agent with chat history.
 
 ```bash
 ssh root@<staging-host> "cd /opt/pinchy && docker compose pull && docker compose up -d && docker image prune -f"
@@ -240,7 +242,7 @@ ssh root@<staging-host> "cd /opt/pinchy && docker compose pull && docker compose
 
 The `docker image prune -f` step removes the previous `:next` image that `pull` left dangling. Staging cycles `:next` many times per day, so without it the root volume fills up within a release window (see [#370](https://github.com/heypinchy/pinchy/issues/370)).
 
-Auto-deploy on every push to `main` is tracked in [issue #184](https://github.com/heypinchy/pinchy/issues/184) and lands in v0.7.0.
+Auto-deploy on every push to `main` is tracked in [issue #184](https://github.com/heypinchy/pinchy/issues/184).
 
 **Use synthetic data in staging.** Do not restore prod dumps — unnecessary privacy surface.
 
@@ -263,6 +265,7 @@ The release script and CI enforce image builds, GHCR visibility, end-user instal
 **Model catalog** (every release)
 
 - [ ] Refresh the Ollama Cloud model catalog by running the `update-ollama-cloud-models` skill. The upstream catalog changes independently of Pinchy releases, so do this on every release — not only when our models or templates changed.
+- [ ] Refresh the vendored models.dev snapshot (`node scripts/update-model-catalog.mjs`), then check that `packages/web/src/lib/openclaw-builtin-models.ts` carries each of Anthropic's, OpenAI's and Google's current models. That list is all Pinchy knows about those providers: a model it lacks still shows up in the model dropdown, but OpenClaw gets no definition for it, and it only becomes a default when the provider no longer serves any curated model. The snapshot sat untouched for four months after it was added, while two model generations shipped.
 
 **Documentation**
 
@@ -270,10 +273,14 @@ The release script and CI enforce image builds, GHCR visibility, end-user instal
 
 **Staging**
 
-- [ ] Staging instance on `:next` ran an **active test-and-fix pass** today (not just a click-through): drive the archetypes through real flows — default agent (Smithers), each live integration (email, Odoo, …), an analytics/data agent, and a knowledge-base agent — hunting for problems, and verify each against **ground truth** (audit log `tool.*` rows, OpenClaw container logs, the regenerated `openclaw.json`), not the chat UI. Any bug found is a release blocker: TDD-fix it, redeploy `:next`, re-verify. See the `cut-pinchy-release` skill § "The staging pass is an active test-and-fix loop" for the full loop, and [Staging instance setup](#staging-instance-setup) for the one-time setup and the refresh command (`docker compose pull && up -d && docker image prune -f`).
+- [ ] Staging instance, pinned to the candidate image for the branch being cut (`:next` from `main`, `:rc-X.Y` from `release/X.Y` — `pnpm release:preflight` prints which), ran an **active test-and-fix pass** today (not just a click-through): drive the archetypes through real flows — default agent (Smithers), each live integration (email, Odoo, …), an analytics/data agent, and a knowledge-base agent — hunting for problems, and verify each against **ground truth** (audit log `tool.*` rows, OpenClaw container logs, the regenerated `openclaw.json`), not the chat UI. Any bug found is a release blocker: TDD-fix it, redeploy the refreshed candidate image, re-verify. See the `cut-pinchy-release` skill § "The staging pass is an active test-and-fix loop" for the full loop, and [Staging instance setup](#staging-instance-setup) for the one-time setup and the refresh command (`docker compose pull && up -d && docker image prune -f`).
 - [ ] PWA install check:
       Open the staging URL in Chrome Desktop — confirm an install icon appears in the address bar and clicking it produces a standalone window.
       Open the same URL in iOS Safari — confirm **Share → Add to Home Screen** produces a launcher icon that opens Pinchy full-screen with a branded splash.
+
+**Security** (whole release delta, after the staging pass)
+
+- [ ] Security review run over the **entire** `v<prev>..HEAD` delta of the branch being tagged — not per PR, and not instead of per-PR review. Two classes of finding are invisible to per-PR review and showed up here in v0.9.0: a security fix that is merged on `main` but was never picked into the release branch (`git fetch && git merge-base --is-ancestor <sha> origin/release/X.Y`), and a hole that only composes across PRs (old gap + new route). Confirm the range you actually reviewed with `git diff --stat` before trusting a clean verdict, verify each reported finding against the source, and TDD-fix findings as release blockers — running each new security test against the **unpatched** source first. See the `cut-pinchy-release` skill § "Run a security review over the whole release delta".
 
 **Marketing website** (separate, maintainer-only repo — `heypinchy/website`, private)
 
@@ -281,8 +288,8 @@ The release script and CI enforce image builds, GHCR visibility, end-user instal
 
 ### Release steps
 
-1. Complete the checklist above on `main`.
-2. Run `pnpm release <new-version>` (e.g. `pnpm release 0.5.0`). The script verifies: clean working tree, on `main`, CI green, tag not taken, `upgrading.mdx` has the target-version section, `pnpm audit --audit-level=high --prod` passes, then bumps versions, commits, tags, and pushes.
+1. Complete the checklist above on the `release/X.Y` branch (upstream-first fixes cherry-picked from `main`).
+2. Run `pnpm release <new-version> --verified=$(git rev-parse HEAD)` (e.g. `pnpm release 0.5.0 --verified=$(git rev-parse HEAD)`) from `release/X.Y`. `--verified` is the staging attestation — the commit you actually verified on staging — and the script refuses to release unless it equals HEAD. The script verifies: clean working tree, on `main` or a `release/*` branch, **a green CI run for HEAD's own commit** (not merely a green run somewhere on the branch), the staging attestation, tag not taken, `upgrading.mdx` has the target-version section, `pnpm audit --audit-level=high --prod` passes, then bumps versions, commits and tags. A follow-up commit after the tag opens the next cycle: the next upgrade-notes section in `upgrading.mdx` and the next `-dev` version in both `package.json` files (`X.Y.(Z+1)-dev` on `release/X.Y`, `X.(Y+1).0-dev` on `main`). The install pins stay on the tag. Branch and tag are pushed in one atomic push.
 3. GitHub Actions runs the release workflow: build + push images, verify GHCR visibility (anonymous pull test), run the end-user install smoke against published images, extract the upgrade notes from `upgrading.mdx`, create the GitHub Release (auto-generated notes with the upgrade-notes section prepended), deploy docs. Any failure means **the release is not installable for end-users — do not announce until fixed.**
 4. Review the auto-generated GitHub Release notes. The "Upgrade notes" section at the top comes from `upgrading.mdx` — if it looks wrong, edit the release on GitHub directly.
 5. **Deploy the release to the demo and production instances.** Published images do not deploy themselves — staging tracks `:next`, but demo/production pin `${PINCHY_VERSION}` and only move when an operator bumps it and pulls (until auto-deploy lands — [#184](https://github.com/heypinchy/pinchy/issues/184)). Per instance: bump `PINCHY_VERSION` in its `.env` → `docker compose pull && docker compose up -d && docker image prune -f` → verify `/api/version` + smoke. Mind cross-release migrations when skipping versions. See the `cut-pinchy-release` skill § "After the release" for details; treat production as a confirm-first outward action.
@@ -332,13 +339,13 @@ This is intentionally an internal/contributor workflow — the public docs at [d
 
 ### Refreshing staging to the latest `main`
 
-Every push to `main` triggers the **Pre-release** workflow, which builds and publishes new `:next` images. Pull them onto your staging instance:
+Every push to `main` triggers the **Pre-release** workflow, which builds and publishes new `:next` images. Pull them onto your staging instance, together with `main`'s `docker-compose.yml` — an image that expects a service the old compose file doesn't start (the `office-converter`, for one) runs without it, and nothing else looks wrong. Keep staging's own changes in `docker-compose.override.yml`; the fetch replaces `docker-compose.yml`:
 
 ```bash
-ssh root@<staging-ip> "cd /opt/pinchy && docker compose pull && docker compose up -d && docker image prune -f"
+ssh root@<staging-ip> "cd /opt/pinchy && curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/main/docker-compose.yml -o docker-compose.yml && docker compose pull && docker compose up -d && docker image prune -f"
 ```
 
-Run this manually before each pre-release click-through. Auto-deploy on every push to `main` is tracked in [issue #184](https://github.com/heypinchy/pinchy/issues/184) and lands in v0.7.0.
+Run this manually before each pre-release click-through. Auto-deploy on every push to `main` is tracked in [issue #184](https://github.com/heypinchy/pinchy/issues/184).
 
 ### Saving cost between releases
 

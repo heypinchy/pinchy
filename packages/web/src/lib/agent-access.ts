@@ -5,6 +5,7 @@ import { eq } from "drizzle-orm";
 import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
 import { getLicenseState } from "@/lib/enterprise";
 import type { LicenseState } from "@/lib/license-state";
+import { getInstancePolicy, isPausedPersonalAgent } from "@/lib/instance-policy";
 
 interface AgentForAccess {
   id: string;
@@ -72,6 +73,36 @@ export function assertAgentAccess(
 }
 
 /**
+ * Whether `agent` is the caller's own personal agent while members may not use
+ * one (Settings → Organization → Member access). Callers run it only AFTER
+ * `assertAgentAccess` passed, so for a personal agent the caller is its owner
+ * and `userRole` is the owner's role.
+ *
+ * The policy is read only when it can change the answer — a member's personal
+ * agent — so a shared agent or an admin costs no query.
+ *
+ * Kept beside `assertAgentAccess` rather than inside it: that predicate is
+ * synchronous and its inputs are loaded by its callers, and the answer here is
+ * a different one. A stranger is told the agent does not exist; the owner is
+ * told it is switched off, which is true and is what makes the empty sidebar
+ * explicable. `__tests__/security/personal-agent-policy-gate.test.ts` fails on
+ * any caller of `assertAgentAccess` that does not consult this as well.
+ */
+export async function isPersonalAgentPausedFor(
+  agent: { isPersonal: boolean },
+  userRole: string | null | undefined
+): Promise<boolean> {
+  if (!agent.isPersonal || userRole === "admin") return false;
+  return isPausedPersonalAgent(agent, userRole, await getInstancePolicy());
+}
+
+/** The 403 an owner gets for their own paused personal agent. */
+export const PERSONAL_AGENT_DISABLED = {
+  error: "Personal agents are turned off on this instance. Ask your admin if you need yours back.",
+  code: "personal_agent_disabled",
+} as const;
+
+/**
  * Check if a user has WRITE access to an agent. Throws if access is denied.
  *
  * Rules:
@@ -79,13 +110,17 @@ export function assertAgentAccess(
  * - Personal agent owners can modify their own agents
  * - Non-admin users CANNOT modify shared agents
  */
+export function canWriteAgent(agent: AgentForAccess, userId: string, userRole: string): boolean {
+  if (userRole === "admin") return true;
+  return Boolean(agent.isPersonal && agent.ownerId === userId);
+}
+
 export function assertAgentWriteAccess(
   agent: AgentForAccess,
   userId: string,
   userRole: string
 ): void {
-  if (userRole === "admin") return;
-  if (agent.isPersonal && agent.ownerId === userId) return;
+  if (canWriteAgent(agent, userId, userRole)) return;
 
   throw new Error("Access denied");
 }
@@ -115,6 +150,88 @@ export function requireAgentWriteAccess(
   }
 }
 
+/**
+ * Load an agent and gate READ access: returns the agent, or the response the
+ * route should send back.
+ *
+ * **A denied agent answers 404, byte-identical to an agent that does not
+ * exist.** Both paths return the same status and the same body on purpose, so
+ * the answer cannot be read as "this id exists, but not for you".
+ *
+ * The criterion is the one `DELETE /api/v1/agents/[agentId]` already writes
+ * down: a distinguishable error is fine when the caller **can already
+ * enumerate** the resource, and is an oracle when they cannot. Nobody can
+ * enumerate someone else's personal agent — `getVisibleAgents` withholds them
+ * from every caller including admins — so 403-vs-404 here was the oracle case.
+ * Three places in the product had already settled on 404 for this exact
+ * denial: the chat page (`notFound()`), the key-authenticated
+ * `GET /api/v1/agents/[agentId]`, and the FILE layer of the very routes this
+ * helper guards, where `agent-uploads-route.test.ts` spells out "a non-owner
+ * must not even be able to confirm the file exists". The agent above those
+ * files disclosed what they withheld.
+ *
+ * `agents.id` is `crypto.randomUUID()`, so there is no scanning either way —
+ * but that bounds the RATE, not the disclosure. Agent ids travel in shared
+ * links and outlive group membership, so the caller holding one is the
+ * ordinary case, not the exotic one.
+ *
+ * WRITE denial stays 403 (`requireAgentWriteAccess`), and that is the same
+ * rule rather than an exception to it: a caller who reaches the write gate has
+ * already passed this one, so they can see the agent, and "you may not change
+ * it" tells them nothing they did not know. Routes that gate by hand rather
+ * than through this helper must run the read gate FIRST for the same reason —
+ * `DELETE /api/agents/[agentId]/channels/telegram` is the worked example.
+ *
+ * **Being an admin is not a visibility rule**, and the admin-only management
+ * surfaces under `/api/agents/:id/` go through this helper for that reason
+ * (`knowledge/reindex`, `knowledge/unsearchable`, `integrations`, and
+ * connecting a Telegram bot). They used to look the agent up by id and
+ * proceed, so an admin holding one could reindex a stranger's Smithers, read
+ * the documents its index cannot search, grant it live access to an Odoo or
+ * email connection, and attach a Telegram bot to it. The argument that index
+ * management is instance-wide does not rescue that: those routes resolve their
+ * scope from ONE agent's `pinchy-files` grants, and `PATCH /api/agents/:id` —
+ * the only route that can set them — already answers 404 for the same agent.
+ * A surface that can act on a grant it cannot see or set is an inconsistency,
+ * not a capability. `POST /integrations` is the plainest case: a permission
+ * write into a private agent, invisible to its owner and to every list the
+ * granting admin can see.
+ *
+ * Their role check runs BEFORE this gate, and that ordering is safe where the
+ * telegram DELETE's was not: `withAdmin`/`requireAdmin` refuse every id alike,
+ * real or invented, so the answer carries nothing about the agent.
+ *
+ * That the prefix has no gap left is asserted, not asserted-in-prose:
+ * `__tests__/security/agent-route-access-gate.test.ts` walks every exported
+ * handler under `app/api/agents/[agentId]/` and fails on one that does not call
+ * this function. The four families above were a paragraph nothing checked, and
+ * the docs now state the property outright — so the next handler added under the
+ * prefix inherits the rule instead of quietly re-opening it.
+ *
+ * One thing this does NOT close, said plainly so the next reader does not
+ * mistake "byte-identical" for "indistinguishable":
+ *
+ * - **Timing.** The denial path runs a license lookup and, for a restricted
+ *   agent, two group queries that the `!agent` path never reaches. Equalising
+ *   that costs a query on every miss and buys little against a UUID keyspace.
+ *
+ * The list used to carry two more. The Automations routes were one and are now
+ * closed (#880) — `resolveWorkflowAgent` shows the layering this docblock asks
+ * for: read gate first, so an agent the caller cannot see is a 404, and only
+ * then the manage-scope 403 for one they can. The admin-only
+ * `/api/agents/:id/knowledge/*`, `/integrations` and Telegram-connect endpoints
+ * were the other, and are the paragraph above.
+ *
+ * What is left is deliberate and narrow: `PATCH`/`DELETE /api/automations/[id]`
+ * are keyed by WORKFLOW id and gate on `canManageAgentWorkflows` alone, so an
+ * admin already holding such an id can stop a runaway automation on an agent
+ * they cannot see. They cannot list or create one — that path is `agentId`-keyed
+ * and runs this gate. See `email-workflows/authz.ts` for why, and do not add a
+ * caller that consults that predicate without a visibility gate in front of it:
+ * `__tests__/security/workflow-scope-gate-callers.test.ts` walks those call
+ * sites the way the guard above walks this prefix, so the narrowness is asserted
+ * rather than promised, and those two handlers are its whole exemption list.
+ */
 export async function getAgentWithAccess(agentId: string, userId: string, userRole: string) {
   const rows = await db.select().from(activeAgents).where(eq(activeAgents.id, agentId));
   const agent = rows[0];
@@ -136,7 +253,14 @@ export async function getAgentWithAccess(agentId: string, userId: string, userRo
   try {
     assertAgentAccess(agent, userId, userRole, userGroupIds, agentGroupIds, licenseState);
   } catch {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    // Same response as the `!agent` branch above — see the docblock. Keep the
+    // two literals identical; a divergent body re-opens the oracle that equal
+    // statuses close.
+    return NextResponse.json({ error: "Agent not found" }, { status: 404 });
+  }
+
+  if (await isPersonalAgentPausedFor(agent, userRole)) {
+    return NextResponse.json(PERSONAL_AGENT_DISABLED, { status: 403 });
   }
 
   return agent;

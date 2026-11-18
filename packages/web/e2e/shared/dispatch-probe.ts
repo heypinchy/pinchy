@@ -131,6 +131,54 @@ export async function waitForOpenClawStable(
 }
 
 /**
+ * Best-effort variant of {@link waitForOpenClawStable} for setup/retry paths
+ * that used to sit on a fixed sleep: returns as soon as OpenClaw is stable,
+ * and on timeout logs and returns `false` instead of throwing.
+ *
+ * Two reasons it exists rather than each helper polling `connected` itself:
+ *
+ *  - **`connected` alone is the wrong predicate here.** The condition these
+ *    call sites are actually waiting on is "the config push that the request
+ *    just fired has landed in OC's runtime", and `pushConfigInBackground` is
+ *    fire-and-forget: OC stays `connected: true` for the entire 33–53 s a
+ *    rate-limited `config.apply` can be parked (see `push-state.ts`). A
+ *    connection-only poll therefore returns on its FIRST iteration and waits
+ *    for nothing — strictly weaker than the sleep it would replace. Only
+ *    `configPushesPending === 0`, held for a contiguous window, is the real
+ *    signal (agent-rules/testing.md § "No Untracked Sleeps In E2E": the poll's exit
+ *    condition must be the condition the assertion depends on).
+ *  - **Timing out must leave a trace.** The sleeps these replace were lenient
+ *    by construction and every caller has its own gate before it dispatches,
+ *    so failing setup here would turn a slow stack red for the wrong reason.
+ *    But a silent 120 s of nothing is how a stability gate becomes decoration
+ *    — hence the `console.warn` rather than a swallowed `catch`.
+ */
+export async function settleOpenClawBestEffort(
+  fetchHealth: Parameters<typeof waitForOpenClawStable>[0],
+  label: string,
+  opts: { deadlineMs?: number; stableForMs?: number } = {}
+): Promise<boolean> {
+  // 5 s stable window (not the 30 s dispatch-probe default): these call sites
+  // gate a setup step, not an imminent tool dispatch, and the pair of sleeps
+  // this replaces totalled 5 s — so the common path costs the same wall clock
+  // it always did, while now proving the condition instead of guessing it.
+  const deadlineMs = opts.deadlineMs ?? 120_000;
+  const stableForMs = opts.stableForMs ?? 5_000;
+  const startedAt = Date.now();
+  try {
+    await waitForOpenClawStable(fetchHealth, { deadlineMs, stableForMs });
+    console.log(`${label} OpenClaw settled after ${String(Date.now() - startedAt)}ms`);
+    return true;
+  } catch (err) {
+    console.warn(
+      `${label} OpenClaw did not settle within ${String(deadlineMs)}ms — continuing anyway ` +
+        `(each suite re-gates before it dispatches): ${String(err)}`
+    );
+    return false;
+  }
+}
+
+/**
  * Poll `GET /api/health/openclaw?agentId=<id>` until the response's
  * `agentDispatchable` flag is true — i.e. OC's runtime `agents.list`
  * currently contains the requested id.
@@ -142,8 +190,8 @@ export async function waitForOpenClawStable(
  * (both fire-and-forget regenerates), OC's hot-reload can still be in
  * flight when the API returns 200. Worse: if Pinchy's prior tests
  * exhausted OC's `config.apply` rate-limit window (~3 calls / 45 s),
- * the probe's regens fall through to the inotify file-watcher fallback
- * whose debounce can stretch past the stability check. The result is
+ * the probe's regens fall through to the file-write fallback, which a
+ * running OpenClaw may not reload at all (CI run 41906476538). The result is
  * "unknown agent id" errors when the test fires its chat.
  *
  * Tests that immediately dispatch to an agent created earlier in their
@@ -169,8 +217,130 @@ export async function waitForAgentDispatchable(
     await new Promise((r) => setTimeout(r, interval));
   }
   throw new Error(
-    `OpenClaw runtime did not see agent ${agentId} as dispatchable within deadline — config.apply likely stuck in file-watcher debounce`
+    `OpenClaw runtime did not see agent ${agentId} as dispatchable within deadline — its agents.list never named it (config.apply never landed, or a file write it never reloaded)`
   );
+}
+
+export interface EnsureAgentDispatchableParams {
+  agentId: string;
+  /** The tool grant the agent must end up with (also the toggle's restore value). */
+  allowedTools: string[];
+  fetchHealth: () => Promise<{
+    ok: boolean;
+    json: () => Promise<{ connected?: boolean; configPushesPending?: number }>;
+  }>;
+  fetchDispatch: (
+    agentId: string
+  ) => Promise<{ ok: boolean; json: () => Promise<{ agentDispatchable?: boolean }> }>;
+  /** Sets the agent's `allowedTools` (a `PATCH /api/agents/:id`). */
+  setAllowedTools: (tools: string[]) => Promise<void>;
+  opts?: {
+    stableOpts?: { deadlineMs?: number; stableForMs?: number; intervalMs?: number };
+    /** Per-attempt dispatchability deadline (default 120 s). */
+    dispatchDeadlineMs?: number;
+    dispatchIntervalMs?: number;
+    /** Recovery toggles before giving up (default 2). */
+    maxRecoveryAttempts?: number;
+    /**
+     * Overall wall-clock budget for the whole ensure (default 360 s). Every
+     * internal wait is clamped to the REMAINING budget, so once it expires the
+     * helper throws its own attempt-counted error almost immediately — before a
+     * surrounding `beforeAll` Playwright timeout (e.g. 420 s) can preempt it and
+     * mask the diagnostic. Must stay comfortably below that `beforeAll` budget.
+     */
+    overallDeadlineMs?: number;
+  };
+}
+
+/**
+ * Wait until a freshly-created agent is dispatchable, RECOVERING from OpenClaw's
+ * `config.apply` rate limit instead of flaking on it.
+ *
+ * OpenClaw hard-caps control-plane writes at 3 per 60 s per connection — a
+ * compiled-in constant (`CONTROL_PLANE_RATE_LIMIT_*`) with no env/config knob,
+ * shared across every `config.apply` Pinchy makes. Under the integration
+ * suite's cumulative config-mutation rate, `pushConfigInBackground` parks a
+ * rejected apply for ~2×50 s and then falls back to a file write whose inotify
+ * reload can lag past a fixed dispatchability deadline. When that happens
+ * `waitForOpenClawStable` reports settled (the fallback drained
+ * `configPushesPending`) while the agent is NOT yet in OC's runtime, and a
+ * plain `waitForAgentDispatchable` times out — the kb-attribution /
+ * pinchy-knowledge `beforeAll` flake (heypinchy/pinchy#901; the class fix — an
+ * explicit `config.apply` readiness signal instead of a probe — is #465).
+ *
+ * The recovery works because this runs inside a BLOCKING `beforeAll`: no other
+ * `config.apply` competes, so the rate-limit window drains within ~60 s.
+ * Toggling the tool grant off→on (with a stability wait between, so each half
+ * is a genuine on-disk diff rather than a superseded no-op) forces a clean WS
+ * `config.apply`, and that path refreshes OC's runtime IN-PROCESS — it does not
+ * depend on the lagging file-watcher, so the agent reliably re-materialises
+ * regardless of whether the earlier file-write reload ever landed.
+ *
+ * Bounded two ways so a genuinely-broken stack still fails loudly WITH this
+ * diagnostic: `maxRecoveryAttempts` caps the number of toggles, and
+ * `overallDeadlineMs` (default 360 s) caps total wall-clock. Every internal
+ * wait is clamped to the remaining overall budget, so the helper self-throws an
+ * attempt-counted error before a surrounding `beforeAll` Playwright timeout can
+ * preempt it and swap this message for an opaque one.
+ */
+export async function ensureAgentDispatchable(
+  params: EnsureAgentDispatchableParams
+): Promise<void> {
+  const { agentId, allowedTools, fetchHealth, fetchDispatch, setAllowedTools } = params;
+  const stableOpts = params.opts?.stableOpts;
+  const dispatchDeadlineMs = params.opts?.dispatchDeadlineMs ?? 120_000;
+  const dispatchIntervalMs = params.opts?.dispatchIntervalMs;
+  const maxRecoveryAttempts = params.opts?.maxRecoveryAttempts ?? 2;
+  const overallDeadline = Date.now() + (params.opts?.overallDeadlineMs ?? 360_000);
+  const remainingMs = () => Math.max(overallDeadline - Date.now(), 0);
+
+  // A stability wait clamped to the overall budget. When the budget is spent it
+  // returns immediately (rather than throwing "did not stabilise") so the loop's
+  // next dispatch check produces the informative, attempt-counted error instead.
+  const stableWithinBudget = async () => {
+    const budget = remainingMs();
+    if (budget === 0) return;
+    try {
+      await waitForOpenClawStable(fetchHealth, {
+        ...stableOpts,
+        deadlineMs: Math.min(stableOpts?.deadlineMs ?? 150_000, budget),
+      });
+    } catch (err) {
+      // Only swallow a stabilise timeout that coincides with budget exhaustion;
+      // a genuine early stabilise failure (budget left) is still surfaced.
+      if (remainingMs() > 0) throw err;
+    }
+  };
+
+  await stableWithinBudget();
+
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await waitForAgentDispatchable(fetchDispatch, agentId, {
+        deadlineMs: Math.min(dispatchDeadlineMs, remainingMs()),
+        intervalMs: dispatchIntervalMs,
+      });
+      return;
+    } catch {
+      // Give up loudly — with our OWN attempt-counted message — the moment
+      // either bound trips, so the surrounding beforeAll timeout never masks it.
+      if (attempt >= maxRecoveryAttempts || remainingMs() === 0) {
+        throw new Error(
+          `OpenClaw runtime did not see agent ${agentId} as dispatchable after ${String(
+            attempt
+          )} recovery attempt(s) — config.apply likely stuck in file-watcher debounce`
+        );
+      }
+      // Force a genuine config diff so a clean WS config.apply re-materialises
+      // the agent in OC's runtime. Clear the grant, let it settle to disk, then
+      // restore it — the stability wait between the halves is what makes each a
+      // real diff instead of a self-superseding no-op.
+      await setAllowedTools([]);
+      await stableWithinBudget();
+      await setAllowedTools(allowedTools);
+      await stableWithinBudget();
+    }
+  }
 }
 
 /**
@@ -247,6 +417,8 @@ export async function pollAuditForTool(
 export interface AuditApiEntry {
   eventType: string;
   resource: string | null;
+  actorType: string | null;
+  actorId: string | null;
   outcome: string;
   detail: Record<string, unknown> | null;
 }
@@ -266,23 +438,95 @@ export async function pollAuditForEvent(
     deadlineMs?: number;
     intervalMs?: number;
     since?: string;
+    /**
+     * How many rows of this event type to scan per poll, newest first.
+     * Raise it when the same event type is emitted by other tests in the same
+     * run: entries written after ours push it off the page, and the poll then
+     * times out on an entry that is sitting in the log.
+     */
+    limit?: number;
   }
 ): Promise<AuditApiEntry> {
-  const deadline = Date.now() + (params.deadlineMs ?? 60_000);
+  const deadlineMs = params.deadlineMs ?? 60_000;
+  const deadline = Date.now() + deadlineMs;
   const interval = params.intervalMs ?? 500;
+  const limit = params.limit ?? 25;
   const sinceQs = params.since ? `&from=${encodeURIComponent(params.since)}` : "";
+  // A non-200 is retried rather than thrown on — the audit route can be
+  // transiently unavailable while the stack settles. But an endpoint that
+  // never recovers would otherwise surface as a bare "no entry matched",
+  // blaming the thing under test for a broken query. Carry the last bad
+  // status into the failure so it names itself.
+  let lastNon200: number | null = null;
   while (Date.now() < deadline) {
     const res = await page.request.get(
-      `/api/audit?eventType=${encodeURIComponent(params.eventType)}&limit=25${sinceQs}`
+      `/api/audit?eventType=${encodeURIComponent(params.eventType)}&limit=${limit}${sinceQs}`
     );
     if (res.status() === 200) {
       const audit = (await res.json()) as { entries: AuditApiEntry[] };
       const match = audit.entries.find(params.predicate);
       if (match) return match;
+      lastNon200 = null;
+    } else {
+      lastNon200 = res.status();
     }
     await new Promise((r) => setTimeout(r, interval));
   }
+  const suffix =
+    lastNon200 === null ? "" : ` (the audit query last answered HTTP ${lastNon200}, not 200)`;
   throw new Error(
-    `No "${params.eventType}" audit entry matched predicate within ${params.deadlineMs ?? 60_000}ms`
+    `No "${params.eventType}" audit entry matched predicate within ${deadlineMs}ms${suffix}`
   );
+}
+
+/**
+ * Describe what the audit trail knows about a tool the run was supposed to
+ * execute — for use in an assertion message (#1013).
+ *
+ * The duplicate-write retry gate is driven by `agentRanToolSince()`, which asks
+ * whether a `tool.%` row exists for `resource = agent:<agentId>`. When the gate
+ * is missing, the interesting question is *why* that lookup came back empty,
+ * and a run's artifacts cannot answer it: OpenClaw does not log tool executions
+ * at the E2E log level, postgres has no statement logging, and pinchy has no
+ * request logging. So ask the audit API directly, while the stack is still up.
+ *
+ * The three answers map to three different bugs:
+ *   - no row at all              → the tool never ran (fake-LLM / dispatch side)
+ *   - row under a different
+ *     `resource`                 → written, but not attributable to this agent
+ *                                  (the `unknown-agent` fallback, or a
+ *                                  sessionKey that didn't resolve)
+ *   - row present and matching   → it existed but the lookup missed it — a race
+ *                                  between the plugin's audit POST and the
+ *                                  error chunk's `agentRanToolSince()`
+ *
+ * Never throws: a diagnostic that fails takes the real failure's message with
+ * it, which is the opposite of the point.
+ */
+export async function describeToolAudit(
+  page: Page,
+  params: { toolName: string; agentId: string }
+): Promise<string> {
+  const eventType = `tool.${params.toolName}`;
+  try {
+    const res = await page.request.get(
+      `/api/audit?eventType=${encodeURIComponent(eventType)}&limit=10`
+    );
+    if (res.status() !== 200) {
+      return `[#1013] could not read the audit trail: HTTP ${res.status()} from /api/audit?eventType=${eventType}`;
+    }
+    const audit = (await res.json()) as { entries: AuditApiEntry[] };
+    if (audit.entries.length === 0) {
+      return `[#1013] no "${eventType}" audit row exists at all — the tool never ran, so sideEffects=false was CORRECT and the fault is upstream of the retry gate (fake-LLM round selection or tool dispatch).`;
+    }
+    const wanted = `agent:${params.agentId}`;
+    const mine = audit.entries.filter((e) => e.resource === wanted);
+    if (mine.length === 0) {
+      const seen = [...new Set(audit.entries.map((e) => e.resource ?? "null"))].join(", ");
+      return `[#1013] ${audit.entries.length} "${eventType}" row(s) exist but none under "${wanted}" (saw: ${seen}) — the tool ran and was audited, but the row is not attributable to this agent, so agentRanToolSince() can never find it.`;
+    }
+    return `[#1013] ${mine.length} matching "${eventType}" row(s) under "${wanted}" — the row the gate looks for DOES exist, so the lookup raced the audit write.`;
+  } catch (err) {
+    return `[#1013] audit diagnostic itself failed: ${err instanceof Error ? err.message : String(err)}`;
+  }
 }

@@ -30,6 +30,10 @@ const {
   mockMaterializeAttachments: vi.fn().mockResolvedValue({ chatAttachments: [], workspaceRefs: [] }),
 }));
 
+vi.mock("@/lib/budgets", () => ({
+  getExhaustedBlockingBudget: vi.fn().mockResolvedValue(null),
+}));
+
 vi.mock("@/lib/agent-access", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/agent-access")>();
   return {

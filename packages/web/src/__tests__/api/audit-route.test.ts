@@ -8,24 +8,30 @@ vi.mock("@/lib/api-auth", () => ({
 }));
 
 // Build chainable mock for entries query:
-// select().from().leftJoin().leftJoin().leftJoin().where().orderBy().limit().offset()
+// select().from().leftJoin() ×4 .where().orderBy().limit().offset()
 const mockEntriesOffset = vi.fn();
 const mockEntriesLimit = vi.fn().mockReturnValue({ offset: mockEntriesOffset });
 const mockEntriesOrderBy = vi.fn().mockReturnValue({ limit: mockEntriesLimit });
 const mockEntriesWhere = vi.fn().mockReturnValue({ orderBy: mockEntriesOrderBy });
-const mockEntriesLeftJoin3 = vi.fn().mockReturnValue({ where: mockEntriesWhere });
+const mockEntriesLeftJoin4 = vi.fn().mockReturnValue({ where: mockEntriesWhere });
+const mockEntriesLeftJoin3 = vi.fn().mockReturnValue({ leftJoin: mockEntriesLeftJoin4 });
 const mockEntriesLeftJoin2 = vi.fn().mockReturnValue({ leftJoin: mockEntriesLeftJoin3 });
 const mockEntriesLeftJoin1 = vi.fn().mockReturnValue({ leftJoin: mockEntriesLeftJoin2 });
 const mockEntriesFrom = vi.fn().mockReturnValue({ leftJoin: mockEntriesLeftJoin1 });
 
-// Build chainable mock for count query: select().from().where()
+// Build chainable mock for the FILTERED count query: select().from().where()
 const mockCountWhere = vi.fn();
 const mockCountFrom = vi.fn().mockReturnValue({ where: mockCountWhere });
+
+// The UNFILTERED path reads pg_class.reltuples via db.execute(sql`...`)
+// instead of a select().from().where() chain — see rawTotalForPage1 in
+// app/api/audit/route.ts.
+const mockExecute = vi.fn();
 
 const mockSelect = vi.fn();
 
 vi.mock("@/db", () => ({
-  db: { select: mockSelect },
+  db: { select: mockSelect, execute: mockExecute },
 }));
 
 vi.mock("@/db/schema", () => ({
@@ -72,6 +78,9 @@ vi.mock("drizzle-orm/pg-core", () => ({
 }));
 
 const mockResolveActorIdMatchSet = vi.fn();
+// Faked because it hits the DB. The api_key actor-name fallback deliberately
+// is NOT mocked — it lives in @/lib/api-key-identity precisely because it is
+// pure, so these tests exercise the real thing.
 vi.mock("@/lib/audit", () => ({
   resolveActorIdMatchSet: (...args: unknown[]) => mockResolveActorIdMatchSet(...args),
 }));
@@ -120,14 +129,31 @@ describe("GET /api/audit", () => {
     },
   ];
 
-  function setupMocks(entries = sampleEntries, total = entries.length) {
+  // Total is only computed on page 1, and takes one of two shapes: an exact
+  // count (filtered — a second db.select call) or a reltuples estimate
+  // (unfiltered — db.execute). "none" is page > 1, where total isn't
+  // computed at all. Queuing a `mockReturnValueOnce`/`mockResolvedValueOnce`
+  // that the code path never consumes would leak into the NEXT test (these
+  // are FIFO queues that `vi.clearAllMocks()` does not drain), so the mode
+  // must match exactly what the request under test will actually trigger —
+  // never "queue both, harmlessly".
+  type TotalMode = "estimate" | "exact" | "none";
+
+  function setupMocks(
+    entries = sampleEntries,
+    total = entries.length,
+    totalMode: TotalMode = "estimate"
+  ) {
     // First call: entries query (with leftJoin chain)
     mockSelect.mockReturnValueOnce({ from: mockEntriesFrom });
     mockEntriesOffset.mockResolvedValueOnce(entries);
 
-    // Second call: count query
-    mockSelect.mockReturnValueOnce({ from: mockCountFrom });
-    mockCountWhere.mockResolvedValueOnce([{ count: total }]);
+    if (totalMode === "exact") {
+      mockSelect.mockReturnValueOnce({ from: mockCountFrom });
+      mockCountWhere.mockResolvedValueOnce([{ count: total }]);
+    } else if (totalMode === "estimate") {
+      mockExecute.mockResolvedValueOnce([{ estimate: total }]);
+    }
   }
 
   beforeEach(async () => {
@@ -201,7 +227,8 @@ describe("GET /api/audit", () => {
   });
 
   it("supports custom page and limit parameters", async () => {
-    setupMocks([], 100);
+    // page > 1: total isn't (re)computed at all.
+    setupMocks([], 100, "none");
 
     const request = new NextRequest("http://localhost:7777/api/audit?page=3&limit=20");
     const response = await GET(request);
@@ -256,7 +283,7 @@ describe("GET /api/audit", () => {
   });
 
   it("supports eventType filter parameter", async () => {
-    setupMocks([sampleEntries[0]], 1);
+    setupMocks([sampleEntries[0]], 1, "exact");
 
     const request = new NextRequest("http://localhost:7777/api/audit?eventType=auth.login");
     const response = await GET(request);
@@ -271,7 +298,7 @@ describe("GET /api/audit", () => {
 
   it("supports actorId filter parameter (matches raw id when no pseudonym found)", async () => {
     mockResolveActorIdMatchSet.mockResolvedValueOnce(["user-1"]);
-    setupMocks([sampleEntries[0]], 1);
+    setupMocks([sampleEntries[0]], 1, "exact");
 
     const request = new NextRequest("http://localhost:7777/api/audit?actorId=user-1");
     const response = await GET(request);
@@ -287,7 +314,7 @@ describe("GET /api/audit", () => {
     // match both, or an admin filtering by a known user id would silently
     // miss half that user's history.
     mockResolveActorIdMatchSet.mockResolvedValueOnce(["user-1", "pseudo-abc"]);
-    setupMocks([sampleEntries[0]], 1);
+    setupMocks([sampleEntries[0]], 1, "exact");
 
     const request = new NextRequest("http://localhost:7777/api/audit?actorId=user-1");
     const response = await GET(request);
@@ -305,7 +332,7 @@ describe("GET /api/audit", () => {
 
   it("supports from and to date range filters", async () => {
     const { gte, lte } = await import("drizzle-orm");
-    setupMocks([]);
+    setupMocks([], 0, "exact");
 
     const request = new NextRequest(
       "http://localhost:7777/api/audit?from=2026-02-01T00:00:00Z&to=2026-02-28T23:59:59Z"
@@ -319,7 +346,7 @@ describe("GET /api/audit", () => {
 
   it("sets to-date to end of UTC day when only a date string is provided", async () => {
     const { lte } = await import("drizzle-orm");
-    setupMocks([]);
+    setupMocks([], 0, "exact");
 
     const request = new NextRequest("http://localhost:7777/api/audit?to=2026-03-03");
     const response = await GET(request);
@@ -340,6 +367,75 @@ describe("GET /api/audit", () => {
     const body = await response.json();
     expect(body.entries).toHaveLength(0);
     expect(body.total).toBe(0);
+  });
+
+  // ── Total: page 1 only, reltuples estimate for the unfiltered case ─────
+  //
+  // See rawTotalForPage1 in app/api/audit/route.ts. Total is only ever
+  // recomputed on page 1: a deep page (Previous/Next) reuses the total the
+  // page-1 fetch already put in client state (audit-log-table.tsx), and an
+  // unfiltered page-1 request reads pg_class.reltuples instead of running a
+  // full-table count(*).
+
+  it("does not compute a total at all on page > 1 — no exact count, no estimate query", async () => {
+    // Only the entries select is queued; queuing a count/estimate mock here
+    // would mean the route consumed one, which is exactly what this test
+    // must disprove.
+    mockSelect.mockReturnValueOnce({ from: mockEntriesFrom });
+    mockEntriesOffset.mockResolvedValueOnce(sampleEntries);
+
+    const request = new NextRequest("http://localhost:7777/api/audit?page=2");
+    const response = await GET(request);
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    // JSON.stringify drops an undefined property entirely — the client must
+    // see no `total` key at all, not `total: null` or `total: 0`.
+    expect("total" in body).toBe(false);
+    expect(mockSelect).toHaveBeenCalledTimes(1); // entries only
+    expect(mockExecute).not.toHaveBeenCalled();
+  });
+
+  it("uses the pg_class.reltuples estimate directly when it exceeds the page's own entry count", async () => {
+    mockSelect.mockReturnValueOnce({ from: mockEntriesFrom });
+    mockEntriesOffset.mockResolvedValueOnce(sampleEntries); // 2 entries
+    mockExecute.mockResolvedValueOnce([{ estimate: 500_000 }]);
+
+    const request = new NextRequest("http://localhost:7777/api/audit");
+    const response = await GET(request);
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.total).toBe(500_000);
+    // Unfiltered: no exact count(*) — just the one entries select.
+    expect(mockSelect).toHaveBeenCalledTimes(1);
+  });
+
+  it("floors a stale/zero reltuples estimate at the page's own entry count", async () => {
+    // pg_class.reltuples reads 0 on a table that has never been ANALYZEd yet
+    // (a brand-new install) even though rows exist — the response must never
+    // undercount below what it is already returning.
+    mockSelect.mockReturnValueOnce({ from: mockEntriesFrom });
+    mockEntriesOffset.mockResolvedValueOnce(sampleEntries); // 2 entries
+    mockExecute.mockResolvedValueOnce([{ estimate: 0 }]);
+
+    const request = new NextRequest("http://localhost:7777/api/audit");
+    const response = await GET(request);
+
+    const body = await response.json();
+    expect(body.total).toBe(sampleEntries.length);
+  });
+
+  it("computes an exact count for a filtered page-1 request instead of the reltuples estimate", async () => {
+    setupMocks([sampleEntries[0]], 1, "exact");
+
+    const request = new NextRequest("http://localhost:7777/api/audit?eventType=auth.login");
+    const response = await GET(request);
+
+    const body = await response.json();
+    expect(body.total).toBe(1);
+    // Filtered path never touches pg_class — that's the unfiltered shortcut.
+    expect(mockExecute).not.toHaveBeenCalled();
   });
 
   it("resolves actorName from users table", async () => {
@@ -367,13 +463,121 @@ describe("GET /api/audit", () => {
     mockEntriesOffset.mockResolvedValueOnce(entriesWithName);
 
     // Second call: count query
-    mockSelect.mockReturnValueOnce({ from: mockCountFrom });
-    mockCountWhere.mockResolvedValueOnce([{ count: 1 }]);
+    mockExecute.mockResolvedValueOnce([{ estimate: 1 }]);
 
     const req = new NextRequest("http://localhost/api/audit");
     const res = await GET(req);
     const body = await res.json();
     expect(body.entries[0].actorName).toBe("Alice");
+  });
+
+  // ── api_key actors (#572) ───────────────────────────────────────────────
+
+  it("names an api_key actor from its detail snapshot, since the user join can't reach it", async () => {
+    const keyEntry = [
+      {
+        id: 1,
+        timestamp: new Date("2026-02-21T10:00:00.000Z"),
+        actorType: "api_key",
+        actorId: "key-77",
+        eventType: "agent.created",
+        resource: "agent:a1",
+        detail: { name: "HR Bot", apiKey: { id: "key-77", name: "CI Deploy" } },
+        rowHmac: "abc",
+        // The join is against `users`, and a key is not a user — so it always
+        // misses for these rows. Null here isn't an edge case; it's every
+        // api_key row there will ever be.
+        actorName: null,
+        actorBanned: null,
+        resourceAgentName: null,
+        resourceAgentDeleted: null,
+        resourceUserName: null,
+        resourceUserBanned: null,
+      },
+    ];
+
+    mockSelect.mockReturnValueOnce({ from: mockEntriesFrom });
+    mockEntriesOffset.mockResolvedValueOnce(keyEntry);
+    mockExecute.mockResolvedValueOnce([{ estimate: 1 }]);
+
+    const req = new NextRequest("http://localhost/api/audit");
+    const res = await GET(req);
+    const body = await res.json();
+
+    // Without this fallback the UI renders "key-77…" — a truncated opaque id,
+    // in the one product surface whose entire job is telling an auditor who
+    // did what. The name comes from the detail snapshot rather than a join to
+    // `apikey`, so it still reads correctly after the key is revoked and its
+    // row is hard-deleted.
+    expect(body.entries[0].actorName).toBe("CI Deploy");
+  });
+
+  it("leaves actorName null for an api_key row whose detail carries no key snapshot", async () => {
+    const keyEntry = [
+      {
+        id: 1,
+        timestamp: new Date("2026-02-21T10:00:00.000Z"),
+        actorType: "api_key",
+        actorId: "key-77",
+        eventType: "agent.created",
+        resource: "agent:a1",
+        detail: { name: "HR Bot" },
+        rowHmac: "abc",
+        actorName: null,
+        actorBanned: null,
+        resourceAgentName: null,
+        resourceAgentDeleted: null,
+        resourceUserName: null,
+        resourceUserBanned: null,
+      },
+    ];
+
+    mockSelect.mockReturnValueOnce({ from: mockEntriesFrom });
+    mockEntriesOffset.mockResolvedValueOnce(keyEntry);
+    mockExecute.mockResolvedValueOnce([{ estimate: 1 }]);
+
+    const req = new NextRequest("http://localhost/api/audit");
+    const res = await GET(req);
+    const body = await res.json();
+
+    // Degrade to the id rather than invent a name. The audit trail is
+    // evidence; a plausible-looking guess in it is worse than an honest gap.
+    expect(body.entries[0].actorName).toBeNull();
+  });
+
+  it("does not read a key name out of a USER row's detail", async () => {
+    const userEntry = [
+      {
+        id: 1,
+        timestamp: new Date("2026-02-21T10:00:00.000Z"),
+        actorType: "user",
+        actorId: "user-1",
+        eventType: "api_key.created",
+        resource: "api_key:key-77",
+        // An admin issuing a key: the detail legitimately mentions the key,
+        // but the ACTOR is the admin. Keying the fallback off actorType — not
+        // merely "is there an apiKey in detail?" — is what stops this row
+        // from being relabelled "CI Deploy".
+        detail: { id: "key-77", name: "CI Deploy", scopes: ["agents:read"] },
+        rowHmac: "abc",
+        actorName: null,
+        actorBanned: null,
+        resourceAgentName: null,
+        resourceAgentDeleted: null,
+        resourceUserName: null,
+        resourceUserBanned: null,
+      },
+    ];
+
+    mockSelect.mockReturnValueOnce({ from: mockEntriesFrom });
+    mockEntriesOffset.mockResolvedValueOnce(userEntry);
+    mockExecute.mockResolvedValueOnce([{ estimate: 1 }]);
+
+    const req = new NextRequest("http://localhost/api/audit");
+    const res = await GET(req);
+    const body = await res.json();
+
+    expect(body.entries[0].actorName).toBeNull();
   });
 
   it("joins the actor's user row on EITHER auditPseudonym OR the raw id (dual-join, alt+neu)", async () => {
@@ -417,8 +621,7 @@ describe("GET /api/audit", () => {
     mockEntriesOffset.mockResolvedValueOnce(entriesWithAgentResource);
 
     // Second call: count query
-    mockSelect.mockReturnValueOnce({ from: mockCountFrom });
-    mockCountWhere.mockResolvedValueOnce([{ count: 1 }]);
+    mockExecute.mockResolvedValueOnce([{ estimate: 1 }]);
 
     const req = new NextRequest("http://localhost/api/audit");
     const res = await GET(req);
@@ -448,8 +651,7 @@ describe("GET /api/audit", () => {
 
     mockSelect.mockReturnValueOnce({ from: mockEntriesFrom });
     mockEntriesOffset.mockResolvedValueOnce(entries);
-    mockSelect.mockReturnValueOnce({ from: mockCountFrom });
-    mockCountWhere.mockResolvedValueOnce([{ count: 1 }]);
+    mockExecute.mockResolvedValueOnce([{ estimate: 1 }]);
 
     const req = new NextRequest("http://localhost/api/audit");
     const res = await GET(req);
@@ -479,8 +681,7 @@ describe("GET /api/audit", () => {
 
     mockSelect.mockReturnValueOnce({ from: mockEntriesFrom });
     mockEntriesOffset.mockResolvedValueOnce(entries);
-    mockSelect.mockReturnValueOnce({ from: mockCountFrom });
-    mockCountWhere.mockResolvedValueOnce([{ count: 1 }]);
+    mockExecute.mockResolvedValueOnce([{ estimate: 1 }]);
 
     const req = new NextRequest("http://localhost/api/audit");
     const res = await GET(req);
@@ -502,8 +703,7 @@ describe("GET /api/audit", () => {
 
     mockSelect.mockReturnValueOnce({ from: mockEntriesFrom });
     mockEntriesOffset.mockResolvedValueOnce(entries);
-    mockSelect.mockReturnValueOnce({ from: mockCountFrom });
-    mockCountWhere.mockResolvedValueOnce([{ count: 1 }]);
+    mockExecute.mockResolvedValueOnce([{ estimate: 1 }]);
 
     const req = new NextRequest("http://localhost/api/audit");
     const res = await GET(req);
@@ -525,8 +725,7 @@ describe("GET /api/audit", () => {
 
     mockSelect.mockReturnValueOnce({ from: mockEntriesFrom });
     mockEntriesOffset.mockResolvedValueOnce(entries);
-    mockSelect.mockReturnValueOnce({ from: mockCountFrom });
-    mockCountWhere.mockResolvedValueOnce([{ count: 1 }]);
+    mockExecute.mockResolvedValueOnce([{ estimate: 1 }]);
 
     const req = new NextRequest("http://localhost/api/audit");
     const res = await GET(req);
@@ -578,8 +777,7 @@ describe("GET /api/audit", () => {
     ];
     mockSelect.mockReturnValueOnce({ from: mockEntriesFrom });
     mockEntriesOffset.mockResolvedValueOnce(entries);
-    mockSelect.mockReturnValueOnce({ from: mockCountFrom });
-    mockCountWhere.mockResolvedValueOnce([{ count: 2 }]);
+    mockExecute.mockResolvedValueOnce([{ estimate: 2 }]);
 
     const req = new NextRequest("http://localhost/api/audit");
     const res = await GET(req);
@@ -593,14 +791,14 @@ describe("GET /api/audit", () => {
   });
 
   it("filters by status=failure when query param is set", async () => {
-    setupMocks([], 0);
+    setupMocks([], 0, "exact");
     const req = new NextRequest("http://localhost/api/audit?status=failure");
     await GET(req);
     expect(eq).toHaveBeenCalledWith("outcome", "failure");
   });
 
   it("filters by status=success when query param is set", async () => {
-    setupMocks([], 0);
+    setupMocks([], 0, "exact");
     const req = new NextRequest("http://localhost/api/audit?status=success");
     await GET(req);
     expect(eq).toHaveBeenCalledWith("outcome", "success");
@@ -628,8 +826,7 @@ describe("GET /api/audit", () => {
 
     mockSelect.mockReturnValueOnce({ from: mockEntriesFrom });
     mockEntriesOffset.mockResolvedValueOnce(entries);
-    mockSelect.mockReturnValueOnce({ from: mockCountFrom });
-    mockCountWhere.mockResolvedValueOnce([{ count: 1 }]);
+    mockExecute.mockResolvedValueOnce([{ estimate: 1 }]);
 
     const req = new NextRequest("http://localhost/api/audit");
     const res = await GET(req);
@@ -641,14 +838,14 @@ describe("GET /api/audit", () => {
   it("returns 400 for an invalid 'from' date instead of crashing the query", async () => {
     // new Date("notadate") is an Invalid Date; pushed into a timestamp bound it
     // makes drizzle throw a RangeError at serialization → an unhandled 500.
-    setupMocks();
+    // No setupMocks(): the route returns 400 before any db call, and queuing
+    // an unconsumed mock here would leak into the next test's first call.
     const req = new NextRequest("http://localhost/api/audit?from=notadate");
     const res = await GET(req);
     expect(res.status).toBe(400);
   });
 
   it("returns 400 for an invalid 'to' date", async () => {
-    setupMocks();
     const req = new NextRequest("http://localhost/api/audit?to=garbage");
     const res = await GET(req);
     expect(res.status).toBe(400);

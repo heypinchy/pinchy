@@ -1,0 +1,157 @@
+/**
+ * Cross-checks that the agent asking for a connection's credentials was
+ * actually granted that connection (#987).
+ *
+ * The credentials endpoint used to authorize on the gateway token alone. That
+ * token is a single shared secret that `openclaw-config/build.ts` inlines into
+ * EVERY plugin's config block, so possession of it proved only "some code
+ * inside the OpenClaw container is asking" — never "this agent may have these
+ * credentials". Any plugin could name any `connectionId` and receive a
+ * decrypted Odoo password or mailbox token for an agent it has no relationship
+ * with.
+ *
+ * What this is, and what it is not: the agent id is asserted by the caller, so
+ * code that already runs inside the container can still name a different one.
+ * This closes the accidental path (a plugin bug, a config carrying the wrong
+ * connectionId) and makes the deliberate one leave an audit row, but it is
+ * defense in depth on top of the container boundary — not a replacement for
+ * it. The structural fix is scoped per-agent tokens so possession stops being
+ * instance-wide authority; that is tracked separately in #987's follow-up note
+ * and needs an OpenClaw-side change to hand each agent its own token.
+ */
+
+import { and, count, eq } from "drizzle-orm";
+
+import { db } from "@/db";
+import { activeAgents, agentConnectionPermissions, integrationConnections } from "@/db/schema";
+import type { IntegrationConnectionType } from "@/db/enums";
+
+/**
+ * The tools that grant an agent the instance-wide web-search connection's
+ * credentials — the Brave Search API key.
+ *
+ * Only the tools that actually spend the key belong here. `pinchy_web_fetch`
+ * loads the same plugin and sees the same `connectionId` in its config, but
+ * fetching a page needs no key and the plugin never asks for one on that path.
+ * Listing it handed the Brave key to every fetch-only agent, which is more
+ * than that agent can use — least privilege says refuse it.
+ *
+ * This list is one half of a pair. The other half is the set of `pinchy-web`
+ * tools whose code path requests credentials. A tool that needs the key but is
+ * missing here gets a 403 on its first call; a tool listed here that never
+ * uses the key grants the key for nothing. `web-search-tools-drift.test.ts`
+ * reads the plugin source and pins the two together.
+ *
+ * Kept beside the rule rather than imported from the tool registry on purpose:
+ * this is the authorization list, and it must change only when someone means
+ * to widen who can read the Brave API key.
+ */
+export const WEB_SEARCH_KEY_TOOLS: readonly string[] = ["pinchy_web_search"];
+
+export type ConnectionForAuth = {
+  id: string;
+  type: IntegrationConnectionType;
+  name: string | null;
+};
+
+export type AgentForAuth = {
+  id: string;
+  name: string | null;
+  allowedTools: string[];
+};
+
+export type ConnectionAccessDecision =
+  | { allowed: true }
+  | { allowed: false; reason: "agent-unknown" | "connection-unknown" | "not-granted" };
+
+/**
+ * The rule itself. Pure, so every branch is checkable without a database.
+ *
+ * `grantCount` is the number of `agent_connection_permissions` rows for this
+ * (agent, connection) pair — the table stores one row per model+operation, so
+ * any positive count means the pair was granted.
+ */
+export function decideConnectionAccess(
+  agent: AgentForAuth | null,
+  connection: ConnectionForAuth | null,
+  grantCount: number
+): ConnectionAccessDecision {
+  // Connection first, so a connection that no longer exists is reported as
+  // such whatever agent id arrived with it: the route answers that with the
+  // actionable "no longer connected" 404 an admin can act on, and checking the
+  // agent first would bury it under a 403 whenever the agent id is stale too —
+  // which is precisely the case where an integration was removed and its
+  // grants went with it.
+  //
+  // What this order costs, stated plainly rather than argued away: 404-vs-403
+  // tells the caller whether a connection id exists, and it can ask without a
+  // valid agent id. That is accepted here. The caller already holds the
+  // gateway token, so it is code inside the OpenClaw container, and that
+  // container reads an `openclaw.json` listing every connection id it is wired
+  // to. Existence is not the secret this endpoint keeps; the credentials are.
+  if (!connection) return { allowed: false, reason: "connection-unknown" };
+  if (!agent) return { allowed: false, reason: "agent-unknown" };
+
+  // The web-search connection is instance-wide — `build.ts` writes the same
+  // connection id into the shared `pinchy-web` config, so there are no
+  // permission rows to count. Requiring one here would silently revoke web
+  // search across the whole instance; reading the tool list instead asks
+  // whether this agent holds a tool that spends the key.
+  if (connection.type === "web-search") {
+    const granted = agent.allowedTools.some((tool) => WEB_SEARCH_KEY_TOOLS.includes(tool));
+    return granted ? { allowed: true } : { allowed: false, reason: "not-granted" };
+  }
+
+  return grantCount > 0 ? { allowed: true } : { allowed: false, reason: "not-granted" };
+}
+
+/**
+ * Loads the three facts `decideConnectionAccess` needs and applies it.
+ *
+ * `activeAgents` rather than `agents`: a soft-deleted agent must not keep
+ * pulling credentials, and its permission rows outlive it — `deleteAgent`
+ * clears them, but a row that survived a partial delete must not be the only
+ * thing standing between a dead agent and a live password.
+ */
+export async function authorizeAgentConnection(
+  agentId: string,
+  connectionId: string
+): Promise<ConnectionAccessDecision & { agent: AgentForAuth | null }> {
+  const [connectionRow] = await db
+    .select({
+      id: integrationConnections.id,
+      type: integrationConnections.type,
+      name: integrationConnections.name,
+    })
+    .from(integrationConnections)
+    .where(eq(integrationConnections.id, connectionId))
+    .limit(1);
+
+  const [agentRow] = await db
+    .select({
+      id: activeAgents.id,
+      name: activeAgents.name,
+      allowedTools: activeAgents.allowedTools,
+    })
+    .from(activeAgents)
+    .where(eq(activeAgents.id, agentId))
+    .limit(1);
+
+  const agent: AgentForAuth | null = agentRow
+    ? { id: agentRow.id, name: agentRow.name, allowedTools: agentRow.allowedTools ?? [] }
+    : null;
+
+  const [grants] = await db
+    .select({ n: count() })
+    .from(agentConnectionPermissions)
+    .where(
+      and(
+        eq(agentConnectionPermissions.agentId, agentId),
+        eq(agentConnectionPermissions.connectionId, connectionId)
+      )
+    );
+
+  const connection: ConnectionForAuth | null = connectionRow ?? null;
+
+  return { ...decideConnectionAccess(agent, connection, grants?.n ?? 0), agent };
+}

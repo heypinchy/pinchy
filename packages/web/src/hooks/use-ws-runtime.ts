@@ -9,15 +9,24 @@ import {
   replaceTrailingPlaceholder,
   stripTrailingPlaceholder,
 } from "@/hooks/in-flight-placeholder";
+import { DELAY_HINT_MS } from "@/lib/chat-liveness";
+import {
+  ACCOUNT_DEACTIVATED_CLOSE_CODE,
+  SESSION_CHECK_AFTER_FAILED_RECONNECTS,
+  leaveDeactivatedAccount,
+  sessionIsGone,
+} from "@/lib/account-deactivated";
 import { mergeOrAppendChunk } from "@/hooks/merge-chunk";
-import { ensureTrailingAssistant } from "@/hooks/ensure-trailing-assistant";
+import { attachDeliveredFile } from "@/hooks/attach-delivered-file";
+import {
+  ensureTrailingAssistant,
+  resumeInflightReplyInLocal,
+} from "@/hooks/ensure-trailing-assistant";
 import { uploadAttachment } from "@/lib/upload-attachment";
 import { oversizeAttachmentError } from "@/lib/attachment-size-check";
 import { useDraftId } from "@/hooks/use-draft-id";
 import {
   useExternalStoreRuntime,
-  SimpleTextAttachmentAdapter,
-  CompositeAttachmentAdapter,
   type ThreadMessageLike,
   type AppendMessage,
   type AssistantRuntime,
@@ -32,18 +41,23 @@ import {
   type LivenessState,
   type LivenessEvent,
 } from "./liveness-state";
-import {
-  CLIENT_IMAGE_COMPRESSION_TARGET_BYTES,
-  CLIENT_MAX_ATTACHMENT_SIZE_BYTES,
-} from "@/lib/limits";
+import { CLIENT_IMAGE_COMPRESSION_TARGET_BYTES } from "@/lib/limits";
 import { MAX_ATTACHMENTS_PER_MESSAGE } from "@/lib/schemas/uploads";
 import { compressImageForChat } from "@/lib/image-compression";
 import { parseSlashCommand, type SlashCommand } from "@/lib/slash-commands";
+import { attachmentAdapter } from "@/lib/attachment-adapters";
 
 /** Lightweight metadata for binary file attachments shown next to user messages. */
 export interface WsFileMeta {
   filename: string;
   mimeType: string;
+  /**
+   * Server-side upload id, present only on user turns rebuilt from history
+   * (#1195) — the server recovers it from `uploaded_files` so a retry after a
+   * reload can still name the files. Display code ignores it; the hook lifts it
+   * into the message's `attachmentIds`.
+   */
+  uploadId?: string;
 }
 
 /** Tracks a file dropped in the composer while it uploads to the server. */
@@ -53,6 +67,18 @@ export interface PendingUpload {
   objectUrl: string; // URL.createObjectURL — local preview, revoked on remove/send
   state: "uploading" | "ready" | "failed";
   uploadId?: string; // server-assigned, set when state = "ready"
+  /**
+   * Name the file was actually stored under, set when state = "ready" (#1199).
+   *
+   * NOT `file.name`: the route renames a file the browser did not name, so a
+   * pasted screenshot lands in `uploads/` as `upload-<stamp>.png` while
+   * `file.name` still says `image.png`. The chip builds
+   * `/api/agents/<id>/uploads/<filename>` from the name in the message, so
+   * sending the local one probes a path that does not exist — five HEAD
+   * retries, then a chip with no preview and the wrong label, until a history
+   * frame swaps the name under the user.
+   */
+  storedFilename?: string;
   progress: number; // 0-100
   error?: string; // set when state = "failed"
 }
@@ -67,6 +93,18 @@ export interface WsMessage {
    * agent's workspace and don't need to be replayed in client memory.
    */
   files?: WsFileMeta[];
+  /**
+   * Server-side upload ids for this message's attachments, kept so a retry can
+   * re-send them (#1195). `files` above is display metadata and cannot stand in
+   * — without the ids, a retry delivered the text with the attachments silently
+   * dropped, and the agent answered about files it had never been given.
+   *
+   * Set both on user messages this client sent and on user turns rebuilt from
+   * history, where the server recovers the ids from `uploaded_files` — the
+   * retry affordance outlives a reload (ChatErrorBanner), so the ids have to
+   * as well.
+   */
+  attachmentIds?: string[];
   timestamp?: string;
   error?: ChatError;
   /** Delivery status — only set for user messages managed by the reducer */
@@ -85,7 +123,6 @@ export interface WsMessage {
   oversized?: boolean;
 }
 
-const DELAY_HINT_MS = 15_000;
 /**
  * Cap on the Tier 2b pre-history frame buffer. The buffer holds chunks
  * that arrive on a fresh ws between `addListener` (server-side) and the
@@ -126,173 +163,95 @@ function convertMessage(msg: WsMessage): ThreadMessageLike {
   };
 }
 
-/**
- * Text-file attachment adapter — produces text content parts that get
- * concatenated into the user's message text. Kept because it's the only path
- * that doesn't go through the (removed) base64 `image_url` flow; image and
- * PDF uploads now go through the two-phase upload pipeline
- * (`addPendingUpload` → POST /uploads → `attachmentIds` on send).
- */
-/**
- * Adapter for source-code files whose content the model reads inline as text.
- *
- * The plain-text / CSV / Markdown / JSON / YAML types are deliberately NOT
- * listed here: those are workspace data files (issue #392) routed through the
- * two-phase upload pipeline (`addPendingUpload` → POST /uploads → server
- * staging), the same path used for images and PDFs. Because the assistant-ui
- * `CompositeAttachmentAdapter` would inline anything matching its `accept`
- * mask, listing those types here would short-circuit the upload and bypass
- * the agent's workspace.
- */
-class CodeTextAttachmentAdapter extends SimpleTextAttachmentAdapter {
-  public override accept =
-    "text/html,text/xml,text/css,application/javascript,application/typescript,.js,.ts,.tsx,.jsx,.py,.rs,.go,.sh,.sql,.toml";
-}
-
-/**
- * Adapter for Office documents the model needs as readable text.
- *
- * Currently: .docx only. The file is a ZIP archive of XML; reading it via
- * the plain-text adapter would ship the model the literal "PK…" bytes of
- * the archive. We convert it to Markdown with mammoth + turndown at upload
- * time — headings survive as ATX `#`/`##`, tables as GFM pipe tables, lists
- * as bullet/numbered lines, and embedded images become `[image]` placeholders.
- *
- * Mammoth and turndown are dynamically imported inside send() so they don't
- * land in the initial chat bundle for users who never attach a .docx.
- *
- * Filename is XML-escaped into the `<attachment name="…">` wrapper so the
- * agent can cite the source document even when the name contains spaces,
- * ampersands, or angle brackets.
- *
- * Exported only so the size-rejection contract and the wrapper escaping
- * can be unit-tested in isolation.
- */
-export class OfficeDocumentAttachmentAdapter {
-  public accept = "application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx";
-
-  async add(state: { file: File }) {
-    const { file } = state;
-    if (file.size > CLIENT_MAX_ATTACHMENT_SIZE_BYTES) {
-      const limitMb = Math.round(CLIENT_MAX_ATTACHMENT_SIZE_BYTES / 1024 / 1024);
-      throw new Error(
-        `File "${file.name}" is too large (${Math.round(file.size / 1024 / 1024)} MB). The limit is ${limitMb} MB.`
-      );
-    }
-    return {
-      id: uuid(),
-      type: "document" as const,
-      name: file.name,
-      contentType: file.type,
-      file,
-      status: { type: "requires-action" as const, reason: "composer-send" as const },
-    };
-  }
-
-  async send(attachment: { id?: string; name: string; file: File }) {
-    const arrayBuffer = await attachment.file.arrayBuffer();
-    const { default: mammoth } = await import("mammoth");
-    const { default: TurndownService } = await import("turndown");
-    const { gfm } = await import("turndown-plugin-gfm");
-
-    const { value: html } = await mammoth.convertToHtml(
-      { arrayBuffer },
-      {
-        // Empty src skips mammoth's base64 encoding; the strip-image
-        // turndown rule below replaces <img> with [image] downstream.
-        convertImage: mammoth.images.imgElement(() => Promise.resolve({ src: "" })),
-      }
-    );
-
-    const normalizedHtml = normalizeDocxTableHtml(html);
-
-    const turndown = new TurndownService({
-      headingStyle: "atx",
-      codeBlockStyle: "fenced",
-      bulletListMarker: "-",
-    });
-    turndown.use(gfm);
-    turndown.addRule("strip-image", {
-      filter: "img",
-      replacement: () => "[image]",
-    });
-    const value = turndown.turndown(normalizedHtml);
-
-    return {
-      id: attachment.id ?? uuid(),
-      type: "document" as const,
-      name: attachment.name,
-      file: attachment.file,
-      status: { type: "complete" as const },
-      content: [
-        {
-          type: "text" as const,
-          text: `<attachment name="${escapeXmlAttribute(attachment.name)}">\n${value}\n</attachment>`,
-        },
-      ],
-    };
-  }
-
-  async remove(): Promise<void> {
-    // No-op — local files require no cleanup
-  }
-}
-
-/**
- * Normalize mammoth-generated table HTML so turndown's GFM plugin produces
- * pipe tables.
- *
- * Mammoth emits `<table><tr><td>…</td></tr></table>` — no `<thead>`, no
- * `<th>`, and cell content wrapped in `<p>`. The turndown-plugin-gfm table
- * rule only activates when the first row is a heading row (all-`<th>` or
- * inside `<thead>`). This function:
- *  1. Strips `<p>` wrappers inside cells so content is inline.
- *  2. Promotes the first `<tr>` into a `<thead>` with `<th>` cells.
- *
- * KEEP-IN-SYNC with `normalizeTableHtml` in
- * `packages/plugins/pinchy-files/docx-extract.ts`. See that file for the
- * rationale for the intentional duplication.
- */
-function normalizeDocxTableHtml(html: string): string {
-  let out = html.replace(/<(td|th)([^>]*)><p>([\s\S]*?)<\/p><\/(td|th)>/g, "<$1$2>$3</$1>");
-
-  // Mammoth emits no <tbody>, so rows sit directly under <table>.
-  out = out.replace(/<table>([\s\S]*?)<\/table>/g, (_, inner: string) => {
-    const firstRowMatch = inner.match(/^(<tr>[\s\S]*?<\/tr>)/);
-    if (!firstRowMatch) return `<table>${inner}</table>`;
-    const firstRow = firstRowMatch[1];
-    const rest = inner.slice(firstRow.length);
-    const headingRow = firstRow.replace(/<td([^>]*)>/g, "<th$1>").replace(/<\/td>/g, "</th>");
-    return `<table><thead>${headingRow}</thead><tbody>${rest}</tbody></table>`;
-  });
-
-  return out;
-}
-
-function escapeXmlAttribute(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-// Image and PDF MIMEs (and the workspace-data formats CSV/JSON/YAML/MD/TXT)
-// are NOT here — they go through the two-phase upload pipeline
-// (PinchyAttachmentButton → addPendingUpload → POST /uploads), not through
-// the assistant-ui adapter chain. Code-text + .docx still go through adapters
-// because they inline extracted text into the message content (no `image_url`
-// base64 frame, no PROTOCOL_OUTDATED rejection).
-// Exported for the routing tests in `__tests__/hooks/attachment-routing.test.ts`
-// which assert which adapter accepts a given (filename, MIME) pair — see
-// issue #392.
-export const attachmentAdapter = new CompositeAttachmentAdapter([
-  new CodeTextAttachmentAdapter(),
-  new OfficeDocumentAttachmentAdapter(),
-]);
-
-const MAX_RECONNECT_ATTEMPTS = 10;
 const MAX_BUNDLED_MESSAGES = 200;
+
+/**
+ * Reconnect backoff (#1422). There is no attempt budget: while the tab is
+ * visible the chat keeps dialing for as long as it takes, because the only
+ * thing an exhausted budget ever bought a user was a dead end that a reload
+ * fixed. Delay doubles from 1 s up to the cap; jitter only ever shortens it, so
+ * the nominal delay is always enough to see the next attempt.
+ */
+const RECONNECT_BASE_DELAY_MS = 1000;
+const RECONNECT_MAX_DELAY_MS = 15_000;
+const RECONNECT_MIN_JITTER = 0.8;
+
+function reconnectDelay(attempt: number): number {
+  const nominal = Math.min(RECONNECT_BASE_DELAY_MS * Math.pow(2, attempt), RECONNECT_MAX_DELAY_MS);
+  return Math.round(nominal * (RECONNECT_MIN_JITTER + (1 - RECONNECT_MIN_JITTER) * Math.random()));
+}
+
+/**
+ * A handshake that has not finished by now is not going to (a proxy holding
+ * the upgrade, a slow session lookup, a route that died with the old network).
+ * The browser's own timeout is minutes away, if it exists at all.
+ */
+const CONNECT_TIMEOUT_MS = 10_000;
+
+/**
+ * How often the safety net looks for "visible, online, not connected, nothing
+ * scheduled" (#1422 cases 5 and 6). Recovery must not depend on any single
+ * platform event having fired; this is what runs when none of them did.
+ */
+const WATCHDOG_INTERVAL_MS = 5_000;
+
+/**
+ * Application heartbeat (#1422 case 8). A browser cannot send a protocol ping
+ * and cannot see one, so a half-open socket reports OPEN while everything sent
+ * goes nowhere. We send `{ "type": "ping" }`; a server that supports it answers
+ * `{ "type": "pong" }`. The deadline is only enforced on a connection that has
+ * already ponged once, so a server without the heartbeat is never cut.
+ */
+const HEARTBEAT_INTERVAL_MS = 25_000;
+const PONG_DEADLINE_MS = 10_000;
+
+/** Application close code for a handshake the server accepted and then refused. */
+const REJECTED_CLOSE_CODE = 4429;
+
+export type ConnectionRejection = "too_many_connections" | "rate_limited";
+
+/**
+ * The reason sits in the close frame so the browser can read it (a raw HTTP 429
+ * on the upgrade surfaces only as 1006). Anything unreadable means the account
+ * limit, the common cause.
+ */
+function parseRejection(reason: string | undefined): ConnectionRejection {
+  return reason === "rate_limited" ? "rate_limited" : "too_many_connections";
+}
+
+/** What a server without the heartbeat answers a frame it does not know with. */
+const UNKNOWN_FRAME_ERROR_MESSAGE = "OpenClaw not configured";
+
+/**
+ * Deadline for the server's answer to a `history` request (#956).
+ *
+ * The server answers on every branch of `ClientRouter.handleHistory` — with
+ * messages, with the authoritative `sessionKnown: true` empty signal, or with a
+ * greeting — so silence past this point means the request or the response was
+ * lost in transit, not that the server declined. Sized off that handler's own
+ * worst case: `waitForConnection` gives up after 10s, the catch path then sleeps
+ * 2s and refetches. 20s leaves room for that plus the RPC round trips, so a slow
+ * server is never mistaken for a dead socket.
+ */
+const HISTORY_TIMEOUT_MS = 20_000;
+
+/**
+ * How many times an expired deadline may drop the socket and reconnect by
+ * itself. One is usually enough — the reported failure is a socket the OS tore
+ * down without a `close` event, which a fresh connection cures. The cap keeps a
+ * server that genuinely never answers from turning into an endless reconnect
+ * loop; past it the user's Retry is the way forward.
+ */
+const MAX_HISTORY_SELF_HEALS = 2;
+
+/**
+ * How long a tab may stay hidden before the WebSocket is deliberately closed
+ * (#895). Shorter background gaps (a quick tab switch) keep the connection
+ * open so the tab doesn't pay a full reconnect+history-reload round trip for
+ * every brief glance away; longer gaps free the server-side connection since
+ * nobody is looking.
+ */
+const HIDDEN_CLOSE_GRACE_MS = 5 * 60 * 1000;
 
 function capMessages<T>(messages: T[]): T[] {
   if (messages.length <= MAX_BUNDLED_MESSAGES) return messages;
@@ -457,6 +416,28 @@ export function preserveRicherLocalOverOversizedHistory(
   });
 }
 
+/**
+ * Lift the upload ids the server recovered for a history-rebuilt user turn
+ * (#1195) into the message's `attachmentIds`, so the retry affordance that
+ * survives a reload can re-send the files with the text.
+ *
+ * All-or-nothing on purpose. A partially-resolved set would send a manifest
+ * naming SOME of the user's files — the agent then answers about three of five
+ * invoices with nothing to say which two are missing, which is worse than the
+ * old behaviour of sending none and leaving the first attempt's block in the
+ * transcript as the only reference. An id goes unresolved when the row is gone
+ * (an operator cleaned the workspace) or the filename is ambiguous, and neither
+ * is something to paper over.
+ */
+export function historyAttachmentIds(msg: { role: string; files?: WsFileMeta[] }): {
+  attachmentIds?: string[];
+} {
+  if (msg.role !== "user" || !msg.files || msg.files.length === 0) return {};
+  const ids = msg.files.map((f) => f.uploadId);
+  if (ids.some((id) => id === undefined)) return {};
+  return { attachmentIds: ids as string[] };
+}
+
 export function useWsRuntime(
   agentId: string,
   /**
@@ -496,8 +477,32 @@ export function useWsRuntime(
    * turn green before the initial greeting/history is committed (issue #197).
    */
   hasInitialContent: boolean;
-  reconnectExhausted: boolean;
+  /**
+   * The browser reports no network (`navigator.onLine`, `offline`/`online`).
+   * Its own state: no reconnect is attempted until the network is back, and the
+   * UI must not blame the server (#1422).
+   */
+  isOffline: boolean;
+  /**
+   * The server accepted the handshake and closed it with 4429 (#1422): the
+   * account's connection cap or the address's upgrade rate. Cleared once a
+   * later connection is actually served. Retrying continues in the background.
+   */
+  connectionRejection: ConnectionRejection | null;
   payloadRejected: boolean;
+  /**
+   * The client's deadline for the server's answer to a `history` request
+   * expired (issue #956). Combined with `hasInitialContent === false` this is
+   * the dead end users hit: a chat parked on the loading indicator forever.
+   * Cleared the moment any history frame lands, including one produced by the
+   * self-heal reconnect the expiry triggers.
+   */
+  historyTimedOut: boolean;
+  /**
+   * "Try again": drop the current socket, dial a fresh one right now and start
+   * the backoff over (#956, #1422). Works from every unavailable state.
+   */
+  retryHistory: () => void;
   /**
    * True while an inline turn-failure bubble is in the thread (#583). Lets the
    * durable paused-error banner suppress itself as a fallback rather than
@@ -506,6 +511,8 @@ export function useWsRuntime(
   hasInlineError: boolean;
   onRetryContinue: (reason: "orphan" | "partial_stream_failure" | "send_failure") => void;
   onRetryResend: (messageId: string) => void;
+  /** A message waits for the next connection; only this instance holds it (#957). */
+  hasQueuedMessage: boolean;
   pendingUploads: PendingUpload[];
   addPendingUpload: (file: File) => void;
   removePendingUpload: (localId: string) => void;
@@ -545,21 +552,75 @@ export function useWsRuntime(
    * messages that won't arrive. Reset on every reconnect/agent-switch.
    */
   const [knownEmptyHistory, setKnownEmptyHistory] = useState(false);
+  /**
+   * The deadline on an outstanding `history` request expired (#956). Before
+   * this existed, a lost history frame parked the chat on the loading indicator
+   * with no error, no retry and no way out but a manual reload — every other
+   * timer in this hook covers SENDING, nothing covered the initial load.
+   */
+  const [historyTimedOut, setHistoryTimedOut] = useState(false);
+  const historyWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Self-heal reconnects spent on the current stall; reset by an answer. */
+  const historySelfHealsRef = useRef(0);
   const [isOpenClawConnected, setIsOpenClawConnected] = useState(false);
-  const [reconnectExhausted, setReconnectExhausted] = useState(false);
+  const [isOffline, setIsOffline] = useState(
+    () => typeof navigator !== "undefined" && navigator.onLine === false
+  );
+  const [connectionRejection, setConnectionRejection] = useState<ConnectionRejection | null>(null);
   const [payloadRejected, setPayloadRejected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const connectRef = useRef<(() => void) | null>(null);
+  /** Drop the current socket and dial a new one now, backoff restarted (#1422). */
+  const reconnectNowRef = useRef<(() => void) | null>(null);
   const delayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** When the current dial started, and the timer that aborts it if it hangs. */
+  const connectStartedAtRef = useRef(0);
+  const connectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pongDeadlineRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** This connection has been ponged at least once, so a missing pong is a verdict. */
+  const connectionPongedRef = useRef(false);
+  /** The first ping of a connection is a probe; an old server answers it with an error frame. */
+  const probeOutstandingRef = useRef(false);
   const mountedRef = useRef(true);
+  /** Backoff exponent. Reset by anything that earns a fresh start (open, return, Try again). */
   const reconnectAttemptRef = useRef(0);
+  /**
+   * Failures since the last successful open. Deliberately NOT the backoff
+   * counter: focus, visibility and Try again all reset that one, and the
+   * session check (below) must still trigger after N failures in a row (#1422).
+   */
+  const failedSinceOpenRef = useRef(0);
+  /** Heartbeat capability, per hook: has any connection of ours ever been ponged? */
+  const everPongedRef = useRef(false);
+  /** A first ping went unanswered on a connection that never ponged: stop pinging. */
+  const pingUnsupportedRef = useRef(false);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Session check after repeated failed reconnects (see
+  // SESSION_CHECK_AFTER_FAILED_RECONNECTS): one request at a time, and once
+  // the tab is leaving for /login nothing reconnects or asks again.
+  const sessionCheckInFlightRef = useRef(false);
+  const leavingForLoginRef = useRef(false);
+  // #895: armed on every `visibilitychange` → hidden, cleared on visible or on
+  // firing. Fires `suspendForPageLifecycle()` (the same deliberate-close path
+  // pagehide/offline already use) once the tab has been hidden continuously
+  // for HIDDEN_CLOSE_GRACE_MS.
+  const hiddenGraceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconcileApplyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconcileFinishTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const messagesRef = useRef<WsMessage[]>([]);
   const shouldRecoverFromHistoryRef = useRef(false);
   const lifecycleSuspendedRef = useRef(false);
   const pendingMessageRef = useRef<string | null>(null);
+  // Mirrors `pendingMessageRef` for consumers (#957): a queued payload lives
+  // only in this instance, so the chat must not be unmounted while one waits.
+  const [hasQueuedMessage, setHasQueuedMessage] = useState(false);
+
+  // The socket the server has answered on (#1422). `open` only means the
+  // handshake finished; a refused connection is opened and then closed. Every
+  // accepted connection gets a first frame, so only that frame makes a socket
+  // count: it is what flushes the queued message and resets the backoff.
+  const servedSocketRef = useRef<WebSocket | null>(null);
   // Latest slash-command handler (#611). Kept in a ref so `onNew` (memoized
   // without it in its deps) always calls the freshest version.
   const onSlashCommandRef = useRef<((command: SlashCommand) => void) | undefined>(onSlashCommand);
@@ -579,6 +640,18 @@ export function useWsRuntime(
    */
   const pendingHistoryRef = useRef(false);
   const frameBufferRef = useRef<unknown[]>([]);
+  /**
+   * How much of the in-flight message's text the bubble already shows, as of
+   * the last history frame that seeded it with `activeRun.partialContent`.
+   * Every chunk frame carries `offset` (the text emitted for its message before
+   * it), so a delta that the seed already holds is dropped instead of appended
+   * a second time. That happens whenever the history request goes out on a
+   * socket that is already one of the run's listeners — a tab refocus, a
+   * lifecycle recovery, a catch-up — where every word between the request and
+   * the server's snapshot arrives both as a buffered delta and inside
+   * `partialContent`.
+   */
+  const resumeCursorRef = useRef<{ messageId: string; length: number } | null>(null);
   // Multi-device live-sync: the messageId of the poke we last acted on, so a
   // duplicate poke for the same finished message does not trigger a redundant
   // history re-pull. Dedup is keyed on the globally-unique messageId rather than
@@ -594,6 +667,41 @@ export function useWsRuntime(
    * error.
    */
   const inflightRunIdRef = useRef<string | null>(null);
+  /**
+   * The partial reply the user pressed stop on, held only until the server's
+   * history agrees (#978).
+   *
+   * OpenClaw does not persist an aborted run's assistant text, so every history
+   * catch-up after a stop hands back a list that is one message SHORTER than
+   * what is on screen — and the reconcile's job is to adopt the server's view.
+   * Nothing distinguishes that from a genuine shrink (a compaction, a deletion
+   * on another device) except knowing the stop happened, which is what this
+   * ref is.
+   *
+   * Held in a ref rather than a message flag because it must survive the
+   * destructive reconcile that would otherwise consume it. Cleared as soon as
+   * it stops being needed — a new turn, or a history that carries the reply
+   * itself — so it can never resurrect a message the user later deleted.
+   */
+  const stoppedReplyRef = useRef<{
+    id: string;
+    content: string;
+    timestamp?: string;
+  } | null>(null);
+  /**
+   * True from a stop click until the next turn starts (#978).
+   *
+   * The server no longer turns a user abort into an error frame, but it can
+   * only do that once it KNOWS about the abort — and the error chunk may
+   * already be on its way when the click arrives. That leftover frame would
+   * put "The model provider timed out." on a turn the user ended deliberately,
+   * which `onCancel` promises not to do.
+   *
+   * Deliberately not folded into `stoppedReplyRef`: a run stopped before its
+   * first word has no partial to hold, and that is precisely the case where a
+   * spurious error banner is the ONLY thing the user would be left with.
+   */
+  const cancelledTurnRef = useRef(false);
   /**
    * True iff at least one assistant chunk was received during the current turn.
    * Reset when a new turn starts (user sends or retry). Used to classify
@@ -639,6 +747,10 @@ export function useWsRuntime(
     setMessages(capMessages([]));
     setIsRunning(false);
     setIsDelayed(false);
+    // #978: a stopped reply belongs to the chat it was stopped in. Carrying it
+    // across a switch would anchor it onto the next chat's history.
+    cancelledTurnRef.current = false;
+    stoppedReplyRef.current = null;
     // Reset the liveness machine for the new agent. Updating the ref
     // synchronously here (same rationale as the timer cleanup below) means any
     // frame handler that fires before the next commit sees the cleared state.
@@ -646,6 +758,7 @@ export function useWsRuntime(
     setIsHistoryLoaded(false);
     setIsReconcilingMessages(false);
     setKnownEmptyHistory(false);
+    setHistoryTimedOut(false);
     setPayloadRejected(false);
     // Multi-device live-sync: drop the poke-dedup identity so the newly-opened
     // session's first poke always re-pulls — its messageIds are unrelated to the
@@ -655,20 +768,21 @@ export function useWsRuntime(
     // Synchronous timer cleanup is the entire point of doing this in render
     // (see comment above). Deferring it to useEffect would defeat the
     // race-prevention this block exists for.
-    // eslint-disable-next-line react-hooks/refs
     if (reconcileApplyTimerRef.current) {
-      // eslint-disable-next-line react-hooks/refs
       clearTimeout(reconcileApplyTimerRef.current);
-      // eslint-disable-next-line react-hooks/refs
       reconcileApplyTimerRef.current = null;
     }
-    // eslint-disable-next-line react-hooks/refs
     if (reconcileFinishTimerRef.current) {
-      // eslint-disable-next-line react-hooks/refs
       clearTimeout(reconcileFinishTimerRef.current);
-      // eslint-disable-next-line react-hooks/refs
       reconcileFinishTimerRef.current = null;
     }
+    // The previous session's history deadline must not fire into the new one —
+    // it would drop a healthy socket the new session just opened (#956).
+    if (historyWatchdogRef.current) {
+      clearTimeout(historyWatchdogRef.current);
+      historyWatchdogRef.current = null;
+    }
+    historySelfHealsRef.current = 0;
     // Revoke object URLs from previous agent's pending uploads and clear the list.
     setPendingUploads((prev) => {
       for (const u of prev) {
@@ -711,12 +825,72 @@ export function useWsRuntime(
     livenessRef.current = livenessReducer(livenessRef.current, event);
   }, []);
 
+  const clearHistoryWatchdog = useCallback(() => {
+    if (historyWatchdogRef.current) {
+      clearTimeout(historyWatchdogRef.current);
+      historyWatchdogRef.current = null;
+    }
+  }, []);
+
+  /**
+   * Throw away the current socket and get a live one. Closing it ourselves is
+   * the point: the socket we hold may be dead without having said so (a
+   * backgrounded PWA torn down by the OS never fires `close`), so it still
+   * reports OPEN while everything we send goes nowhere. `onclose` then drives
+   * the normal reconnect, whose `onopen` re-requests history.
+   */
+  const forceReconnect = useCallback(() => {
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    shouldRecoverFromHistoryRef.current = true;
+    const ws = wsRef.current;
+    if (ws && ws.readyState !== WebSocket.CLOSED) {
+      ws.close();
+    } else {
+      connectRef.current?.();
+    }
+  }, []);
+
+  /**
+   * Start the clock on an outstanding history request (#956). Every path that
+   * sends one arms this, so no request can wait without a deadline.
+   */
+  const armHistoryWatchdog = useCallback(() => {
+    clearHistoryWatchdog();
+    historyWatchdogRef.current = setTimeout(() => {
+      historyWatchdogRef.current = null;
+      // Surface the stall immediately rather than after the self-heal has had
+      // its turn: the user has already been staring at a spinner for the whole
+      // deadline. If the reconnect below works, the history frame clears this
+      // again on its own and the retry affordance disappears unused.
+      setHistoryTimedOut(true);
+      if (historySelfHealsRef.current >= MAX_HISTORY_SELF_HEALS) return;
+      historySelfHealsRef.current++;
+      forceReconnect();
+    }, HISTORY_TIMEOUT_MS);
+  }, [clearHistoryWatchdog, forceReconnect]);
+
+  /**
+   * "Try again" (#956, #1422): the user's escape from every unavailable state.
+   * Drops whatever socket we hold, dials a new one immediately — not after the
+   * pending backoff — and restarts the backoff and the self-heal budget.
+   */
+  const retryHistory = useCallback(() => {
+    setHistoryTimedOut(false);
+    historySelfHealsRef.current = 0;
+    if (reconnectNowRef.current) reconnectNowRef.current();
+    else forceReconnect();
+  }, [forceReconnect]);
+
   useEffect(() => {
     // Update before connect() so stale handlers from the previous agent see
     // the new agentId as soon as the cleanup's ws.close() fires asynchronously.
     agentIdRef.current = agentId;
     mountedRef.current = true;
     reconnectAttemptRef.current = 0;
+    failedSinceOpenRef.current = 0;
     shouldRecoverFromHistoryRef.current = false;
 
     // Snapshot the ack-timers Map at effect start so the cleanup can iterate
@@ -736,9 +910,31 @@ export function useWsRuntime(
       }
     }
 
+    /**
+     * How this hook asks for history when the answer is something the UI waits
+     * on. Arms the pre-history frame buffer (Tier 2b) and the response deadline
+     * (#956) together, so the two can't drift apart: anything that waits for a
+     * history frame also has a clock on it.
+     *
+     * The one request that does NOT come through here is the OpenClaw
+     * rising-edge catch-up below, which fires only once history is already
+     * loaded — nothing is waiting on it, so it needs neither the buffer nor a
+     * deadline.
+     */
+    function sendHistoryRequest(ws: WebSocket) {
+      pendingHistoryRef.current = true;
+      frameBufferRef.current = [];
+      // #508: scope the history request to the active chat's session.
+      ws.send(JSON.stringify({ type: "history", agentId, ...(chatId && { chatId }) }));
+      armHistoryWatchdog();
+    }
+
     function clearUiTimers() {
       clearReconcileTimers();
       setIsReconcilingMessages(false);
+      // A suspended tab is not stalled — it closed its socket on purpose. Let
+      // the deadline fire here and it would reconnect a backgrounded page.
+      clearHistoryWatchdog();
       if (delayTimerRef.current) {
         clearTimeout(delayTimerRef.current);
         delayTimerRef.current = null;
@@ -779,13 +975,12 @@ export function useWsRuntime(
       if (!lifecycleSuspendedRef.current) return;
       lifecycleSuspendedRef.current = false;
       shouldRecoverFromHistoryRef.current = true;
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
+      const ws = wsRef.current;
+      if (ws?.readyState === WebSocket.OPEN) {
         // Tier 2b: same buffer-then-drain protocol as ws.onopen — the
         // server may broadcast in-flight chunks between the addListener
         // (which runs in handleHistory) and the history-response send.
-        pendingHistoryRef.current = true;
-        frameBufferRef.current = [];
-        wsRef.current.send(JSON.stringify({ type: "history", agentId, ...(chatId && { chatId }) }));
+        sendHistoryRequest(ws);
       } else {
         connect();
       }
@@ -813,10 +1008,9 @@ export function useWsRuntime(
       // the SENDING device double-renders its own just-streamed turn (the CI
       // integration E2E caught exactly this).
       shouldRecoverFromHistoryRef.current = true;
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        pendingHistoryRef.current = true;
-        frameBufferRef.current = [];
-        wsRef.current.send(JSON.stringify({ type: "history", agentId, ...(chatId && { chatId }) }));
+      const ws = wsRef.current;
+      if (ws?.readyState === WebSocket.OPEN) {
+        sendHistoryRequest(ws);
       } else {
         connect();
       }
@@ -830,11 +1024,108 @@ export function useWsRuntime(
       if (!pendingHistoryRef.current) requestHistoryCatchup();
     }
 
+    // #895: guard document access — this effect only runs client-side (the
+    // hook is "use client"), but keep the check defensive/SSR-safe rather
+    // than assuming.
+    function isTabHidden() {
+      return typeof document !== "undefined" && document.visibilityState === "hidden";
+    }
+
+    function clearHiddenGraceTimer() {
+      if (hiddenGraceTimerRef.current) {
+        clearTimeout(hiddenGraceTimerRef.current);
+        hiddenGraceTimerRef.current = null;
+      }
+    }
+
+    // #895: tab hidden → pause reconnecting, don't tear down the connection
+    // yet. Only after HIDDEN_CLOSE_GRACE_MS of continuous hidden time do we
+    // deliberately close it (reusing suspendForPageLifecycle, which already
+    // makes onclose skip reconnect scheduling and marks the drop as
+    // lifecycle-driven so recoverFromPageLifecycle knows to reopen it).
+    function scheduleHiddenGraceClose() {
+      clearHiddenGraceTimer();
+      // The #956 history-answer watchdog also has to stand down here, not
+      // only when the grace period eventually elapses and
+      // suspendForPageLifecycle's clearUiTimers() runs. Nobody is watching a
+      // stalled load on a hidden tab, so it must not fire its own
+      // reconnect (forceReconnect) independently of — and bypassing — the
+      // hidden-aware pause this function exists to provide. Whichever path
+      // brings the tab back (handleTabVisible's OPEN-socket reconcile or a
+      // post-grace-close recoverFromPageLifecycle) re-requests history and
+      // re-arms a fresh deadline, so a genuine stall is still caught, just
+      // not while nobody is looking.
+      clearHistoryWatchdog();
+      hiddenGraceTimerRef.current = setTimeout(() => {
+        hiddenGraceTimerRef.current = null;
+        suspendForPageLifecycle();
+      }, HIDDEN_CLOSE_GRACE_MS);
+    }
+
+    // #895: tab visible → always reset the reconnect counter and reconnect
+    // (or recover) immediately, so a returning user never waits out stale
+    // backoff.
+    function handleTabVisible() {
+      clearHiddenGraceTimer();
+
+      // Reset the BACKOFF unconditionally, before any branch below — including
+      // the suspended one, which delegates to recoverFromPageLifecycle() and
+      // never touches the counter itself. A returning user must not wait out
+      // the delay a long absence left behind. This is only the backoff:
+      // `failedSinceOpenRef` survives, so the session check still sees
+      // consecutive failures however often the user comes back (#1422).
+      reconnectAttemptRef.current = 0;
+
+      if (lifecycleSuspendedRef.current) {
+        // Connection was deliberately closed (grace-period close, pagehide,
+        // or offline) — reopen it via the existing suspend/recover path.
+        recoverFromPageLifecycle();
+        return;
+      }
+
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        // Connection survived the entire hidden period (grace close never
+        // fired) — no reconnect needed, but a refocus must still reconcile
+        // against canonical server history exactly like a real reconnect
+        // would. e2e/18-tab-refocus-shrink.spec.ts pins this: server-side
+        // state (e.g. an in-flight run whose history has since shrunk) can
+        // change while the tab wasn't listening even though the socket
+        // itself never dropped. Same buffer-then-drain protocol as
+        // ws.onopen / recoverFromPageLifecycle's OPEN branch — and the same
+        // #956 deadline: a socket that "survived" the hidden spell is
+        // exactly the one that may be half-dead (still reports OPEN, sends
+        // go nowhere), so this request must not wait without a watchdog.
+        shouldRecoverFromHistoryRef.current = true;
+        sendHistoryRequest(wsRef.current);
+        return;
+      }
+
+      if (wsRef.current?.readyState === WebSocket.CONNECTING) {
+        // A dial is in flight: let it finish — unless it has outlived its
+        // deadline. A frozen or throttled tab may never have run the timer that
+        // aborts it, and "let it resolve naturally" is the hang of #1422 case 4.
+        if (Date.now() - connectStartedAtRef.current < CONNECT_TIMEOUT_MS) return;
+        // Overdue: count it as a failed attempt and fall through to dial again
+        // right away — the tab is visible and the backoff was just reset.
+        abortSocket(wsRef.current);
+      }
+
+      // Disconnected: either a backoff attempt was deferred while hidden (see
+      // the reconnect timer below) or reconnect had fully exhausted.
+      // Reconnect right away (the counter was already reset above).
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      shouldRecoverFromHistoryRef.current = true;
+      connect();
+    }
+
     function handleVisibilityChange() {
       if (document.visibilityState === "hidden") {
-        suspendForPageLifecycle();
+        scheduleHiddenGraceClose();
       } else if (document.visibilityState === "visible") {
-        recoverFromPageLifecycle();
+        handleTabVisible();
       }
     }
 
@@ -847,26 +1138,221 @@ export function useWsRuntime(
     }
 
     function handleOffline() {
+      setIsOffline(true);
       suspendForPageLifecycle();
     }
 
     function handleOnline() {
-      recoverFromPageLifecycle();
+      setIsOffline(false);
+      // `recoverFromPageLifecycle` only acts on a suspended tab; a network that
+      // returns while a backoff is pending should not wait that backoff out.
+      if (lifecycleSuspendedRef.current) {
+        recoverFromPageLifecycle();
+      } else if (!isSocketAlive(wsRef.current)) {
+        reconnectNow();
+      }
+    }
+
+    function isSocketAlive(ws: WebSocket | null) {
+      return ws?.readyState === WebSocket.OPEN || ws?.readyState === WebSocket.CONNECTING;
+    }
+
+    /**
+     * Give up on a socket without waiting for the browser to say so. A dial
+     * that hangs, or a connection the OS tore down silently, may take minutes
+     * to fire `onclose` — or never — so the close is driven by hand. The real
+     * event, should it ever arrive, is ignored as stale (`wsRef` has moved on).
+     */
+    function abortSocket(ws: WebSocket | null) {
+      if (!ws || wsRef.current !== ws) return;
+      try {
+        ws.close();
+      } catch {
+        // already closing
+      }
+      ws.onclose?.(new CloseEvent("close", { code: 1006 }));
+    }
+
+    /**
+     * "Try again": drop the socket we hold, dial a new one immediately and
+     * restart the backoff. Stands in for every platform event that may not have
+     * fired, so it also lifts a lingering suspend.
+     */
+    function reconnectNow() {
+      if (leavingForLoginRef.current) return;
+      setIsOffline(typeof navigator !== "undefined" && navigator.onLine === false);
+      reconnectAttemptRef.current = 0;
+      shouldRecoverFromHistoryRef.current = true;
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      const current = wsRef.current;
+      if (current) {
+        // Not `abortSocket`: a deliberate drop is not a failed attempt.
+        wsRef.current = null;
+        try {
+          current.close();
+        } catch {
+          // already closing
+        }
+        stopConnectionTimers();
+        pendingHistoryRef.current = false;
+        frameBufferRef.current = [];
+        clearHistoryWatchdog();
+        setIsConnected(false);
+        setIsOpenClawConnected(false);
+      }
+      connect();
+    }
+
+    /**
+     * Safety net (#1422 cases 5b and 6): recovery must not depend on one
+     * platform event. Visible, online, and nothing connected, connecting or
+     * scheduled — whatever left it that way — means nobody is going to dial.
+     */
+    function watchdogTick() {
+      if (!mountedRef.current || leavingForLoginRef.current) return;
+      const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+      setIsOffline(offline);
+      if (offline || isTabHidden()) return;
+      if (lifecycleSuspendedRef.current) {
+        recoverFromPageLifecycle();
+        return;
+      }
+      if (isSocketAlive(wsRef.current) || reconnectTimerRef.current) return;
+      shouldRecoverFromHistoryRef.current = true;
+      connect();
+    }
+
+    function scheduleReconnect(delay: number) {
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = setTimeout(() => {
+        reconnectTimerRef.current = null;
+        // #895: a tab hidden while this backoff was pending must not dial —
+        // burning attempts in the background is what the grace-period close
+        // exists to avoid. The watchdog and `handleTabVisible` dial once the tab
+        // is visible again.
+        if (isTabHidden()) return;
+        connect();
+      }, delay);
+    }
+
+    function stopConnectionTimers() {
+      if (connectTimerRef.current) {
+        clearTimeout(connectTimerRef.current);
+        connectTimerRef.current = null;
+      }
+      if (heartbeatTimerRef.current) {
+        clearInterval(heartbeatTimerRef.current);
+        heartbeatTimerRef.current = null;
+      }
+      if (pongDeadlineRef.current) {
+        clearTimeout(pongDeadlineRef.current);
+        pongDeadlineRef.current = null;
+      }
+      connectionPongedRef.current = false;
+      probeOutstandingRef.current = false;
+    }
+
+    /**
+     * Application heartbeat: a browser cannot see a half-open socket (no FIN,
+     * no RST), and a server older than the ping frame answers it with an error.
+     * So the first ping is a probe — a connection is only cut for silence after
+     * it has itself proven it can answer — and a server that never answers it is
+     * simply not pinged again. Any inbound frame counts as alive.
+     */
+    function startHeartbeat(ws: WebSocket) {
+      heartbeatTimerRef.current = setInterval(() => {
+        if (wsRef.current !== ws || ws.readyState !== WebSocket.OPEN) return;
+        if (pingUnsupportedRef.current) return;
+        if (probeOutstandingRef.current) {
+          // Last probe went unanswered on a connection that never ponged.
+          pingUnsupportedRef.current = true;
+          probeOutstandingRef.current = false;
+          return;
+        }
+        if (!connectionPongedRef.current && !everPongedRef.current) {
+          probeOutstandingRef.current = true;
+        }
+        try {
+          ws.send(JSON.stringify({ type: "ping" }));
+        } catch {
+          return;
+        }
+        if (connectionPongedRef.current) {
+          if (pongDeadlineRef.current) clearTimeout(pongDeadlineRef.current);
+          pongDeadlineRef.current = setTimeout(() => {
+            pongDeadlineRef.current = null;
+            abortSocket(ws);
+          }, PONG_DEADLINE_MS);
+        }
+      }, HEARTBEAT_INTERVAL_MS);
+    }
+
+    /** Stop everything and go to /login: this tab's account can't sign in any more. */
+    function leaveForLogin() {
+      if (leavingForLoginRef.current) return;
+      leavingForLoginRef.current = true;
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      isRunningRef.current = false;
+      setIsRunning(false);
+      leaveDeactivatedAccount();
+    }
+
+    /**
+     * A tab whose socket was already closed when the account was deactivated
+     * never got the 4403 — and its reconnects fail as a bare 1006, the same
+     * as a server that is down. So after a few failed reconnects in a row,
+     * ask: a positive "no session" leaves for /login; anything else keeps
+     * the ordinary backoff running alongside.
+     */
+    function checkSessionAfterFailedReconnects() {
+      if (sessionCheckInFlightRef.current || leavingForLoginRef.current) return;
+      sessionCheckInFlightRef.current = true;
+      void sessionIsGone().then((gone) => {
+        sessionCheckInFlightRef.current = false;
+        if (gone && mountedRef.current) leaveForLogin();
+      });
     }
 
     function connect() {
+      if (leavingForLoginRef.current) return;
+      // One socket at a time (#1422). A live socket or a pending backoff
+      // already owns the next connection; a second dial would hold a slot of
+      // the per-user limit with no handler that ever closes it. A caller that
+      // wants a fresh socket now drops the old one and the timer first.
+      if (isSocketAlive(wsRef.current) || reconnectTimerRef.current) return;
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       const ws = new WebSocket(`${protocol}//${window.location.host}/api/ws?agentId=${agentId}`);
       // Snapshot the agentId at connection time. Handlers compare this against
       // agentIdRef.current to detect stale connections after an agent switch.
       const connectionAgentId = agentId;
 
+      // An explicit dial is a decision to be connected: it may not run under a
+      // suspend flag whose paired recover event never came (#1422 case 5a).
+      lifecycleSuspendedRef.current = false;
+      stopConnectionTimers();
+      connectStartedAtRef.current = Date.now();
+      // A dial that neither opens nor fails can sit in CONNECTING for minutes.
+      connectTimerRef.current = setTimeout(() => {
+        connectTimerRef.current = null;
+        if (wsRef.current === ws && ws.readyState === WebSocket.CONNECTING) abortSocket(ws);
+      }, CONNECT_TIMEOUT_MS);
+
       ws.onopen = () => {
         if (connectionAgentId !== agentIdRef.current || wsRef.current !== ws) return;
+        if (connectTimerRef.current) {
+          clearTimeout(connectTimerRef.current);
+          connectTimerRef.current = null;
+        }
         setIsConnected(true);
-        setReconnectExhausted(false);
         setPayloadRejected(false);
-        reconnectAttemptRef.current = 0;
+        failedSinceOpenRef.current = 0;
+        startHeartbeat(ws);
         // Tier 2b: arm the pre-history buffer on EVERY open, then drain it
         // when the history response lands. The server's handleHistory does
         // `addListener` and THEN async-fetches chat.history before replying,
@@ -884,38 +1370,68 @@ export function useWsRuntime(
         // also missed the multi-tab case. Arming unconditionally is safe: on a
         // genuinely fresh load nothing is streaming, so the buffer drains empty
         // on the (always-sent) history response — no stall, no benefit lost.
-        pendingHistoryRef.current = true;
-        frameBufferRef.current = [];
-        // #508: scope the history request to the active chat's session.
-        ws.send(JSON.stringify({ type: "history", agentId, ...(chatId && { chatId }) }));
-
-        // Flush any message that was queued while disconnected/connecting
-        if (pendingMessageRef.current) {
-          ws.send(pendingMessageRef.current);
-          pendingMessageRef.current = null;
-        }
+        sendHistoryRequest(ws);
+        // The queued message and the backoff reset wait for the server's first
+        // frame (see `servedSocketRef`).
       };
 
       ws.onclose = (event?: CloseEvent) => {
         if (connectionAgentId !== agentIdRef.current || wsRef.current !== ws) return;
         if (wsRef.current === ws) wsRef.current = null;
+        stopConnectionTimers();
         setIsConnected(false);
+        // The upstream flag belongs to the connection that carried it; kept, it
+        // would flash "connected" on the next socket before that says anything.
+        setIsOpenClawConnected(false);
         setIsDelayed(false);
         // Tier 2b: drop any pre-history buffer from the dying connection
         // so it can't bleed into the next ws's drain. The next onopen
         // re-arms pendingHistoryRef before sending its own history req.
         pendingHistoryRef.current = false;
         frameBufferRef.current = [];
+        // Nothing is outstanding on a dead socket. The next onopen sends its
+        // own request and arms its own deadline (#956); `historyTimedOut`
+        // deliberately survives, so a stall stays visible across the reconnect
+        // until a history frame actually lands.
+        clearHistoryWatchdog();
         if (delayTimerRef.current) {
           clearTimeout(delayTimerRef.current);
           delayTimerRef.current = null;
         }
+
+        // Close-code 4403: the account was deactivated (server/user-sockets.ts).
+        // Its sessions are gone, so every reconnect would fail the upgrade —
+        // ten tries behind a "reconnecting" status for something no retry can
+        // fix. Leave for the login page instead, where an expired session ends
+        // up too and where a deactivated account is told it can't sign in.
+        if (event?.code === ACCOUNT_DEACTIVATED_CLOSE_CODE) {
+          leaveForLogin();
+          return;
+        }
+        if (leavingForLoginRef.current) return;
 
         if (lifecycleSuspendedRef.current) {
           isRunningRef.current = false;
           setIsRunning(false);
           setIsHistoryLoaded(false);
           setKnownEmptyHistory(false);
+          return;
+        }
+
+        // Close-code 4429: the server refused this connection (too many open,
+        // or the rate limit) and said why. Not a failed attempt — the session is
+        // fine — and not a reason to hammer: retry at the capped interval until
+        // the limit lets us in.
+        if (event?.code === REJECTED_CLOSE_CODE) {
+          isRunningRef.current = false;
+          setIsRunning(false);
+          setIsHistoryLoaded(false);
+          setKnownEmptyHistory(false);
+          setConnectionRejection(parseRejection(event.reason));
+          if (mountedRef.current) {
+            shouldRecoverFromHistoryRef.current = true;
+            scheduleReconnect(reconnectDelay(Number.POSITIVE_INFINITY));
+          }
           return;
         }
 
@@ -968,17 +1484,20 @@ export function useWsRuntime(
         setKnownEmptyHistory(false);
         setPayloadRejected(false);
 
-        if (mountedRef.current && reconnectAttemptRef.current < MAX_RECONNECT_ATTEMPTS) {
-          shouldRecoverFromHistoryRef.current = true;
-          const delay = Math.min(1000 * Math.pow(2, reconnectAttemptRef.current), 5000);
-          reconnectAttemptRef.current++;
-          reconnectTimerRef.current = setTimeout(() => {
-            reconnectTimerRef.current = null;
-            connect();
-          }, delay);
-        } else if (mountedRef.current) {
-          setReconnectExhausted(true);
+        if (!mountedRef.current) return;
+        // Counted apart from the backoff: focus, visibility and Try again all
+        // reset that, and the check must still see failures in a row (#1422).
+        if (failedSinceOpenRef.current >= SESSION_CHECK_AFTER_FAILED_RECONNECTS) {
+          checkSessionAfterFailedReconnects();
         }
+        failedSinceOpenRef.current++;
+
+        // Never give up while the tab is visible: the delay is capped, not the
+        // number of attempts.
+        shouldRecoverFromHistoryRef.current = true;
+        const delay = reconnectDelay(reconnectAttemptRef.current);
+        reconnectAttemptRef.current++;
+        scheduleReconnect(delay);
       };
 
       ws.onerror = () => {
@@ -1038,6 +1557,24 @@ export function useWsRuntime(
         // either a server bug (history frame never arrives) or an
         // adversarial server flooding chunks. Log + drop oldest so we
         // don't OOM the tab.
+        // A policy refusal can be the server's answer to the history request
+        // itself (an open tab reconnecting after the admin switched personal
+        // agents off). No history is coming, so end the wait here instead of
+        // buffering the refusal behind a history frame that never arrives —
+        // that would end in the history timeout, which reads as a network
+        // fault. Nothing buffered can be applied without history either.
+        if (
+          pendingHistoryRef.current &&
+          data.type === "error" &&
+          typeof data.code === "string" &&
+          data.code.startsWith("policy_")
+        ) {
+          clearHistoryWatchdog();
+          pendingHistoryRef.current = false;
+          frameBufferRef.current = [];
+          setIsHistoryLoaded(true);
+        }
+
         if (pendingHistoryRef.current && data.type !== "history") {
           if (frameBufferRef.current.length >= FRAME_BUFFER_MAX) {
             console.warn(
@@ -1051,6 +1588,13 @@ export function useWsRuntime(
         }
 
         if (data.type === "history") {
+          // The wait is over: disarm the deadline and clear any stall it
+          // already surfaced (#956). A frame that arrives late — on this
+          // socket or on a self-healed one — recovers the chat on its own,
+          // and the retry affordance disappears unused.
+          clearHistoryWatchdog();
+          historySelfHealsRef.current = 0;
+          setHistoryTimedOut(false);
           const serverMessages: Array<{
             role: string;
             content: string;
@@ -1074,6 +1618,7 @@ export function useWsRuntime(
             // here so the file chip renders on reload.
             ...(msg.files && msg.files.length > 0 ? { files: msg.files } : {}),
             ...(msg.oversized ? { oversized: true } : {}),
+            ...historyAttachmentIds(msg),
           }));
 
           // Prefer a richer LOCAL copy over an oversized-history placeholder
@@ -1096,6 +1641,16 @@ export function useWsRuntime(
             historyMessages.push(...preserved);
           }
 
+          // Read BEFORE the two anchoring blocks below, both of which APPEND an
+          // assistant to `historyMessages`. `bufferIsStale` (further down) asks
+          // whether the SERVER already holds this turn's reply; an anchored copy
+          // of a reply the server does NOT hold answers that question `true` and
+          // throws away every frame buffered during the catch-up — including the
+          // pipe's post-`done` flush, which for a stopped run carries the tail of
+          // the very reply the anchor exists to keep.
+          const serverHistoryEndsInAssistant =
+            historyMessages[historyMessages.length - 1]?.role === "assistant";
+
           // Tier 2b: if the server reports an in-flight run for this
           // session, anchor the last assistant message in the reconciled
           // history to the server-side `currentMessageId`. Subsequent
@@ -1114,7 +1669,18 @@ export function useWsRuntime(
               };
             }
           ).activeRun;
-          if (activeRun) {
+          const resumeAnchor: WsMessage | null = activeRun
+            ? {
+                id: activeRun.messageId,
+                role: "assistant",
+                content: activeRun.partialContent ?? "",
+                timestamp: new Date().toISOString(),
+              }
+            : null;
+          resumeCursorRef.current = resumeAnchor
+            ? { messageId: resumeAnchor.id, length: resumeAnchor.content.length }
+            : null;
+          if (activeRun && resumeAnchor) {
             // Anchor the in-flight reply as the TRAILING assistant message, seeded
             // with the server's resume buffer (`partialContent`) — the text
             // already streamed before this reload, which the server won't replay
@@ -1127,17 +1693,54 @@ export function useWsRuntime(
             // ThreadPrimitive.Messages (tapClientLookup index out of bounds).
             // Future chunks merge into this id via mergeOrAppendChunk. See
             // ensure-trailing-assistant.ts (#470).
-            const anchored = ensureTrailingAssistant(historyMessages, {
-              id: activeRun.messageId,
-              role: "assistant",
-              content: activeRun.partialContent ?? "",
-              timestamp: new Date().toISOString(),
-            });
+            const anchored = ensureTrailingAssistant(historyMessages, resumeAnchor);
             historyMessages.length = 0;
             historyMessages.push(...anchored);
             isRunningRef.current = true;
             setIsRunning(true);
             inflightRunIdRef.current = activeRun.runId;
+            // A live run means a NEW turn is streaming; whatever the user
+            // stopped before it is no longer the trailing reply.
+            stoppedReplyRef.current = null;
+          } else if (stoppedReplyRef.current && historyMessages.length > 0) {
+            // The empty list is client-router's "the session exists but OpenClaw
+            // cannot answer right now" frame (`messages: [], sessionKnown: true`
+            // — a restart race, or two failed history RPCs). It is NOT a shorter
+            // view of the conversation, and `shouldReplaceLocalWithServerHistory`
+            // refuses to adopt it for exactly that reason. Anchoring into it
+            // would hand that guard a list of ONE, which then reads as a genuine
+            // shrink and stages the destructive reconcile: the whole
+            // conversation replaced by the stopped reply alone. Hold the reply
+            // and let the next catch-up, which has a real history, release it.
+            //
+            // #978: the user pressed stop and this catch-up is the first look at
+            // the server's version of the turn. An aborted run's reply is not in
+            // OpenClaw's transcript — the history therefore ends at the USER
+            // turn, is shorter than the local list, and the reconcile below
+            // adopts it wholesale. That silently deletes the words the stop was
+            // pressed to keep.
+            //
+            // Anchor them back, exactly as the activeRun branch does for a run
+            // that is still going. Same helper, same rule: if the server DOES
+            // have the reply (it persisted after all, or another device
+            // continued the conversation) it wins whenever it is longer, so this
+            // can restore text but never shrink it.
+            const stopped = stoppedReplyRef.current;
+            const last = historyMessages[historyMessages.length - 1];
+            if (last?.role === "assistant" && last.content.length >= stopped.content.length) {
+              // The server caught up. Stop holding a private copy — keeping it
+              // would resurrect this reply after a later /reset or a deletion.
+              stoppedReplyRef.current = null;
+            } else {
+              const anchored = ensureTrailingAssistant(historyMessages, {
+                id: stopped.id,
+                role: "assistant",
+                content: stopped.content,
+                timestamp: stopped.timestamp ?? new Date().toISOString(),
+              });
+              historyMessages.length = 0;
+              historyMessages.push(...anchored);
+            }
           }
           const shouldRecoverFromHistory = shouldRecoverFromHistoryRef.current;
           const prevMessages = messagesRef.current;
@@ -1184,11 +1787,11 @@ export function useWsRuntime(
             }
           };
           // Stale iff the turn is done server-side (no activeRun) and its reply
-          // is already in history. When activeRun is set, historyMessages has
-          // been re-anchored above, but `!activeRun` short-circuits before we
-          // read it, so this only inspects the unmutated server list.
-          const bufferIsStale =
-            !activeRun && historyMessages[historyMessages.length - 1]?.role === "assistant";
+          // is already in history. Reads the snapshot taken before the anchoring
+          // blocks: `!activeRun` used to short-circuit before the only mutation
+          // there was, but the stopped-reply anchor (#978) runs on the
+          // `!activeRun` side, so the mutated list is no longer a safe reading.
+          const bufferIsStale = !activeRun && serverHistoryEndsInAssistant;
 
           if (shouldStageReplace) {
             stageDestructiveHistoryReconcile(historyMessages);
@@ -1241,8 +1844,13 @@ export function useWsRuntime(
               // future chunks still merge into the trailing assistant by id. This
               // also guards the concurrent-render case where `prev` is longer than
               // the messagesRef snapshot the staging decision used.
+              //
+              // Keeping `prev` must still resume the in-flight reply: the words
+              // streamed while this tab was not listening exist only in the
+              // anchor's `partialContent`, and the deltas still to come start
+              // where it ends.
               if (next.length < prev.length) {
-                return prev;
+                return resumeAnchor ? resumeInflightReplyInLocal(prev, resumeAnchor) : prev;
               }
               return next;
             }
@@ -1363,6 +1971,16 @@ export function useWsRuntime(
           }
           setIsDelayed(false);
 
+          // Drop whatever the resume seed already shows (see resumeCursorRef). A
+          // frame without `offset` is applied whole, as before.
+          let content: string = data.content;
+          const cursor = resumeCursorRef.current;
+          if (cursor && cursor.messageId === data.messageId && typeof data.offset === "number") {
+            content = content.slice(Math.max(0, cursor.length - data.offset));
+            cursor.length = Math.max(cursor.length, data.offset + data.content.length);
+          }
+          if (content === "") return;
+
           setMessages((prev) => {
             // A successful chunk auto-dismisses any prior error bubble — the
             // retry succeeded, so the previous failure no longer reflects state.
@@ -1387,11 +2005,28 @@ export function useWsRuntime(
               mergeOrAppendChunk(filtered, {
                 id: data.messageId,
                 role: "assistant",
-                content: data.content,
+                content,
                 timestamp: new Date().toISOString(),
               })
             );
           });
+        }
+
+        if (data.type === "file") {
+          // Agent → user file delivery (#703). A plugin handed the user a file
+          // mid-run; attach the chip to the assistant message this run is
+          // streaming into (creating a content-less bubble if the file lands
+          // before any text). The bytes are fetched lazily from the artifacts
+          // route by the chip component.
+          setMessages((prev) =>
+            capMessages(
+              attachDeliveredFile(prev, {
+                id: data.messageId,
+                filename: data.filename,
+                mimeType: data.mimeType,
+              })
+            )
+          );
         }
 
         if (data.type === "done") {
@@ -1413,6 +2048,13 @@ export function useWsRuntime(
           // Tier 2b: the run finished cleanly. Drop the in-flight runId
           // so the next turn's activeRun signal (if any) replaces it.
           inflightRunIdRef.current = null;
+          // #978: the terminator BOUNDS the error suppression below. The frame
+          // it guards against is the abort's own error racing the server's
+          // knowledge of the click, and the server sends that error before this
+          // `complete` — so anything arriving after it is about a different
+          // event and must reach the user. Left unbounded, a tab that stopped a
+          // reply and was then left open would silently drop every later error.
+          cancelledTurnRef.current = false;
         }
 
         if (data.type === "error") {
@@ -1421,6 +2063,20 @@ export function useWsRuntime(
             delayTimerRef.current = null;
           }
           setIsDelayed(false);
+
+          // #978: this turn was stopped by the user. A terminal error for it is
+          // the abort itself arriving the long way round — surfacing it would
+          // blame the provider for the user's own click, and the error bubble
+          // is also what flips the destructive-reconcile predicate that then
+          // discards the partial reply. `PROTOCOL_OUTDATED` is deliberately
+          // BELOW this: it is about the bundle, not about this turn, and it
+          // stays actionable no matter what the user just pressed.
+          if (cancelledTurnRef.current && data.code !== "PROTOCOL_OUTDATED") {
+            isRunningRef.current = false;
+            setIsRunning(false);
+            inflightRunIdRef.current = null;
+            return;
+          }
 
           // PROTOCOL_OUTDATED: the server rejected a legacy frame shape.
           // Surface a persistent reload toast — the tab needs the new bundle
@@ -1453,11 +2109,22 @@ export function useWsRuntime(
           // All attachment-related server error codes map onto the dedicated
           // "Invalid file" UI so the user sees the server's actionable message
           // instead of a generic "unknown error" fallback (issue #324).
+          //
+          // Matched by prefix rather than enumerated: the list was a
+          // hand-maintained mirror of client-router's `code:` literals, and a
+          // new one added there (`attachment_file_missing`, #1195) would
+          // silently fall through to "An unknown error occurred." — the exact
+          // fallback #324 removed. Every code Pinchy emits for this family is
+          // namespaced `attachment_`, and nothing else in the protocol is.
           const isAttachmentErrorCode =
-            data.code === "attachment_invalid" ||
-            data.code === "attachment_not_found" ||
-            data.code === "attachment_expired" ||
-            data.code === "attachment_already_attached";
+            typeof data.code === "string" && data.code.startsWith("attachment_");
+
+          // `policy_` codes are refusals by an instance policy (a member's
+          // personal agent switched off, a budget used up). Nothing the user
+          // can retry will change the answer — only an admin can — so the
+          // bubble carries the server's explanation and no Retry button.
+          // Matched by prefix for the same reason as `attachment_` above.
+          const isPolicyRefusal = typeof data.code === "string" && data.code.startsWith("policy_");
 
           const error: ChatError = data.providerError
             ? {
@@ -1484,10 +2151,14 @@ export function useWsRuntime(
                   role: "assistant",
                   content: "",
                   error,
-                  retryable: true,
-                  retryReason: hasReceivedChunkRef.current
-                    ? ("partial_stream_failure" as const)
-                    : ("send_failure" as const),
+                  ...(isPolicyRefusal
+                    ? {}
+                    : {
+                        retryable: true,
+                        retryReason: hasReceivedChunkRef.current
+                          ? ("partial_stream_failure" as const)
+                          : ("send_failure" as const),
+                      }),
                 }
               )
             )
@@ -1502,8 +2173,44 @@ export function useWsRuntime(
 
       ws.onmessage = (event) => {
         if (connectionAgentId !== agentIdRef.current || wsRef.current !== ws) return;
+        if (servedSocketRef.current !== ws) {
+          servedSocketRef.current = ws;
+          reconnectAttemptRef.current = 0;
+          // Flush any message that was queued while disconnected/connecting.
+          if (pendingMessageRef.current) {
+            ws.send(pendingMessageRef.current);
+            pendingMessageRef.current = null;
+            setHasQueuedMessage(false);
+          }
+        }
         try {
           const data = JSON.parse(event.data);
+          // Any frame proves the connection is alive and being served.
+          if (pongDeadlineRef.current) {
+            clearTimeout(pongDeadlineRef.current);
+            pongDeadlineRef.current = null;
+          }
+          if (data.type === "pong") {
+            everPongedRef.current = true;
+            connectionPongedRef.current = true;
+            probeOutstandingRef.current = false;
+            setConnectionRejection(null);
+            return;
+          }
+          // A server that predates `ping` routes it like a chat message and
+          // answers with one of these code-less errors. It answers the probe,
+          // not the user: swallow it and stop pinging.
+          if (
+            probeOutstandingRef.current &&
+            data.type === "error" &&
+            data.code === undefined &&
+            (data.message === UNKNOWN_FRAME_ERROR_MESSAGE || data.message === "Agent not found")
+          ) {
+            probeOutstandingRef.current = false;
+            pingUnsupportedRef.current = true;
+            return;
+          }
+          setConnectionRejection(null);
           processFrame(data);
         } catch {
           // Ignore unparseable messages
@@ -1514,7 +2221,9 @@ export function useWsRuntime(
     }
 
     connectRef.current = connect;
+    reconnectNowRef.current = reconnectNow;
     connect();
+    const watchdogTimer = setInterval(watchdogTick, WATCHDOG_INTERVAL_MS);
     document.addEventListener("visibilitychange", handleVisibilityChange);
     window.addEventListener("pagehide", handlePageHide);
     window.addEventListener("pageshow", handlePageShow);
@@ -1529,6 +2238,11 @@ export function useWsRuntime(
       if (connectRef.current === connect) {
         connectRef.current = null;
       }
+      if (reconnectNowRef.current === reconnectNow) {
+        reconnectNowRef.current = null;
+      }
+      clearInterval(watchdogTimer);
+      stopConnectionTimers();
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       window.removeEventListener("pagehide", handlePageHide);
       window.removeEventListener("pageshow", handlePageShow);
@@ -1541,7 +2255,12 @@ export function useWsRuntime(
         clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;
       }
+      if (hiddenGraceTimerRef.current) {
+        clearTimeout(hiddenGraceTimerRef.current);
+        hiddenGraceTimerRef.current = null;
+      }
       clearReconcileTimers();
+      clearHistoryWatchdog();
       if (delayTimerRef.current) {
         clearTimeout(delayTimerRef.current);
       }
@@ -1552,7 +2271,11 @@ export function useWsRuntime(
         clearTimeout(timer);
       }
       ackTimers.clear();
-      wsRef.current?.close();
+      // Released, not just closed: the next effect's connect() must not see it
+      // as the live socket while its close is still in flight.
+      const ws = wsRef.current;
+      wsRef.current = null;
+      ws?.close();
     };
     // chatId (#508) is intentionally in the deps: switching the chat must tear
     // down the old WS and reconnect so the fresh connect() sends a history
@@ -1581,38 +2304,45 @@ export function useWsRuntime(
 
   /**
    * Send a JSON-serialised payload over the WebSocket if it's open, otherwise
-   * queue it for delivery the moment the next connection completes the
-   * handshake (see `connect()` in the main effect — it flushes
-   * pendingMessageRef on open).
+   * queue it for delivery on the first frame of the next connection the server
+   * accepts (see `servedSocketRef`).
    */
-  const sendOrQueue = useCallback((payload: string) => {
-    const ws = wsRef.current;
-    if (ws?.readyState === WebSocket.OPEN) {
-      // A user-initiated send proves the client is interactive — i.e. past the
-      // initial history-load window (the composer is gated on isHistoryLoaded).
-      // The pre-history buffer (armed on every open) must therefore be disarmed
-      // now so THIS turn's chunks stream straight through instead of waiting for
-      // a history response that won't come mid-turn. A resuming reload never
-      // sends, so its buffer stays armed until the history response drains the
-      // raced-ahead deltas onto the anchored prefix. Only disarm when nothing is
-      // buffered — the gated composer can't produce a real pre-history backlog,
-      // and this guarantees such a backlog is never silently dropped.
-      if (pendingHistoryRef.current && frameBufferRef.current.length === 0) {
-        pendingHistoryRef.current = false;
+  const sendOrQueue = useCallback(
+    (payload: string) => {
+      const ws = wsRef.current;
+      if (ws?.readyState === WebSocket.OPEN) {
+        // A user-initiated send proves the client is interactive — i.e. past the
+        // initial history-load window (the composer is gated on isHistoryLoaded).
+        // The pre-history buffer (armed on every open) must therefore be disarmed
+        // now so THIS turn's chunks stream straight through instead of waiting for
+        // a history response that won't come mid-turn. A resuming reload never
+        // sends, so its buffer stays armed until the history response drains the
+        // raced-ahead deltas onto the anchored prefix. Only disarm when nothing is
+        // buffered — the gated composer can't produce a real pre-history backlog,
+        // and this guarantees such a backlog is never silently dropped.
+        if (pendingHistoryRef.current && frameBufferRef.current.length === 0) {
+          pendingHistoryRef.current = false;
+          // The deadline goes with the buffer (#956): nothing is waiting on a
+          // history frame any more, and a watchdog left armed would tear down a
+          // perfectly healthy socket in the middle of this turn.
+          clearHistoryWatchdog();
+        }
+        ws.send(payload);
+      } else {
+        pendingMessageRef.current = payload;
+        setHasQueuedMessage(true);
+        if (
+          ws?.readyState === WebSocket.CONNECTING ||
+          ws?.readyState === WebSocket.CLOSING ||
+          reconnectTimerRef.current
+        ) {
+          return;
+        }
+        connectRef.current?.();
       }
-      ws.send(payload);
-    } else {
-      pendingMessageRef.current = payload;
-      if (
-        ws?.readyState === WebSocket.CONNECTING ||
-        ws?.readyState === WebSocket.CLOSING ||
-        reconnectTimerRef.current
-      ) {
-        return;
-      }
-      connectRef.current?.();
-    }
-  }, []);
+    },
+    [clearHistoryWatchdog]
+  );
 
   const onNew = useCallback(
     async (message: AppendMessage) => {
@@ -1663,10 +2393,14 @@ export function useWsRuntime(
             status: "sending",
             ...(readyUploads.length > 0 && {
               files: readyUploads.map((u) => ({
-                filename: u.file.name,
+                // The name on disk (#1199) — see PendingUpload.storedFilename.
+                // The fallback only covers a chip that reached "ready" before
+                // this field existed; a live upload always carries it.
+                filename: u.storedFilename ?? u.file.name,
                 mimeType: u.file.type,
               })),
             }),
+            ...(attachmentIds.length > 0 && { attachmentIds }),
           },
           // In-flight assistant placeholder: keeps the list ending in an
           // assistant for the whole run, so assistant-ui never injects its
@@ -1688,6 +2422,11 @@ export function useWsRuntime(
       isRunningRef.current = true;
       hasReceivedChunkRef.current = false;
       setIsRunning(true);
+      // #978: the previous turn's stopped reply is now settled history as far
+      // as this client is concerned — it sits in the local list, and the next
+      // reconcile must be free to correct it like any other message.
+      cancelledTurnRef.current = false;
+      stoppedReplyRef.current = null;
       // A new turn starts — drive the liveness machine to `responding`. This
       // clears any prior failure/slow state so a fresh send always starts clean.
       dispatchLiveness({ type: "started" });
@@ -1762,6 +2501,17 @@ export function useWsRuntime(
       delayTimerRef.current = null;
     }
     setIsDelayed(false);
+    // #978: remember the words already on screen BEFORE clearing isRunning.
+    // Clearing it is what re-opens `requestHistoryCatchup`, and the server's
+    // history for an aborted run does not contain this reply — so without a
+    // local copy the next poke or window focus adopts a shorter history and the
+    // partial disappears. That is the flake behind 19-chat-stop-button.
+    const trailing = messagesRef.current[messagesRef.current.length - 1];
+    stoppedReplyRef.current =
+      trailing?.role === "assistant" && trailing.content.length > 0 && !trailing.error
+        ? { id: trailing.id, content: trailing.content, timestamp: trailing.timestamp }
+        : null;
+    cancelledTurnRef.current = true;
     isRunningRef.current = false;
     hasReceivedChunkRef.current = false;
     setIsRunning(false);
@@ -1789,6 +2539,12 @@ export function useWsRuntime(
       hasReceivedChunkRef.current = false;
       trimTrailingOnNextChunkRef.current = true;
       setIsRunning(true);
+      // #978: a retry is a new turn, and it explicitly discards the trailing
+      // partial (`trimTrailingOnNextChunkRef`). Holding either stop-related ref
+      // past this point would re-anchor a reply the retry just replaced, and
+      // swallow the retry's own errors.
+      stoppedReplyRef.current = null;
+      cancelledTurnRef.current = false;
       // A retry starts a fresh turn — clear any prior failed/slow liveness.
       dispatchLiveness({ type: "started" });
 
@@ -1797,6 +2553,12 @@ export function useWsRuntime(
         agentId,
         ...(chatId && { chatId }),
         content: lastUserMsg.content,
+        // Re-send the attachments with the message they belong to (#1195).
+        // Without this the retry delivered the text alone and the agent was
+        // asked about files it had never been handed.
+        ...((lastUserMsg.attachmentIds?.length ?? 0) > 0 && {
+          attachmentIds: lastUserMsg.attachmentIds,
+        }),
         clientMessageId: lastUserMsg.id,
         isRetry: true,
         retryReason: reason,
@@ -1836,6 +2598,12 @@ export function useWsRuntime(
         agentId,
         ...(chatId && { chatId }),
         content: failedMsg.content,
+        // Same reason as onRetryContinue (#1195). This path matters more, not
+        // less: the message never reached the server, so its uploads are still
+        // `staged` and the agent has never seen them at all.
+        ...((failedMsg.attachmentIds?.length ?? 0) > 0 && {
+          attachmentIds: failedMsg.attachmentIds,
+        }),
         clientMessageId: messageId,
         isRetry: true,
       });
@@ -1950,6 +2718,7 @@ export function useWsRuntime(
                     ...u,
                     state: "ready",
                     uploadId: response.id,
+                    storedFilename: response.filename,
                     progress: 100,
                   }
                 : u
@@ -2057,6 +2826,7 @@ export function useWsRuntime(
                     ...u,
                     state: "ready",
                     uploadId: response.id,
+                    storedFilename: response.filename,
                     progress: 100,
                   }
                 : u
@@ -2114,14 +2884,18 @@ export function useWsRuntime(
     isReconcilingMessages,
     hasInitialContent,
     isOpenClawConnected,
-    reconnectExhausted,
+    isOffline,
+    connectionRejection,
     payloadRejected,
+    historyTimedOut,
+    retryHistory,
     // #583: whether an inline turn-failure bubble is currently in the thread.
     // The durable paused-error banner reads this (via the published bundle) to
     // suppress itself when the same failure is already shown inline.
     hasInlineError: messages.some((m) => m.error),
     onRetryContinue,
     onRetryResend,
+    hasQueuedMessage,
     pendingUploads,
     addPendingUpload,
     removePendingUpload,

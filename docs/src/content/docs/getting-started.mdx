@@ -9,6 +9,7 @@ This guide walks you through getting Pinchy up and running — from downloading 
 
 ## Prerequisites
 
+- A 64-bit x86 (amd64) machine — Pinchy's images are built for `linux/amd64` only, so Arm64 hosts are [not yet supported](/installation/#system-requirements) ([#1081](https://github.com/heypinchy/pinchy/issues/1081))
 - [Docker](https://docs.docker.com/get-docker/) (includes Docker Compose v2)
 - An API key from an LLM provider (Anthropic, OpenAI, Google, or Ollama)
 
@@ -34,9 +35,10 @@ docker compose pull
 docker compose up -d
 ```
 
-This starts three services:
+This starts four services:
 
 - **Pinchy** — the web app on port 7777
+- **Office converter** — turns Word and PowerPoint files into PDFs, and old `.xls` workbooks into `.xlsx`, for the knowledge base (no network at all)
 - **OpenClaw** — the AI agent runtime (internal, not exposed)
 - **PostgreSQL** — the database
 
@@ -63,6 +65,8 @@ Your API key is encrypted at rest using AES-256-GCM before being stored in the d
 
 If the provider you configure has no vision-capable model, the wizard shows an amber warning: **No vision-capable model configured.** Adding Anthropic, OpenAI, or Google as a provider enables image uploads and scanned-PDF support.
 
+Once the key is saved, the wizard shows **Provider connected!** and briefly waits on **Getting Smithers ready…** — this is Pinchy handing the new configuration to the agent runtime, and **Continue to Pinchy** unlocks as soon as the runtime has it. On a fresh install that step occasionally takes most of a minute, because saving the first API key also provisions the runtime's secrets store and restarts it. If it is still going after 30 seconds the wizard lets you through anyway with a note; your first message just takes a moment longer to land.
+
 ## 6. Chat with Smithers
 
 Once your provider is configured, Pinchy redirects you to the chat interface. Your default agent — **Smithers** — greets you automatically and starts a short onboarding interview to learn about you (and your organization, if you're an admin). This builds context that every agent on the platform can use.
@@ -73,7 +77,7 @@ Type a message and hit Enter. Smithers responds in real time via WebSocket. See 
 
 ## 7. Invite your team
 
-Go to **Settings → Users** to invite team members. Enter their email address and Pinchy generates a one-time invite link.
+Go to **Settings → Users** to invite team members. Enter their email address and Pinchy generates a one-time invite link. To have Pinchy email the link for you, [set up email delivery](/guides/email-delivery/) first.
 
 Each invited user gets their own personal **Smithers** agent, created automatically when they claim the invite. Invite links are valid for 7 days.
 
@@ -81,7 +85,7 @@ Each invited user gets their own personal **Smithers** agent, created automatica
 
 You can create agents from templates. Creating an agent is simple: pick a template, give it a name, add an optional tagline, and click Create. Each agent gets a unique auto-generated avatar.
 
-For example, a **Knowledge Base** agent can read text files, Markdown, and **PDF documents** (including scanned PDFs with vision-capable models) from directories you select — but has no access to anything else by default.
+For example, a **Knowledge Base** agent can read text files, Markdown, and **PDF documents** (including scanned PDFs with vision-capable models) from directories you select — but has no access to anything else by default. Searching and reading don't cover the same formats, so a document can be readable on request and still not come back as a search hit — or the other way round. See [Supported file types](/guides/mount-data-directories/#supported-file-types).
 
 After creating the agent, you can customize it through the agent settings tabs. Which tabs you see depends on your role and the agent type:
 
@@ -96,7 +100,7 @@ After creating the agent, you can customize it through the agent settings tabs. 
 - **Permissions** — Configure which tools and directories the agent can access
 - **Access** <Badge text="Enterprise" variant="note" /> — Set visibility to all users or restrict to specific groups
 
-**Admin-only, any agent:**
+**Admin-only, shared agents and your own Smithers:**
 
 - **Telegram** — Connect a Telegram bot to this agent
 

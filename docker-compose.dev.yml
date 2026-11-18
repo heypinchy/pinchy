@@ -1,12 +1,28 @@
 services:
   pinchy:
+    # Overridable so two worktrees can run a dev stack at once.
+    # `pnpm worktree:env` writes a free block into a gitignored .env.
+    #
+    # DEV_-prefixed, and set HERE rather than in docker-compose.yml, because
+    # PINCHY_PORT is read by the base file that EVERY E2E stack layers on: a
+    # value in .env would move those stacks off the :7777 their Playwright
+    # configs expect, and the failure surfaces as a connection timeout with no
+    # trace back to the allocation. Only stacks that include this dev overlay
+    # should move. See dev-stack-port-isolation.test.mjs.
+    ports: !override
+      - "${DEV_PINCHY_PORT:-127.0.0.1:7777}:7777"
     build:
       context: .
       dockerfile: Dockerfile.pinchy.dev
     environment:
       - DATABASE_URL=postgresql://pinchy:pinchy_dev@db:5432/pinchy
       - BETTER_AUTH_SECRET=dev-secret-do-not-use-in-production
-      - PINCHY_ENTERPRISE_KEY=${PINCHY_ENTERPRISE_KEY-eyJhbGciOiJFUzI1NiJ9.eyJ0eXBlIjoicGFpZCIsImZlYXR1cmVzIjpbImVudGVycHJpc2UiXSwiaXNzIjoiaGV5cGluY2h5LmNvbSIsInN1YiI6InBpbmNoeS1kZXYiLCJpYXQiOjE3NzM0ODUyMzQsImV4cCI6MjA4ODg0NTIzNH0.h6stBWDrHP2LnXBv18RDk9_y71_b8FvFU6IodCBJkldlLoW6uxX6P7Hr_SL8OM-jhaNqUu7BIMaTYvbqW28buA}
+      # The development license — signed by the DEVELOPMENT key, which only a
+      # non-production build trusts (see src/lib/license-keys.ts). Committing
+      # it is safe for exactly that reason; the production-signed token that
+      # used to sit here was not (#1083). Kept byte-identical to
+      # `DEV_LICENSE_TOKEN` by committed-license-tokens.test.ts.
+      - PINCHY_ENTERPRISE_KEY=${PINCHY_ENTERPRISE_KEY-eyJhbGciOiJFUzI1NiJ9.eyJ0eXBlIjoicGFpZCIsImZlYXR1cmVzIjpbImVudGVycHJpc2UiXSwiaXNzIjoiaGV5cGluY2h5LmNvbSIsInN1YiI6InBpbmNoeS1kZXYiLCJpYXQiOjE3NzM0ODUyMzQsImV4cCI6NDkyNzA4NTIzNH0.x6YibNzmaMdiWJb4GjksKqfvJ1y-Tu0cv-iSZWdPW5fPQIzzJyed4b8oMlBbdQN_CkRFOisjYe9Q75PC6OEZxA}
       # MCP integration is feature-flagged behind a single server-side runtime
       # flag (src/lib/feature-flags.ts) — no build-time / NEXT_PUBLIC_
       # counterpart, so passing it through here (default off) is enough for a
@@ -25,6 +41,39 @@ services:
       # ../../../../plugins/<name>/ relative to web/src/lib/openclaw-config/.
       # Mount read-only so the dev server can import them without a rebuild.
       - ./packages/plugins:/app/packages/plugins:ro
+      # Re-declare /data WRITABLE for dev, overriding the base compose's
+      # `pinchy-data:/data:ro` (Compose merges service volumes by target, so
+      # this same-target entry wins). Required because the sample-docs bind
+      # below nests UNDER /data: Docker must create the `/data/sample-docs`
+      # mountpoint inside the /data volume, which a read-only parent mount
+      # forbids ("read-only file system" — fatal under Linux runc in CI, though
+      # tolerated by macOS/OrbStack locally). Production keeps /data read-only
+      # (it has no nested bind); only dev needs it writable.
+      - pinchy-data:/data
+      # Dev KB corpus, read-only, at the SAME /data/sample-docs path the
+      # openclaw service mounts it — so the knowledge-base ingest pipeline and
+      # the workspace-file serve route in web resolve the same paths an agent's
+      # allowed_paths reference.
+      - ./sample-data:/data/sample-docs:ro
+      # A spool of its own, for both services (same target, so it replaces
+      # the base file's mount). Dev runs them as root, and a capability-less
+      # root converter cannot write a spool the production image prepared —
+      # owned by 999, sticky, its socket owned by 998 — in the same project.
+      - pinchy-office-spool-dev:/var/spool/pinchy-office
+  office-converter:
+    # No image override needed: `pinchy` above builds the image the base file
+    # names, and Compose runs this service on that local build.
+    #
+    # Root, because the dev image has no `pinchy` user and the dev web process
+    # stages its batches as root — the production converter's uid (998, group
+    # 999) could not write the PDFs back. Still no network, no capabilities,
+    # read-only root filesystem.
+    user: "0:0"
+    volumes:
+      # Live source, like the pinchy service, so a change to the converter is
+      # one `docker compose restart office-converter` away.
+      - ./packages/web/src:/app/packages/web/src:ro
+      - pinchy-office-spool-dev:/var/spool/pinchy-office
   openclaw:
     build:
       context: .
@@ -47,6 +96,8 @@ services:
       - ./packages/plugins/pinchy-web:/root/.openclaw/extensions/pinchy-web
       - ./packages/plugins/pinchy-email:/root/.openclaw/extensions/pinchy-email
       - ./packages/plugins/pinchy-docs:/root/.openclaw/extensions/pinchy-docs
+      - ./packages/plugins/pinchy-knowledge:/root/.openclaw/extensions/pinchy-knowledge
+      - ./packages/plugins/pinchy-approvals:/root/.openclaw/extensions/pinchy-approvals
       - ./sample-data:/data/sample-docs
       # Shadow volumes: mounted ON TOP of the node_modules path of the four
       # plugins that have baked /opt/<plugin>-deps bundles (pinchy-files,
@@ -61,9 +112,9 @@ services:
       # keeps the container's node_modules physically separate from the
       # host's, so config/install-plugin-deps.sh (mountpoint-safe — see its
       # header comment) and host `pnpm install` stop clobbering each other.
-      # context/audit/transcript/docs are intentionally excluded: they have
-      # no /opt/*-deps bundle, so their (host-managed) node_modules must stay
-      # visible through the bind mount above.
+      # context/audit/transcript/docs/knowledge are intentionally excluded:
+      # they have no /opt/*-deps bundle, so their (host-managed) node_modules
+      # must stay visible through the bind mount above.
       - dev-pinchy-files-node-modules:/root/.openclaw/extensions/pinchy-files/node_modules
       - dev-pinchy-odoo-node-modules:/root/.openclaw/extensions/pinchy-odoo/node_modules
       - dev-pinchy-web-node-modules:/root/.openclaw/extensions/pinchy-web/node_modules
@@ -72,11 +123,15 @@ services:
     environment:
       - POSTGRES_PASSWORD=pinchy_dev
     ports:
-      - "5434:5432"
+      # Overridable so two worktrees can run a dev stack at once. Host IP is
+      # hard-coded (not part of the variable) because DEV_DB_PORT is written
+      # as a bare number by `pnpm worktree:env` (scripts/worktree-env.mjs);
+      # binding all interfaces would expose the dev DB on the network.
+      - "127.0.0.1:${DEV_DB_PORT:-5434}:5432"
   caddy:
     image: caddy:2
     ports:
-      - "8443:443"
+      - "127.0.0.1:${DEV_CADDY_PORT:-8443}:443"
     volumes:
       - ./Caddyfile.dev:/etc/caddy/Caddyfile:ro
       - caddy_data_dev:/data
@@ -85,6 +140,7 @@ services:
 
 volumes:
   caddy_data_dev:
+  pinchy-office-spool-dev:
   dev-pinchy-files-node-modules:
   dev-pinchy-odoo-node-modules:
   dev-pinchy-web-node-modules:

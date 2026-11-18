@@ -110,13 +110,12 @@ const { mockResolveModelForTemplate: mockResolveTemplate } = vi.hoisted(() => ({
   }),
 }));
 
-vi.mock("@/lib/model-resolver", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/model-resolver")>();
-  return {
-    ...actual,
-    resolveModelForTemplate: mockResolveTemplate,
-  };
-});
+// The route previews each template's model through the live-availability
+// wrapper (#883). Mock that; the barrel stays real for the genuine
+// TemplateCapabilityUnavailableError class.
+vi.mock("@/lib/model-resolver/resolve-available", () => ({
+  resolveAvailableModelForTemplate: mockResolveTemplate,
+}));
 
 import { inArray } from "drizzle-orm";
 import { GET } from "@/app/api/templates/route";
@@ -412,6 +411,40 @@ describe("GET /api/templates", () => {
     );
   });
 
+  // #1297: web templates stay creatable without a search provider (page fetch
+  // needs no key), but the form must know search is not set up.
+  it("keeps web templates available and reports webSearchConfigured=false without a web-search connection", async () => {
+    mockLimit.mockResolvedValue([]);
+
+    const response = await GET(
+      new NextRequest("http://localhost:7777/api/templates"),
+      routeContext()
+    );
+    const body = await response.json();
+
+    const monitor = body.templates.find((t: { id: string }) => t.id === "market-monitor");
+    expect(monitor.requiresWeb).toBe(true);
+    expect(monitor.available).toBe(true);
+    expect(monitor.webSearchConfigured).toBe(false);
+  });
+
+  it("reports webSearchConfigured=true when a web-search connection exists", async () => {
+    const seededConnections = [{ type: "web-search", id: "brave-1" }];
+    mockLimit.mockImplementation((n: number) => {
+      const condition = mockWhere.mock.calls.at(-1)?.[0];
+      return Promise.resolve(matchSeededConnections(seededConnections, condition).slice(0, n));
+    });
+
+    const response = await GET(
+      new NextRequest("http://localhost:7777/api/templates"),
+      routeContext()
+    );
+    const body = await response.json();
+
+    const monitor = body.templates.find((t: { id: string }) => t.id === "market-monitor");
+    expect(monitor.webSearchConfigured).toBe(true);
+  });
+
   it("includes requiresEmailConnection flag in email template response", async () => {
     mockLimit.mockResolvedValue([]);
 
@@ -454,7 +487,10 @@ describe("GET /api/templates — MCP template gating", () => {
   it("marks an MCP template unavailable when its preset has no active connection", async () => {
     mockGetActiveMcpPresets.mockResolvedValue(new Set<string>()); // nothing connected
 
-    const response = await GET(new NextRequest("http://localhost:7777/api/templates"));
+    const response = await GET(
+      new NextRequest("http://localhost:7777/api/templates"),
+      routeContext()
+    );
     const body = await response.json();
 
     const ghReviewer = body.templates.find((t: { id: string }) => t.id === "github-pr-reviewer");
@@ -474,7 +510,10 @@ describe("GET /api/templates — MCP template gating", () => {
   it("marks an MCP template available once its preset is connected", async () => {
     mockGetActiveMcpPresets.mockResolvedValue(new Set(["github"]));
 
-    const response = await GET(new NextRequest("http://localhost:7777/api/templates"));
+    const response = await GET(
+      new NextRequest("http://localhost:7777/api/templates"),
+      routeContext()
+    );
     const body = await response.json();
 
     const ghReviewer = body.templates.find((t: { id: string }) => t.id === "github-pr-reviewer");
@@ -488,7 +527,10 @@ describe("GET /api/templates — MCP template gating", () => {
   it("non-MCP templates get requiresMcpConnection: null", async () => {
     mockGetActiveMcpPresets.mockResolvedValue(new Set<string>());
 
-    const response = await GET(new NextRequest("http://localhost:7777/api/templates"));
+    const response = await GET(
+      new NextRequest("http://localhost:7777/api/templates"),
+      routeContext()
+    );
     const body = await response.json();
 
     const custom = body.templates.find((t: { id: string }) => t.id === "custom");
@@ -501,7 +543,10 @@ describe("GET /api/templates — MCP template gating", () => {
     // the Odoo card beside it advertises "Odoo · Read & Write".
     mockGetActiveMcpPresets.mockResolvedValue(new Set(["github"]));
 
-    const response = await GET(new NextRequest("http://localhost:7777/api/templates"));
+    const response = await GET(
+      new NextRequest("http://localhost:7777/api/templates"),
+      routeContext()
+    );
     const body = await response.json();
 
     const ghReviewer = body.templates.find((t: { id: string }) => t.id === "github-pr-reviewer");
@@ -515,7 +560,10 @@ describe("GET /api/templates — MCP template gating", () => {
   it("non-MCP templates expose no recommended tool names", async () => {
     mockGetActiveMcpPresets.mockResolvedValue(new Set<string>());
 
-    const response = await GET(new NextRequest("http://localhost:7777/api/templates"));
+    const response = await GET(
+      new NextRequest("http://localhost:7777/api/templates"),
+      routeContext()
+    );
     const body = await response.json();
 
     const custom = body.templates.find((t: { id: string }) => t.id === "custom");
@@ -532,7 +580,10 @@ describe("GET /api/templates — MCP flag off", () => {
   });
 
   it("hides MCP templates entirely instead of merely marking them unavailable (D3: entire MCP surface absent)", async () => {
-    const response = await GET(new NextRequest("http://localhost:7777/api/templates"));
+    const response = await GET(
+      new NextRequest("http://localhost:7777/api/templates"),
+      routeContext()
+    );
     const body = await response.json();
 
     const ids = body.templates.map((t: { id: string }) => t.id);
@@ -541,7 +592,7 @@ describe("GET /api/templates — MCP flag off", () => {
   });
 
   it("never calls getActiveMcpPresets when the flag is off", async () => {
-    await GET(new NextRequest("http://localhost:7777/api/templates"));
+    await GET(new NextRequest("http://localhost:7777/api/templates"), routeContext());
     expect(mockGetActiveMcpPresets).not.toHaveBeenCalled();
   });
 });

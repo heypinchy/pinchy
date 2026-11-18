@@ -14,6 +14,8 @@ import {
   pinchyPost,
   pinchyDelete,
   getOdooRecords,
+  setOdooMethodResponse,
+  clearOdooMethodResponse,
 } from "./helpers";
 import {
   FAKE_OLLAMA_ODOO_CREATE_NESTED_LINES_TRIGGER,
@@ -23,7 +25,7 @@ import {
 } from "../shared/fake-ollama/fake-ollama-server";
 import {
   loginViaUI,
-  pollAuditForTool,
+  pollAuditForEvent,
   seedDefaultProviderToOllama,
   waitForOpenClawStable,
   waitForAgentDispatchable,
@@ -160,6 +162,8 @@ test.describe("Odoo nested one2many many2one resolution (#615)", () => {
 
     const input = page.getByPlaceholder(/send a message/i);
     await expect(input).toBeVisible({ timeout: 10_000 });
+    // Capture the cutoff BEFORE dispatch so the poll cannot match a stale row.
+    const since = new Date().toISOString();
     await input.fill(`${FAKE_OLLAMA_ODOO_CREATE_NESTED_LINES_TRIGGER}: book the opening entry`);
     await input.press("Enter");
 
@@ -167,12 +171,20 @@ test.describe("Odoo nested one2many many2one resolution (#615)", () => {
     // poll is still running when a late dispatch finally writes its audit. No
     // chat re-send — see odoo-agent-chat.spec.ts for why re-sending worsens
     // this flake.
-    const found = await pollAuditForTool(page, {
-      toolName: "odoo_create",
-      agentId,
+    //
+    // #720: assert not just that odoo_create dispatched, but that the plugin's
+    // read-after-write verification RAN and PASSED — outcome=success AND
+    // detail.verified=true. account.move is a verified-write model, so a green
+    // row here proves the record was read back and confirmed, not merely that
+    // the create call returned.
+    const entry = await pollAuditForEvent(page, {
+      eventType: "tool.odoo_create",
+      predicate: (e) => e.resource === `agent:${agentId}` && e.outcome === "success",
+      since,
       deadlineMs: 160_000,
     });
-    expect(found).toBe(true);
+    expect(entry.outcome).toBe("success");
+    expect(entry.detail?.verified).toBe(true);
 
     // Proof beyond the audit row: assert directly against the mock that the
     // move was created with two lines, and each line's account_id resolved
@@ -194,6 +206,51 @@ test.describe("Odoo nested one2many many2one resolution (#615)", () => {
     expect(createdLines).toHaveLength(2);
     for (const line of createdLines) {
       expect(line.account_id).toBe(40);
+    }
+  });
+
+  test("a silent no-op create (id returned, nothing persisted) is audited as failure, not false-success (#720)", async ({
+    page,
+  }, testInfo) => {
+    // The Eval-v1 flagship finding: the ERP returns a plausible id but persists
+    // nothing, and every model reported success. Here we inject exactly that —
+    // the mock's account.move `create` returns id 999999 without storing a
+    // record — and prove the plugin's read-after-write verification turns it
+    // into a hard, visible failure (outcome=failure, detail.verified=false)
+    // instead of a green checkmark.
+    testInfo.setTimeout(180_000);
+
+    // Make account.move.create a silent no-op: return an id, store nothing.
+    await setOdooMethodResponse("account.move", "create", 999999);
+    try {
+      await loginViaUI(page, getAdminEmail(), getAdminPassword());
+      await page.goto(`/chat/${agentId}`);
+      await expect(page).toHaveURL(`/chat/${agentId}`, { timeout: 10_000 });
+
+      const input = page.getByPlaceholder(/send a message/i);
+      await expect(input).toBeVisible({ timeout: 10_000 });
+      // Capture the cutoff BEFORE dispatch so the poll cannot match a stale row.
+      const since = new Date().toISOString();
+      await input.fill(`${FAKE_OLLAMA_ODOO_CREATE_NESTED_LINES_TRIGGER}: book the opening entry`);
+      await input.press("Enter");
+
+      const entry = await pollAuditForEvent(page, {
+        eventType: "tool.odoo_create",
+        predicate: (e) => e.resource === `agent:${agentId}` && e.outcome === "failure",
+        since,
+        deadlineMs: 160_000,
+      });
+      expect(entry.outcome).toBe("failure");
+      expect(entry.detail?.verified).toBe(false);
+
+      // The injected id was never persisted — verification proves the ERP is
+      // still empty of that record.
+      const stored = await getOdooRecords("account.move");
+      expect(stored.some((m) => m.id === 999999)).toBe(false);
+    } finally {
+      // Clear ONLY this override so the surrounding suite's seeded records and
+      // the other test's stored move are untouched.
+      await clearOdooMethodResponse("account.move", "create");
     }
   });
 });

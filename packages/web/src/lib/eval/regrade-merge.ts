@@ -47,13 +47,6 @@ export function applyTrajectoryRegrade(
     if (storedKeys.has(k)) duplicateStored.add(k);
     storedKeys.add(k);
   }
-  if (duplicateStored.size > 0) {
-    throw new Error(
-      `applyTrajectoryRegrade: duplicate (model, latencyMs) among stored runs${where}: ` +
-        `${[...duplicateStored].join(", ")}. latencyMs no longer identifies a run, so one ` +
-        `trajectory would re-grade several runs.`
-    );
-  }
 
   const regradedByKey = new Map<string, RunResult>();
   const orphans: string[] = [];
@@ -75,6 +68,19 @@ export function applyTrajectoryRegrade(
       `applyTrajectoryRegrade: ${String(orphans.length)} trajectory/ies match no stored run` +
         `${where}: ${orphans.join(", ")}. Their re-grade would be dropped and the published ` +
         `cell would silently keep its stale stored grade.`
+    );
+  }
+
+  // A duplicate stored key only matters if a trajectory would be applied to it:
+  // then one re-grade would silently land on several runs. Timeouts collide here
+  // by construction (every hung run is cut off by the same cap and records the
+  // same latency) and never dump a trajectory, so those collisions are inert.
+  const ambiguous = [...duplicateStored].filter((k) => regradedByKey.has(k));
+  if (ambiguous.length > 0) {
+    throw new Error(
+      `applyTrajectoryRegrade: duplicate (model, latencyMs) among stored runs${where}: ` +
+        `${ambiguous.join(", ")}. A trajectory matches that key, so one re-grade would be ` +
+        `applied to several runs.`
     );
   }
 

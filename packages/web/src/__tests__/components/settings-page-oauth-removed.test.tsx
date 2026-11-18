@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import "@testing-library/jest-dom";
@@ -14,8 +15,8 @@ vi.mock("@/lib/auth-client", () => ({
 }));
 
 vi.mock("next/navigation", () => ({
-  useRouter: vi.fn().mockReturnValue({ replace: vi.fn() }),
-  useSearchParams: vi.fn().mockReturnValue(new URLSearchParams()),
+  useRouter: vi.fn().mockReturnValue({ replace: vi.fn(), push: vi.fn() }),
+  useSearchParams: vi.fn().mockReturnValue(new URLSearchParams("tab=integrations")),
   usePathname: vi.fn().mockReturnValue("/settings"),
 }));
 
@@ -68,7 +69,7 @@ describe("SettingsPageContent integrations tab", () => {
   });
 
   it("does not render SettingsOAuth component", async () => {
-    render(<SettingsPageContent initialTab="integrations" isAdmin={true} />);
+    render(<SettingsPageContent isAdmin={true} />);
 
     await waitFor(() => {
       expect(screen.getByTestId("settings-integrations")).toBeInTheDocument();

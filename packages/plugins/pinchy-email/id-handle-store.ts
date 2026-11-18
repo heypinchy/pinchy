@@ -110,11 +110,7 @@ export function putAttachmentHandle(agentId: string, realId: string): string {
   return putWithPrefix(agentId, realId, ATT_PREFIX);
 }
 
-function putWithPrefix(
-  agentId: string,
-  realId: string,
-  prefix: string,
-): string {
+function putWithPrefix(agentId: string, realId: string, prefix: string): string {
   const store = getOrCreateAgentStore(agentId);
   const now = Date.now();
   sweepExpired(store, now);

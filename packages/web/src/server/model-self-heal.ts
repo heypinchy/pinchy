@@ -5,10 +5,12 @@ import { resetCache } from "@/lib/provider-models";
 /**
  * Runtime self-heal: when a chat/tool dispatch fails because the configured
  * model was retired upstream (HTTP 410 / "Unknown model"), regenerate the
- * OpenClaw config. `regenerateOpenClawConfig` re-resolves media models against
- * the LIVE `/v1/models` catalog (see `default-media-models.ts`) and skips the
- * write when nothing changed — so a retired model is swapped for a live one
- * without waiting for the next Pinchy upgrade or restart.
+ * OpenClaw config. `regenerateOpenClawConfig` re-resolves against the LIVE
+ * `/v1/models` catalog — both the media models (see `default-media-models.ts`)
+ * AND each agent's chat-model fallback chain (see `chat-model-fallback.ts`, the
+ * `{ primary, fallbacks }` OpenClaw retries when the pinned model 410s, #881) —
+ * and skips the write when nothing changed. So a retired model is covered by a
+ * live one without waiting for the next Pinchy upgrade or restart.
  *
  * OpenClaw has no fallback resolver of its own, so this is Pinchy's job. The
  * regeneration is debounced: a retirement makes EVERY dispatch fail the same

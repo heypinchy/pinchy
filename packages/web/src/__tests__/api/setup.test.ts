@@ -1,7 +1,16 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, expectTypeOf, vi, beforeEach } from "vitest";
 import { createAdmin } from "@/lib/setup";
-import { seedDefaultAgent } from "@/db/seed";
+import { seedAdminSmithers } from "@/db/seed";
 import { POST } from "@/app/api/setup/route";
+
+// Rows handed to `db.insert(agents).values(...)`, newest last. `values` is a
+// fresh spy per call and therefore unreachable from a test, so the row has to
+// be captured here to assert the shape of the agent being created. vi.hoisted
+// because vi.mock's factory is lifted above the imports and would otherwise
+// read this before initialization.
+const { agentInsertRows } = vi.hoisted(() => ({
+  agentInsertRows: [] as Record<string, unknown>[],
+}));
 
 vi.mock("@/db", () => {
   const insertMock = vi.fn().mockImplementation((table) => {
@@ -10,20 +19,23 @@ vi.mock("@/db", () => {
         ? table[Symbol.for("drizzle:Name")] === "agents"
         : false;
     return {
-      values: vi.fn().mockReturnValue({
-        returning: vi.fn().mockImplementation(() => {
-          if (isAgentsTable) {
-            return Promise.resolve([
-              {
-                id: "agent-1",
-                name: "Smithers",
-                model: "anthropic/claude-sonnet-4-20250514",
-                createdAt: new Date(),
-              },
-            ]);
-          }
-          return Promise.resolve([{ id: "1", email: "admin@test.com" }]);
-        }),
+      values: vi.fn().mockImplementation((row: Record<string, unknown>) => {
+        if (isAgentsTable) agentInsertRows.push(row);
+        return {
+          returning: vi.fn().mockImplementation(() => {
+            if (isAgentsTable) {
+              return Promise.resolve([
+                {
+                  id: "agent-1",
+                  name: "Smithers",
+                  model: "anthropic/claude-sonnet-4-20250514",
+                  createdAt: new Date(),
+                },
+              ]);
+            }
+            return Promise.resolve([{ id: "1", email: "admin@test.com" }]);
+          }),
+        };
       }),
     };
   });
@@ -93,6 +105,10 @@ vi.mock("@/lib/providers", () => ({
   PROVIDERS: {},
 }));
 
+vi.mock("@/lib/audit-deferred", () => ({
+  deferAuditLog: vi.fn(),
+}));
+
 vi.mock("@/lib/provider-models", () => ({
   getDefaultModel: vi.fn().mockResolvedValue("ollama-local/test-model"),
 }));
@@ -101,6 +117,7 @@ import { ensureWorkspace } from "@/lib/workspace";
 import { auth } from "@/lib/auth";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { markOpenClawConfigReady, isOpenClawConfigReady } from "@/lib/openclaw-config-ready";
+import { deferAuditLog } from "@/lib/audit-deferred";
 
 import { db } from "@/db";
 
@@ -170,7 +187,7 @@ describe("createAdmin", () => {
     expect(db.update).toHaveBeenCalled();
   });
 
-  it("should pass user id to seedDefaultAgent", async () => {
+  it("should pass user id to seedAdminSmithers", async () => {
     vi.mocked(db.query.users.findFirst).mockResolvedValue(undefined);
     vi.mocked(db.query.agents.findFirst).mockResolvedValue(undefined);
 
@@ -217,6 +234,41 @@ describe("POST /api/setup", () => {
 
     expect(response.status).toBe(201);
     expect(data).toEqual({ id: "1", email: "admin@test.com" });
+  });
+
+  it("audits the account it creates as user.created via setup", async () => {
+    // The first admin is the one account no invite explains, so its creation
+    // is the row the provenance check (lib/user-provenance.ts) and an auditor
+    // both need. Actor is the new admin; no email or raw id in detail.
+    vi.mocked(db.query.users.findFirst).mockResolvedValue(undefined);
+
+    const response = await POST(
+      makeRequest({ name: "Admin User", email: "admin@test.com", password: "Br1ghtNova!2" }) as any
+    );
+
+    expect(response.status).toBe(201);
+    expect(deferAuditLog).toHaveBeenCalledOnce();
+    expect(deferAuditLog).toHaveBeenCalledWith({
+      actorType: "user",
+      actorId: "1",
+      eventType: "user.created",
+      detail: { name: "Admin User", role: "admin", via: "setup" },
+      outcome: "success",
+    });
+  });
+
+  it("writes no user.created row when setup is already complete", async () => {
+    vi.mocked(db.query.users.findFirst).mockResolvedValue(
+      makeDbUserRow({ id: "1", email: "admin@test.com", name: "Admin", role: "admin" })
+    );
+    vi.mocked(isOpenClawConfigReady).mockReturnValue(true);
+
+    const response = await POST(
+      makeRequest({ name: "Late", email: "late@test.com", password: "Br1ghtNova!2" }) as any
+    );
+
+    expect(response.status).toBe(403);
+    expect(deferAuditLog).not.toHaveBeenCalled();
   });
 
   it("should return 400 when name is missing", async () => {
@@ -389,22 +441,23 @@ describe("POST /api/setup", () => {
   });
 });
 
-describe("seedDefaultAgent", () => {
+describe("seedAdminSmithers", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    agentInsertRows.length = 0;
   });
 
   it("should create Smithers agent", async () => {
     vi.mocked(db.query.agents.findFirst).mockResolvedValue(undefined);
 
-    const agent = await seedDefaultAgent();
+    const agent = await seedAdminSmithers("admin-1");
     expect(agent.name).toBe("Smithers");
   });
 
   it("should call ensureWorkspace when creating a new agent", async () => {
     vi.mocked(db.query.agents.findFirst).mockResolvedValue(undefined);
 
-    await seedDefaultAgent();
+    await seedAdminSmithers("admin-1");
     expect(ensureWorkspace).toHaveBeenCalledWith("agent-1");
   });
 
@@ -418,36 +471,39 @@ describe("seedDefaultAgent", () => {
       })
     );
 
-    const agent = await seedDefaultAgent();
+    const agent = await seedAdminSmithers("admin-1");
     expect(agent.name).toBe("Smithers");
     expect(agent.id).toBe("existing-agent");
     expect(db.insert).not.toHaveBeenCalled();
     expect(ensureWorkspace).not.toHaveBeenCalled();
   });
 
-  it("should accept an optional ownerId parameter", async () => {
+  it("owns the agent it creates by the id it was given", async () => {
     vi.mocked(db.query.agents.findFirst).mockResolvedValue(undefined);
 
-    const agent = await seedDefaultAgent("user-1");
+    const agent = await seedAdminSmithers("user-1");
+
     expect(agent.name).toBe("Smithers");
+    expect(agentInsertRows).toHaveLength(1);
+    expect(agentInsertRows[0]).toMatchObject({ ownerId: "user-1" });
   });
 
-  it("should set isPersonal to true when ownerId is provided", async () => {
+  it("creates the admin's Smithers as a personal agent", async () => {
     vi.mocked(db.query.agents.findFirst).mockResolvedValue(undefined);
 
-    await seedDefaultAgent("user-1");
+    await seedAdminSmithers("admin-1");
 
-    // Verify the insert was called (second call after user insert)
-    const insertCalls = vi.mocked(db.insert).mock.calls;
-    expect(insertCalls.length).toBeGreaterThan(0);
+    expect(agentInsertRows).toHaveLength(1);
+    expect(agentInsertRows[0]).toMatchObject({
+      ownerId: "admin-1",
+      isPersonal: true,
+    });
   });
 
-  it("should set isPersonal to false when no ownerId is provided", async () => {
-    vi.mocked(db.query.agents.findFirst).mockResolvedValue(undefined);
-
-    await seedDefaultAgent();
-
-    const insertCalls = vi.mocked(db.insert).mock.calls;
-    expect(insertCalls.length).toBeGreaterThan(0);
+  it("takes ownerId as a required parameter", () => {
+    // Runtime cannot see this: making ownerId optional again would resurrect an
+    // ownerless-Smithers branch that no caller reaches, and every runtime test
+    // here would stay green. The typecheck gate is what catches it.
+    expectTypeOf(seedAdminSmithers).parameters.toEqualTypeOf<[string]>();
   });
 });

@@ -16,7 +16,9 @@ import postgres from "postgres";
 import {
   FAKE_OLLAMA_RATE_LIMIT_TRIGGER,
   FAKE_OLLAMA_TOOL_THEN_RATE_LIMIT_TRIGGER,
+  FAKE_OLLAMA_TOOL_THEN_RATE_LIMIT_TOOL as TOOL_THEN_RATE_LIMIT_TOOL,
 } from "../shared/fake-ollama/fake-ollama-server";
+import { describeToolAudit } from "../shared/dispatch-probe";
 import { stackDbUrl } from "../shared/stack-db";
 import { login, getSmithersAgentId, waitForOpenClawConnected } from "./helpers";
 
@@ -86,15 +88,28 @@ test.describe("Durable agent-error banner", () => {
 
     await expect(page.getByTestId("error-warning-icon").last()).toBeVisible({ timeout: 60000 });
 
-    // In-session (the live path, before any reload): the LIVE error frame
-    // carries the audit-derived sideEffects flag, so the inline bubble's Retry
+    // In-session (the live path, before any reload): the inline bubble's Retry
     // is gated behind the SAME duplicate-write confirm as the durable banner —
-    // not just the post-reload banner. Clicking it opens the confirm instead of
-    // resending. Cancel here so the run's durable error survives to the reload
-    // assertions below.
+    // not just the post-reload banner. Clicking it asks the server whether this
+    // run already acted (#1013) and opens the confirm instead of resending.
+    // Cancel here so the run's durable error survives to the reload assertions
+    // below.
+    //
+    // The click-time question is the point. The flag the error frame carried is
+    // derived the instant the run fails, and OpenClaw fires `after_tool_call`
+    // without awaiting it — so the `tool.*` audit row can still be in flight
+    // then. This assertion used to fail in CI for exactly that reason, and the
+    // artifacts could not say why: OpenClaw doesn't log tool executions at this
+    // level, postgres has no statement logging, pinchy has no request logging.
     await page.getByRole("button", { name: /^retry$/i }).click();
     const liveConfirm = page.getByRole("alertdialog");
-    await expect(liveConfirm).toBeVisible();
+    // Ask the audit trail here, while the stack is still up, and carry the
+    // answer into the failure message. See describeToolAudit for how the three
+    // possible answers map to three different bugs.
+    await expect(
+      liveConfirm,
+      await describeToolAudit(page, { toolName: TOOL_THEN_RATE_LIMIT_TOOL, agentId })
+    ).toBeVisible();
     await expect(liveConfirm).toContainText(/duplicate/i);
     await liveConfirm.getByRole("button", { name: /cancel/i }).click();
     await expect(liveConfirm).toHaveCount(0);

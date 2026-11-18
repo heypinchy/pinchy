@@ -178,8 +178,39 @@ test.describe("message action-bar layout shift", () => {
       return below.y - target.y;
     };
 
+    // Take the baseline only once the gap has stopped moving on its own.
+    //
+    // It moves for ~100ms after mount with no hover involved — measured by
+    // sampling `gap()` eight times at 100ms with the hover removed entirely:
+    // [104.556, 105, 105, 105, 105, 105, 105, 105]. Sampling inside that window
+    // gives a baseline that differs from every later reading, and since the
+    // hover path then waits for the bar to mount, the test reports the
+    // settle as a hover-induced shift. That is what failed in CI (#1016):
+    // "gap 103.894287109375px → 105px" — a slower host, so the baseline landed
+    // further from the settled value and the 1px tolerance broke.
+    //
+    // Waiting is the fix rather than a wider tolerance: the tolerance is what
+    // gives this test its resolution, and the delta it was rejecting was a
+    // measurement artifact, not a layout shift. With the wait, the delta is
+    // exactly 0 (measured across runs), so `< 1` has room to spare.
+    const settledGap = async () => {
+      let previous = await gap();
+      await expect
+        .poll(
+          async () => {
+            const next = await gap();
+            const unchanged = Math.abs(next - previous) < 0.01;
+            previous = next;
+            return unchanged;
+          },
+          { timeout: 5000, message: "the thread's layout never stopped moving" }
+        )
+        .toBe(true);
+      return previous;
+    };
+
     const heightBefore = (await hoverTarget.boundingBox())!.height;
-    const gapBefore = await gap();
+    const gapBefore = await settledGap();
 
     await hoverTarget.hover();
 

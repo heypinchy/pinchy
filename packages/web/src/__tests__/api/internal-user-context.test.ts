@@ -32,6 +32,7 @@ import { validateGatewayToken } from "@/lib/gateway-auth";
 import { syncUserContextToWorkspaces } from "@/lib/context-sync";
 import { db } from "@/db";
 import { PUT } from "@/app/api/internal/users/[userId]/context/route";
+import { CONTEXT_CONTENT_MAX_LENGTH } from "@/lib/schemas/context";
 
 function makePutRequest(userId: string, body: Record<string, unknown>) {
   return new NextRequest(`http://localhost/api/internal/users/${userId}/context`, {
@@ -127,5 +128,18 @@ describe("PUT /api/internal/users/:userId/context", () => {
   it("returns 400 when content is not a string", async () => {
     const res = await PUT(makePutRequest("user-1", { content: 123 }), makeParams("user-1"));
     expect(res.status).toBe(400);
+  });
+
+  it("returns 400 when content exceeds the max length", async () => {
+    const tooLong = "a".repeat(CONTEXT_CONTENT_MAX_LENGTH + 1);
+    const res = await PUT(makePutRequest("user-1", { content: tooLong }), makeParams("user-1"));
+    expect(res.status).toBe(400);
+    expect(syncUserContextToWorkspaces).not.toHaveBeenCalled();
+  });
+
+  it("accepts content at exactly the max length", async () => {
+    const maxLength = "a".repeat(CONTEXT_CONTENT_MAX_LENGTH);
+    const res = await PUT(makePutRequest("user-1", { content: maxLength }), makeParams("user-1"));
+    expect(res.status).toBe(200);
   });
 });

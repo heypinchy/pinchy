@@ -1,11 +1,16 @@
+// @vitest-environment jsdom
 // packages/web/src/__tests__/components/provider-key-form.test.tsx
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import "@testing-library/jest-dom";
 import { ProviderKeyForm } from "@/components/provider-key-form";
 import { toast } from "sonner";
+import type { DeletionPreviewResponse } from "@/lib/schemas/provider-deletion";
+import { jsonResponse } from "@/test-helpers/fetch";
 
-vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
+}));
 
 vi.mock("@/lib/github-issue", () => ({
   buildGitHubIssueUrl: vi.fn().mockReturnValue("https://github.com/test"),
@@ -15,6 +20,36 @@ vi.mock("@/lib/github-issue", () => ({
 vi.mock("next/navigation", () => ({
   usePathname: () => "/setup/provider",
 }));
+
+/** A `GET /api/settings/providers/deletion-preview` body (#949). */
+function previewResponse(overrides: Partial<DeletionPreviewResponse> = {}): Response {
+  const body: DeletionPreviewResponse = {
+    targetProvider: "openai",
+    targetProviderLabel: "OpenAI",
+    targetModel: "openai/gpt-5.5",
+    affectedAgents: [
+      { id: "a1", name: "Hermes" },
+      { id: "a2", name: "Booker" },
+      { id: "a3", name: "Reader" },
+    ],
+    refusal: null,
+    ...overrides,
+  };
+  return jsonResponse(body);
+}
+
+/**
+ * Routes the two requests a removal now makes: the preflight when the dialog
+ * opens, then the DELETE itself.
+ */
+function deleteFlowResponse(
+  url: string,
+  deleteBody: unknown,
+  previewOverrides: Partial<DeletionPreviewResponse> = {}
+): Response {
+  if (url.includes("deletion-preview")) return previewResponse(previewOverrides);
+  return jsonResponse(deleteBody);
+}
 
 describe("ProviderKeyForm", () => {
   const onSuccess = vi.fn();
@@ -72,10 +107,7 @@ describe("ProviderKeyForm", () => {
   });
 
   it("should call onSuccess and show success toast after successful submission", async () => {
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ success: true }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ success: true }));
 
     render(<ProviderKeyForm onSuccess={onSuccess} />);
 
@@ -91,11 +123,35 @@ describe("ProviderKeyForm", () => {
     });
   });
 
+  it("shows a warning toast (not success) when the save reports a runtime warning (#880)", async () => {
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse({
+        success: true,
+        warning: "Saved. Applying it to the agent runtime failed.",
+      })
+    );
+
+    render(<ProviderKeyForm onSuccess={onSuccess} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+    fireEvent.change(screen.getByLabelText(/api key/i), {
+      target: { value: "sk-ant-valid-key" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+
+    await waitFor(() => {
+      // Still a success flow — onSuccess fires and no error toast.
+      expect(onSuccess).toHaveBeenCalled();
+      expect(toast.warning).toHaveBeenCalledWith("Saved. Applying it to the agent runtime failed.");
+    });
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
   it("should show inline error message on failed validation", async () => {
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: false,
-      json: async () => ({ error: "Invalid API key. Please check and try again." }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse({ error: "Invalid API key. Please check and try again." }, { status: 400 })
+    );
 
     render(<ProviderKeyForm onSuccess={onSuccess} />);
 
@@ -111,10 +167,9 @@ describe("ProviderKeyForm", () => {
   });
 
   it("should show report issue link on failed validation", async () => {
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: false,
-      json: async () => ({ error: "Invalid API key." }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse({ error: "Invalid API key." }, { status: 400 })
+    );
 
     render(<ProviderKeyForm onSuccess={onSuccess} />);
 
@@ -130,10 +185,9 @@ describe("ProviderKeyForm", () => {
   });
 
   it("should show error indicator next to input on failed validation", async () => {
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: false,
-      json: async () => ({ error: "Invalid API key." }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse({ error: "Invalid API key." }, { status: 400 })
+    );
 
     render(<ProviderKeyForm onSuccess={onSuccess} />);
 
@@ -151,16 +205,7 @@ describe("ProviderKeyForm", () => {
   it("should show loading state during submission", async () => {
     vi.mocked(global.fetch).mockImplementation(
       () =>
-        new Promise((resolve) =>
-          setTimeout(
-            () =>
-              resolve({
-                ok: true,
-                json: async () => ({ success: true }),
-              } as Response),
-            100
-          )
-        )
+        new Promise((resolve) => setTimeout(() => resolve(jsonResponse({ success: true })), 100))
     );
 
     render(<ProviderKeyForm onSuccess={onSuccess} />);
@@ -201,10 +246,7 @@ describe("ProviderKeyForm", () => {
     });
 
     it("should call onDirtyChange(false) after successful save", async () => {
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ success: true }),
-      } as Response);
+      vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ success: true }));
 
       const onDirtyChange = vi.fn();
       render(<ProviderKeyForm onSuccess={onSuccess} onDirtyChange={onDirtyChange} />);
@@ -303,13 +345,15 @@ describe("ProviderKeyForm", () => {
       google: { configured: false },
     };
 
-    it("should show 'Configured' indicator when configuredProviders marks a provider as configured", () => {
+    it("shows a configured checkmark when configuredProviders marks a provider as configured", () => {
       render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
 
-      expect(screen.getByText("Configured")).toBeInTheDocument();
+      // Configured (non-default) tiles carry a quiet check, not the word "Configured".
+      expect(screen.getByTestId("tile-configured")).toBeInTheDocument();
+      expect(screen.queryByTestId("tile-default")).not.toBeInTheDocument();
     });
 
-    it("should show 'Active' indicator for the defaultProvider", () => {
+    it("shows the 'Default' indicator on the defaultProvider tile (not 'Active')", () => {
       render(
         <ProviderKeyForm
           onSuccess={onSuccess}
@@ -318,7 +362,9 @@ describe("ProviderKeyForm", () => {
         />
       );
 
-      expect(screen.getByText("Active")).toBeInTheDocument();
+      expect(screen.getByTestId("tile-default")).toBeInTheDocument();
+      // The default tile shows "Default", not the plain configured check.
+      expect(screen.queryByTestId("tile-configured")).not.toBeInTheDocument();
     });
 
     it("should always show input with masked placeholder for configured provider", () => {
@@ -358,15 +404,14 @@ describe("ProviderKeyForm", () => {
     it("should not show status indicators without configuredProviders prop", () => {
       render(<ProviderKeyForm onSuccess={onSuccess} />);
 
-      expect(screen.queryByText("Configured")).not.toBeInTheDocument();
-      expect(screen.queryByText("Active")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("tile-configured")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("tile-default")).not.toBeInTheDocument();
     });
 
     it("should show error indicator instead of configured indicator on failed save", async () => {
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: false,
-        json: async () => ({ error: "Invalid API key." }),
-      } as Response);
+      vi.mocked(global.fetch).mockResolvedValueOnce(
+        jsonResponse({ error: "Invalid API key." }, { status: 400 })
+      );
 
       render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
 
@@ -384,10 +429,7 @@ describe("ProviderKeyForm", () => {
     });
 
     it("should show configured indicator and success toast after successful save", async () => {
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ success: true }),
-      } as Response);
+      vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ success: true }));
 
       render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
 
@@ -444,14 +486,18 @@ describe("ProviderKeyForm", () => {
       fireEvent.click(screen.getByRole("button", { name: /remove key/i }));
       fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
 
-      expect(global.fetch).not.toHaveBeenCalled();
+      // Opening the dialog fetches the read-only removal preview (#949); the
+      // only thing Cancel must guarantee is that nothing was deleted.
+      expect(global.fetch).not.toHaveBeenCalledWith(
+        "/api/settings/providers",
+        expect.objectContaining({ method: "DELETE" })
+      );
     });
 
     it("should call DELETE endpoint and onSuccess after confirming removal", async () => {
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ success: true }),
-      } as Response);
+      vi.mocked(global.fetch).mockImplementation(async (input) =>
+        deleteFlowResponse(String(input), { success: true })
+      );
 
       render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
 
@@ -470,12 +516,18 @@ describe("ProviderKeyForm", () => {
     });
 
     it("should show error toast when trying to remove the last configured provider", async () => {
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: false,
-        json: async () => ({
-          error: "Cannot remove the last configured provider. Add another provider first.",
-        }),
-      } as Response);
+      vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+        if (String(input).includes("deletion-preview")) {
+          return previewResponse();
+        }
+        void init;
+        return jsonResponse(
+          {
+            error: "Cannot remove the last configured provider. Add another provider first.",
+          },
+          { status: 400 }
+        );
+      });
 
       render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
 
@@ -489,6 +541,259 @@ describe("ProviderKeyForm", () => {
         );
       });
     });
+
+    // #949 — the dialog used to say "agents will be switched to another
+    // configured provider" while the exact target was already determined. It
+    // now states the outcome, sourced from the server-side preflight so the
+    // built-ins-first ordering is never re-derived (and mis-derived) here.
+    describe("removal preview (#949)", () => {
+      it("names the affected agent count, the target provider and its model", async () => {
+        vi.mocked(global.fetch).mockImplementation(async (input) =>
+          String(input).includes("deletion-preview")
+            ? previewResponse({
+                affectedAgents: [
+                  { id: "a1", name: "Hermes" },
+                  { id: "a2", name: "Booker" },
+                  { id: "a3", name: "Reader" },
+                ],
+              })
+            : jsonResponse({})
+        );
+
+        render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
+
+        fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+        fireEvent.click(screen.getByRole("button", { name: /remove key/i }));
+
+        expect(global.fetch).toHaveBeenCalledWith(
+          "/api/settings/providers/deletion-preview?provider=anthropic",
+          expect.anything()
+        );
+        const dialog = await screen.findByRole("alertdialog");
+        await waitFor(() => {
+          expect(dialog).toHaveTextContent(
+            /3 agents using its models will be moved to OpenAI \(gpt-5\.5\)/
+          );
+        });
+        expect(dialog).toHaveTextContent(/change each agent's model afterwards/i);
+      });
+
+      it("uses the singular for a single affected agent", async () => {
+        vi.mocked(global.fetch).mockImplementation(async (input) =>
+          String(input).includes("deletion-preview")
+            ? previewResponse({ affectedAgents: [{ id: "a1", name: "Hermes" }] })
+            : jsonResponse({})
+        );
+
+        render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
+
+        fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+        fireEvent.click(screen.getByRole("button", { name: /remove key/i }));
+
+        const dialog = await screen.findByRole("alertdialog");
+        await waitFor(() => {
+          expect(dialog).toHaveTextContent(/1 agent using its models will be moved to OpenAI/);
+        });
+      });
+
+      it("says nothing about agents when none are affected — never '0 agents'", async () => {
+        vi.mocked(global.fetch).mockImplementation(async (input) =>
+          String(input).includes("deletion-preview")
+            ? previewResponse({ affectedAgents: [] })
+            : jsonResponse({})
+        );
+
+        render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
+
+        fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+        fireEvent.click(screen.getByRole("button", { name: /remove key/i }));
+
+        const dialog = await screen.findByRole("alertdialog");
+        await waitFor(() => {
+          // The preview resolved: the fallback sentence is gone…
+          expect(dialog).not.toHaveTextContent(/another configured provider/i);
+        });
+        // …and no count is printed at all.
+        expect(dialog).not.toHaveTextContent(/0 agent/);
+        expect(dialog).not.toHaveTextContent(/will be moved/i);
+        expect(dialog).toHaveTextContent(/Removes your Anthropic API key\./);
+      });
+
+      // Every other provider is a custom one whose base URL is refused, so the
+      // DELETE would answer 400. Say so in the dialog and keep Remove disabled,
+      // rather than letting the admin click into a toast.
+      it("states the refusal inline and disables Remove when the DELETE would refuse", async () => {
+        const refusal =
+          "Cannot remove the last usable provider. Every other configured provider has a base URL that is now refused, so agents could not be moved onto it. Change one of those URLs or add another provider first.";
+        vi.mocked(global.fetch).mockImplementation(async (input) =>
+          String(input).includes("deletion-preview")
+            ? previewResponse({
+                targetProvider: null,
+                targetProviderLabel: null,
+                targetModel: null,
+                affectedAgents: [],
+                refusal,
+              })
+            : jsonResponse({})
+        );
+
+        render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
+
+        fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+        fireEvent.click(screen.getByRole("button", { name: /remove key/i }));
+
+        const dialog = await screen.findByRole("alertdialog");
+        await waitFor(() => {
+          expect(dialog).toHaveTextContent(refusal);
+        });
+        expect(dialog).not.toHaveTextContent(/another configured provider/i);
+        const remove = screen.getByRole("button", { name: /^remove$/i });
+        expect(remove).toBeDisabled();
+        fireEvent.click(remove);
+        expect(global.fetch).not.toHaveBeenCalledWith(
+          "/api/settings/providers",
+          expect.objectContaining({ method: "DELETE" })
+        );
+        expect(toast.error).not.toHaveBeenCalled();
+      });
+
+      it("falls back to the generic sentence when the preview fails", async () => {
+        vi.mocked(global.fetch).mockImplementation(async (input) =>
+          String(input).includes("deletion-preview")
+            ? jsonResponse({ error: "boom" }, { status: 500 })
+            : jsonResponse({})
+        );
+
+        render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
+
+        fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+        fireEvent.click(screen.getByRole("button", { name: /remove key/i }));
+
+        const dialog = await screen.findByRole("alertdialog");
+        expect(dialog).toHaveTextContent(/switched to another configured provider/i);
+        // No invented target when the preflight didn't answer.
+        expect(dialog).not.toHaveTextContent(/will be moved to/i);
+      });
+
+      // The preflight exists so the dialog never names a target the DELETE
+      // won't use. A slow response is the second way to break that promise:
+      // it belongs to a provider the admin has since moved on from, and
+      // committing it would state one provider's consequence in another
+      // provider's dialog — the same confidently-wrong failure, arriving over
+      // the network instead of through a duplicated ordering policy.
+      it("ignores a preflight that lands after another provider's dialog opened", async () => {
+        const twoConfigured = {
+          anthropic: { configured: true, hint: "xY9z" },
+          openai: { configured: true, hint: "ab12" },
+        };
+        let landStalePreview!: (res: Response) => void;
+        const stalePreview = new Promise<Response>((resolve) => {
+          landStalePreview = resolve;
+        });
+        vi.mocked(global.fetch).mockImplementation(async (input) => {
+          const url = String(input);
+          if (url.includes("deletion-preview?provider=anthropic")) return stalePreview;
+          if (url.includes("deletion-preview?provider=openai")) {
+            return previewResponse({
+              targetProvider: "google",
+              targetProviderLabel: "Google",
+              targetModel: "google/gemini-3-pro",
+              affectedAgents: [{ id: "a1", name: "Hermes" }],
+            });
+          }
+          return jsonResponse({});
+        });
+
+        render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={twoConfigured} />);
+
+        // Open Anthropic's dialog — its preflight stays in flight — then leave.
+        fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+        fireEvent.click(screen.getByRole("button", { name: /remove key/i }));
+        await screen.findByRole("alertdialog");
+        fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
+
+        // Now OpenAI's, whose preflight answers immediately.
+        fireEvent.click(screen.getByRole("button", { name: /^openai$/i }));
+        fireEvent.click(screen.getByRole("button", { name: /remove key/i }));
+        const dialog = await screen.findByRole("alertdialog");
+        await waitFor(() => {
+          expect(dialog).toHaveTextContent(/1 agent using its models will be moved to Google/);
+        });
+
+        // Anthropic's answer arrives late, naming a different target.
+        await act(async () => {
+          landStalePreview(
+            previewResponse({
+              targetProvider: "anthropic",
+              targetProviderLabel: "Anthropic",
+              targetModel: "anthropic/claude-sonnet-4-6",
+              affectedAgents: [{ id: "a9", name: "Ghost" }],
+            })
+          );
+        });
+
+        expect(dialog).toHaveTextContent(/moved to Google \(gemini-3-pro\)/);
+        expect(dialog).not.toHaveTextContent(/Anthropic/);
+      });
+
+      it("confirms in the success toast what the removal actually did", async () => {
+        vi.mocked(global.fetch).mockImplementation(async (input) =>
+          deleteFlowResponse(String(input), { success: true, migratedAgents: 3 })
+        );
+
+        render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
+
+        fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+        fireEvent.click(screen.getByRole("button", { name: /remove key/i }));
+        const dialog = await screen.findByRole("alertdialog");
+        // The dialog opens before its preflight answers, and the toast's
+        // migration clause needs that answer: the count comes from the DELETE
+        // response, but the target label comes from the preview. Clicking
+        // Remove the moment the dialog appears therefore races the preflight,
+        // and a loaded CI runner loses it — the toast came out as the bare
+        // "Anthropic removed." (run 30459145209). Wait for the state the
+        // assertion depends on, exactly like the late-preflight test above.
+        await waitFor(() => {
+          expect(dialog).toHaveTextContent(/3 agents using its models will be moved to OpenAI/);
+        });
+        fireEvent.click(screen.getByRole("button", { name: /^remove$/i }));
+
+        await waitFor(() => {
+          expect(toast.success).toHaveBeenCalledWith(
+            "Anthropic removed. 3 agents moved to OpenAI."
+          );
+        });
+      });
+
+      it("keeps the toast to the removal alone when no agent moved", async () => {
+        vi.mocked(global.fetch).mockImplementation(async (input) =>
+          deleteFlowResponse(
+            String(input),
+            { success: true, migratedAgents: 0 },
+            { affectedAgents: [] }
+          )
+        );
+
+        render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
+
+        fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+        fireEvent.click(screen.getByRole("button", { name: /remove key/i }));
+        const dialog = await screen.findByRole("alertdialog");
+        // Same race, opposite direction: an empty preview renders nothing,
+        // which looks exactly like a preview that has not arrived — so without
+        // this wait the test would also pass if the preflight never answered,
+        // i.e. it would not actually cover the no-agents path it names. The
+        // placeholder sentence disappearing is what marks the preview settled.
+        await waitFor(() => {
+          expect(dialog).not.toHaveTextContent(/will be switched to another configured provider/);
+        });
+        fireEvent.click(screen.getByRole("button", { name: /^remove$/i }));
+
+        await waitFor(() => {
+          expect(toast.success).toHaveBeenCalledWith("Anthropic removed.");
+        });
+      });
+    });
   });
 
   // #296 review follow-up — when the route returns structured `docs`
@@ -497,16 +802,16 @@ describe("ProviderKeyForm", () => {
   // user to copy a URL from prose text. The prose itself stays plain (no
   // long URL squashed in), and the link opens in a new tab.
   describe("structured docs hint on error (#296)", () => {
-    const unsupportedHostResponse = {
-      ok: false,
-      json: async () => ({
+    const unsupportedHostResponse = jsonResponse(
+      {
         error: 'Host "ollama" is not an allowed local Ollama host. Use localhost, ...',
         docs: {
           href: "https://docs.heypinchy.com/guides/ollama-setup/#b-ollama-as-a-docker-service",
           label: "See the recommended Docker setup",
         },
-      }),
-    } as Response;
+      },
+      { status: 400 }
+    );
 
     async function submitOllamaLocal() {
       fireEvent.click(screen.getByRole("button", { name: /ollama \(local\)/i }));
@@ -544,10 +849,9 @@ describe("ProviderKeyForm", () => {
     });
 
     it("does not render a docs link inside the error region when the response has no docs field", async () => {
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: false,
-        json: async () => ({ error: "Could not connect to Ollama at this URL." }),
-      } as Response);
+      vi.mocked(global.fetch).mockResolvedValueOnce(
+        jsonResponse({ error: "Could not connect to Ollama at this URL." }, { status: 400 })
+      );
 
       render(<ProviderKeyForm onSuccess={onSuccess} />);
       await submitOllamaLocal();
@@ -589,10 +893,9 @@ describe("ProviderKeyForm", () => {
     it("clears a previously-shown docs link when the next error response has no docs", async () => {
       vi.mocked(global.fetch)
         .mockResolvedValueOnce(unsupportedHostResponse)
-        .mockResolvedValueOnce({
-          ok: false,
-          json: async () => ({ error: "Could not connect to Ollama at this URL." }),
-        } as Response);
+        .mockResolvedValueOnce(
+          jsonResponse({ error: "Could not connect to Ollama at this URL." }, { status: 400 })
+        );
 
       render(<ProviderKeyForm onSuccess={onSuccess} />);
       await submitOllamaLocal();
@@ -613,16 +916,18 @@ describe("ProviderKeyForm", () => {
     // requires the href to start with http(s):// — anything else falls back
     // to the plain error prose with no link.
     it("rejects a docs.href that is not a http(s) URL (e.g. javascript: scheme)", async () => {
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: false,
-        json: async () => ({
-          error: 'Host "ollama" is not an allowed local Ollama host.',
-          docs: {
-            href: "javascript:alert(1)",
-            label: "See the recommended Docker setup",
+      vi.mocked(global.fetch).mockResolvedValueOnce(
+        jsonResponse(
+          {
+            error: 'Host "ollama" is not an allowed local Ollama host.',
+            docs: {
+              href: "javascript:alert(1)",
+              label: "See the recommended Docker setup",
+            },
           },
-        }),
-      } as Response);
+          { status: 400 }
+        )
+      );
 
       render(<ProviderKeyForm onSuccess={onSuccess} />);
       await submitOllamaLocal();
@@ -638,16 +943,18 @@ describe("ProviderKeyForm", () => {
     // ExternalLink icon — a click target with no visible text. Treat it the
     // same as a missing docs field.
     it("rejects a docs.label that is an empty string", async () => {
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: false,
-        json: async () => ({
-          error: 'Host "ollama" is not an allowed local Ollama host.',
-          docs: {
-            href: "https://docs.heypinchy.com/guides/ollama-setup/",
-            label: "",
+      vi.mocked(global.fetch).mockResolvedValueOnce(
+        jsonResponse(
+          {
+            error: 'Host "ollama" is not an allowed local Ollama host.',
+            docs: {
+              href: "https://docs.heypinchy.com/guides/ollama-setup/",
+              label: "",
+            },
           },
-        }),
-      } as Response);
+          { status: 400 }
+        )
+      );
 
       render(<ProviderKeyForm onSuccess={onSuccess} />);
       await submitOllamaLocal();
@@ -688,10 +995,7 @@ describe("ProviderKeyForm", () => {
     });
 
     it("should send url field instead of apiKey for URL providers", async () => {
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ success: true }),
-      } as Response);
+      vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ success: true }));
 
       render(<ProviderKeyForm onSuccess={onSuccess} />);
 
@@ -714,10 +1018,7 @@ describe("ProviderKeyForm", () => {
     });
 
     it("should show success toast with 'URL saved' for URL providers", async () => {
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ success: true }),
-      } as Response);
+      vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ success: true }));
 
       render(<ProviderKeyForm onSuccess={onSuccess} />);
 
@@ -765,6 +1066,532 @@ describe("ProviderKeyForm", () => {
 
       expect(screen.getByText(/install ollama/i)).toBeInTheDocument();
       expect(screen.getByText(/pull a model/i)).toBeInTheDocument();
+    });
+  });
+
+  // #894 — the setup wizard offers a "Custom provider" action below the
+  // built-in tiles that swaps in the multi-field custom provider form
+  // (reused from settings). Off by default so the settings page doesn't
+  // render it twice.
+  describe("OpenAI-compatible option (#894)", () => {
+    it("does not show the Custom provider button unless enabled", () => {
+      render(<ProviderKeyForm onSuccess={onSuccess} />);
+
+      expect(screen.queryByRole("button", { name: /custom provider/i })).not.toBeInTheDocument();
+    });
+
+    it("reveals the custom multi-field form when selected", () => {
+      render(<ProviderKeyForm onSuccess={onSuccess} showOpenAiCompatibleOption />);
+
+      fireEvent.click(screen.getByRole("button", { name: /custom provider/i }));
+
+      // Multi-field custom form: display name + base URL + key + submit. Models
+      // are discovered server-side on save (#894), so there's no discover step.
+      expect(screen.getByLabelText(/^name$/i)).toBeInTheDocument();
+      expect(screen.getByLabelText(/base url/i)).toBeInTheDocument();
+      expect(screen.getByLabelText(/api key/i)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /^add provider$/i })).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: /connect & discover models/i })
+      ).not.toBeInTheDocument();
+    });
+
+    it("keeps a built-in option on its single-key form (branch intact)", () => {
+      render(<ProviderKeyForm onSuccess={onSuccess} showOpenAiCompatibleOption />);
+
+      fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+
+      // Built-in single-key shape: an API Key field, no Base URL, no discover.
+      expect(screen.getByLabelText(/api key/i)).toBeInTheDocument();
+      expect(screen.queryByLabelText(/base url/i)).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: /connect & discover models/i })
+      ).not.toBeInTheDocument();
+    });
+
+    it("advances the wizard via onOpenAiCompatibleSaved (built-in onSuccess untouched)", () => {
+      const onOpenAiCompatibleSaved = vi.fn();
+      render(
+        <ProviderKeyForm
+          onSuccess={onSuccess}
+          showOpenAiCompatibleOption
+          onOpenAiCompatibleSaved={onOpenAiCompatibleSaved}
+        />
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: /custom provider/i }));
+      // Selecting the custom option must not post to the built-in setup route.
+      expect(global.fetch).not.toHaveBeenCalled();
+      // Cancel returns to the selector without touching the built-in flow.
+      fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
+      expect(onOpenAiCompatibleSaved).not.toHaveBeenCalled();
+      expect(onSuccess).not.toHaveBeenCalled();
+    });
+  });
+
+  // #894 settings redesign: `manageCustomProviders` renders ONE unified grid —
+  // built-in tiles + one tile per custom provider + a dashed "Add custom
+  // provider" tile — replacing the separate `OpenAiCompatibleProvidersSection`
+  // card. Settings-only: absent in the wizard (covered above).
+  describe("settings-mode custom provider management (#894)", () => {
+    function jsonResponse(body: unknown, init: { ok?: boolean; status?: number } = {}): Response {
+      const text = JSON.stringify(body);
+      return {
+        ok: init.ok ?? true,
+        status: init.status ?? 200,
+        json: async () => body,
+        text: async () => text,
+      } as unknown as Response;
+    }
+
+    const acmeRow = {
+      id: "row-id-1",
+      slug: "acme-llm",
+      displayName: "Acme LLM",
+      baseUrl: "https://acme.example.com/v1",
+      models: [],
+      keyHint: "cdef",
+    };
+
+    it("does not fetch or render custom tiles when manageCustomProviders is absent (wizard unaffected)", () => {
+      render(<ProviderKeyForm onSuccess={onSuccess} />);
+
+      expect(
+        screen.queryByRole("button", { name: /add custom provider/i })
+      ).not.toBeInTheDocument();
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it("fetches and renders a tile for each configured custom provider", async () => {
+      vi.mocked(global.fetch).mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.endsWith("/api/settings/providers/openai-compatible")) {
+          return jsonResponse([acmeRow]);
+        }
+        return jsonResponse({});
+      });
+
+      render(<ProviderKeyForm onSuccess={onSuccess} manageCustomProviders />);
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /acme llm/i })).toBeInTheDocument();
+      });
+    });
+
+    it("shows the Add custom provider tile; selecting it opens the create form with no discover step", async () => {
+      vi.mocked(global.fetch).mockImplementation(async () => jsonResponse([]));
+
+      render(<ProviderKeyForm onSuccess={onSuccess} manageCustomProviders />);
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /add custom provider/i })).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByRole("button", { name: /add custom provider/i }));
+
+      expect(screen.getByLabelText(/^name$/i)).toBeInTheDocument();
+      expect(screen.getByLabelText(/base url/i)).toBeInTheDocument();
+      expect(screen.getByLabelText(/api key/i)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /^add provider$/i })).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: /connect & discover models/i })
+      ).not.toBeInTheDocument();
+    });
+
+    it("selecting an existing custom tile opens the edit form with the leave-blank placeholder, never the stored key", async () => {
+      vi.mocked(global.fetch).mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.endsWith("/api/settings/providers/openai-compatible")) {
+          return jsonResponse([acmeRow]);
+        }
+        return jsonResponse({});
+      });
+
+      render(<ProviderKeyForm onSuccess={onSuccess} manageCustomProviders />);
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /acme llm/i })).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByRole("button", { name: /acme llm/i }));
+
+      const keyField = screen.getByLabelText(/api key/i) as HTMLInputElement;
+      expect(keyField.value).toBe("");
+      expect(keyField).toHaveAttribute("placeholder", "Leave blank to keep current key");
+      expect((screen.getByLabelText(/^name$/i) as HTMLInputElement).value).toBe("Acme LLM");
+    });
+
+    it("marks a provider whose saved base URL is now refused, and says why once it's selected", async () => {
+      // Config emission points such a provider at a reserved address, so its agents fail. The
+      // notice is the admin's only sign of it in the UI, so it must not be a
+      // toast that's gone in a few seconds.
+      const refusedReason =
+        "That host resolves to a reserved or internal address that isn't allowed.";
+      vi.mocked(global.fetch).mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.endsWith("/api/settings/providers/openai-compatible")) {
+          return jsonResponse([
+            { ...acmeRow, refusedReason: null },
+            {
+              ...acmeRow,
+              id: "row-id-2",
+              slug: "rebound",
+              displayName: "Rebound",
+              baseUrl: "https://rebound.example.com/v1",
+              refusedReason,
+            },
+          ]);
+        }
+        return jsonResponse({});
+      });
+
+      render(<ProviderKeyForm onSuccess={onSuccess} manageCustomProviders />);
+
+      const reboundTile = await screen.findByRole("button", { name: /rebound/i });
+      expect(reboundTile).toHaveTextContent(/not in use/i);
+      expect(screen.getByRole("button", { name: /acme llm/i })).not.toHaveTextContent(
+        /not in use/i
+      );
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+      fireEvent.click(reboundTile);
+
+      const notice = screen.getByRole("alert");
+      expect(notice).toHaveTextContent(/not in use/i);
+      expect(notice).toHaveTextContent(/its base url is now refused/i);
+      expect(notice).toHaveTextContent(refusedReason);
+      expect(notice).toHaveTextContent(/change the url to use it again/i);
+      expect(toast.error).not.toHaveBeenCalled();
+    });
+
+    it("shows no refusal notice on a selected provider that's in use", async () => {
+      vi.mocked(global.fetch).mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.endsWith("/api/settings/providers/openai-compatible")) {
+          return jsonResponse([{ ...acmeRow, refusedReason: null }]);
+        }
+        return jsonResponse({});
+      });
+
+      render(<ProviderKeyForm onSuccess={onSuccess} manageCustomProviders />);
+
+      fireEvent.click(await screen.findByRole("button", { name: /acme llm/i }));
+
+      expect(screen.queryByText(/not in use/i)).not.toBeInTheDocument();
+    });
+
+    it("shows a configured check on a custom tile, and 'Default' when it's the default", async () => {
+      vi.mocked(global.fetch).mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.endsWith("/api/settings/providers/openai-compatible")) {
+          return jsonResponse([acmeRow]);
+        }
+        return jsonResponse({});
+      });
+
+      const { rerender } = render(
+        <ProviderKeyForm onSuccess={onSuccess} manageCustomProviders defaultProvider="openai" />
+      );
+
+      // acme-llm isn't the default here → its tile shows the quiet configured check.
+      await waitFor(() => {
+        expect(screen.getByTestId("tile-configured")).toBeInTheDocument();
+      });
+
+      rerender(
+        <ProviderKeyForm onSuccess={onSuccess} manageCustomProviders defaultProvider="acme-llm" />
+      );
+
+      // Now it IS the default → the tile shows "Default".
+      await waitFor(() => {
+        expect(screen.getByTestId("tile-default")).toBeInTheDocument();
+      });
+    });
+
+    it("shows Set as default for a configured built-in that isn't the default, and calls the endpoint", async () => {
+      const configuredProviders = {
+        anthropic: { configured: true, hint: "xY9z" },
+        openai: { configured: false },
+      };
+      vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url.endsWith("/api/settings/providers/openai-compatible")) {
+          return jsonResponse([]);
+        }
+        if (url.endsWith("/api/settings/providers/default") && method === "PATCH") {
+          return jsonResponse({ success: true, defaultProvider: "anthropic" });
+        }
+        return jsonResponse({});
+      });
+
+      render(
+        <ProviderKeyForm
+          onSuccess={onSuccess}
+          manageCustomProviders
+          configuredProviders={configuredProviders}
+          defaultProvider="openai"
+        />
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+      const setDefaultButton = await screen.findByRole("button", { name: /set as default/i });
+      fireEvent.click(setDefaultButton);
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith(
+          "/api/settings/providers/default",
+          expect.objectContaining({
+            method: "PATCH",
+            body: JSON.stringify({ provider: "anthropic" }),
+          })
+        );
+        expect(onSuccess).toHaveBeenCalled();
+      });
+    });
+
+    it("does not show Set as default for a built-in that is already the default", () => {
+      const configuredProviders = {
+        anthropic: { configured: true, hint: "xY9z" },
+      };
+      render(
+        <ProviderKeyForm
+          onSuccess={onSuccess}
+          manageCustomProviders
+          configuredProviders={configuredProviders}
+          defaultProvider="anthropic"
+        />
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+
+      expect(screen.queryByRole("button", { name: /set as default/i })).not.toBeInTheDocument();
+    });
+
+    it("shows Set as default for a custom tile that isn't the default, and calls the endpoint with its slug", async () => {
+      vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url.endsWith("/api/settings/providers/openai-compatible")) {
+          return jsonResponse([acmeRow]);
+        }
+        if (url.endsWith("/api/settings/providers/default") && method === "PATCH") {
+          return jsonResponse({ success: true, defaultProvider: "acme-llm" });
+        }
+        return jsonResponse({});
+      });
+
+      render(
+        <ProviderKeyForm onSuccess={onSuccess} manageCustomProviders defaultProvider="anthropic" />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /acme llm/i })).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByRole("button", { name: /acme llm/i }));
+      const setDefaultButton = await screen.findByRole("button", { name: /set as default/i });
+      fireEvent.click(setDefaultButton);
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith(
+          "/api/settings/providers/default",
+          expect.objectContaining({
+            method: "PATCH",
+            body: JSON.stringify({ provider: "acme-llm" }),
+          })
+        );
+        expect(onSuccess).toHaveBeenCalled();
+      });
+    });
+
+    it("offers no Set as default on a provider whose saved base URL is now refused", async () => {
+      // It is never the runtime's default while refused, and the server
+      // refuses the request — so the button would only promise something.
+      vi.mocked(global.fetch).mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.endsWith("/api/settings/providers/openai-compatible")) {
+          return jsonResponse([
+            { ...acmeRow, refusedReason: "That host resolves to a private network address." },
+          ]);
+        }
+        return jsonResponse({});
+      });
+
+      render(
+        <ProviderKeyForm onSuccess={onSuccess} manageCustomProviders defaultProvider="anthropic" />
+      );
+
+      fireEvent.click(await screen.findByRole("button", { name: /acme llm/i }));
+
+      expect(screen.getByRole("alert")).toHaveTextContent(/not in use/i);
+      expect(screen.queryByRole("button", { name: /set as default/i })).not.toBeInTheDocument();
+    });
+
+    it("shows the refusal on the provider, not as a toast, when the server turns Set as default down", async () => {
+      // The list was loaded while the URL was still allowed (or the network
+      // policy changed since). The server's answer carries the reason; the
+      // panel then shows the same persistent notice as a refused provider
+      // loaded fresh, and the button goes away.
+      const refusedReason = "That host resolves to a private network address.";
+      vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url.endsWith("/api/settings/providers/openai-compatible")) {
+          return jsonResponse([{ ...acmeRow, refusedReason: null }]);
+        }
+        if (url.endsWith("/api/settings/providers/default") && method === "PATCH") {
+          return jsonResponse(
+            {
+              error: `Its base URL is now refused, so it can't be the default. ${refusedReason}`,
+              refusedReason,
+            },
+            { ok: false, status: 400 }
+          );
+        }
+        return jsonResponse({});
+      });
+
+      render(
+        <ProviderKeyForm onSuccess={onSuccess} manageCustomProviders defaultProvider="anthropic" />
+      );
+
+      fireEvent.click(await screen.findByRole("button", { name: /acme llm/i }));
+      fireEvent.click(await screen.findByRole("button", { name: /set as default/i }));
+
+      const notice = await screen.findByRole("alert");
+      expect(notice).toHaveTextContent(/not in use/i);
+      expect(notice).toHaveTextContent(refusedReason);
+      expect(screen.queryByRole("button", { name: /set as default/i })).not.toBeInTheDocument();
+      expect(toast.error).not.toHaveBeenCalled();
+      expect(toast.success).not.toHaveBeenCalled();
+      expect(onSuccess).not.toHaveBeenCalled();
+    });
+
+    it("removes a custom provider via the delete confirmation, calling DELETE with its id", async () => {
+      vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url.includes("deletion-preview")) {
+          return previewResponse();
+        }
+        if (url.endsWith("/api/settings/providers/openai-compatible") && method === "GET") {
+          return jsonResponse([acmeRow]);
+        }
+        if (url.endsWith("/api/settings/providers/openai-compatible") && method === "DELETE") {
+          return jsonResponse({ ok: true, migratedAgents: 0 });
+        }
+        return jsonResponse({});
+      });
+
+      render(<ProviderKeyForm onSuccess={onSuccess} manageCustomProviders />);
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /acme llm/i })).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByRole("button", { name: /acme llm/i }));
+      fireEvent.click(screen.getByRole("button", { name: /remove provider/i }));
+      fireEvent.click(screen.getByRole("button", { name: /^remove$/i }));
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith(
+          "/api/settings/providers/openai-compatible",
+          expect.objectContaining({
+            method: "DELETE",
+            body: JSON.stringify({ id: "row-id-1" }),
+          })
+        );
+        expect(onSuccess).toHaveBeenCalled();
+      });
+    });
+
+    it("states the refusal inline and disables Remove for a custom provider the DELETE would refuse", async () => {
+      const refusal = "Cannot remove the last usable provider. Change one of those URLs first.";
+      vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url.includes("deletion-preview")) {
+          return previewResponse({
+            targetProvider: null,
+            targetProviderLabel: null,
+            targetModel: null,
+            affectedAgents: [],
+            refusal,
+          });
+        }
+        if (url.endsWith("/api/settings/providers/openai-compatible") && method === "GET") {
+          return jsonResponse([acmeRow]);
+        }
+        return jsonResponse({});
+      });
+
+      render(<ProviderKeyForm onSuccess={onSuccess} manageCustomProviders />);
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /acme llm/i })).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByRole("button", { name: /acme llm/i }));
+      fireEvent.click(screen.getByRole("button", { name: /remove provider/i }));
+
+      const dialog = await screen.findByRole("alertdialog");
+      await waitFor(() => {
+        expect(dialog).toHaveTextContent(refusal);
+      });
+      const remove = screen.getByRole("button", { name: /^remove$/i });
+      expect(remove).toBeDisabled();
+      fireEvent.click(remove);
+      expect(global.fetch).not.toHaveBeenCalledWith(
+        "/api/settings/providers/openai-compatible",
+        expect.objectContaining({ method: "DELETE" })
+      );
+    });
+
+    // #949 — the custom path carries the same disclosure as the built-in one:
+    // the dialog names the target the shared migration helper will pick, and
+    // the toast reports what happened.
+    it("names the migration target for a custom provider and confirms it in the toast", async () => {
+      vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url.includes("deletion-preview")) {
+          return previewResponse({
+            targetProvider: "anthropic",
+            targetProviderLabel: "Anthropic",
+            targetModel: "anthropic/claude-sonnet-4-6",
+            affectedAgents: [{ id: "a1", name: "Hermes" }],
+          });
+        }
+        if (url.endsWith("/api/settings/providers/openai-compatible") && method === "GET") {
+          return jsonResponse([acmeRow]);
+        }
+        if (url.endsWith("/api/settings/providers/openai-compatible") && method === "DELETE") {
+          return jsonResponse({ ok: true, migratedAgents: 1 });
+        }
+        return jsonResponse({});
+      });
+
+      render(<ProviderKeyForm onSuccess={onSuccess} manageCustomProviders />);
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /acme llm/i })).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByRole("button", { name: /acme llm/i }));
+      fireEvent.click(screen.getByRole("button", { name: /remove provider/i }));
+
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/settings/providers/deletion-preview?provider=acme-llm",
+        expect.anything()
+      );
+      const dialog = await screen.findByRole("alertdialog");
+      await waitFor(() => {
+        expect(dialog).toHaveTextContent(
+          /1 agent using its models will be moved to Anthropic \(claude-sonnet-4-6\)/
+        );
+      });
+      expect(dialog).toHaveTextContent(/Removes Acme LLM\./);
+
+      fireEvent.click(screen.getByRole("button", { name: /^remove$/i }));
+
+      await waitFor(() => {
+        expect(toast.success).toHaveBeenCalledWith("Acme LLM removed. 1 agent moved to Anthropic.");
+      });
     });
   });
 });

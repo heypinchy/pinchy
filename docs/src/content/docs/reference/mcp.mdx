@@ -13,13 +13,10 @@ Every other Pinchy integration — Odoo, email, web search — is a `packages/pl
 
 ## Feature flag
 
-MCP integrations are gated by exactly one environment variable, `PINCHY_MCP_ENABLED`, read server-side at runtime (never inlined into a build). Set it to `1` to enable MCP:
+MCP integrations are gated by exactly one environment variable, `PINCHY_MCP_ENABLED`, read server-side at runtime (never inlined into a build). Set it to `1` in your `.env` to enable MCP; `docker-compose.yml` forwards it to the `pinchy` service:
 
-```yaml
-services:
-  pinchy:
-    environment:
-      - PINCHY_MCP_ENABLED=1
+```bash
+PINCHY_MCP_ENABLED=1
 ```
 
 When the flag is off, the MCP preset tiles don't appear in **Add Integration**, MCP-related API routes behave as if `type: "mcp"` connections don't exist, and `openclaw.json` never emits an `mcp` section or any MCP tool name — even if MCP connections and grants still exist in the database. Nothing is deleted; re-enabling the flag brings them back to life at the next config regenerate.

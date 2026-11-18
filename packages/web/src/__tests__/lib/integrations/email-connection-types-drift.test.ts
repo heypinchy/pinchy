@@ -21,7 +21,10 @@ import { resolve } from "node:path";
 const CALL_SITES = [
   "../../../app/api/templates/route.ts",
   "../../../components/agent-settings-permissions.tsx",
-  "../../../lib/openclaw-config/build.ts",
+  // Extracted from build.ts (openclaw-config monolith split, #1072): the
+  // email-permission aggregation that reads EMAIL_CONNECTION_TYPES now lives
+  // here, so build.ts itself no longer imports the constant directly.
+  "../../../lib/openclaw-config/email-agent-config.ts",
   "../../../components/settings-integrations.tsx",
 ] as const;
 

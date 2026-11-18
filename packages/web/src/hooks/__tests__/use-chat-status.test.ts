@@ -1,15 +1,18 @@
+// @vitest-environment jsdom
 import { act, renderHook } from "@testing-library/react";
 import { vi } from "vitest";
-import { useChatStatus } from "../use-chat-status";
+import { type ChatStatusInputs, useChatStatus } from "../use-chat-status";
 
-const base = {
+const base: ChatStatusInputs = {
   isConnected: true,
   isOpenClawConnected: true,
   isHistoryLoaded: true,
   hasInitialContent: true,
   isRunning: false,
-  reconnectExhausted: false,
+  isOffline: false,
+  connectionRejection: null,
   payloadRejected: false,
+  historyTimedOut: false,
   configuring: false,
 };
 
@@ -51,9 +54,23 @@ describe("useChatStatus", () => {
     expect(result.current).toEqual({ kind: "unavailable", reason: "configuring" });
   });
 
-  it("returns 'unavailable' with reason 'exhausted' when reconnect gave up", () => {
-    const { result } = renderHook(() => useChatStatus({ ...base, reconnectExhausted: true }));
-    expect(result.current).toEqual({ kind: "unavailable", reason: "exhausted" });
+  it("returns 'unavailable' with reason 'offline' when the browser has no network", () => {
+    const { result } = renderHook(() =>
+      useChatStatus({ ...base, isConnected: false, isOffline: true })
+    );
+    expect(result.current).toEqual({ kind: "unavailable", reason: "offline" });
+  });
+
+  it("returns 'unavailable' with reason 'rejected' when the server refused the connection", () => {
+    const { result } = renderHook(() =>
+      useChatStatus({
+        ...base,
+        isConnected: false,
+        isOpenClawConnected: false,
+        connectionRejection: "too_many_connections",
+      })
+    );
+    expect(result.current).toEqual({ kind: "unavailable", reason: "rejected" });
   });
 
   it("returns 'payloadRejected' immediately when the last send was too large", () => {
@@ -68,19 +85,78 @@ describe("useChatStatus", () => {
     expect(result.current).toEqual({ kind: "payloadRejected" });
   });
 
-  it("priority: exhausted > configuring > payloadRejected > disconnected > starting > responding > ready", () => {
+  it("returns 'unavailable' with reason 'historyTimeout' when the initial history never arrived", () => {
+    // Issue #956: the wait for the first history frame has a deadline. Once it
+    // expires with nothing renderable on screen, the chat must stop pretending
+    // to start and offer a way out instead.
     const { result } = renderHook(() =>
       useChatStatus({
         ...base,
-        reconnectExhausted: true,
+        isHistoryLoaded: false,
+        hasInitialContent: false,
+        historyTimedOut: true,
+      })
+    );
+    expect(result.current).toEqual({ kind: "unavailable", reason: "historyTimeout" });
+  });
+
+  it("ignores a history timeout once there is content on screen", () => {
+    // A catch-up re-pull can time out mid-conversation. The transcript is still
+    // there, so the chat is not in a dead end — don't blank it with an error.
+    const { result } = renderHook(() =>
+      useChatStatus({ ...base, historyTimedOut: true, hasInitialContent: true })
+    );
+    expect(result.current).toEqual({ kind: "ready" });
+  });
+
+  it("prefers the history timeout over the generic 'disconnected' state", () => {
+    // The self-heal closes the socket, so isConnected drops right after the
+    // deadline. "Reconnecting..." would hide the retry the user needs.
+    vi.useFakeTimers();
+    const { result } = renderHook(() =>
+      useChatStatus({
+        ...base,
+        isConnected: false,
+        isHistoryLoaded: false,
+        hasInitialContent: false,
+        historyTimedOut: true,
+      })
+    );
+    act(() => {
+      vi.advanceTimersByTime(2100);
+    });
+    expect(result.current).toEqual({ kind: "unavailable", reason: "historyTimeout" });
+    vi.useRealTimers();
+  });
+
+  it("priority: offline > rejected > configuring > payloadRejected > historyTimeout > disconnected > starting > responding > ready", () => {
+    const { result } = renderHook(() =>
+      useChatStatus({
+        ...base,
+        isOffline: true,
+        connectionRejection: "rate_limited",
         configuring: true,
         payloadRejected: true,
+        historyTimedOut: true,
+        hasInitialContent: false,
         isConnected: false,
         isHistoryLoaded: false,
         isRunning: true,
       })
     );
-    expect(result.current).toEqual({ kind: "unavailable", reason: "exhausted" });
+    expect(result.current).toEqual({ kind: "unavailable", reason: "offline" });
+  });
+
+  it("rejected outranks configuring and a payload rejection", () => {
+    const { result } = renderHook(() =>
+      useChatStatus({
+        ...base,
+        connectionRejection: "too_many_connections",
+        configuring: true,
+        payloadRejected: true,
+      })
+    );
+    expect(result.current).toEqual({ kind: "unavailable", reason: "rejected" });
   });
 });
 
@@ -129,7 +205,8 @@ describe("hysteresis", () => {
     act(() => {
       vi.advanceTimersByTime(200);
     });
-    expect(result.current).toEqual({ kind: "unavailable", reason: "disconnected" });
+    // The socket is open, only the upstream dropped: its own reason now.
+    expect(result.current).toEqual({ kind: "unavailable", reason: "upstreamDown" });
   });
 
   it("cancels the pending disconnect when fullyConnected returns within 2s", () => {
@@ -156,12 +233,32 @@ describe("hysteresis", () => {
     expect(result.current).toEqual({ kind: "unavailable", reason: "configuring" });
   });
 
-  it("transitions immediately for reason 'exhausted'", () => {
+  it("transitions immediately for reason 'offline' (the browser said so, no hysteresis)", () => {
     const { result, rerender } = renderHook(({ inputs }) => useChatStatus(inputs), {
       initialProps: { inputs: base },
     });
-    rerender({ inputs: { ...base, reconnectExhausted: true } });
-    expect(result.current).toEqual({ kind: "unavailable", reason: "exhausted" });
+    rerender({ inputs: { ...base, isConnected: false, isOffline: true } });
+    expect(result.current).toEqual({ kind: "unavailable", reason: "offline" });
+  });
+
+  it("transitions immediately for reason 'rejected' (the server said so, no hysteresis)", () => {
+    const { result, rerender } = renderHook(({ inputs }) => useChatStatus(inputs), {
+      initialProps: { inputs: base },
+    });
+    rerender({
+      inputs: { ...base, isConnected: false, connectionRejection: "rate_limited" as const },
+    });
+    expect(result.current).toEqual({ kind: "unavailable", reason: "rejected" });
+  });
+
+  it("reports an open socket whose upstream is down as 'upstreamDown', after the hysteresis", () => {
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useChatStatus({ ...base, isOpenClawConnected: false }));
+    expect(result.current.kind).toBe("ready"); // a blip is not shown: no flash
+    act(() => {
+      vi.advanceTimersByTime(2100);
+    });
+    expect(result.current).toEqual({ kind: "unavailable", reason: "upstreamDown" });
   });
 
   it("keeps payload rejection from becoming disconnected after the hysteresis delay", () => {
@@ -180,6 +277,94 @@ describe("hysteresis", () => {
     });
 
     expect(result.current).toEqual({ kind: "payloadRejected" });
+  });
+});
+
+describe("escalation after 30 s of continuous unavailability (#1422)", () => {
+  afterEach(() => vi.useRealTimers());
+  const down = { ...base, isConnected: false, isOpenClawConnected: false };
+
+  it("says 'disconnected' (still retrying) before 30 s and 'unreachable' after", () => {
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useChatStatus(down));
+    act(() => {
+      vi.advanceTimersByTime(29_000);
+    });
+    expect(result.current).toEqual({ kind: "unavailable", reason: "disconnected" });
+    act(() => {
+      vi.advanceTimersByTime(1_100);
+    });
+    expect(result.current).toEqual({ kind: "unavailable", reason: "unreachable" });
+  });
+
+  it("is not reset by a flap: an open socket that is not served does not restart the clock", () => {
+    vi.useFakeTimers();
+    const { result, rerender } = renderHook(({ inputs }) => useChatStatus(inputs), {
+      initialProps: { inputs: down },
+    });
+    act(() => {
+      vi.advanceTimersByTime(20_000);
+    });
+    rerender({ inputs: { ...down, isConnected: true } }); // handshake accepted, nothing served
+    act(() => {
+      vi.advanceTimersByTime(5_000);
+    });
+    rerender({ inputs: down });
+    act(() => {
+      vi.advanceTimersByTime(5_100);
+    });
+    expect(result.current).toEqual({ kind: "unavailable", reason: "unreachable" });
+  });
+
+  it("is cleared the moment the chat is fully connected again", () => {
+    vi.useFakeTimers();
+    const { result, rerender } = renderHook(({ inputs }) => useChatStatus(inputs), {
+      initialProps: { inputs: down },
+    });
+    act(() => {
+      vi.advanceTimersByTime(31_000);
+    });
+    expect(result.current).toEqual({ kind: "unavailable", reason: "unreachable" });
+    rerender({ inputs: base });
+    act(() => {
+      vi.advanceTimersByTime(10);
+    });
+    expect(result.current).toEqual({ kind: "ready" });
+    // …and a new outage starts a new clock.
+    rerender({ inputs: down });
+    act(() => {
+      vi.advanceTimersByTime(2_100);
+    });
+    expect(result.current).toEqual({ kind: "unavailable", reason: "disconnected" });
+  });
+
+  it("marks an upstream outage that outlived the deadline, so the UI can offer a bug report", () => {
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useChatStatus({ ...base, isOpenClawConnected: false }));
+    act(() => {
+      vi.advanceTimersByTime(31_000);
+    });
+    expect(result.current).toEqual({
+      kind: "unavailable",
+      reason: "upstreamDown",
+      escalated: true,
+    });
+  });
+
+  it("does not count time spent offline or configuring as an outage worth escalating", () => {
+    vi.useFakeTimers();
+    const { result, rerender } = renderHook(({ inputs }) => useChatStatus(inputs), {
+      initialProps: { inputs: { ...down, isOffline: true } },
+    });
+    act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+    expect(result.current).toEqual({ kind: "unavailable", reason: "offline" });
+    rerender({ inputs: down }); // back online, server still down: fresh clock
+    act(() => {
+      vi.advanceTimersByTime(2_100);
+    });
+    expect(result.current).toEqual({ kind: "unavailable", reason: "disconnected" });
   });
 });
 
@@ -215,32 +400,35 @@ describe("hysteresis", () => {
  *   unavailable/disconnected — WebSocket dropped unexpectedly. 2s hysteresis suppresses
  *                              the red dot during brief reconnects.
  *
- *   unavailable/exhausted    — Reconnect gave up after max attempts. User must reload.
+ *   unavailable/offline      — The browser has no network. Reconnects as soon as it returns.
+ *   unavailable/rejected     — The server refused the connection (4429); retried at a capped interval.
+ *   unavailable/upstreamDown — Socket open, the agent runtime behind it is not.
+ *   unavailable/unreachable  — Disconnected for 30 s: same retrying, louder message.
  *
  * Priority (highest → lowest):
- *   exhausted > configuring > payloadRejected > disconnected > starting > responding > ready
+ *   offline > rejected > configuring > payloadRejected > historyTimeout > disconnected > starting > responding > ready
  */
 describe("state machine documentation — complete output mapping", () => {
-  it("exhausted=true → unavailable/exhausted (highest priority, ignores all other flags)", () => {
+  it("offline=true → unavailable/offline (highest priority, ignores all other flags)", () => {
     const { result } = renderHook(() =>
       useChatStatus({
         ...base,
-        reconnectExhausted: true,
+        isOffline: true,
         configuring: true,
         isConnected: false,
         isHistoryLoaded: false,
         isRunning: true,
       })
     );
-    expect(result.current).toEqual({ kind: "unavailable", reason: "exhausted" });
+    expect(result.current).toEqual({ kind: "unavailable", reason: "offline" });
   });
 
-  it("configuring=true, not exhausted → unavailable/configuring", () => {
+  it("configuring=true, not offline → unavailable/configuring", () => {
     const { result } = renderHook(() => useChatStatus({ ...base, configuring: true }));
     expect(result.current).toEqual({ kind: "unavailable", reason: "configuring" });
   });
 
-  it("payloadRejected=true, not exhausted/configuring → payloadRejected", () => {
+  it("payloadRejected=true, not offline/configuring → payloadRejected", () => {
     const { result } = renderHook(() =>
       useChatStatus({
         ...base,

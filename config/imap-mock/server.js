@@ -113,7 +113,9 @@ app.post("/control/reset", async (req, res) => {
 app.post("/control/seed", async (req, res) => {
   const { to, from, subject, body } = req.body ?? {};
   if (!to || !subject) {
-    return res.status(400).json({ ok: false, error: "to and subject are required" });
+    return res
+      .status(400)
+      .json({ ok: false, error: "to and subject are required" });
   }
   try {
     const transport = nodemailer.createTransport({

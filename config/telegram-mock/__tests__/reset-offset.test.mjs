@@ -54,7 +54,7 @@ test("update_id stays monotonic across reset so a stale poller offset still rece
   assert.ok(
     idAfterReset >= stalePollerOffset,
     `update_id must not rewind across reset: got ${idAfterReset}, ` +
-      `stale poller offset is ${stalePollerOffset}`
+      `stale poller offset is ${stalePollerOffset}`,
   );
 
   // Behavioural check against the real symptom: a poller holding the stale
@@ -69,7 +69,7 @@ test("update_id stays monotonic across reset so a stale poller offset still rece
   assert.ok(
     deliveredIds.includes(idAfterReset),
     `stale poller (offset ${stalePollerOffset}) should receive update ` +
-      `${idAfterReset}, got ${JSON.stringify(deliveredIds)}`
+      `${idAfterReset}, got ${JSON.stringify(deliveredIds)}`,
   );
 });
 
@@ -94,7 +94,7 @@ test("activePollingTokens includes a token that just settled a poll", async () =
   const health = getHealthSnapshot();
   assert.ok(
     health.activePollingTokens.includes(TOKEN),
-    `expected ${TOKEN} in activePollingTokens, got ${JSON.stringify(health.activePollingTokens)}`
+    `expected ${TOKEN} in activePollingTokens, got ${JSON.stringify(health.activePollingTokens)}`,
   );
   // Back-compat: pollingTokens (ever-polled) must still include it too.
   assert.ok(health.pollingTokens.includes(TOKEN));
@@ -111,7 +111,7 @@ test("activePollingTokens drops a settled token once the grace window elapses", 
   assert.ok(
     !health.activePollingTokens.includes(TOKEN),
     `expected ${TOKEN} to have dropped out of activePollingTokens after the grace window, ` +
-      `got ${JSON.stringify(health.activePollingTokens)}`
+      `got ${JSON.stringify(health.activePollingTokens)}`,
   );
   // pollingTokens (ever-polled, back-compat) is NOT time-based and must still
   // include it — other specs rely on this field never shrinking except on reset.
@@ -133,7 +133,7 @@ test("an in-flight long-poll keeps a token active indefinitely; aborting it drop
   const inflight = handleGetUpdates(
     TOKEN,
     { offset: "0", timeout: "30" },
-    { signal: ac.signal }
+    { signal: ac.signal },
   );
 
   // Even far beyond the grace window, an open poll reads as active.
@@ -141,7 +141,7 @@ test("an in-flight long-poll keeps a token active indefinitely; aborting it drop
   assert.ok(
     whilePolling.activePollingTokens.includes(TOKEN),
     `an in-flight long-poll must keep ${TOKEN} active regardless of elapsed time, ` +
-      `got ${JSON.stringify(whilePolling.activePollingTokens)}`
+      `got ${JSON.stringify(whilePolling.activePollingTokens)}`,
   );
 
   // Client disconnects (OpenClaw tears the worker down) → the poll settles.
@@ -156,7 +156,7 @@ test("an in-flight long-poll keeps a token active indefinitely; aborting it drop
   assert.ok(
     !afterGrace.activePollingTokens.includes(TOKEN),
     `after abort + grace, ${TOKEN} must drop out of activePollingTokens, ` +
-      `got ${JSON.stringify(afterGrace.activePollingTokens)}`
+      `got ${JSON.stringify(afterGrace.activePollingTokens)}`,
   );
 });
 

@@ -2,11 +2,15 @@
 
 import { useEffect, useState } from "react";
 import { apiGet, apiDelete } from "@/lib/api-client";
-import { useChatSessionHasInlineError } from "@/components/chat-session-provider";
+import {
+  useChatSessionHasInlineError,
+  useChatSessionIsRunning,
+} from "@/components/chat-session-provider";
 import { ChatErrorMessage, type ChatError } from "@/components/assistant-ui/chat-error-message";
 import type { TransientReason } from "@/lib/schemas/chat-frames";
 import { Button } from "@/components/ui/button";
-import { DuplicateRetryConfirm } from "@/components/chat/duplicate-retry-confirm";
+import { GatedRetry } from "@/components/chat/gated-retry";
+import { useRunCompletionEffect } from "@/hooks/use-run-completion-effect";
 
 interface ActiveError {
   id: string;
@@ -48,8 +52,9 @@ function toChatError(error: ActiveError): ChatError {
 }
 
 /**
- * Durable "paused" banner (Concern 1). On mount it asks the server for the
- * session's latest un-resolved agent error and re-surfaces it — so a rate-limit
+ * Durable "paused" banner (Concern 1). On mount, and again whenever a turn in
+ * the chat ends, it asks the server for the session's latest un-resolved agent
+ * error and re-surfaces it — so a rate-limit
  * (or any agent error) the live bubble lost to a reload/reconnect is still
  * visible when the user comes back. Dismiss clears it server-side; Retry resends
  * the last user message, gated behind a duplicate-write confirmation when the
@@ -73,6 +78,15 @@ export function ChatErrorBanner({
   // truth; the banner only fills in when no inline error is present.
   const hasInlineError = useChatSessionHasInlineError(agentId, chatId ?? undefined);
 
+  // Ask again each time a turn in this chat ends (#1301). A turn that went
+  // through supersedes the error server-side, and without this the banner
+  // stayed above the very answer that resolved it until the next reload. The
+  // server stays the judge: a turn that failed leaves the error (or a newer
+  // one) active, and the refetch shows that instead.
+  const isRunning = useChatSessionIsRunning(agentId, chatId ?? undefined);
+  const [turnsEnded, setTurnsEnded] = useState(0);
+  useRunCompletionEffect(isRunning, () => setTurnsEnded((n) => n + 1));
+
   useEffect(() => {
     let cancelled = false;
     const url = chatId
@@ -88,7 +102,7 @@ export function ChatErrorBanner({
     return () => {
       cancelled = true;
     };
-  }, [agentId, chatId]);
+  }, [agentId, chatId, turnsEnded]);
 
   if (!error || hasInlineError) return null;
 
@@ -105,18 +119,29 @@ export function ChatErrorBanner({
     onRetry();
   };
 
-  const retryControl = error.sideEffects ? (
-    <DuplicateRetryConfirm agentName={error.agentName} onConfirm={handleRetry}>
-      {(open) => (
-        <Button variant="outline" size="sm" className="h-7 text-xs" onClick={open}>
+  // The row's `sideEffects` was already re-derived server-side when this banner
+  // was fetched, but the fetch happened on mount and the click can come minutes
+  // later — so ask once more here, on the same terms as the inline bubble.
+  const retryControl = (
+    <GatedRetry
+      agentId={agentId}
+      chatId={chatId}
+      agentName={error.agentName}
+      sideEffects={error.sideEffects}
+      onRetry={handleRetry}
+    >
+      {(start, pending) => (
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7 text-xs"
+          onClick={start}
+          disabled={pending}
+        >
           Retry
         </Button>
       )}
-    </DuplicateRetryConfirm>
-  ) : (
-    <Button variant="outline" size="sm" className="h-7 text-xs" onClick={handleRetry}>
-      Retry
-    </Button>
+    </GatedRetry>
   );
 
   return (

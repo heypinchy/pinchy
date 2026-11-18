@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
 
@@ -50,6 +51,7 @@ vi.mock("@/lib/agent-access", async (importOriginal) => {
   return {
     ...actual,
     assertAgentAccess: vi.fn(),
+    isPersonalAgentPausedFor: vi.fn().mockResolvedValue(false),
   };
 });
 
@@ -111,6 +113,7 @@ describe("ChatPage", () => {
       name: "Personal Agent",
       ownerId: "owner-user",
       isPersonal: true,
+      allowedTools: [],
     };
 
     mockRequireAuth.mockResolvedValue({
@@ -144,6 +147,7 @@ describe("ChatPage", () => {
       name: "Restricted Agent",
       ownerId: null,
       isPersonal: false,
+      allowedTools: [],
       visibility: "restricted",
     };
 
@@ -175,6 +179,7 @@ describe("ChatPage", () => {
       name: "Shared Agent",
       ownerId: null,
       isPersonal: false,
+      allowedTools: [],
     };
 
     mockRequireAuth.mockResolvedValue({
@@ -210,6 +215,7 @@ describe("ChatPage", () => {
       name: "Someone's Agent",
       ownerId: "other-user",
       isPersonal: true,
+      allowedTools: [],
     };
 
     mockRequireAuth.mockResolvedValue({
@@ -245,6 +251,7 @@ describe("ChatPage", () => {
       name: "Shared Agent",
       ownerId: null,
       isPersonal: false,
+      allowedTools: [],
     };
 
     mockRequireAuth.mockResolvedValue({
@@ -266,6 +273,7 @@ describe("ChatPage", () => {
       name: "My Agent",
       ownerId: "user-1",
       isPersonal: true,
+      allowedTools: [],
     };
 
     mockRequireAuth.mockResolvedValue({
@@ -287,6 +295,7 @@ describe("ChatPage", () => {
       name: "Avatar Agent",
       ownerId: null,
       isPersonal: false,
+      allowedTools: [],
       avatarSeed: "my-seed",
     };
 
@@ -303,8 +312,32 @@ describe("ChatPage", () => {
     expect(capturedChatProps.avatarUrl).toBe("data:image/svg+xml;utf8,mock-my-seed");
   });
 
+  it("tells Chat the agent searches the knowledge base, so members get the folder view (#1386)", async () => {
+    const kbAgent = {
+      id: "agent-kb",
+      name: "Docs",
+      ownerId: null,
+      isPersonal: false,
+      allowedTools: ["knowledge_search"],
+      pluginConfig: { "pinchy-files": { allowed_paths: ["/data/kb"] } },
+    };
+    mockRequireAuth.mockResolvedValue({ user: { id: "user-1", role: "member" } });
+    dbSelectMock.where.mockResolvedValue([kbAgent]);
+    mockAssertAgentAccess.mockImplementation(() => {});
+
+    render(await ChatPage({ params: Promise.resolve({ agentId: "agent-kb" }) }));
+
+    expect(capturedChatProps.searchesKnowledge).toBe(true);
+  });
+
   it("redirects to the most-recently-interacted named chat (#508)", async () => {
-    const sharedAgent = { id: "agent-2", name: "Shared Agent", ownerId: null, isPersonal: false };
+    const sharedAgent = {
+      id: "agent-2",
+      name: "Shared Agent",
+      ownerId: null,
+      isPersonal: false,
+      allowedTools: [],
+    };
     mockRequireAuth.mockResolvedValue({ user: { id: "user-1", role: "member" } });
     dbSelectMock.where.mockResolvedValue([sharedAgent]);
     mockAssertAgentAccess.mockImplementation(() => {});
@@ -326,7 +359,13 @@ describe("ChatPage", () => {
   });
 
   it("does NOT redirect when ?keep is set (explicit default chat)", async () => {
-    const sharedAgent = { id: "agent-2", name: "Shared Agent", ownerId: null, isPersonal: false };
+    const sharedAgent = {
+      id: "agent-2",
+      name: "Shared Agent",
+      ownerId: null,
+      isPersonal: false,
+      allowedTools: [],
+    };
     mockRequireAuth.mockResolvedValue({ user: { id: "user-1", role: "member" } });
     dbSelectMock.where.mockResolvedValue([sharedAgent]);
     mockAssertAgentAccess.mockImplementation(() => {});
@@ -347,7 +386,13 @@ describe("ChatPage", () => {
   });
 
   it("renders the default chat when OpenClaw is unreachable", async () => {
-    const sharedAgent = { id: "agent-2", name: "Shared Agent", ownerId: null, isPersonal: false };
+    const sharedAgent = {
+      id: "agent-2",
+      name: "Shared Agent",
+      ownerId: null,
+      isPersonal: false,
+      allowedTools: [],
+    };
     mockRequireAuth.mockResolvedValue({ user: { id: "user-1", role: "member" } });
     dbSelectMock.where.mockResolvedValue([sharedAgent]);
     mockAssertAgentAccess.mockImplementation(() => {});

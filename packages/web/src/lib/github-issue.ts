@@ -4,6 +4,13 @@ export interface DiagnosticsResult {
   version: string;
   nodeEnv: string;
   logs?: string;
+  /**
+   * Set by `GET /api/diagnostics` when the caller is signed in and the server
+   * deliberately held the logs back for their role — never when the logs are
+   * merely missing. The two need different copy in the report body, and an
+   * absent `logs` field alone cannot tell them apart.
+   */
+  logsWithheld?: "admin-only";
 }
 
 export interface IssueContext {
@@ -24,13 +31,19 @@ function buildTitle(error: string): string {
 /**
  * Returns a GitHub new-issue URL with only the title and a short paste hint.
  * The full issue body should be copied to clipboard separately via buildIssueBody().
+ *
+ * The labels are load-bearing, not decoration: this deeplink bypasses
+ * `.github/ISSUE_TEMPLATE/bug_report.yml`, which is where `bug` + `triage`
+ * normally come from. Without them a report born from a real in-app failure
+ * lands unlabelled and shows up in no triage filter — which is exactly how
+ * #849 sat unanswered for a week.
  */
 export function buildGitHubIssueUrl(context: IssueContext): string {
   const title = buildTitle(context.error);
   const body =
     "**Paste your clipboard below** (Cmd+V / Ctrl+V) — diagnostic info was copied automatically.\n\n---\n";
 
-  const params = new URLSearchParams({ title, body });
+  const params = new URLSearchParams({ title, body, labels: "bug,triage" });
   return `${REPO_URL}?${params.toString()}`;
 }
 
@@ -96,10 +109,32 @@ export function buildIssueBody(context: IssueContext): string {
 
   if (diagnostics?.logs) {
     sections.push("", "**Logs:**", "```", diagnostics.logs, "```");
-  } else {
+  } else if (diagnostics?.logsWithheld === "admin-only") {
+    // Since logs became admin-only this is what every member sees, so it is
+    // no longer a rare fallback. Pointing them at a host shell they have no
+    // account on produces a report with no logs and an instruction the
+    // reporter cannot follow — their administrator is the workable step.
     sections.push(
       "",
-      "**Logs:** (run `docker compose logs pinchy --tail 200` and paste below)",
+      "**Logs:** Not included — only admins can read server logs. Forward this report to your Pinchy administrator, who can paste them below.",
+      "```",
+      "",
+      "```"
+    );
+  } else {
+    // No marker means the server did not say why the logs are missing —
+    // either there was no session to withhold for, or diagnostics never
+    // answered. That is not the same as "this reporter holds the host
+    // shell": `ReportIssueLink` renders from both root error boundaries
+    // (`app/error.tsx`, `app/global-error.tsx`), which cover `/login`,
+    // `/invite/[token]` and `/share-target`, and from four components
+    // besides. A signed-out reporter is as likely to be a member on one of
+    // those pages as the person running the setup wizard, and nothing here
+    // separates them — so the copy names both routes rather than guessing
+    // which one is reading it.
+    sections.push(
+      "",
+      "**Logs:** (run `docker compose logs pinchy --tail 200` on the server and paste below — if you have no shell there, ask your Pinchy administrator)",
       "```",
       "",
       "```"

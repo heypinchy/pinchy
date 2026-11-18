@@ -1,24 +1,23 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import "@testing-library/jest-dom";
 import { DiagnosticsExportDialog } from "@/components/diagnostics-export-dialog";
 
-vi.mock("@/lib/api-client", () => ({
-  apiPost: vi.fn(async () => ({ schemaVersion: "pinchy.bugreport.v1" })),
-  // The chat picker (#639) fetches the user's chats on open. Default to an
-  // empty list so the legacy tests below export the default chat (no sessionId).
-  apiGet: vi.fn(async () => ({ chats: [] })),
-  ApiError: class ApiError extends Error {
-    constructor(
-      public readonly status: number,
-      message: string,
-      public readonly details?: unknown
-    ) {
-      super(message);
-      this.name = "ApiError";
-    }
-  },
-}));
+// Spread the real module rather than re-declaring its exports: a hand-rolled
+// factory silently drops anything it forgets (a re-declared `ApiError` also
+// breaks `instanceof` against the real one), and the component reads
+// `errorMessage` from here too.
+vi.mock("@/lib/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api-client")>();
+  return {
+    ...actual,
+    apiPost: vi.fn(async () => ({ schemaVersion: "pinchy.bugreport.v1" })),
+    // The chat picker (#639) fetches the user's chats on open. Default to an
+    // empty list so the legacy tests below export the default chat (no sessionId).
+    apiGet: vi.fn(async () => ({ chats: [] })),
+  };
+});
 
 vi.mock("@/lib/diagnostics/download", () => ({
   downloadBundle: vi.fn(),
@@ -155,6 +154,49 @@ describe("DiagnosticsExportDialog", () => {
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 
+  // The download itself is silent — the browser may drop the file straight into
+  // the downloads folder with no visible tab. Name the file we produced so the
+  // user can find it, on both surfaces (inline, nothing closes at all).
+  it("confirms the download with a toast naming the file", async () => {
+    const { toast } = await import("sonner");
+    render(
+      <DiagnosticsExportDialog open agentId="agt_1" agentName="Smithers" onClose={() => {}} />
+    );
+    fireEvent.click(screen.getByRole("button", { name: /generate/i }));
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith("Diagnostics export downloaded", {
+        description: "pinchy-bugreport-smithers-19700101-0000.json",
+      })
+    );
+  });
+
+  // The whole point of the form's `onSubmittingChange` plumbing: an export in
+  // flight must not be closed out from under itself, or the download is lost
+  // with no explanation. Nothing else covers this.
+  it("refuses to close on Escape while an export is in flight", async () => {
+    const { apiPost } = await import("@/lib/api-client");
+    const onClose = vi.fn();
+    let resolveExport: (bundle: unknown) => void = () => {};
+    vi.mocked(apiPost).mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveExport = resolve;
+      })
+    );
+
+    render(<DiagnosticsExportDialog open agentId="agt_1" agentName="Smithers" onClose={onClose} />);
+    fireEvent.click(screen.getByRole("button", { name: /generate/i }));
+    // Wait for the in-flight state to reach the dialog, otherwise Escape would
+    // race the click and pass for the wrong reason.
+    await waitFor(() => expect(screen.getByRole("button", { name: /generating/i })).toBeDisabled());
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+
+    // Once it lands, the dialog closes on its own — the guard must not be sticky.
+    resolveExport({ schemaVersion: "pinchy.bugreport.v1" });
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
   // ── #639: chat picker + context-aware default selection ──────────────────
 
   const CHATS = [
@@ -192,6 +234,24 @@ describe("DiagnosticsExportDialog", () => {
     );
     expect(await screen.findByRole("combobox", { name: /chat/i })).toBeInTheDocument();
     expect(apiGet).toHaveBeenCalledWith("/api/agents/agt_1/chats");
+  });
+
+  it("constrains the chat picker to the dialog width so a long title can't stretch it", async () => {
+    const { apiGet } = await import("@/lib/api-client");
+    vi.mocked(apiGet).mockResolvedValue({
+      chats: [{ ...CHATS[0], title: "Sind jetzt alle gebuchten Rechnungen mit Bankbuchungen " }],
+    });
+    render(
+      <DiagnosticsExportDialog open agentId="agt_1" agentName="Smithers" onClose={() => {}} />
+    );
+    // The shadcn trigger defaults to `w-fit` + `whitespace-nowrap`, so a long
+    // chat title used to push the trigger — and with it the dialog's grid
+    // column — far past the dialog's own max-width, spilling the picker and the
+    // textarea out of the modal. jsdom computes no layout, so guard the classes
+    // that make the trigger shrinkable.
+    const trigger = await screen.findByRole("combobox", { name: /chat/i });
+    expect(trigger).toHaveClass("w-full");
+    expect(trigger).toHaveClass("min-w-0");
   });
 
   it("exports the default chat's sessionId when launched from Settings (no chat context)", async () => {

@@ -1,15 +1,32 @@
+import { refusingUnknownParams } from "./unknown-params";
 import { readFile, stat } from "./io";
 import { basename, extname } from "path";
-import { OdooClient, type OdooDomain } from "odoo-node";
+import type { OdooClient, OdooDomain } from "odoo-node";
 import { checkPermission, type Permissions } from "./permissions";
 import {
   decodeRef,
   encodeRef,
   isIntegrationRef,
+  MalformedIntegrationRefError,
   type IntegrationRefPayload,
 } from "./integration-ref";
+import {
+  credentialCacheKey,
+  isAuthError,
+  postAuthFailure,
+  requestCredentials,
+  trackMutations,
+} from "./credential-client";
+import { describeOdooError } from "./odoo-error";
+import { checkedTarget, type PinnedTarget } from "./pinned-target";
+import { pinOdooClient } from "./pinned-fetch";
 
 const WORKSPACE_ROOT = "/root/.openclaw/workspaces";
+
+// The two Pinchy-internal calls this plugin makes (credentials fetch,
+// auth-failure report) are bounded inside credential-client.ts. The Odoo
+// calls themselves go through odoo-node, pinned to the addresses Pinchy
+// checked (pinned-fetch.ts).
 
 // 25 MB matches Odoo's default `web.max_file_upload_size` setting. Keeps the
 // plugin process from OOMing on a single attachment (readFile + base64 string
@@ -24,8 +41,7 @@ const MIME_BY_EXT: Record<string, string> = {
   ".webp": "image/webp",
   ".pdf": "application/pdf",
   ".doc": "application/msword",
-  ".docx":
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   ".xls": "application/vnd.ms-excel",
   ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   ".txt": "text/plain",
@@ -33,9 +49,7 @@ const MIME_BY_EXT: Record<string, string> = {
 };
 
 function mimeForFilename(filename: string): string {
-  return (
-    MIME_BY_EXT[extname(filename).toLowerCase()] ?? "application/octet-stream"
-  );
+  return MIME_BY_EXT[extname(filename).toLowerCase()] ?? "application/octet-stream";
 }
 
 // Reject filenames that could escape the agent's uploads directory.
@@ -63,7 +77,7 @@ interface PluginApi {
   pluginConfig?: PluginConfig;
   registerTool: (
     factory: (ctx: PluginToolContext) => AgentTool | null,
-    opts?: { name?: string },
+    opts?: { name?: string }
   ) => void;
 }
 
@@ -75,7 +89,7 @@ interface AgentTool {
   execute: (
     toolCallId: string,
     params: Record<string, unknown>,
-    signal?: AbortSignal,
+    signal?: AbortSignal
   ) => Promise<{
     content: ContentBlock[];
     isError?: boolean;
@@ -110,6 +124,16 @@ export interface OdooField {
   selection?: Array<[string, string]>;
   readonly?: boolean;
   required?: boolean;
+  /**
+   * `fields_get`'s own verdict on whether a domain may reference this field:
+   * `bool(field.store or field.search)`. Carried because `store` alone answers
+   * the wrong question — `account.account.code` is non-stored from Odoo 18 (the
+   * value lives in `account.code.mapping`) yet declares `_search_code`, while
+   * `product.product.code` is a non-stored compute with no search method at
+   * all. Absent from a payload means "unknown", which is treated as searchable
+   * so an older `fields_get` behaves as it always did.
+   */
+  searchable?: boolean;
 }
 
 type OdooRecord = Record<string, unknown>;
@@ -135,7 +159,7 @@ const COUNTRY_ALIASES_TO_CODE: Record<string, string> = {
 
 function getAgentConfig(
   agentConfigs: Record<string, AgentOdooConfig>,
-  agentId: string,
+  agentId: string
 ): AgentOdooConfig | null {
   return agentConfigs[agentId] ?? null;
 }
@@ -147,13 +171,9 @@ function getAgentConfig(
  * `unhashable type: 'dict'`, see issue #209). Without this assertion a
  * malformed payload would propagate all the way to Odoo before erroring.
  */
-function assertCredentialsShape(
-  creds: unknown,
-): asserts creds is OdooCredentials {
+function assertCredentialsShape(creds: unknown): asserts creds is OdooCredentials {
   if (!creds || typeof creds !== "object") {
-    throw new Error(
-      `pinchy-odoo: credentials must be an object, got ${typeof creds}`,
-    );
+    throw new Error(`pinchy-odoo: credentials must be an object, got ${typeof creds}`);
   }
   const obj = creds as Record<string, unknown>;
   // Detect the SecretRef-shaped payload (#209) up front so the error
@@ -177,9 +197,7 @@ function assertCredentialsShape(
         : actual === "object"
           ? " (looks like an unresolved SecretRef — see #209)"
           : "";
-      throw new Error(
-        `pinchy-odoo: credentials.${name} must be a ${type}, got ${actual}${hint}`,
-      );
+      throw new Error(`pinchy-odoo: credentials.${name} must be a ${type}, got ${actual}${hint}`);
     }
   }
 }
@@ -199,42 +217,35 @@ async function fetchCredentials(
   apiBaseUrl: string,
   gatewayToken: string,
   connectionId: string,
-): Promise<OdooCredentials> {
-  const response = await fetch(
-    `${apiBaseUrl}/api/internal/integrations/${connectionId}/credentials`,
-    { headers: { Authorization: `Bearer ${gatewayToken}` } },
-  );
-  if (!response.ok) {
-    // The credentials route puts an actionable message in the JSON body (e.g. a
-    // 404 "This integration is no longer connected …") — surface it so the agent
-    // reports something a user can act on, not a bare HTTP status. Read the body
-    // tolerantly: a non-JSON body must not mask the original status.
-    const body = await (async () => {
-      try {
-        return (await response.json()) as { error?: unknown };
-      } catch {
-        return null;
-      }
-    })();
-    const detail =
-      body && typeof body.error === "string" ? `: ${body.error}` : "";
+  agentId: string
+): Promise<{ creds: OdooCredentials; target: PinnedTarget }> {
+  const data = await requestCredentials({
+    apiBaseUrl,
+    gatewayToken,
+    connectionId,
+    agentId,
+    label: "Odoo",
+  });
+  assertCredentialsShape(data.credentials);
+  // Pinchy answers the addresses it checked the URL's host against. Without
+  // them there is nothing to pin to, and resolving the name here would be
+  // exactly the second lookup a rebinding resolver waits for — so refuse.
+  // The route answers an Odoo URL it cannot check with a 403 or 503, never a
+  // 200, so a 200 without them comes from a Pinchy older than this plugin.
+  const target = checkedTarget(data, "url");
+  if (!target) {
     throw new Error(
-      `Failed to fetch Odoo credentials for connection ${connectionId}: ` +
-        `HTTP ${response.status} ${response.statusText}${detail}`,
+      "pinchy-odoo: Pinchy did not send the addresses it checked for this connection's Odoo URL, so the Odoo tools will not connect to it. Pinchy and its agent runtime (the openclaw container) are most likely on different versions — run both from the same Pinchy release."
     );
   }
-  const data = (await response.json()) as { credentials?: unknown };
-  assertCredentialsShape(data.credentials);
-  return data.credentials;
+  return { creds: data.credentials, target };
 }
 
-function createClient(creds: OdooCredentials): OdooClient {
-  return new OdooClient({
-    url: creds.url,
-    db: creds.db,
-    uid: creds.uid,
-    apiKey: creds.apiKey,
-  });
+function createClient(creds: OdooCredentials, target: PinnedTarget): OdooClient {
+  return pinOdooClient(
+    { url: creds.url, db: creds.db, uid: creds.uid, apiKey: creds.apiKey },
+    target
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -259,17 +270,55 @@ function unquoteFieldKeysDeep(value: unknown): unknown {
   const out: Record<string, unknown> = {};
   for (const [key, val] of Object.entries(value)) {
     const stripped =
-      key.length >= 2 && key.startsWith('"') && key.endsWith('"')
-        ? key.slice(1, -1)
-        : key;
+      key.length >= 2 && key.startsWith('"') && key.endsWith('"') ? key.slice(1, -1) : key;
     out[stripped] = unquoteFieldKeysDeep(val);
   }
   return out;
 }
 
-function unquoteFieldKeys(
-  values: Record<string, unknown>,
-): Record<string, unknown> {
+// A second, distinct model-serialization quirk (observed: ollama-cloud/
+// deepseek-v4-pro in production, pinchy-bugreport-penny-20260716): array-valued
+// tool arguments arrive wrapped as single-key `{item: …}` objects, nested for
+// nested arrays — e.g. `tax_ids: [[6, 0, [172]]]` becomes
+// `{item: {item: ["6", "0", {item: "172"}]}}`. This is the XML-style array
+// serialization certain tool-calling transports produce (documented across
+// runtimes, e.g. llama.cpp ggml-org/llama.cpp#21384), and it is upstream of us.
+//
+// Unlike the quoted-key quirk above, this one is LOSSY: single-element arrays
+// collapse to scalars and ints stringify, so it cannot be reconstructed here
+// without Odoo's schema (which command position is an id list). Silently
+// guessing would forward wrong data. So we DETECT it and return an actionable
+// error naming the artifact and the correct plain-array shape — best-practice
+// for tool robustness (typed, self-correcting error over hidden coercion) —
+// instead of letting Odoo reject it with an opaque "unhashable type: 'dict'" or
+// "Wrong value for …: {'item': …}" that the model cannot act on.
+export function hasItemWrappedArray(value: unknown, depth = 0): boolean {
+  if (depth > 8) return false;
+  if (Array.isArray(value)) {
+    return value.some((v) => hasItemWrappedArray(v, depth + 1));
+  }
+  if (isRecord(value)) {
+    const keys = Object.keys(value);
+    if (keys.length === 1 && keys[0] === "item") return true;
+    return Object.values(value).some((v) => hasItemWrappedArray(v, depth + 1));
+  }
+  return false;
+}
+
+/**
+ * Error for the `{item: …}` array-wrapping quirk, naming the artifact and
+ * showing the correct plain-array shape so the model can re-issue the call.
+ */
+function itemWrappedError(paramName: string): Error {
+  return new Error(
+    `Your \`${paramName}\` arrived with arrays wrapped as {"item": …} objects instead of plain JSON arrays — a serialization artifact from the model, not a value Odoo can accept. ` +
+      `Re-issue the call with plain arrays. For example, a one2many field is invoice_line_ids: [[0, 0, {…}]], ` +
+      `a many2many is tax_ids: [[6, 0, [<id>]]], and a domain is [["state", "=", "posted"]] — ` +
+      `never {"item": {"item": [...]}}.`
+  );
+}
+
+function unquoteFieldKeys(values: Record<string, unknown>): Record<string, unknown> {
   return unquoteFieldKeysDeep(values) as Record<string, unknown>;
 }
 
@@ -325,9 +374,7 @@ const COMMON_FIELDS = [
   "ref",
 ] as const;
 
-const COMMON_INDEX = new Map<string, number>(
-  COMMON_FIELDS.map((f, i) => [f, i]),
-);
+const COMMON_INDEX = new Map<string, number>(COMMON_FIELDS.map((f, i) => [f, i]));
 
 export function sortFieldsByPriority(fields: OdooField[]): OdooField[] {
   return [...fields].sort((a, b) => {
@@ -339,19 +386,193 @@ export function sortFieldsByPriority(fields: OdooField[]): OdooField[] {
 }
 
 /**
- * Narrow an untrusted, tool-supplied `filters` value into an Odoo search
- * domain. A domain is always an array of `[field, op, value]` tuples plus
- * `&`/`|`/`!` operators; an omitted filter means "match everything" (`[]`).
- * Reject non-array input early with a clear message instead of forwarding
- * garbage to Odoo, where it surfaces as an opaque server error. Individual
- * tuple shapes are left to Odoo to validate.
+ * The logical operators an Odoo domain carries between its conditions, in the
+ * Polish notation Odoo expects.
  */
-function asDomain(value: unknown): OdooDomain {
+const ODOO_LOGICAL_OPERATORS = new Set(["&", "|", "!"]);
+
+/**
+ * Every comparison operator Odoo accepts in a search domain. Used to refuse an
+ * operator here, with the list, rather than letting Odoo reject the whole
+ * domain with a message the model cannot act on.
+ *
+ * This is also the ONE list the `filters` tool description is built from, so
+ * what the model is told and what it is held to cannot drift apart. It is
+ * hand-maintained against Odoo's condition-operator set; if a future Odoo adds
+ * one, it has to be added here.
+ */
+const ODOO_DOMAIN_OPERATORS = new Set([
+  "=",
+  "!=",
+  ">",
+  ">=",
+  "<",
+  "<=",
+  "=?",
+  "=like",
+  "=ilike",
+  "like",
+  "not like",
+  "ilike",
+  "not ilike",
+  "in",
+  "not in",
+  "child_of",
+  "parent_of",
+  "any",
+  "not any",
+]);
+
+/**
+ * The operators whose VALUE is itself a domain. Their sub-domain gets exactly
+ * the same treatment as the top level: the #1198 escape lands one level in as
+ * readily as at the top, and nothing below here would decode it.
+ */
+const ODOO_NESTED_DOMAIN_OPERATORS = new Set(["any", "not any"]);
+
+/**
+ * Spellings Odoo normalizes away before matching its own operator set: it
+ * lower-cases the operator, and still accepts the legacy `<>` for `!=`.
+ * Refusing those here would reject a domain Odoo runs happily — and sending
+ * the canonical form is never worse than sending the alias, so this stays
+ * correct even if a future Odoo drops the leniency.
+ */
+const ODOO_OPERATOR_ALIASES = new Map([["<>", "!="]]);
+
+/**
+ * Turn a literal `\uXXXX` sequence back into the character it denotes.
+ *
+ * Not a JSON parse — the input has already been through one. Some models emit
+ * `<`, `>` and `&` in escaped form (the habit that stops you emitting markup),
+ * and when that escape survives the provider's tool-argument serialization a
+ * six-character literal like `\u003c` arrives where an operator belongs.
+ */
+export function decodeUnicodeEscapes(value: string): string {
+  return value.replace(/\\u([0-9a-fA-F]{4})/g, (_match, hex: string) =>
+    String.fromCharCode(parseInt(hex, 16))
+  );
+}
+
+/** The operator Odoo will see, from the one the model actually sent. */
+function canonicalOperator(rawOperator: string): string {
+  const decoded = decodeUnicodeEscapes(rawOperator).toLowerCase();
+  return ODOO_OPERATOR_ALIASES.get(decoded) ?? decoded;
+}
+
+/**
+ * Does this entry look like a domain that arrived one level too deep?
+ *
+ * `[["&", cond, cond]]` and `[[cond, cond]]` are shapes models produce as
+ * readily as the `{item: …}` artifact `hasItemWrappedArray` catches. Every
+ * element of a domain is either a condition (an array) or a logical operator;
+ * a real condition's first element is a field name, which is neither — so the
+ * two shapes are told apart without guessing. Saying "this is nested" beats
+ * the honest-but-useless "the operator must be a string" that reading the
+ * middle element of such an entry would otherwise produce.
+ */
+function looksLikeNestedDomain(entry: unknown[]): boolean {
+  return (
+    entry.length > 0 &&
+    entry.every(
+      (element) =>
+        Array.isArray(element) ||
+        (typeof element === "string" && ODOO_LOGICAL_OPERATORS.has(element))
+    )
+  );
+}
+
+/**
+ * Decode and validate a bare string entry — a domain's `&`, `|` or `!`.
+ *
+ * `&` is the character a model escapes most reflexively of all, so the
+ * operator position of a CONDITION is not the only place #1198 lands.
+ */
+function normalizeLogicalOperator(entry: string): string {
+  const decoded = decodeUnicodeEscapes(entry);
+  if (!ODOO_LOGICAL_OPERATORS.has(decoded)) {
+    throw new Error(
+      `Unsupported domain term ${JSON.stringify(entry)}. A bare string in a domain must be one of ` +
+        `${[...ODOO_LOGICAL_OPERATORS].map((op) => JSON.stringify(op)).join(", ")}; anything else ` +
+        `has to be a [field, operator, value] condition.`
+    );
+  }
+  return decoded;
+}
+
+/**
+ * Normalize the operator of one domain condition, and recurse into the
+ * sub-domain of `any` / `not any`.
+ *
+ * The refusal names the field and the operator and NOT the value: the value is
+ * the model's own search text, it adds nothing to a message about the
+ * operator, and echoing it back into an error message is how caller-supplied
+ * prose ends up being read as a diagnosis by something downstream.
+ */
+function normalizeDomainCondition(condition: unknown[]): unknown[] {
+  const [field, rawOperator, value] = condition;
+  if (typeof rawOperator !== "string") {
+    throw new Error(
+      `Invalid condition on field ${JSON.stringify(field)}: the operator must be a string, ` +
+        `e.g. "=", "in", "ilike" — got ${rawOperator === null ? "null" : typeof rawOperator}.`
+    );
+  }
+
+  const operator = canonicalOperator(rawOperator);
+  if (!ODOO_DOMAIN_OPERATORS.has(operator)) {
+    throw new Error(
+      `Unsupported operator ${JSON.stringify(rawOperator)} on field ${JSON.stringify(field)}. ` +
+        `Use one of: ${[...ODOO_DOMAIN_OPERATORS].join(", ")}.`
+    );
+  }
+
+  const normalizedValue =
+    ODOO_NESTED_DOMAIN_OPERATORS.has(operator) && Array.isArray(value)
+      ? asDomain(value, `the sub-domain of \`${operator}\``)
+      : value;
+
+  return operator === rawOperator && normalizedValue === value
+    ? condition
+    : [field, operator, normalizedValue];
+}
+
+/**
+ * Narrow an untrusted, tool-supplied `filters` value into an Odoo search
+ * domain: a flat list of `&`/`|`/`!` operators and `[field, operator, value]`
+ * conditions, where an omitted filter means "match everything" (`[]`).
+ *
+ * Every OPERATOR position — logical and comparison alike — is decoded and then
+ * validated (heypinchy/pinchy#1198). Decoding alone would only move the dead
+ * end one variant along, so an operator that is still not one Odoo accepts is
+ * refused here, naming what was sent and what could be sent instead, at the
+ * point where the model can still fix it.
+ *
+ * Only operator positions are rewritten. A VALUE may legitimately contain a
+ * backslash-u sequence and rewriting it would corrupt a genuine search string,
+ * while an operator never can. The value half of #1198 is still open (#1213).
+ *
+ * Call this BEFORE `withAuthRetry`: a bad domain is the model's mistake and
+ * not the connection's, and an error raised inside that closure is put through
+ * `isAuthError` — which reads prose, and would spend a credential refresh and
+ * a `report-auth-failure` POST on it.
+ */
+export function asDomain(value: unknown, label = "`filters`"): OdooDomain {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value)) {
-    throw new Error("`filters` must be an array (an Odoo search domain).");
+    throw new Error(`${label} must be an array (an Odoo search domain).`);
   }
-  return value as OdooDomain;
+  return value.map((entry) => {
+    if (typeof entry === "string") return normalizeLogicalOperator(entry);
+    if (Array.isArray(entry)) {
+      if (looksLikeNestedDomain(entry)) {
+        throw new Error(
+          `${label} is nested one level too deep: an entry is itself a list of conditions. ` +
+            `Pass a FLAT list of "&"/"|"/"!" operators and [field, operator, value] conditions.`
+        );
+      }
+      if (entry.length === 3) return normalizeDomainCondition(entry);
+    }
+    return entry;
+  }) as OdooDomain;
 }
 
 interface CompactSchemaOptions {
@@ -378,10 +599,24 @@ const DEFAULT_FIELD_LIMIT = 40;
 // model guesses, and the downstream action lands on the wrong record. When a
 // model declares both fields in its schema, surface a one-line hint next to
 // each so the LLM sees the distinction at the point of decision.
-const ID_DISAMBIGUATION_NOTE =
-  "Odoo's internal numeric primary key. NOT the SKU.";
+const ID_DISAMBIGUATION_NOTE = "Odoo's internal numeric primary key. NOT the SKU.";
 const DEFAULT_CODE_DISAMBIGUATION_NOTE =
   "Human-readable internal reference / SKU. NOT the database id.";
+
+/**
+ * Shared many2one guidance for the two writing tools (`odoo_create`,
+ * `odoo_write`). Spliced verbatim into both so the wording cannot drift, and
+ * so a test can pin it in one place — same contract as
+ * {@link PRODUCT_REF_DISAMBIGUATION_HINT}.
+ *
+ * The code half is not decoration. #1197 gave the resolver a natural-key route,
+ * and the description the model actually reads still said "do not pass raw
+ * numeric IDs" and named country codes as the only supported lookup — which is
+ * precisely what a bare GL account code looks like from the outside. A route
+ * the caller is told not to take is not a route.
+ */
+export const MANY2ONE_VALUE_HINT =
+  'For many2one fields, do not pass raw database IDs; use an opaque ref from odoo_read, an exact display name, or the record\'s own code where it has one. A GL account or journal resolves from its code alone ("7660") or from the "<code> <name>" form a chart of accounts prints ("7660 Entertainment expenses"), and a country from its ISO code.';
 
 /**
  * Shared hint for tool descriptions whose tools accept domain filters
@@ -398,17 +633,14 @@ export const PRODUCT_REF_DISAMBIGUATION_HINT =
 
 export function compactSchema(
   allFields: OdooField[],
-  opts: CompactSchemaOptions,
+  opts: CompactSchemaOptions
 ): CompactSchemaResult {
   const sorted = sortFieldsByPriority(allFields);
 
   // Empty `fields: []` is treated the same as omitted — the agent didn't ask
   // for anything specific, so fall through to the default-truncate path.
   const hasFieldsFilter = Array.isArray(opts.fields) && opts.fields.length > 0;
-  const wantsAll =
-    hasFieldsFilter &&
-    opts.fields!.length === 1 &&
-    opts.fields![0] === "__all__";
+  const wantsAll = hasFieldsFilter && opts.fields!.length === 1 && opts.fields![0] === "__all__";
 
   // Clamp limit: NaN / non-finite → default; negative → 0.
   const safeLimit = Number.isFinite(opts.limit)
@@ -447,8 +679,7 @@ export function compactSchema(
   // `id` on records regardless of the requested field list — annotating
   // runtime records would be misplaced).
   const allFieldNames = new Set(allFields.map((f) => f.name));
-  const annotateIdVsCode =
-    allFieldNames.has("id") && allFieldNames.has("default_code");
+  const annotateIdVsCode = allFieldNames.has("id") && allFieldNames.has("default_code");
 
   function noteFor(name: string): string | undefined {
     if (!annotateIdVsCode) return undefined;
@@ -463,9 +694,7 @@ export function compactSchema(
     if (opts.verbose) {
       out[f.name] = {
         type: f.type,
-        ...(f.type === "many2one" ||
-        f.type === "one2many" ||
-        f.type === "many2many"
+        ...(f.type === "many2one" || f.type === "one2many" || f.type === "many2many"
           ? { relation: f.relation }
           : {}),
         ...(f.type === "selection" ? { selection: f.selection ?? [] } : {}),
@@ -479,8 +708,7 @@ export function compactSchema(
     }
   }
 
-  const truncated =
-    !hasFieldsFilter && !wantsAll && sorted.length > selected.length;
+  const truncated = !hasFieldsFilter && !wantsAll && sorted.length > selected.length;
   if (truncated) {
     hint =
       "default-truncated to most common fields; pass fields:['__all__'] for the full list or fields:[…] to target specific ones";
@@ -537,9 +765,55 @@ export function relationHasCompanyId(fields: OdooField[]): boolean {
   return findCompanyIdField(fields) !== undefined;
 }
 
+/**
+ * The relation's natural-key column: a `code` a lookup may actually search —
+ * the number a user quotes for a GL account or a journal (heypinchy/pinchy#1197).
+ *
+ * The name alone is not the question, and neither is storage. Every Odoo
+ * defines `product.product.code`, a non-stored compute mirroring `default_code`
+ * with no `search` method, so a `["code", "=", …]` leaf on it is either refused
+ * or silently widened to every row — and `product_id` is one of the most-used
+ * many2one lookups there is. `account.account.code` is *also* non-stored from
+ * Odoo 18 (the value moved to `account.code.mapping`) but declares
+ * `_search_code`. `fields_get` collapses exactly that distinction into
+ * `searchable`, so that is the question to ask. The type check mirrors
+ * {@link findCompanyIdField}: a `code` that is not a char column is not a
+ * natural key either.
+ *
+ * Two readings, because today only one of them can fire. `odoo-node`'s
+ * `client.fields()` asks `fields_get` for a fixed attribute list — string,
+ * type, required, readonly, relation, selection — and Odoo returns only what is
+ * asked for, so `searchable` never arrives. Adding it there is a one-line change
+ * in that package and this function honours it the moment it does. Until then
+ * the schema still answers the question for the case that matters: a relation
+ * exposing `default_code` has its stored natural key in THAT column, and its
+ * `code` is the compute mirroring it. That is `product.product` exactly, and
+ * nothing else in Odoo's core carries both.
+ *
+ * Getting it wrong is silent in the worst direction: Odoo answers a domain leaf
+ * on an unsearchable field by substituting a TRUE leaf and logging
+ * `Non-stored field … cannot be searched` server-side. The caller sees no
+ * error — just a search that matched every row, with `limit` deciding the
+ * answer.
+ */
+function findCodeField(fields: OdooField[]): OdooField | undefined {
+  const code = fields.find((f) => f.name === "code" && f.type === "char");
+  if (!code || code.searchable === false) return undefined;
+  return fields.some((f) => f.name === "default_code") ? undefined : code;
+}
+
+/**
+ * Boolean form of {@link findCodeField}. Decides both whether the lookup
+ * searches the code column and whether a numeric string may be a code rather
+ * than an illegal raw id.
+ */
+export function relationHasCode(fields: OdooField[]): boolean {
+  return findCodeField(fields) !== undefined;
+}
+
 export function augmentFieldsWithCompanyId(
   requested: string[] | undefined,
-  modelFields: OdooField[],
+  modelFields: OdooField[]
 ): string[] | undefined {
   if (!requested || requested.length === 0) return requested;
   if (!relationHasCompanyId(modelFields)) return requested;
@@ -547,10 +821,79 @@ export function augmentFieldsWithCompanyId(
   return [...requested, "company_id"];
 }
 
-function getSearchReadRecords(result: unknown): OdooRecord[] {
+/**
+ * Field names the plugin invents in `odoo_read` output that do not exist on
+ * the underlying Odoo model — currently only `_pinchy_ref` (see
+ * `wrapReadResult`). Single source of truth so the set can grow without
+ * scattering string literals across every call site that strips it.
+ *
+ * These exist because the plugin teaches the model a vocabulary Odoo does
+ * not share: the tool prompt tells it to work with `_pinchy_ref`, so it
+ * inevitably asks for the field back in a later `fields`/`groupby` list, and
+ * Odoo hard-errors on the unknown column (2026-07-15, agent "Piper"). Any
+ * field the plugin invents on the way out has to be swallowed on the way
+ * back in — teaching a name and then rejecting it is the plugin's bug, not
+ * the model's.
+ */
+export const SYNTHETIC_FIELD_NAMES: ReadonlySet<string> = new Set(["_pinchy_ref"]);
+
+/**
+ * Remove synthetic (plugin-invented) field names from a model-supplied
+ * `fields`/`groupby` list before it reaches Odoo. Entries may carry an
+ * aggregation or date-granularity suffix (`odoo_aggregate`'s `field:agg` /
+ * `field:month` syntax) — matched by base name, not exact string, so
+ * `_pinchy_ref:count_distinct` is stripped too.
+ *
+ * Mirrors the `undefined`/`[]` "didn't ask" convention from
+ * `augmentFieldsWithCompanyId` (empty stays empty, not "return nothing").
+ * Preserves referential equality when nothing was stripped, so callers that
+ * pass the result straight into `augmentFieldsWithCompanyId` don't lose that
+ * function's own referential-equality guarantee for the common case.
+ *
+ * Deliberately separate from `augmentFieldsWithCompanyId`: that function's
+ * other caller (`lookupFields`) builds its field list internally from Odoo
+ * metadata and never sees model-supplied input, so it must not go through
+ * this stripping.
+ */
+export function stripSyntheticFields<T extends string[] | undefined>(requested: T): T {
+  if (!requested || requested.length === 0) return requested;
+  const filtered = requested.filter((entry) => !SYNTHETIC_FIELD_NAMES.has(entry.split(":")[0]));
+  return (filtered.length === requested.length ? requested : filtered) as T;
+}
+
+/**
+ * `odoo_aggregate` entry point for the two model-supplied lists it forwards
+ * verbatim to `readGroup`. Validates the shape (both are declared `required`
+ * in the tool schema but arrive as whatever the model sent), then strips
+ * synthetic names — and refuses a list that strips down to NOTHING.
+ *
+ * The refusal is the point: an empty `groupby` means "one global aggregate"
+ * to Odoo and an empty `fields` means "counts only", so silently forwarding
+ * either answers a different question than the model asked. A wrong answer
+ * that looks right is worse than an error the model can act on, and
+ * `_pinchy_ref` is never a legitimate thing to group by — it is per-record
+ * by construction, so `id` is what the model actually wants.
+ */
+export function prepareAggregateFields(value: unknown, paramName: "fields" | "groupby"): string[] {
+  if (!Array.isArray(value) || value.some((e) => typeof e !== "string")) {
+    throw new Error(`\`${paramName}\` must be an array of field-name strings.`);
+  }
+  const stripped = stripSyntheticFields(value as string[]);
+  if (value.length > 0 && stripped.length === 0) {
+    const synthetic = [...SYNTHETIC_FIELD_NAMES].map((name) => `\`${name}\``).join(", ");
+    throw new Error(
+      `\`${paramName}\` contained only synthetic field names (${synthetic}), ` +
+        `which do not exist on the Odoo model. Use a real column — to count ` +
+        `or group per record, use \`id\`.`
+    );
+  }
+  return stripped;
+}
+
+function getSearchReadRecords(result: unknown, key: string = "records"): OdooRecord[] {
   if (Array.isArray(result)) return result.filter(isRecord);
-  if (isRecord(result) && Array.isArray(result.records)) {
-    return result.records.filter(isRecord);
+  if (isRecord(result) && Array.isArray(result[key])) {
+    return (result[key] as unknown[]).filter(isRecord);
   }
   return [];
 }
@@ -564,15 +907,13 @@ export function normalizeFields(fields: unknown): OdooField[] {
           name: field.name,
           string: typeof field.string === "string" ? field.string : undefined,
           type: typeof field.type === "string" ? field.type : undefined,
-          relation:
-            typeof field.relation === "string" ? field.relation : undefined,
+          relation: typeof field.relation === "string" ? field.relation : undefined,
           selection: Array.isArray(field.selection)
             ? (field.selection as Array<[string, string]>)
             : undefined,
-          readonly:
-            typeof field.readonly === "boolean" ? field.readonly : undefined,
-          required:
-            typeof field.required === "boolean" ? field.required : undefined,
+          readonly: typeof field.readonly === "boolean" ? field.readonly : undefined,
+          required: typeof field.required === "boolean" ? field.required : undefined,
+          searchable: typeof field.searchable === "boolean" ? field.searchable : undefined,
         },
       ];
     });
@@ -587,15 +928,13 @@ export function normalizeFields(fields: unknown): OdooField[] {
         name,
         string: typeof field.string === "string" ? field.string : undefined,
         type: typeof field.type === "string" ? field.type : undefined,
-        relation:
-          typeof field.relation === "string" ? field.relation : undefined,
+        relation: typeof field.relation === "string" ? field.relation : undefined,
         selection: Array.isArray(field.selection)
           ? (field.selection as Array<[string, string]>)
           : undefined,
-        readonly:
-          typeof field.readonly === "boolean" ? field.readonly : undefined,
-        required:
-          typeof field.required === "boolean" ? field.required : undefined,
+        readonly: typeof field.readonly === "boolean" ? field.readonly : undefined,
+        required: typeof field.required === "boolean" ? field.required : undefined,
+        searchable: typeof field.searchable === "boolean" ? field.searchable : undefined,
       },
     ];
   });
@@ -617,7 +956,7 @@ type FieldsCache = Map<string, OdooField[]>;
 async function loadFields(
   client: OdooClient,
   model: string,
-  cache: FieldsCache,
+  cache: FieldsCache
 ): Promise<OdooField[]> {
   const cached = cache.get(model);
   if (cached) return cached;
@@ -650,16 +989,12 @@ function recordText(record: OdooRecord, field: string): string | null {
 }
 
 function uniqueIds(records: OdooRecord[]): number[] {
-  return [
-    ...new Set(records.map(recordId).filter((id): id is number => id !== null)),
-  ];
+  return [...new Set(records.map(recordId).filter((id): id is number => id !== null))];
 }
 
 function recordLabel(record: OdooRecord): string {
   return (
-    recordText(record, "display_name") ??
-    recordText(record, "name") ??
-    String(record.id ?? "")
+    recordText(record, "display_name") ?? recordText(record, "name") ?? String(record.id ?? "")
   );
 }
 
@@ -674,9 +1009,10 @@ function recordLabel(record: OdooRecord): string {
 const MAX_DISPLAYED_LABELS = 5;
 
 function formatSuggestions(records: OdooRecord[]): string {
-  const labels = [
-    ...new Set(records.map(recordLabel).filter((label) => label.length > 0)),
-  ].slice(0, MAX_DISPLAYED_LABELS);
+  const labels = [...new Set(records.map(recordLabel).filter((label) => label.length > 0))].slice(
+    0,
+    MAX_DISPLAYED_LABELS
+  );
   return labels.length > 0 ? ` Suggestions: ${labels.join(", ")}.` : "";
 }
 
@@ -691,7 +1027,7 @@ function formatSuggestions(records: OdooRecord[]): string {
 export function formatMultiMatchError(
   field: OdooField,
   lookup: { name?: string | null; code?: string | null },
-  matches: OdooRecord[],
+  matches: OdooRecord[]
 ): string {
   const label = field.string ?? field.name;
   const input = lookup.code ?? lookup.name ?? "";
@@ -726,8 +1062,7 @@ function rankedSuggestions(input: string, records: OdooRecord[]): OdooRecord[] {
     const displayName = recordText(record, "display_name");
     return (
       (name !== null && normalizeLookupText(name).startsWith(requested)) ||
-      (displayName !== null &&
-        normalizeLookupText(displayName).startsWith(requested))
+      (displayName !== null && normalizeLookupText(displayName).startsWith(requested))
     );
   });
   return startsWith.length > 0 ? startsWith : records;
@@ -737,8 +1072,7 @@ function parseLookup(field: OdooField, value: unknown): RelationLookup | null {
   if (typeof value === "string") {
     const input = value.trim();
     if (input === "") return { name: "" };
-    const countryCode =
-      field.relation === "res.country" ? countryCodeForInput(input) : null;
+    const countryCode = field.relation === "res.country" ? countryCodeForInput(input) : null;
     return countryCode ? { code: countryCode } : { name: input };
   }
 
@@ -746,37 +1080,219 @@ function parseLookup(field: OdooField, value: unknown): RelationLookup | null {
   const lookup = value.lookup;
   return {
     name: typeof lookup.name === "string" ? lookup.name.trim() : undefined,
+    // Upper-cased for `res.country` only, because that is the one relation
+    // where it states a fact: ISO 3166-1 alpha-2 is upper-case, and the domain
+    // leaf is a case-sensitive `=` on a char column. Journal and account codes
+    // are not upper-case by rule, so normalising them here turned a correctly
+    // typed `{lookup: {code: "bnk1"}}` into a query for "BNK1" that matches
+    // nothing (#1206 review).
     code:
       typeof lookup.code === "string"
-        ? lookup.code.trim().toUpperCase()
+        ? field.relation === "res.country"
+          ? lookup.code.trim().toUpperCase()
+          : lookup.code.trim()
         : undefined,
   };
 }
 
+/**
+ * The natural-key token of a lookup string (heypinchy/pinchy#1197).
+ *
+ * Accountants address a GL account by its number, and a chart of accounts
+ * prints `"7660 Entertainment expenses"` — which is also what Odoo renders in
+ * most account pickers. Both forms have to resolve, so the leading whitespace-
+ * delimited token is what gets compared against `code`. A bare code is that
+ * same form with the name left off.
+ *
+ * An explicit `{lookup: {code}}` is returned as-is. Otherwise the token is a
+ * *guess* about the input's shape, which is why {@link resolveReferenceFromRecords}
+ * only reaches for it once an exact name has failed: "IT Infrastructure" must
+ * not resolve to whatever record happens to carry the code "IT".
+ */
+function codeTokenOf(lookup: RelationLookup): string | null {
+  if (lookup.code) return lookup.code;
+  const name = lookup.name?.trim();
+  if (!name) return null;
+  const [head] = name.split(/\s+/, 1);
+  return head || null;
+}
+
+/** The records whose `code` equals `code`, compared case-insensitively. */
+function recordsWithCode(code: string, records: OdooRecord[]): OdooRecord[] {
+  const wanted = normalizeLookupText(code);
+  return records.filter((record) => {
+    const value = recordText(record, "code");
+    return value !== null && normalizeLookupText(value) === wanted;
+  });
+}
+
+/** Case-insensitive, with every run of whitespace read as one space. */
+function normalizeNameText(value: string): string {
+  return normalizeLookupText(value).replace(/\s+/g, " ");
+}
+
+/**
+ * One separator a model writes between a code and its name — `"600000 -
+ * Expenses"`, `"6000 : Office supplies"` — and the space around it. Only the
+ * first: a second one belongs to the name. One written onto the code
+ * (`"6000: Office supplies"`) is part of the code token, which then matches no
+ * record, and the lookup is refused.
+ */
+const CODE_NAME_SEPARATOR = /^\s*[-–—:|/]\s*/;
+
+/** The name a lookup claims beside a code, without the separator before it. */
+function claimedNameText(value: string): string {
+  return value.trim().replace(CODE_NAME_SEPARATOR, "").trim();
+}
+
+/**
+ * The record a lookup names by code and name together, once the code is known
+ * to match: the `"<code> <name>"` string and the
+ * explicit `{lookup: {code, name}}`. The name beside the code
+ * is a claim about the record: resolved on the code alone, `"6000 Bank fees"`
+ * would book to account 6000 whatever it is called, so the card would read
+ * "Bank fees" while the effect was "Office supplies". The claim has to hold — case, spacing and one separator
+ * aside — or the lookup is refused with the name the code actually carries, so
+ * the model can send the exact name or the record's ref. Two records that
+ * share the code (the multi-company case) are told apart by the same name.
+ */
+function matchByCodeAndName(
+  field: OdooField,
+  lookup: RelationLookup,
+  code: string,
+  claimedName: string,
+  coded: OdooRecord[]
+): number {
+  const wanted = normalizeNameText(claimedName);
+  const named = coded.filter((record) => {
+    const name = recordText(record, "name");
+    return name !== null && normalizeNameText(name) === wanted;
+  });
+  const ids = uniqueIds(named);
+  if (ids.length === 1) return ids[0];
+  if (ids.length > 1) throw new Error(formatMultiMatchError(field, { ...lookup, code }, named));
+  const label = field.string ?? field.name;
+  const actual = [
+    ...new Set(coded.map((record) => recordText(record, "name")).filter((name) => name !== null)),
+  ];
+  const carries =
+    actual.length > 0 ? actual.map((name) => JSON.stringify(name)).join(" or ") : "unnamed";
+  const source = lookup.code ? `code "${code}"` : `"${lookup.name}"`;
+  throw new Error(
+    `Could not resolve ${field.name} from ${source}: ${label} ${code} is ${carries}, ` +
+      `not ${JSON.stringify(claimedName)}. Provide an exact ${label} name or ref.`
+  );
+}
+
+/**
+ * The refusal for an explicit code that no candidate carries, naming the code
+ * of the record the name beside it does name, if any — so the model can send
+ * a code and a name of the same record, or its ref.
+ */
+function unknownCodeError(
+  field: OdooField,
+  code: string,
+  claimedName: string,
+  records: OdooRecord[]
+): string {
+  const label = field.string ?? field.name;
+  const wanted = normalizeNameText(claimedName);
+  const namedCodes = [
+    ...new Set(
+      records
+        .filter((record) => {
+          const name = recordText(record, "name");
+          return name !== null && normalizeNameText(name) === wanted;
+        })
+        .map((record) => recordText(record, "code"))
+        .filter((value): value is string => value !== null)
+    ),
+  ];
+  const named =
+    namedCodes.length > 0 ? ` (${JSON.stringify(claimedName)} is ${namedCodes.join(" or ")})` : "";
+  return (
+    `Could not resolve ${field.name} from code "${code}": no ${label} has code ${code}${named}. ` +
+    `Provide an exact ${label} name or ref.`
+  );
+}
+
+/**
+ * The single record whose `code` equals `code`, or `null` when none does.
+ * Compared case-insensitively, like every other text match here — the domain
+ * leaf that fetched these candidates is a case-sensitive `=`, but a record
+ * pulled in by the *name* leg can still differ in case from the code it was
+ * asked for.
+ *
+ * Throws on more than one, through the shared multi-match formatter: duplicate
+ * codes are the multi-company case, and that message names the `company_id`
+ * remedy instead of leaving the caller to guess.
+ */
+function matchByCode(
+  field: OdooField,
+  lookup: RelationLookup,
+  code: string,
+  records: OdooRecord[]
+): number | null {
+  const matches = recordsWithCode(code, records);
+  const ids = uniqueIds(matches);
+  if (ids.length === 1) return ids[0];
+  if (ids.length > 1) throw new Error(formatMultiMatchError(field, { ...lookup, code }, matches));
+  return null;
+}
+
+/**
+ * Pick the one record a lookup names, in order of how much the caller actually
+ * told us (heypinchy/pinchy#1197, precedence corrected in the #1206 review):
+ *
+ * 1. An explicit `{lookup: {code}}` names the column it means. Nothing beats it
+ *    — but a `name` beside it must be the record's name too
+ *    (`matchByCodeAndName`), or the lookup is refused; so is a code beside a
+ *    name that no record carries, except on `res.country` (`unknownCodeError`).
+ * 2. An exact `name`/`display_name` match. This sits ABOVE the derived code
+ *    token on purpose: the token is a guess about the input's shape, an exact
+ *    name is not. With the order reversed, `"IT Infrastructure"` resolves to
+ *    whatever record carries the code `"IT"` — a write to the wrong record,
+ *    with no error anywhere.
+ * 3. The leading token, which is the `"<code> <name>"` form a chart of accounts
+ *    prints, and a bare code. Reached only once an exact name has failed, so
+ *    the composite form that carries a disambiguating name still resolves when
+ *    two companies share a code. The name after the code must be the record's
+ *    name (`matchByCodeAndName`): a code never overrides a name it contradicts.
+ */
 function resolveReferenceFromRecords(
   field: OdooField,
   lookup: RelationLookup,
-  records: OdooRecord[],
+  records: OdooRecord[]
 ): number {
   const label = field.string ?? field.name;
   const input = lookup.code ?? lookup.name ?? "";
 
-  if (field.relation === "res.country" && lookup.code) {
-    const codeMatches = records.filter(
-      (record) => recordText(record, "code")?.toUpperCase() === lookup.code,
-    );
-    const ids = uniqueIds(codeMatches);
-    if (ids.length === 1) return ids[0];
-    if (ids.length > 1) {
-      throw new Error(
-        `Could not resolve ${field.name}: multiple countries match code "${lookup.code}".`,
-      );
+  if (lookup.code) {
+    // A name beside the code is a claim about the record, exactly as in the
+    // string form below — never ignored.
+    const claimedName = lookup.name ? claimedNameText(lookup.name) : "";
+    const coded = claimedName ? recordsWithCode(lookup.code, records) : [];
+    if (coded.length > 0) {
+      return matchByCodeAndName(field, lookup, lookup.code, claimedName, coded);
+    }
+    const byExplicitCode = matchByCode(field, lookup, lookup.code, records);
+    if (byExplicitCode !== null) return byExplicitCode;
+    // A code no record carries is a claim the records contradict, just as a
+    // name is: `{code: "6000", name: "Bank fees"}`
+    // fell through to the exact-name branch and booked to 6100 "Bank fees"
+    // while the card read 6000 — and the string "6000 Bank fees" was refused.
+    // `res.country` alone keeps the fall-through: a country is identified by
+    // its name, its code is an ISO 3166-1 alpha-2 key models misremember in
+    // well-known ways ("UK" for GB, "EL" for GR), and a code that names no
+    // country points at no other record the name could be confused with.
+    if (claimedName && field.relation !== "res.country") {
+      throw new Error(unknownCodeError(field, lookup.code, claimedName, records));
     }
   }
 
   if (!lookup.name) {
     throw new Error(
-      `Could not resolve ${field.name} from "${input}".${formatSuggestions(records)} Provide an exact ${label} name or ref.`,
+      `Could not resolve ${field.name} from "${input}".${formatSuggestions(records)} Provide an exact ${label} name or ref.`
     );
   }
 
@@ -795,10 +1311,21 @@ function resolveReferenceFromRecords(
     throw new Error(formatMultiMatchError(field, lookup, exactMatches));
   }
 
+  const codeToken = codeTokenOf(lookup);
+  if (codeToken) {
+    const claimedName = lookup.code ? "" : claimedNameText(lookup.name.slice(codeToken.length));
+    const coded = claimedName ? recordsWithCode(codeToken, records) : [];
+    if (coded.length > 0) {
+      return matchByCodeAndName(field, lookup, codeToken, claimedName, coded);
+    }
+    const byCodeToken = matchByCode(field, lookup, codeToken, records);
+    if (byCodeToken !== null) return byCodeToken;
+  }
+
   throw new Error(
     `Could not resolve ${field.name} from "${input}".${formatSuggestions(
-      rankedSuggestions(input, records),
-    )} Provide an exact ${label} name or ref.`,
+      rankedSuggestions(input, records)
+    )} Provide an exact ${label} name or ref.`
   );
 }
 
@@ -819,7 +1346,7 @@ function resolveReferenceFromRecords(
  */
 function decodeOdooRefForConnection(
   connectionId: string,
-  refString: string,
+  refString: string
 ): IntegrationRefPayload {
   const ref = decodeRef(refString);
   if (ref.integrationType !== "odoo") {
@@ -832,22 +1359,56 @@ function decodeOdooRefForConnection(
 }
 
 /**
+ * Turn a caught decode failure into a caller-facing error, naming the
+ * parameter the model actually passed so it knows which ref to re-fetch.
+ *
+ * A {@link MalformedIntegrationRefError} means the string never decoded at
+ * all. The model garbling a long base64url token is the common cause, but a
+ * rotated `PINCHY_REF_TOKEN_KEY` is indistinguishable from here — every ref
+ * minted under the old key fails the same auth-tag check. So the message
+ * names the remedy (re-fetch, which is correct either way) and claims
+ * nothing about the cause. Anything else already carries a specific message
+ * and passes through untouched.
+ */
+function refDecodeError(err: unknown, paramName: string): Error {
+  if (err instanceof MalformedIntegrationRefError) {
+    return new Error(
+      `\`${paramName}\` ref could not be decoded — it looks corrupted or ` +
+        `truncated. Re-fetch the record with \`odoo_read\` and pass the ` +
+        `fresh \`_pinchy_ref\` exactly as returned.`
+    );
+  }
+  return err instanceof Error ? err : new Error(String(err));
+}
+
+/**
  * Decode a `target`/`targetRef` for a tool that acts on an arbitrary target
  * model (schedule/complete/reschedule activity, record-action tools,
- * attach_file). Returns the payload on success, or null when the ref is
- * malformed or belongs to a different connection — the caller surfaces a
- * consistent "does not belong to this Odoo connection" error. No model
- * check: these tools accept any target model and gate it through the
- * permissions map instead.
+ * attach_file). Returns the payload on success, or throws a descriptive
+ * error otherwise. No model check: these tools accept any target model and
+ * gate it through the permissions map instead.
+ *
+ * The two failure causes must stay distinguishable: `decodeRef` throws a
+ * typed {@link MalformedIntegrationRefError} for "this string doesn't decode
+ * at all", while `decodeOdooRefForConnection` throws a plain `Error` for
+ * "decoded fine, but wrong integration type or connectionId". Both share the
+ * generic "Invalid integration reference" text, so `instanceof` — not string
+ * matching — is what tells them apart. Collapsing them again sends a garbled
+ * ref down a connection-config trail; that is the 2026-07-15 prod incident
+ * the `odoo_schedule_activity` "Cause 1 / Cause 2" tests pin.
  */
 function decodeTargetRef(
   connectionId: string,
   refString: string,
-): IntegrationRefPayload | null {
+  paramName = "target"
+): IntegrationRefPayload {
   try {
     return decodeOdooRefForConnection(connectionId, refString);
-  } catch {
-    return null;
+  } catch (err) {
+    if (err instanceof MalformedIntegrationRefError) {
+      throw refDecodeError(err, paramName);
+    }
+    throw new Error(`\`${paramName}\` ref does not belong to this Odoo connection.`);
   }
 }
 
@@ -865,16 +1426,15 @@ function decodeTargetRef(
  * both get the same validation — accepting the bare string loses no safety
  * versus the object form.
  */
-function decodeAndValidateRef(
-  connectionId: string,
-  field: OdooField,
-  refString: string,
-): number {
-  const ref = decodeOdooRefForConnection(connectionId, refString);
+function decodeAndValidateRef(connectionId: string, field: OdooField, refString: string): number {
+  let ref: IntegrationRefPayload;
+  try {
+    ref = decodeOdooRefForConnection(connectionId, refString);
+  } catch (err) {
+    throw refDecodeError(err, field.name);
+  }
   if (ref.model !== field.relation) {
-    throw new Error(
-      `Invalid ref for ${field.name}: expected ${field.relation}, got ${ref.model}.`,
-    );
+    throw new Error(`Invalid ref for ${field.name}: expected ${field.relation}, got ${ref.model}.`);
   }
   return ref.id;
 }
@@ -882,7 +1442,7 @@ function decodeAndValidateRef(
 function refToId(
   connectionId: string,
   field: OdooField,
-  value: Record<string, unknown>,
+  value: Record<string, unknown>
 ): number | null {
   // Accept BOTH wire shapes: the m2o wrapper's `{ ref }` (wrapMany2OneValue)
   // and the one2many wrapper's `{ _pinchy_ref }` (wrapOne2ManyValue). Without
@@ -927,9 +1487,7 @@ function refToId(
  * `line_ids[0].account_id`. Odoo's server-side `company_id` constraint
  * remains the ultimate authority.
  */
-export function assertNoCrossCompanyRefs(
-  values: Record<string, unknown>,
-): void {
+export function assertNoCrossCompanyRefs(values: Record<string, unknown>): void {
   const intended = readRefCompanyTag(values.company_id);
   if (intended === null) return;
   const intendedLabel = intended.label ?? `id=${intended.id}`;
@@ -942,8 +1500,8 @@ export function assertNoCrossCompanyRefs(
 
 // Depth cap for the cross-company guard's tuple recursion — a defensive
 // bound against a pathologically deep/self-referential nested structure,
-// mirroring the bound `normalizeMany2OneValues` already applies to its own
-// nested walk (one level today). Generous enough for any real Odoo o2m/m2m
+// mirroring the bound `normalizeMany2OneValues` applies to its own
+// nested walk (MAX_X2MANY_DEPTH, two levels). Generous enough for any real Odoo o2m/m2m
 // nesting while still stopping unbounded recursion.
 const MAX_CROSS_COMPANY_DEPTH = 8;
 
@@ -960,7 +1518,7 @@ function assertNoCrossCompanyValue(
   intended: { id: number; label: string | null },
   intendedLabel: string,
   path: string,
-  depth: number,
+  depth: number
 ): void {
   if (depth >= MAX_CROSS_COMPANY_DEPTH) return;
   const sibling = readRefCompanyTag(value);
@@ -970,7 +1528,7 @@ function assertNoCrossCompanyValue(
       throw new Error(
         `Cross-company write rejected: values.company_id points to "${intendedLabel}" ` +
           `but values.${path} points to a record in "${otherLabel}". ` +
-          `Re-resolve ${path} in the right company first.`,
+          `Re-resolve ${path} in the right company first.`
       );
     }
     return;
@@ -988,9 +1546,7 @@ function assertNoCrossCompanyValue(
       // to the parent's company when the line declares none.
       const lineTag = readRefCompanyTag(lineDict.company_id);
       const lineIntended = lineTag ?? intended;
-      const lineIntendedLabel = lineTag
-        ? (lineTag.label ?? `id=${lineTag.id}`)
-        : intendedLabel;
+      const lineIntendedLabel = lineTag ? (lineTag.label ?? `id=${lineTag.id}`) : intendedLabel;
       for (const [k, v] of Object.entries(lineDict)) {
         if (k === "company_id") continue; // the scoping anchor itself
         assertNoCrossCompanyValue(
@@ -998,31 +1554,19 @@ function assertNoCrossCompanyValue(
           lineIntended,
           lineIntendedLabel,
           `${path}[${i}].${k}`,
-          depth + 1,
+          depth + 1
         );
       }
     }
     // Codes 1 (update), 2 (delete), 3 (unlink), 4 (link) all carry a
     // company-taggable id at tuple[1]. (0 has no id; 6 is handled below.)
     if (tuple[0] === 1 || tuple[0] === 2 || tuple[0] === 3 || tuple[0] === 4) {
-      assertNoCrossCompanyValue(
-        tuple[1],
-        intended,
-        intendedLabel,
-        `${path}[${i}]`,
-        depth + 1,
-      );
+      assertNoCrossCompanyValue(tuple[1], intended, intendedLabel, `${path}[${i}]`, depth + 1);
     }
     // replace (6, 0, [ids]) — check every id in the replacement list.
     if (tuple[0] === 6 && Array.isArray(tuple[2])) {
       (tuple[2] as unknown[]).forEach((id, j) => {
-        assertNoCrossCompanyValue(
-          id,
-          intended,
-          intendedLabel,
-          `${path}[${i}][${j}]`,
-          depth + 1,
-        );
+        assertNoCrossCompanyValue(id, intended, intendedLabel, `${path}[${i}][${j}]`, depth + 1);
       });
     }
   });
@@ -1046,7 +1590,7 @@ function assertNoCrossCompanyValue(
  */
 export function findInvalidSelectionValues(
   fields: OdooField[],
-  values: Record<string, unknown>,
+  values: Record<string, unknown>
 ): Array<{ field: string; value: string; validValues: string[] }> {
   const byName = new Map(fields.map((f) => [f.name, f]));
   const invalid: Array<{ field: string; value: string; validValues: string[] }> = [];
@@ -1066,13 +1610,13 @@ export function findInvalidSelectionValues(
 /** Human-readable error for invalid selection values, listing the valid keys. */
 export function formatInvalidSelectionError(
   model: string,
-  invalid: Array<{ field: string; value: string; validValues: string[] }>,
+  invalid: Array<{ field: string; value: string; validValues: string[] }>
 ): string {
   return invalid
     .map(
       (e) =>
         `Invalid value "${e.value}" for ${model}.${e.field}. ` +
-        `Valid values: ${e.validValues.join(", ")}.`,
+        `Valid values: ${e.validValues.join(", ")}.`
     )
     .join(" ");
 }
@@ -1084,9 +1628,7 @@ export function formatInvalidSelectionError(
  * label may still be null even when the id is present, mirroring the
  * encoder's tolerance of partial tags on the read side.
  */
-function readRefCompanyTag(
-  value: unknown,
-): { id: number; label: string | null } | null {
+function readRefCompanyTag(value: unknown): { id: number; label: string | null } | null {
   // Accept the ref in any wire form the agent may pass: the m2o wrapper's
   // `{ ref: "…" }` object, the one2many wrapper's `{ _pinchy_ref: "…" }`
   // object (so a pasted whole o2m line object is visible to this guard too),
@@ -1137,15 +1679,22 @@ async function searchRelationByName(
   field: OdooField,
   lookup: RelationLookup,
   scopeCompanyId: number | null = null,
-  fieldsCache: FieldsCache = new Map(),
+  fieldsCache: FieldsCache = new Map()
 ): Promise<unknown> {
   const relation = field.relation as string;
   const relationFields = await loadFields(client, relation, fieldsCache);
-  const lookupFields = augmentFieldsWithCompanyId(
-    ["id", "name", "display_name"],
-    relationFields,
-  ) ?? ["id", "name", "display_name"];
-  const domain: OdooDomain = [["name", "ilike", lookup.name ?? ""]];
+  // A relation with a searchable natural key (account.account.code,
+  // account.journal.code) is addressed by that key in practice, so ask for the
+  // column and search it alongside the name (#1197). Relations without one are
+  // untouched — same fields, same domain as before, which the test named
+  // "leaves the domain and field list of a code-less relation untouched" pins.
+  const hasCode = relationHasCode(relationFields);
+  const baseFields = hasCode
+    ? ["id", "name", "display_name", "code"]
+    : ["id", "name", "display_name"];
+  const lookupFields = augmentFieldsWithCompanyId(baseFields, relationFields) ?? baseFields;
+  const domain = relationLookupDomain(lookup, hasCode ? codeTokenOf(lookup) : null);
+  if (!domain) return { records: [] };
   if (scopeCompanyId !== null && relationHasCompanyId(relationFields)) {
     // Mirror Odoo's `_check_company_domain`: include SHARED records
     // (company_id = false), not just the target company. A strict
@@ -1154,15 +1703,80 @@ async function searchRelationByName(
     // lookups that resolved before. For company-EXCLUSIVE relations
     // (account.journal, where company_id is required) the false branch
     // never matches, so this is equivalent to the strict filter there.
-    domain.push(
-      "|",
-      ["company_id", "=", false],
-      ["company_id", "=", scopeCompanyId],
-    );
+    domain.push("|", ["company_id", "=", false], ["company_id", "=", scopeCompanyId]);
   }
   return client.searchRead(relation, domain, {
     fields: lookupFields,
     limit: 20,
+  });
+}
+
+/**
+ * Search domain for a many2one lookup: the OR of the legs it actually carries,
+ * or `null` when it carries none.
+ *
+ * Three shapes, and each one exists because of how
+ * {@link resolveReferenceFromRecords} consumes the result:
+ *
+ * - A `code` narrows to an exact `code` match — an explicit `{lookup:{code}}`,
+ *   a recognized alias/ISO country input via `countryCodeForInput`, or the
+ *   leading token of the `"<code> <name>"` form a chart of accounts prints.
+ * - A `name` narrows to an `ilike` match. `name` only, deliberately: no other
+ *   search domain in this plugin touches `display_name`, which is a computed
+ *   non-stored field whose searchability depends on the Odoo version — and for
+ *   `res.country` (`_rec_name` is `name`) it would match nothing `name`
+ *   doesn't. The client-side matcher still compares both.
+ * - BOTH are OR-ed rather than letting `code` win, because
+ *   `resolveReferenceFromRecords` reads the name leg's records after a failed
+ *   code match: it falls through to its exact-name branch for a code token
+ *   (only a guess about the input's shape) and for an explicit `res.country`
+ *   code, and an explicit code elsewhere is refused naming the code the name
+ *   does carry (`unknownCodeError`). A code-only domain never fetches those
+ *   records, so a wrong code would make a correct name unresolvable.
+ *
+ * `null` is the neither case (`{lookup: {}}`, or a non-string `name` that
+ * `parseLookup` drops). An `ilike ""` there is `LIKE '%%'`, i.e. every row —
+ * a full-table scan reached through the one input that carries no information
+ * to scan for, with `limit` deciding whether the answer is in the window. The
+ * caller resolves against no records instead, which produces the identical
+ * error unqueried. `res.country` had this right since the P3 fix; the #1197
+ * generic path reintroduced it by keeping `["name", "ilike", lookup.name ?? ""]`
+ * unconditionally, which is why both callers now share this one builder.
+ */
+function relationLookupDomain(lookup: RelationLookup, codeToken: string | null): OdooDomain | null {
+  const byCode: OdooDomain | null = codeToken ? [["code", "=", codeToken]] : null;
+  const byName: OdooDomain | null = lookup.name ? [["name", "ilike", lookup.name]] : null;
+  if (byCode && byName) return ["|", ...byCode, ...byName];
+  return byCode ?? byName;
+}
+
+/**
+ * The `res.country` case of {@link relationLookupDomain}. Countries take their
+ * own search path rather than {@link searchRelationByName} because they need a
+ * far larger `limit` and no company scoping; only an EXPLICIT code is searched,
+ * since a country name's leading token ("United" of "United States") is never
+ * an ISO code.
+ */
+function countryLookupDomain(lookup: RelationLookup): OdooDomain | null {
+  return relationLookupDomain(lookup, lookup.code ?? null);
+}
+
+/**
+ * Candidate `res.country` rows for a lookup, or an empty result when
+ * {@link countryLookupDomain} has nothing to search for. The `limit` is a
+ * backstop rather than the bound that matters now that the domain is scoped —
+ * a one-letter `ilike` still matches a good share of the table.
+ */
+async function readCountryCandidates(
+  client: OdooClient,
+  relation: string,
+  lookup: RelationLookup
+): Promise<unknown> {
+  const domain = countryLookupDomain(lookup);
+  if (!domain) return { records: [] };
+  return client.searchRead(relation, domain, {
+    fields: ["id", "name", "display_name", "code"],
+    limit: 1000,
   });
 }
 
@@ -1172,17 +1786,17 @@ async function resolveRelationValue(
   field: OdooField,
   value: unknown,
   scopeCompanyId: number | null = null,
-  fieldsCache: FieldsCache = new Map(),
+  fieldsCache: FieldsCache = new Map()
 ): Promise<unknown> {
   if (value == null || value === false) return value;
   if (typeof value === "number") {
     throw new Error(
-      `Raw numeric IDs are not accepted for ${field.name}. Use an opaque ref or lookup.`,
+      `Raw numeric IDs are not accepted for ${field.name}. Use an opaque ref or lookup.`
     );
   }
   if (Array.isArray(value) && typeof value[0] === "number") {
     throw new Error(
-      `Raw numeric IDs are not accepted for ${field.name}. Use an opaque ref or lookup.`,
+      `Raw numeric IDs are not accepted for ${field.name}. Use an opaque ref or lookup.`
     );
   }
   if (isRecord(value)) {
@@ -1190,7 +1804,7 @@ async function resolveRelationValue(
     if (refId !== null) return refId;
     if (typeof value.id === "number") {
       throw new Error(
-        `Raw numeric IDs are not accepted for ${field.name}. Use an opaque ref or lookup.`,
+        `Raw numeric IDs are not accepted for ${field.name}. Use an opaque ref or lookup.`
       );
     }
   }
@@ -1212,31 +1826,75 @@ async function resolveRelationValue(
   if (!lookup) return value;
   if (lookup.name === "") return false;
   if (lookup.name && /^\d+$/.test(lookup.name)) {
-    throw new Error(
-      `Raw numeric IDs are not accepted for ${field.name}. Use an opaque ref or lookup.`,
-    );
+    // A GL account code IS numeric ("7660"), so refusing every numeric string
+    // left an accountant's most natural input with no route at all — and the
+    // ref-corruption workaround the model reached for next hit this same wall
+    // (#1197, #1193). Relaxed ONLY where the relation declares a SEARCHABLE
+    // `code` the lookup will really search, and even then the value is matched
+    // against `code`, never against `id`: "an agent cannot address a record by
+    // its primary key" still holds.
+    //
+    // `res.country` is excluded outright rather than by its schema. Its `code`
+    // is ISO 3166-1 alpha-2 and can never be numeric, so a numeric country
+    // value is a raw database id and nothing else — relaxing there bought a
+    // vaguer error and an Odoo round trip to reach it (#1206 review). The
+    // check short-circuits before the `fields_get`, so that trip is not paid.
+    const codeIsAddressable =
+      field.relation !== undefined &&
+      field.relation !== "res.country" &&
+      relationHasCode(await loadFields(client, field.relation, fieldsCache));
+    if (!codeIsAddressable) {
+      throw new Error(
+        `Raw numeric IDs are not accepted for ${field.name}. Use an opaque ref or lookup.`
+      );
+    }
   }
   if (!field.relation) return value;
 
   const result =
     field.relation === "res.country"
-      ? await client.searchRead(field.relation, [], {
-          fields: ["id", "name", "display_name", "code"],
-          limit: 1000,
-        })
-      : await searchRelationByName(
-          client,
-          field,
-          lookup,
-          scopeCompanyId,
-          fieldsCache,
-        );
+      ? await readCountryCandidates(client, field.relation, lookup)
+      : await searchRelationByName(client, field, lookup, scopeCompanyId, fieldsCache);
 
-  return resolveReferenceFromRecords(
-    field,
-    lookup,
-    getSearchReadRecords(result),
-  );
+  return resolveReferenceFromRecords(field, lookup, getSearchReadRecords(result));
+}
+
+// How many command-tuple levels `normalizeMany2OneValues` descends: the
+// parent's x2many (level 1) and the x2many fields inside its line values
+// (level 2). Odoo realistically needs no more.
+const MAX_X2MANY_DEPTH = 2;
+
+/**
+ * An x2many value must be explicit command tuples (or empty). Odoo would
+ * silently rewrite shorthand — `false` into a clear (code 5), a bare id list
+ * into `[6, 0, list]`, a boolean code into 0/1 — and each rewrite can destroy
+ * data (a bare list of lines unlinks every other line) while skipping the
+ * per-code grant check. So nothing is rewritten here: anything that is not a
+ * well-formed command list is refused with a hint at the right tuple.
+ */
+function assertX2manyCommands(fieldName: string, value: unknown): unknown[] {
+  const invalid = (hint: string): never => {
+    throw new Error(`Invalid value for "${fieldName}": ${hint}`);
+  };
+  if (Array.isArray(value)) {
+    if (value.length === 0) return value;
+    if (value.every((c) => Array.isArray(c) && Number.isInteger(c[0]) && c[0] >= 0 && c[0] <= 6)) {
+      return value;
+    }
+    if (!Array.isArray(value[0])) {
+      if (value.some(isRecord)) {
+        return invalid(
+          "wrap each new line as [0, 0, {…}], or edit an existing one with [1, ref, {…}]."
+        );
+      }
+      return invalid(
+        "to replace the linked records, use [[6, 0, [ids]]]; to link one, use [[4, id]]."
+      );
+    }
+  } else if (value === false || value == null) {
+    return invalid("to clear it, use [[5]].");
+  }
+  return invalid("use command tuples such as [[6, 0, [ids]]] (or [[5]] to clear).");
 }
 
 export async function normalizeMany2OneValues(
@@ -1247,10 +1905,39 @@ export async function normalizeMany2OneValues(
   permissions: Permissions,
   depth = 0,
   inheritedScope: number | null = null,
-  fieldsCache: FieldsCache = new Map(),
+  fieldsCache: FieldsCache = new Map()
 ): Promise<{ values: Record<string, unknown>; fields: OdooField[] }> {
   const fields = await loadFields(client, model, fieldsCache);
-  if (fields.length === 0) return { values, fields };
+  if (fields.length === 0) {
+    // No schema means no relation fields to walk, so a command list in the
+    // values would reach Odoo with its per-code grant checks skipped. Refuse
+    // it; plain values (and raw-id-only shapes with no command lists) pass.
+    // Only nested levels: a top-level empty schema keeps its long-standing
+    // pass-through for well-formed raw-id command lists (arg-robustness tests).
+    if (depth >= 1 && Object.values(values).some((v) => Array.isArray(v) && v.length > 0)) {
+      throw new Error(
+        `Cannot check x2many commands for ${model}: the schema for ${model} came back ` +
+          `empty, so the per-command permission checks cannot run. ` +
+          `Re-check the connection to Odoo and try again.`
+      );
+    }
+    return { values, fields };
+  }
+
+  // Past the walk's depth nothing is checked, so nothing may pass: refuse any
+  // x2many that holds commands (or an invalid shape) BEFORE spending lookups.
+  if (depth >= MAX_X2MANY_DEPTH) {
+    for (const field of fields) {
+      if (field.type !== "one2many" && field.type !== "many2many") continue;
+      if (!(field.name in values)) continue;
+      if (assertX2manyCommands(field.name, values[field.name]).length === 0) continue;
+      throw new Error(
+        `x2many commands nested deeper than ${MAX_X2MANY_DEPTH} levels are not supported ` +
+          `(found commands for "${field.name}" on ${model}). Save this record first, then set ` +
+          `"${field.name}" with odoo_write on ${model} using the id it returns.`
+      );
+    }
+  }
 
   const normalized = { ...values };
 
@@ -1273,14 +1960,10 @@ export async function normalizeMany2OneValues(
       companyField,
       normalized.company_id,
       null,
-      fieldsCache,
+      fieldsCache
     );
     normalized.company_id = resolved;
-    if (
-      typeof resolved === "number" &&
-      Number.isInteger(resolved) &&
-      resolved > 0
-    ) {
+    if (typeof resolved === "number" && Number.isInteger(resolved) && resolved > 0) {
       scopeCompanyId = resolved;
     }
   }
@@ -1294,31 +1977,30 @@ export async function normalizeMany2OneValues(
       field,
       normalized[field.name],
       scopeCompanyId,
-      fieldsCache,
+      fieldsCache
     );
   }
 
-  // One nesting level down (#615; many2many follow-up): resolve m2o fields
-  // inside one2many AND many2many command tuples (e.g. account.move
+  // Nested x2many command tuples (#615; many2many follow-up): resolve m2o
+  // fields inside one2many AND many2many command tuples (e.g. account.move
   // `line_ids: [[0, 0, { account_id: "…" }]]`, or a many2many `tax_ids: [[4,
-  // "…"]]`). The nested m2o values get the same ref decoding + company
-  // scoping as top-level fields, inheriting the parent's `scopeCompanyId`
-  // (the lines belong to the same company). Bounded to depth 1 — Odoo's
-  // command tuples can nest arbitrarily, but one level covers the
-  // account.move line_ids case; deeper nesting is left to a future change to
-  // avoid unbounded recursion through self-referential models.
-  if (depth < 1) {
+  // "…"]]`) with the same ref decoding + company scoping as top-level fields,
+  // inheriting the parent's `scopeCompanyId`. The walk goes MAX_X2MANY_DEPTH
+  // (two) levels: a line's own x2many fields —
+  // `invoice_line_ids: [[0, 0, { tax_ids: [[6, 0, [ref]]] }]]` — are walked
+  // too, re-entering `normalizeCommandTuples`, so the per-code grant checks
+  // apply to THEIR relation model (account.tax here). Stopping at one level
+  // shipped the ref/name verbatim to Odoo ("invalid input syntax for type
+  // integer"). The cap bounds the walk by the input's depth, not the schema.
+  // Past it nothing passes verbatim (a command there would skip the grant
+  // check, e.g. a code-2 delete): that is rejected up front, see above.
+  if (depth < MAX_X2MANY_DEPTH) {
     for (const field of fields) {
       const kind =
-        field.type === "one2many"
-          ? "one2many"
-          : field.type === "many2many"
-            ? "many2many"
-            : null;
+        field.type === "one2many" ? "one2many" : field.type === "many2many" ? "many2many" : null;
       if (kind === null || !field.relation) continue;
       if (!(field.name in normalized)) continue;
-      const commands = normalized[field.name];
-      if (!Array.isArray(commands)) continue;
+      const commands = assertX2manyCommands(field.name, normalized[field.name]);
       normalized[field.name] = await normalizeCommandTuples(
         client,
         connectionId,
@@ -1328,7 +2010,7 @@ export async function normalizeMany2OneValues(
         permissions,
         depth,
         fieldsCache,
-        kind,
+        kind
       );
     }
   }
@@ -1386,7 +2068,7 @@ async function resolveCommandTargetId(
   relationField: OdooField,
   idValue: unknown,
   scopeCompanyId: number | null,
-  fieldsCache: FieldsCache,
+  fieldsCache: FieldsCache
 ): Promise<unknown> {
   if (typeof idValue === "number") return idValue;
   if (idValue === false || idValue == null) return idValue;
@@ -1396,7 +2078,7 @@ async function resolveCommandTargetId(
     relationField,
     idValue,
     scopeCompanyId,
-    fieldsCache,
+    fieldsCache
   );
 }
 
@@ -1409,8 +2091,7 @@ async function resolveCommandTargetId(
 function isRefShaped(value: unknown): boolean {
   if (isIntegrationRef(value)) return true;
   return (
-    isRecord(value) &&
-    (typeof value.ref === "string" || typeof value._pinchy_ref === "string")
+    isRecord(value) && (typeof value.ref === "string" || typeof value._pinchy_ref === "string")
   );
 }
 
@@ -1464,7 +2145,7 @@ async function normalizeCommandTuples(
   permissions: Permissions,
   depth: number,
   fieldsCache: FieldsCache,
-  kind: "one2many" | "many2many",
+  kind: "one2many" | "many2many"
 ): Promise<unknown[]> {
   const relationModel = relationField.relation as string;
   const opByCode = kind === "one2many" ? NESTED_OP_BY_CODE : M2M_OP_BY_CODE;
@@ -1483,7 +2164,7 @@ async function normalizeCommandTuples(
       throw new Error(
         `Agent missing ${op} grant on ${relationModel} ` +
           `(nested via ${relationField.name} command ${cmd[0]}). ` +
-          `Add ${op} on ${relationModel} to this agent's permissions.`,
+          `Add ${op} on ${relationModel} to this agent's permissions.`
       );
     }
   }
@@ -1500,7 +2181,7 @@ async function normalizeCommandTuples(
     throw new Error(
       `Cannot resolve references in "${relationField.name}" (relation "${relationModel}"): ` +
         `the schema for ${relationModel} came back empty, so many2one refs in its ` +
-        `command tuples cannot be decoded. Re-check the connection to Odoo and try again.`,
+        `command tuples cannot be decoded. Re-check the connection to Odoo and try again.`
     );
   }
 
@@ -1522,7 +2203,7 @@ async function normalizeCommandTuples(
           permissions,
           depth + 1,
           scopeCompanyId,
-          fieldsCache,
+          fieldsCache
         )
       ).values;
       const resolvedId =
@@ -1533,7 +2214,7 @@ async function normalizeCommandTuples(
               relationField,
               cmd[1],
               scopeCompanyId,
-              fieldsCache,
+              fieldsCache
             )
           : cmd[1];
       out.push([code, resolvedId, resolvedValues]);
@@ -1544,7 +2225,7 @@ async function normalizeCommandTuples(
         relationField,
         cmd[1],
         scopeCompanyId,
-        fieldsCache,
+        fieldsCache
       );
       out.push([code, resolvedId, ...cmd.slice(2)]);
     } else if (code === 6 && Array.isArray(cmd[2])) {
@@ -1556,9 +2237,9 @@ async function normalizeCommandTuples(
             relationField,
             id,
             scopeCompanyId,
-            fieldsCache,
-          ),
-        ),
+            fieldsCache
+          )
+        )
       );
       out.push([code, cmd[1], resolvedIds]);
     } else {
@@ -1583,20 +2264,16 @@ const TODO_ACTIVITY_XMLID = { module: "mail", name: "mail_activity_data_todo" };
  * `res_id IS NOT NULL AND res_id != 0` SQL CHECK. ir.model is world-readable
  * for internal users, so this lookup needs no extra model grant.
  */
-async function resolveIrModelId(
-  client: OdooClient,
-  technicalModel: string,
-): Promise<number> {
-  const result = await client.searchRead(
-    "ir.model",
-    [["model", "=", technicalModel]],
-    { fields: ["id"], limit: 1 },
-  );
+async function resolveIrModelId(client: OdooClient, technicalModel: string): Promise<number> {
+  const result = await client.searchRead("ir.model", [["model", "=", technicalModel]], {
+    fields: ["id"],
+    limit: 1,
+  });
   const record = getSearchReadRecords(result)[0];
   const id = record ? recordId(record) : null;
   if (id === null) {
     throw new Error(
-      `Could not resolve the Odoo model "${technicalModel}" — no ir.model row found.`,
+      `Could not resolve the Odoo model "${technicalModel}" — no ir.model row found.`
     );
   }
   return id;
@@ -1607,9 +2284,7 @@ async function resolveIrModelId(
  * (rather than throwing) when ir.model.data is unreadable or the xmlid is
  * absent, so the caller can fall back to Odoo's own default activity type.
  */
-async function resolveDefaultActivityTypeId(
-  client: OdooClient,
-): Promise<number | null> {
+async function resolveDefaultActivityTypeId(client: OdooClient): Promise<number | null> {
   try {
     const result = await client.searchRead(
       "ir.model.data",
@@ -1617,7 +2292,7 @@ async function resolveDefaultActivityTypeId(
         ["module", "=", TODO_ACTIVITY_XMLID.module],
         ["name", "=", TODO_ACTIVITY_XMLID.name],
       ],
-      { fields: ["res_id"], limit: 1 },
+      { fields: ["res_id"], limit: 1 }
     );
     const record = getSearchReadRecords(result)[0];
     return record && typeof record.res_id === "number" ? record.res_id : null;
@@ -1627,23 +2302,39 @@ async function resolveDefaultActivityTypeId(
 }
 
 /** Resolve an activity type id from its exact (untranslated) name. */
-async function resolveActivityTypeByName(
-  client: OdooClient,
-  name: string,
-): Promise<number> {
-  const result = await client.searchRead(
-    "mail.activity.type",
-    [["name", "=", name]],
-    { fields: ["id"], limit: 1 },
-  );
+async function resolveActivityTypeByName(client: OdooClient, name: string): Promise<number> {
+  const result = await client.searchRead("mail.activity.type", [["name", "=", name]], {
+    fields: ["id"],
+    limit: 1,
+  });
   const record = getSearchReadRecords(result)[0];
   const id = record ? recordId(record) : null;
   if (id === null) {
     throw new Error(
-      `Could not resolve activity type "${name}". Use an exact activity type name (e.g. "To-Do", "Call", "Email").`,
+      `Could not resolve activity type "${name}". Use an exact activity type name (e.g. "To-Do", "Call", "Email").`
     );
   }
   return id;
+}
+
+/**
+ * The `assignee` as the tools use it: a user NAME is trimmed (a model pads
+ * names freely, and the lookup is an exact match), a ref is taken exactly as
+ * sent. A ref with whitespace around it is refused rather than trimmed into
+ * the ref: the confirmation card shows a string as the
+ * record it names only when the string IS the ref, so `" " + ref` was shown
+ * as opaque text while the activity went to the record the ref names.
+ */
+function assigneeParam(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  if (trimmed !== value && isIntegrationRef(trimmed)) {
+    throw new Error(
+      "`assignee` has whitespace around its _pinchy_ref. Pass the ref exactly as odoo_read " +
+        "returned it, with nothing before or after it."
+    );
+  }
+  return trimmed;
 }
 
 /**
@@ -1654,32 +2345,31 @@ async function resolveActivityTypeByName(
 async function resolveAssigneeUserId(
   client: OdooClient,
   connectionId: string,
-  assignee: string,
+  assignee: string
 ): Promise<number> {
   if (isIntegrationRef(assignee)) {
-    const ref = decodeOdooRefForConnection(connectionId, assignee);
+    let ref: IntegrationRefPayload;
+    try {
+      ref = decodeOdooRefForConnection(connectionId, assignee);
+    } catch (err) {
+      throw refDecodeError(err, "assignee");
+    }
     if (ref.model !== "res.users") {
       throw new Error("`assignee` ref must point to a res.users record.");
     }
     return ref.id;
   }
-  const result = await client.searchRead(
-    "res.users",
-    [["name", "=", assignee]],
-    {
-      fields: ["id"],
-      limit: 2,
-    },
-  );
+  const result = await client.searchRead("res.users", [["name", "=", assignee]], {
+    fields: ["id"],
+    limit: 2,
+  });
   const ids = uniqueIds(getSearchReadRecords(result));
   if (ids.length === 1) return ids[0];
   if (ids.length === 0) {
-    throw new Error(
-      `Could not resolve assignee "${assignee}" — no matching user.`,
-    );
+    throw new Error(`Could not resolve assignee "${assignee}" — no matching user.`);
   }
   throw new Error(
-    `Could not resolve assignee "${assignee}" — multiple users match; pass an opaque res.users ref instead.`,
+    `Could not resolve assignee "${assignee}" — multiple users match; pass an opaque res.users ref instead.`
   );
 }
 
@@ -1692,19 +2382,16 @@ async function resolveAssigneeUserId(
 async function resolveTargetSalespersonId(
   client: OdooClient,
   targetModel: string,
-  targetId: number,
+  targetId: number
 ): Promise<number | null> {
   try {
-    const result = await client.searchRead(
-      targetModel,
-      [["id", "=", targetId]],
-      { fields: ["user_id"], limit: 1 },
-    );
+    const result = await client.searchRead(targetModel, [["id", "=", targetId]], {
+      fields: ["user_id"],
+      limit: 1,
+    });
     const record = getSearchReadRecords(result)[0];
     const userId = record?.user_id;
-    return Array.isArray(userId) && typeof userId[0] === "number"
-      ? userId[0]
-      : null;
+    return Array.isArray(userId) && typeof userId[0] === "number" ? userId[0] : null;
   } catch {
     return null;
   }
@@ -1725,7 +2412,7 @@ async function resolveTargetSalespersonId(
 async function ensureActivityResModelId(
   client: OdooClient,
   model: string,
-  values: Record<string, unknown>,
+  values: Record<string, unknown>
 ): Promise<Record<string, unknown>> {
   if (model !== "mail.activity") return values;
   if (values.res_model_id != null) return values;
@@ -1736,6 +2423,63 @@ async function ensureActivityResModelId(
   const next: Record<string, unknown> = { ...values, res_model_id: irModelId };
   delete next.res_model;
   return next;
+}
+
+/** Id of an Odoo many2one value, which comes back as `[id, label]` or `false`. */
+export function relationId(value: unknown): number | null {
+  if (!Array.isArray(value)) return null;
+  const id = value[0];
+  return typeof id === "number" && Number.isInteger(id) && id > 0 ? id : null;
+}
+
+/** Label of an Odoo many2one value. */
+export function relationLabel(value: unknown): string | null {
+  if (!Array.isArray(value)) return null;
+  return typeof value[1] === "string" ? value[1] : null;
+}
+
+function asNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/**
+ * Accounts a bill/invoice settles against, matched via
+ * `account.move.line.account_type` (a related field on the line, so no join is
+ * needed). Reconciliation only ever happens on these: Odoo refuses lines from
+ * two different accounts outright ("Entries are not from the same account"),
+ * which is why a bank transaction sitting on the journal's *suspense* account
+ * can never be reconciled against a bill's payable line directly — the suspense
+ * line has to be replaced first.
+ */
+const SETTLEMENT_ACCOUNT_TYPES = ["asset_receivable", "liability_payable"];
+
+/**
+ * Did the reconcile actually happen?
+ *
+ * This is the crux of the tool, and it is deliberately paranoid. Verified
+ * against a real Odoo 19 instance (2026-07-16):
+ *
+ *  1. `account.move.line.reconcile()` returns `None` — on success AND on a
+ *     silent no-op. Over RPC that is `undefined`. The return value carries no
+ *     information at all.
+ *  2. Odoo 19 dropped the "you can only reconcile posted entries" guard. A
+ *     reconcile touching a draft line raises nothing, writes no
+ *     `account.partial.reconcile`, and changes nothing. Silence is not success.
+ *  3. `account.bank.statement.line.is_reconciled` is NOT a valid signal: it is
+ *     computed as "no suspense line left on the move", so merely restating the
+ *     counterpart (step 1 of the bank flow) already flips it to `true` while
+ *     the bill stays unpaid.
+ *
+ * The only trustworthy evidence is the settled document's own residual going
+ * down. That is what we check.
+ */
+export function didReconcile(residualBefore: unknown, residualAfter: unknown): boolean {
+  const before = asNumber(residualBefore);
+  const after = asNumber(residualAfter);
+  if (before === null || after === null) return false;
+  // Residuals are signed and rounded by Odoo; compare magnitudes with a
+  // cent-level tolerance so a float artefact cannot read as progress.
+  return Math.abs(after) < Math.abs(before) - 0.005;
 }
 
 /**
@@ -1805,22 +2549,14 @@ export function extractCompanyLabel(value: unknown): string | null {
  */
 export function extractCompanyId(value: unknown): number | null {
   if (!Array.isArray(value)) return null;
-  if (
-    typeof value[0] !== "number" ||
-    !Number.isInteger(value[0]) ||
-    value[0] <= 0
-  ) {
+  if (typeof value[0] !== "number" || !Number.isInteger(value[0]) || value[0] <= 0) {
     return null;
   }
   if (extractCompanyLabel(value) === null) return null;
   return value[0];
 }
 
-function wrapMany2OneValue(
-  connectionId: string,
-  field: OdooField,
-  value: unknown,
-): unknown {
+function wrapMany2OneValue(connectionId: string, field: OdooField, value: unknown): unknown {
   if (
     field.type !== "many2one" ||
     !field.relation ||
@@ -1860,11 +2596,7 @@ function wrapMany2OneValue(
  * o2m on read, but the field loop is generic) passes through unchanged —
  * defensive, never throws.
  */
-function wrapOne2ManyValue(
-  connectionId: string,
-  field: OdooField,
-  value: unknown,
-): unknown {
+function wrapOne2ManyValue(connectionId: string, field: OdooField, value: unknown): unknown {
   if (
     field.type !== "one2many" ||
     !field.relation ||
@@ -1892,7 +2624,7 @@ function wrapReadResult(
   connectionId: string,
   model: string,
   fields: OdooField[],
-  result: unknown,
+  result: unknown
 ): unknown {
   const byName = new Map(fields.map((field) => [field.name, field]));
   const wrapRecord = (record: OdooRecord): OdooRecord => {
@@ -1927,9 +2659,7 @@ function wrapReadResult(
         model,
         id: record.id,
         label,
-        ...(companyId !== null && companyLabel !== null
-          ? { companyId, companyLabel }
-          : {}),
+        ...(companyId !== null && companyLabel !== null ? { companyId, companyLabel } : {}),
       });
     }
 
@@ -1953,28 +2683,261 @@ function wrapReadResult(
   return result;
 }
 
-async function reportAuthFailure(
-  apiBaseUrl: string,
-  connectionId: string,
-  gatewayToken: string,
-  reason: string,
-): Promise<void> {
-  try {
-    await fetch(
-      `${apiBaseUrl}/api/internal/integrations/${connectionId}/report-auth-failure`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${gatewayToken}`,
-          "Content-Type": "application/json",
-          "X-Plugin-Id": "pinchy-odoo",
-        },
-        body: JSON.stringify({ reason: reason.slice(0, 500) }),
-      },
+/**
+ * Row-count bounds for `odoo_read`/`odoo_aggregate`'s `limit` parameter.
+ *
+ * `params.limit` reached `client.searchRead`/`client.readGroup` verbatim, so
+ * a model asking for `limit: 999999` got exactly that against Odoo and a
+ * single call could pull the whole table. These are the bounds the tool
+ * descriptions promise — interpolated into those descriptions rather than
+ * restated, so the number the model plans against and the number actually
+ * enforced cannot drift apart.
+ *
+ * `ODOO_READ_DEFAULT_LIMIT` also happens to match `odoo-node`'s own
+ * `DEFAULT_LIMIT`, which its `searchRead` substitutes for an `undefined`
+ * limit — so an omitted limit was never the unbounded case. Pinning it here
+ * makes the documented default ours instead of a library constant we don't
+ * own and would not notice changing.
+ */
+export const ODOO_READ_DEFAULT_LIMIT = 100;
+export const ODOO_READ_LIMIT_CAP = 500;
+
+/**
+ * Reduce a model-supplied `limit` to a usable row count, or `null` when it
+ * carries no usable bound at all.
+ *
+ * A bare `Math.min` is a ONE-SIDED clamp, and the side it leaves open is the
+ * one that matters. Odoo reads `limit=0` as *no limit*, and `odoo-node`
+ * forwards it verbatim (`options?.limit ?? DEFAULT_LIMIT` — `0 ?? 100` is
+ * `0`), so `limit: 0` walked straight through the cap and returned the entire
+ * table: the exact outcome the cap exists to prevent, one plausible model
+ * output away. The other open cases end the same way or worse — a negative
+ * value reaches Postgres as a negative `LIMIT`, and `NaN`/`Infinity` are
+ * `typeof "number"` but serialize to JSON `null`, i.e. unbounded again.
+ *
+ * So the rule is positive rather than subtractive: a limit is honoured only
+ * if it is a finite row count of at least 1, floored to a whole row and
+ * capped. Anything else is "not specified" and left to the caller's default.
+ */
+function usableLimit(limit: unknown): number | null {
+  if (typeof limit !== "number" || !Number.isFinite(limit)) return null;
+  const rows = Math.floor(limit);
+  if (rows < 1) return null;
+  return Math.min(rows, ODOO_READ_LIMIT_CAP);
+}
+
+/** `odoo_read`: an unusable limit falls back to the documented default. */
+function clampReadLimit(limit: unknown): number {
+  return usableLimit(limit) ?? ODOO_READ_DEFAULT_LIMIT;
+}
+
+/**
+ * `odoo_aggregate`: its `limit` (max groups) has no documented default, so an
+ * unusable value collapses to `undefined` — the same state as omitting the
+ * parameter, never a forwarded `0` that Odoo would read as "all groups".
+ */
+function clampOptionalLimit(limit: unknown): number | undefined {
+  return usableLimit(limit) ?? undefined;
+}
+
+/**
+ * Serialized-size ceiling for an `odoo_read` or `odoo_aggregate` result, in
+ * characters.
+ *
+ * OpenClaw's runtime caps every tool result at `maxChars=64000` and the whole
+ * prompt history at `aggregateBudgetChars=256000`, replacing the overflow with a
+ * literal `[... N more characters truncated …]` marker spliced MID-JSON. A real
+ * `crm.lead` read on production reached ~509,000 chars — ~8× the per-result cap
+ * and ~2× the entire aggregate budget — so the model received corrupt JSON plus
+ * the marker and looped on "the results are truncated" (pinchy production, Piper
+ * agent, 2026-07-22). We bound the result well under 64000 so (a) our JSON is
+ * never cut mid-structure, and (b) several reads still fit inside the 256000
+ * aggregate before OpenClaw has to intervene. This mirrors the pre-emptive
+ * ceiling `openclaw-config/bootstrap-caps.ts` applies to instruction files.
+ */
+export const ODOO_READ_RESULT_BUDGET_CHARS = 30000;
+
+/**
+ * How many `{id, label}` pairs a delete lists in its audit detail.
+ *
+ * Read this together with what the audit route does: curated details suppress
+ * `detail.params` (`curatesNonErrorFields` in `api/internal/audit/tool-use`),
+ * so this list plus `count` IS the audit row's record of the delete — the
+ * `targets` the tool was called with are not kept beside it. That is the right
+ * trade (the refs are opaque tokens; a name is what a reader can act on), but
+ * it means the cap is a real limit and not a display preference: a delete of
+ * more than this many records leaves Pinchy knowing how many went and naming
+ * the first {@link ODOO_DELETE_DETAIL_LABEL_CAP}, with `deletedTruncated`
+ * saying so out loud.
+ *
+ * Raising it does not fix that — {@link ODOO_DELETE_DETAIL_BUDGET_BYTES} binds
+ * first, and AGENTS.md's 2048-byte detail rule is what that budget serves
+ * ("Summarize bulk operations"). The full set lives in the tool result the
+ * model receives, which is complete by construction.
+ */
+export const ODOO_DELETE_DETAIL_LABEL_CAP = 20;
+
+/**
+ * Byte ceiling for that detail. AGENTS.md caps an audit `detail` at 2048
+ * bytes; the tool-use audit route merges its own fields (toolName, success,
+ * toolCallId, durationMs) on top of ours, so ours has to fit with room left.
+ *
+ * This is the real bound, and {@link ODOO_DELETE_DETAIL_LABEL_CAP} is not:
+ * a cap on how many labels we list says nothing about how long an Odoo
+ * `display_name` is. An invoice's runs to "INV/2026/00042 — Müller
+ * Maschinenbau GmbH & Co. KG [Helmcraft GmbH]" and there is no upper bound in
+ * the schema, so twenty of them can pass a count check and still blow the byte
+ * budget. Counting is the readability rule; this is the one that holds.
+ */
+export const ODOO_DELETE_DETAIL_BUDGET_BYTES = 1400;
+
+/** Per-label clip, so one pathological display_name cannot crowd out the rest. */
+const DELETE_LABEL_MAX_CHARS = 120;
+
+/**
+ * Clip a label to {@link DELETE_LABEL_MAX_CHARS} **code points**, not UTF-16
+ * units.
+ *
+ * `String.prototype.slice` counts units, so a boundary landing inside a
+ * surrogate pair — an emoji in a `res.partner.category` name is the everyday
+ * case — leaves a lone high surrogate. `JSON.stringify` faithfully encodes it
+ * as `\ud83d`, and Postgres then refuses the whole row:
+ *
+ *   ERROR: invalid input syntax for type json
+ *   DETAIL: Unicode low surrogate must follow a high surrogate.
+ *
+ * `audit_log.detail` is `jsonb`, so that is a failed INSERT for a delete that
+ * has already happened — the exact evidence-loss this detail exists to
+ * prevent, caused by the code meant to prevent it. Iterating the string yields
+ * whole code points.
+ */
+function clipDeleteLabel(label: string): string {
+  const points = Array.from(label);
+  if (points.length <= DELETE_LABEL_MAX_CHARS) return label;
+  return `${points.slice(0, DELETE_LABEL_MAX_CHARS - 1).join("")}…`;
+}
+
+function deleteDetailShape(
+  model: string,
+  count: number,
+  shown: Array<{ id: number; label: string }>
+): Record<string, unknown> {
+  const truncated = count - shown.length;
+  return {
+    model,
+    count,
+    deleted: shown,
+    ...(truncated > 0 ? { deletedTruncated: truncated } : {}),
+  };
+}
+
+/**
+ * Build the audit detail for a delete: the model, how many records went, and
+ * as many `{id, label}` pairs as fit both caps above.
+ *
+ * `deletedTruncated` is not decoration. A list shortened in silence reads as
+ * "that was all of them", which is the one claim an append-only audit row must
+ * never make on its own.
+ */
+export function buildDeleteAuditDetail(
+  model: string,
+  deleted: Array<{ id: number; label: string }>
+): Record<string, unknown> {
+  const shown: Array<{ id: number; label: string }> = [];
+  for (const entry of deleted.slice(0, ODOO_DELETE_DETAIL_LABEL_CAP)) {
+    const candidate = [...shown, { id: entry.id, label: clipDeleteLabel(entry.label) }];
+    const size = Buffer.byteLength(
+      JSON.stringify(deleteDetailShape(model, deleted.length, candidate)),
+      "utf8"
     );
-  } catch {
-    // best-effort — never mask the original tool error
+    if (size > ODOO_DELETE_DETAIL_BUDGET_BYTES) break;
+    shown.push(candidate[candidate.length - 1]);
   }
+  return deleteDetailShape(model, deleted.length, shown);
+}
+
+export const ODOO_READ_TRUNCATION_HINT =
+  "Result truncated to fit the model's context budget: the first `returned` of " +
+  "`total` matching records (in order) are included. To make the result smaller, " +
+  "request fewer `fields` (drop heavy ones like `description`) or narrow `filters`. " +
+  "To get the next page, re-read with `offset` set to this request's `offset` plus " +
+  "`returned`.";
+
+/**
+ * The aggregate hint is its own text, not a reuse of the read one. Truncation
+ * guidance is what the model acts on, and every lever the read hint names is
+ * either wrong or a no-op for `odoo_aggregate`: dropping a `field` removes an
+ * aggregation rather than a heavy column, and the rows are groups, not
+ * records. Wrong recovery advice on a truncated result is how the original
+ * incident's loop started.
+ */
+export const ODOO_AGGREGATE_TRUNCATION_HINT =
+  "Result truncated to fit the model's context budget: the first `returned` of " +
+  "`total` groups (in order) are included. To make the result smaller, set a " +
+  "`limit`, group by fewer or coarser fields (e.g. `date_order:month` instead of " +
+  "`date_order:day`), or narrow `filters`. To get the next page, re-run with " +
+  "`offset` set to this request's `offset` plus `returned`.";
+
+/**
+ * Bound an `odoo_read` (or, via the `key` param, `odoo_aggregate`) result to
+ * {@link ODOO_READ_RESULT_BUDGET_CHARS} so it can never trip OpenClaw's blind
+ * mid-JSON truncation. A result that already fits is returned verbatim (same
+ * reference, no added keys — existing callers/tests see no change). An
+ * oversized result keeps the largest prefix of `result[key]` entries that fits
+ * and returns a self-describing object: the original `total` (full Odoo match
+ * count, when the input carries one) is preserved, `returned` gives the
+ * included count, `truncated: true` flags the cut, and `hint` tells the model
+ * how to get the rest. At least one entry is always kept, even if that single
+ * entry alone exceeds the budget, so the model can still make progress (and
+ * see the hint to drop heavy `fields`).
+ *
+ * `key` defaults to `"records"` (the `odoo_read`/`searchRead` shape).
+ * `odoo_aggregate`'s `readGroup` result nests its rows under `groups` instead,
+ * so it passes `key: "groups"` — and its own `hint`, since the read hint's
+ * advice does not apply to an aggregation.
+ */
+export function enforceReadResultBudget(
+  result: unknown,
+  budget: number = ODOO_READ_RESULT_BUDGET_CHARS,
+  key: string = "records",
+  hint: string = ODOO_READ_TRUNCATION_HINT
+): unknown {
+  const records = getSearchReadRecords(result, key);
+  if (records.length === 0) return result;
+  if (JSON.stringify(result).length <= budget) return result;
+
+  const isObjectShape = isRecord(result) && Array.isArray(result[key]);
+  const base: Record<string, unknown> = isObjectShape
+    ? { ...(result as Record<string, unknown>) }
+    : {};
+  delete base[key];
+  const total =
+    isObjectShape && typeof (result as Record<string, unknown>).total === "number"
+      ? ((result as Record<string, unknown>).total as number)
+      : records.length;
+
+  const build = (kept: OdooRecord[]) => ({
+    ...base,
+    [key]: kept,
+    total,
+    returned: kept.length,
+    truncated: true,
+    hint,
+  });
+
+  // Grow the kept set while the *actual* serialized length stays within budget
+  // (measuring the real output, not an estimate, so the result is provably under
+  // the ceiling). At least one record is always kept — even a lone record that
+  // busts the budget beats returning nothing, and the hint tells the model to
+  // drop heavy `fields`. We only reach this branch when the full result already
+  // exceeds the budget, so the loop always breaks before exhausting `records`.
+  const kept: OdooRecord[] = [];
+  for (const record of records) {
+    if (kept.length > 0 && JSON.stringify(build([...kept, record])).length > budget) break;
+    kept.push(record);
+  }
+
+  return build(kept);
 }
 
 /**
@@ -1998,17 +2961,144 @@ function toolError(text: string): {
   };
 }
 
+/**
+ * #720: error result for a failed read-after-write verification. Same
+ * `isError` + `details.error` contract as {@link toolError} (so the audit
+ * route records `outcome: failure`), plus `verified: false` so the audit row
+ * carries the verification outcome. The record was NOT persisted as reported;
+ * the model must surface the failure instead of narrating success.
+ */
+function verificationError(text: string): {
+  content: ContentBlock[];
+  isError: true;
+  details: { error: string; verified: false };
+} {
+  return {
+    isError: true,
+    content: [{ type: "text", text }],
+    details: { error: text, verified: false },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// #720: plugin-side write verification (read-after-write).
+//
+// Eval-v1's silent-failure scenario — the ERP returns a plausible id but
+// persists nothing — showed 0 of 162 graded runs across all 14 models
+// performing a verifying read after the write. Every model trusted the bare
+// return value and reported success while the ERP stayed empty. This is a
+// behavioural failure shared by the strongest and weakest models alike, so we
+// move verification into the deterministic tool layer: after a create/write on
+// a covered model the plugin reads the record back — from the SAME
+// authenticated session, so there is no replica lag — and only reports success
+// once the authoritative post-state confirms it (the "persist-before-
+// acknowledge" pattern, mirroring `odoo_reconcile`'s `didReconcile` check).
+// ---------------------------------------------------------------------------
+
+// #723: eval-only governance toggle. The write guards (duplicate guard #721 +
+// read-back verification #720) are DEFAULT-ON. The governed-tools comparison
+// sweep needs to run the SAME scenarios with the guards OFF (the ungoverned
+// arm) so the before/after delta isolates the guards' effect. The switch is the
+// env var PINCHY_ODOO_GOVERNANCE, read at the two guard decision points in
+// odoo_create. It is stack-level and eval-only: never emitted into product
+// config, never settable from the product UI, set only by docker-compose.eval.yml.
+//
+// Fail-safe: enforced unless the value is EXACTLY "off" (case-insensitive,
+// trimmed). Any unrecognized value keeps the guards on, so a typo can never
+// silently disable governance in production.
+export function governanceEnforced(): boolean {
+  return (process.env.PINCHY_ODOO_GOVERNANCE ?? "").trim().toLowerCase() !== "off";
+}
+
+// Models whose writes we verify. Start with account.move + its line model (the
+// highest-stakes writes, per #720); widen only if the eval supports it.
+const VERIFIED_WRITE_MODELS = new Set(["account.move", "account.move.line"]);
+
+export function isVerifiedModel(model: string): boolean {
+  return VERIFIED_WRITE_MODELS.has(model);
+}
+
+// Field types Odoo stores VERBATIM — a read-back value equals what we wrote,
+// with no legitimate backend transformation, so comparing them cannot
+// false-fail. Deliberately EXCLUDED (each can differ from the submitted value
+// through legitimate Odoo behaviour, which a naive comparison would misread as
+// a failed write):
+//   - relational (many2one/one2many/many2many): normalization, command-tuple
+//     expansion, and the `[id, label]` read shape;
+//   - float / monetary: currency & decimal-precision rounding, net↔gross;
+//   - datetime: a submitted date is normalized to `... 00:00:00`;
+//   - readonly / computed: the server owns the value.
+const VERBATIM_SCALAR_TYPES = new Set(["char", "text", "boolean", "date", "selection", "integer"]);
+
+export function isVerbatimScalarField(field: OdooField): boolean {
+  return !field.readonly && !!field.type && VERBATIM_SCALAR_TYPES.has(field.type);
+}
+
+/**
+ * The submitted fields we can safely compare on read-back: those the caller
+ * explicitly set that map to a verbatim-scalar field in the model schema.
+ */
+export function verbatimFieldsToVerify(
+  fields: OdooField[],
+  submitted: Record<string, unknown>
+): OdooField[] {
+  const byName = new Map(fields.map((f) => [f.name, f]));
+  const out: OdooField[] = [];
+  for (const key of Object.keys(submitted)) {
+    const field = byName.get(key);
+    if (field && isVerbatimScalarField(field)) out.push(field);
+  }
+  return out;
+}
+
+function scalarEquals(field: OdooField, expected: unknown, actual: unknown): boolean {
+  // Odoo returns integers as numbers; tolerate a numeric-string submitted value
+  // (e.g. sequence). Everything else in the verbatim set round-trips exactly.
+  if (field.type === "integer") return Number(expected) === Number(actual);
+  return expected === actual;
+}
+
+export function findVerbatimMismatches(
+  fields: OdooField[],
+  submitted: Record<string, unknown>,
+  readBack: Record<string, unknown> | undefined
+): Array<{ field: string; expected: unknown; actual: unknown }> {
+  const out: Array<{ field: string; expected: unknown; actual: unknown }> = [];
+  for (const field of verbatimFieldsToVerify(fields, submitted)) {
+    const expected = submitted[field.name];
+    const actual = readBack?.[field.name];
+    if (!scalarEquals(field, expected, actual)) {
+      out.push({ field: field.name, expected, actual });
+    }
+  }
+  return out;
+}
+
+function formatMismatches(
+  mismatches: Array<{ field: string; expected: unknown; actual: unknown }>
+): string {
+  return mismatches
+    .map(
+      (m) =>
+        `${m.field}: wrote ${JSON.stringify(m.expected)}, read back ${JSON.stringify(m.actual)}`
+    )
+    .join("; ");
+}
+
 function permissionDenied(
   operation: string,
-  model: string,
+  model: string
 ): { content: ContentBlock[]; isError: true; details: { error: string } } {
-  return toolError(
-    `Permission denied: ${operation} on ${model} is not allowed for this agent.`,
-  );
+  return toolError(`Permission denied: ${operation} on ${model} is not allowed for this agent.`);
 }
 
 function isOdooAccessError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
+  // An HTTP-level failure (odoo-node: status in `code`, no `data`) is the
+  // server refusing the request — "HTTP 405: Method Not Allowed" — not Odoo
+  // refusing this user a model.
+  const { code, data } = error as Error & { code?: unknown; data?: unknown };
+  if (typeof code === "number" && code >= 100 && data === undefined) return false;
   const msg = error.message.toLowerCase();
   return (
     msg.includes("accesserror") ||
@@ -2020,16 +3110,95 @@ function isOdooAccessError(error: unknown): boolean {
 
 function errorResult(
   error: unknown,
-  context?: { operation?: string; model?: string },
+  context?: { operation?: string; model?: string }
 ): { content: ContentBlock[]; isError: true; details: { error: string } } {
   if (isOdooAccessError(error) && context?.model) {
     const op = context.operation ?? "access";
     return toolError(
-      `Odoo denied permission to ${op} on ${context.model}. The Odoo user's permissions may have changed since the last sync. An admin can re-sync the connection in Settings > Integrations to update available permissions.`,
+      `Odoo denied permission to ${op} on ${context.model}. The Odoo user's permissions may have changed since the last sync. An admin can re-sync the connection in Settings > Integrations to update available permissions.`
     );
   }
-  const message = error instanceof Error ? error.message : "Unknown error";
+  // Classify on the raw message, show the described one: `describeOdooError`
+  // rewrites the failures the model cannot act on.
+  const raw = error instanceof Error ? error.message : "";
+  const message = describeOdooError(error);
+  // A relation field (many2one) that received a display name instead of an id
+  // surfaces from Postgres as "invalid input syntax for type integer: <text>".
+  // That raw DB error is not actionable for the model, so append what to do:
+  // resolve the name to an id/ref first (production: Penny repeatedly sent
+  // account_id: "7600 Office supplies …" and got only the bare Postgres error).
+  if (/invalid input syntax for type integer:/i.test(raw)) {
+    return toolError(
+      `Error: ${message}\n\nThis usually means a relation field (e.g. account_id, partner_id, journal_id) was given a display name or text instead of a numeric id. Look the record up with odoo_read to get its id, then pass that id or the _pinchy_ref it returns — never the display name.`
+    );
+  }
   return toolError(`Error: ${message}`);
+}
+
+/**
+ * A snapshot of the vendor bill that already carries a given `ref`, surfaced by
+ * the deterministic duplicate guard (pinchy#721) so the model can relay it to
+ * the user instead of double-booking (a double-payment risk).
+ */
+interface ExistingBillSnapshot {
+  id: number;
+  name: string | null;
+  state: string | null;
+  amount_total: number | null;
+  date: string | null;
+}
+
+// Odoo's own duplicate detection (`_fetch_duplicate_reference`, account 19)
+// keys VENDOR documents on their `ref` — the supplier's invoice number. Customer
+// invoices (out_invoice/out_refund) are deduped on amount+date, NEVER on ref, and
+// journal entries are never deduped at all. So a ref-based guard scopes to exactly
+// these two vendor move types; guarding out_* on ref would falsely reject a
+// legitimately re-used customer-document reference.
+const VENDOR_DOCUMENT_MOVE_TYPES = new Set(["in_invoice", "in_refund"]);
+
+function vendorDocumentLabel(moveType: string): string {
+  return moveType === "in_refund" ? "vendor credit note" : "vendor bill";
+}
+
+function toBillSnapshot(record: Record<string, unknown>): ExistingBillSnapshot {
+  return {
+    id: record.id as number,
+    name: typeof record.name === "string" ? record.name : null,
+    state: typeof record.state === "string" ? record.state : null,
+    amount_total: typeof record.amount_total === "number" ? record.amount_total : null,
+    // Odoo returns `false` for an unset invoice_date; normalize to null.
+    date: typeof record.invoice_date === "string" ? record.invoice_date : null,
+  };
+}
+
+function formatExistingBillSnapshot(s: ExistingBillSnapshot): string {
+  const parts = [`id ${s.id}`];
+  if (s.name) parts.push(`"${s.name}"`);
+  if (s.state) parts.push(`state ${s.state}`);
+  if (s.amount_total !== null) parts.push(`total ${s.amount_total}`);
+  if (s.date) parts.push(`dated ${s.date}`);
+  return parts.join(", ");
+}
+
+/**
+ * The block message. Deliberately phrased to make the model RELAY the existing
+ * bill rather than loop against the refusal (the eval's hard-rejection scenario
+ * showed some models retry a refused create). It names the bill, states it was
+ * not created, and points at the explicit `allow_duplicate` override.
+ */
+function duplicateBillBlockMessage(
+  moveType: string,
+  ref: string,
+  snapshot: ExistingBillSnapshot
+): string {
+  const label = vendorDocumentLabel(moveType);
+  return (
+    `Duplicate ${label} blocked. A ${label} with reference "${ref}" is already on file ` +
+    `in Odoo: ${formatExistingBillSnapshot(snapshot)}. It was NOT created again — booking ` +
+    `it twice risks a double payment. Do not retry this create; relay the existing bill ` +
+    `above to the user. If this is a deliberate, confirmed re-filing, call odoo_create ` +
+    `again with allow_duplicate: true.`
+  );
 }
 
 const plugin = {
@@ -2037,11 +3206,25 @@ const plugin = {
   name: "Pinchy Odoo",
   description: "Odoo ERP integration with model-level permissions.",
 
-  register(api: PluginApi) {
+  register(pluginApi: PluginApi) {
+    // Every tool refuses a parameter it does not declare (unknown-params.ts).
+    const api = refusingUnknownParams(pluginApi);
     const pluginConfig = api.pluginConfig;
     const agentConfigs = pluginConfig?.agents ?? {};
     const apiBaseUrl = pluginConfig?.apiBaseUrl ?? "";
     const gatewayToken = pluginConfig?.gatewayToken ?? "";
+
+    // #723: make an ungoverned stack impossible to miss. The write guards
+    // (#720/#721) are default-on; PINCHY_ODOO_GOVERNANCE=off disables them for
+    // the eval's ungoverned arm ONLY. Warn once at load so an operator can never
+    // mistake an ungoverned run for a governed one (goes to OpenClaw stdout).
+    if (!governanceEnforced()) {
+      console.warn(
+        "[pinchy-odoo] governance is OFF (PINCHY_ODOO_GOVERNANCE=off): write " +
+          "guards (duplicate guard #721, read-back verification #720) are " +
+          "DISABLED. This is an eval-only mode — never run it in production."
+      );
+    }
 
     // Client cache per agent. Built lazily on first tool call: fetch
     // credentials from Pinchy → instantiate OdooClient. TTL keeps the
@@ -2053,23 +3236,25 @@ const plugin = {
     const CREDENTIALS_TTL_MS = 5 * 60 * 1000; // 5 minutes
     const cache = new Map<string, { client: OdooClient; expiresAt: number }>();
 
-    function invalidate(agentId: string) {
-      cache.delete(agentId);
+    function invalidate(agentId: string, connectionId: string) {
+      cache.delete(credentialCacheKey(agentId, connectionId));
     }
 
     async function getOrCreateClient(
       agentId: string,
-      config: AgentOdooConfig,
+      config: AgentOdooConfig
     ): Promise<OdooClient> {
-      const hit = cache.get(agentId);
+      const key = credentialCacheKey(agentId, config.connectionId);
+      const hit = cache.get(key);
       if (hit && hit.expiresAt > Date.now()) return hit.client;
-      const creds = await fetchCredentials(
+      const { creds, target } = await fetchCredentials(
         apiBaseUrl,
         gatewayToken,
         config.connectionId,
+        agentId
       );
-      const client = createClient(creds);
-      cache.set(agentId, {
+      const client = createClient(creds, target);
+      cache.set(key, {
         client,
         expiresAt: Date.now() + CREDENTIALS_TTL_MS,
       });
@@ -2077,44 +3262,243 @@ const plugin = {
     }
 
     /**
+     * Odoo calls that change server-side state. `trackMutations` uses this to
+     * refuse a retry that would repeat a write that already went through.
+     * `callMethod` is in the list because that is how the record-action and
+     * reconcile tools reach `action_post`, `js_assign_outstanding_line` and
+     * friends — it is a write channel, not a read one.
+     */
+    const MUTATING_CLIENT_METHODS = ["create", "write", "unlink", "callMethod"] as const;
+
+    /**
      * Run an Odoo call with one transparent retry on auth failure.
      * Odoo throws an `AccessDenied` / 401-shaped error when the apiKey is
      * stale (rotated, revoked, expired). We invalidate the cache and
-     * fetch fresh credentials once — if it still fails, surface to the
-     * user.
+     * fetch fresh credentials once — if that is refused for its credentials
+     * too, report the connection as auth-failed; any other failure surfaces
+     * to the user like a first-attempt error.
+     *
+     * `isAuthError` is the shared classifier (#1077); the client is wrapped
+     * so a closure that already completed a write is never re-run.
      */
     async function withAuthRetry<T>(
       agentId: string,
       config: AgentOdooConfig,
-      fn: (client: OdooClient) => Promise<T>,
+      fn: (client: OdooClient) => Promise<T>
     ): Promise<T> {
       const client = await getOrCreateClient(agentId, config);
+      let mutated = false;
+      const tracked = trackMutations(client, MUTATING_CLIENT_METHODS, () => {
+        mutated = true;
+      });
       try {
-        return await fn(client);
+        return await fn(tracked);
       } catch (err) {
-        const msg = err instanceof Error ? err.message.toLowerCase() : "";
-        const isAuthError =
-          msg.includes("access denied") ||
-          msg.includes("invalid api key") ||
-          msg.includes("401") ||
-          msg.includes("authenticat");
-        if (!isAuthError) throw err;
-        invalidate(agentId);
+        if (!isAuthError(err)) throw err;
+        // A write inside this closure already succeeded, so re-running the
+        // closure would repeat it. Surface the auth error instead of
+        // creating a second record.
+        if (mutated) throw err;
+        invalidate(agentId, config.connectionId);
         const fresh = await getOrCreateClient(agentId, config);
         try {
-          return await fn(fresh);
-        } catch (retryErr) {
-          const retryMsg =
-            retryErr instanceof Error ? retryErr.message : String(retryErr);
-          await reportAuthFailure(
-            apiBaseUrl,
-            config.connectionId,
-            gatewayToken,
-            retryMsg,
+          return await fn(
+            trackMutations(fresh, MUTATING_CLIENT_METHODS, () => {
+              mutated = true;
+            })
           );
+        } catch (retryErr) {
+          // Fresh credentials and the retry still failed — but only an auth
+          // error says those credentials are bad. A 502, a non-JSON page or a
+          // ValidationError from the model's arguments would otherwise flip a
+          // healthy connection to auth_failed, and nothing clears that.
+          if (!isAuthError(retryErr)) throw retryErr;
+          // Pinchy stores the reason as the connection's last error and audits
+          // it, so it gets the same treatment as a tool result.
+          await postAuthFailure({
+            apiBaseUrl,
+            connectionId: config.connectionId,
+            gatewayToken,
+            pluginId: "pinchy-odoo",
+            reason: describeOdooError(retryErr),
+          });
           throw retryErr;
         }
       }
+    }
+
+    /**
+     * #720: read the record back after `odoo_create` and confirm it persisted.
+     *
+     * Two gates, strongest first:
+     *   1. Existence — if the id cannot be read back, the write did not persist
+     *      (the Eval-v1 silent-failure scenario). This is deterministic and
+     *      cannot false-fail: a persisted record is always readable by its own
+     *      id in the same session.
+     *   2. Verbatim-scalar match — every submitted field Odoo stores verbatim
+     *      must read back unchanged (see `verbatimFieldsToVerify`).
+     *
+     * Only runs for covered models when the agent can read; otherwise it makes
+     * no verification claim (returns `verified: false`, and the caller omits the
+     * flag) rather than reporting an unverified success as verified.
+     */
+    async function verifyCreate(
+      agentId: string,
+      config: AgentOdooConfig,
+      model: string,
+      id: number,
+      sentValues: Record<string, unknown>,
+      modelFields: OdooField[] | null
+    ): Promise<
+      | { ok: true; verified: boolean; verifiedValues?: Record<string, unknown> }
+      | { ok: false; error: string }
+    > {
+      if (!isVerifiedModel(model)) return { ok: true, verified: false };
+      if (!checkPermission(config.permissions, model, "read")) return { ok: true, verified: false };
+
+      const compareFields = modelFields ? verbatimFieldsToVerify(modelFields, sentValues) : [];
+      const readFields = ["id", ...compareFields.map((f) => f.name)];
+
+      let record: Record<string, unknown> | undefined;
+      try {
+        const res = await withAuthRetry(agentId, config, (client) =>
+          client.searchRead(model, [["id", "=", id]], { fields: readFields, limit: 1 })
+        );
+        record = getSearchReadRecords(res)[0] as Record<string, unknown> | undefined;
+      } catch {
+        // The verification read failed (transport). The create may well have
+        // persisted, so reporting failure would risk a duplicate on retry —
+        // degrade to an unverified success rather than false-fail.
+        return { ok: true, verified: false };
+      }
+
+      if (!record) {
+        return {
+          ok: false,
+          error:
+            `Odoo returned id ${id} for ${model} but the record could not be read back — ` +
+            `the write did not persist. Odoo reports no error in this case, so this is not a ` +
+            `transient failure: nothing was saved, and repeating the identical create will not ` +
+            `change that. Do not report success and do not retry the same create — report this ` +
+            `failure to the user and stop; the Odoo connection needs checking.`,
+        };
+      }
+
+      const mismatches = findVerbatimMismatches(compareFields, sentValues, record);
+      if (mismatches.length > 0) {
+        return {
+          ok: false,
+          error:
+            `Odoo created ${model} id ${id} but the saved values do not match what was written ` +
+            `(${formatMismatches(mismatches)}). The record was not persisted as intended, so do ` +
+            `not report success. Do not retry the identical create — the record exists, so ` +
+            `retrying would duplicate it. Report this discrepancy to the user and stop.`,
+        };
+      }
+
+      const verifiedValues: Record<string, unknown> = {};
+      for (const f of compareFields) verifiedValues[f.name] = record[f.name];
+      return { ok: true, verified: true, verifiedValues };
+    }
+
+    /**
+     * #720: read the written records back after `odoo_write` and confirm the
+     * submitted verbatim scalars now match. `write` returns only a boolean and
+     * the record pre-exists, so existence is a weak signal — the authoritative
+     * check is that the fields we changed read back as written (mirrors
+     * `odoo_reconcile`). If we have nothing verbatim to compare (all submitted
+     * fields are relational/float), we make no verification claim.
+     */
+    async function verifyWrite(
+      agentId: string,
+      config: AgentOdooConfig,
+      model: string,
+      ids: number[],
+      sentValues: Record<string, unknown>,
+      modelFields: OdooField[] | null
+    ): Promise<{ ok: true; verified: boolean } | { ok: false; error: string }> {
+      if (!isVerifiedModel(model)) return { ok: true, verified: false };
+      if (!checkPermission(config.permissions, model, "read")) return { ok: true, verified: false };
+
+      const compareFields = modelFields ? verbatimFieldsToVerify(modelFields, sentValues) : [];
+      if (compareFields.length === 0) return { ok: true, verified: false };
+      const readFields = ["id", ...compareFields.map((f) => f.name)];
+
+      let recordsById: Map<unknown, Record<string, unknown>>;
+      try {
+        const res = await withAuthRetry(agentId, config, (client) =>
+          client.searchRead(model, [["id", "in", ids]], { fields: readFields })
+        );
+        recordsById = new Map(
+          getSearchReadRecords(res).map((r) => [(r as Record<string, unknown>).id, r])
+        );
+      } catch {
+        return { ok: true, verified: false };
+      }
+
+      for (const id of ids) {
+        const record = recordsById.get(id) as Record<string, unknown> | undefined;
+        if (!record) {
+          return {
+            ok: false,
+            error:
+              `Odoo reported the write to ${model} id ${id} succeeded but the record could not ` +
+              `be read back — the change did not persist. Do not report success and do not retry ` +
+              `the identical write; report this failure to the user and stop.`,
+          };
+        }
+        const mismatches = findVerbatimMismatches(compareFields, sentValues, record);
+        if (mismatches.length > 0) {
+          return {
+            ok: false,
+            error:
+              `Odoo reported the write to ${model} id ${id} succeeded but the saved values do ` +
+              `not match what was written (${formatMismatches(mismatches)}). Do not report ` +
+              `success and do not retry the identical write; report this discrepancy to the user ` +
+              `and stop.`,
+          };
+        }
+      }
+      return { ok: true, verified: true };
+    }
+
+    /**
+     * pinchy#1078: read the display names of the records a delete is about to
+     * remove — BEFORE the unlink, because afterwards there is nothing left to
+     * read and AGENTS.md requires a delete's audit detail to name what it
+     * deleted ("deleted rows may no longer be queryable").
+     *
+     * Best-effort on purpose, and called with only the ids the detail can show.
+     * The caller already holds a signed label per target (every `_pinchy_ref`
+     * carries the display name of the read that minted it), so an id this never
+     * reaches — or one the read did not return — degrades to that, not to
+     * nothing.
+     * Turning a failed name lookup into a failed delete would invent a new way
+     * for the user's actual request to fail, and would do it over a forensic
+     * nicety — so an agent granted delete but not read still deletes, with the
+     * ref's label in the audit row.
+     */
+    async function readDeleteLabels(
+      agentId: string,
+      config: AgentOdooConfig,
+      model: string,
+      ids: number[]
+    ): Promise<Map<number, string>> {
+      const labels = new Map<number, string>();
+      if (!checkPermission(config.permissions, model, "read")) return labels;
+      try {
+        const res = await withAuthRetry(agentId, config, (client) =>
+          client.searchRead(model, [["id", "in", ids]], { fields: ["id", "display_name"] })
+        );
+        for (const record of getSearchReadRecords(res)) {
+          const id = recordId(record);
+          const label = recordText(record, "display_name");
+          if (id !== null && label !== null && label.length > 0) labels.set(id, label);
+        }
+      } catch {
+        return labels;
+      }
+      return labels;
     }
 
     // Shared implementation of the list-models tool body. Reused by the
@@ -2123,17 +3507,13 @@ const plugin = {
     function listModelsImpl(config: AgentOdooConfig) {
       try {
         const names = config.modelNames ?? {};
-        const models = Object.entries(config.permissions).map(
-          ([model, ops]) => ({
-            model,
-            name: names[model] ?? model,
-            operations: ops,
-          }),
-        );
+        const models = Object.entries(config.permissions).map(([model, ops]) => ({
+          model,
+          name: names[model] ?? model,
+          operations: ops,
+        }));
         return {
-          content: [
-            { type: "text" as const, text: JSON.stringify({ models }) },
-          ],
+          content: [{ type: "text" as const, text: JSON.stringify({ models }) }],
         };
       } catch (error) {
         return errorResult(error);
@@ -2147,7 +3527,7 @@ const plugin = {
     async function describeModelImpl(
       agentId: string,
       config: AgentOdooConfig,
-      params: Record<string, unknown>,
+      params: Record<string, unknown>
     ) {
       try {
         const model = params.model;
@@ -2158,15 +3538,11 @@ const plugin = {
           return toolError(`Model "${model}" is not available for this agent.`);
         }
 
-        const rawFields = await withAuthRetry(agentId, config, (client) =>
-          client.fields(model),
-        );
+        const rawFields = await withAuthRetry(agentId, config, (client) => client.fields(model));
         const normalised = normalizeFields(rawFields);
 
         const result = compactSchema(normalised, {
-          fields: Array.isArray(params.fields)
-            ? (params.fields as string[])
-            : undefined,
+          fields: Array.isArray(params.fields) ? (params.fields as string[]) : undefined,
           limit: typeof params.limit === "number" ? params.limit : 40,
           verbose: params.verbose === true,
         });
@@ -2211,7 +3587,7 @@ const plugin = {
           },
         };
       },
-      { name: "odoo_list_models" },
+      { name: "odoo_list_models" }
     );
 
     // 2. odoo_describe_model
@@ -2232,8 +3608,7 @@ const plugin = {
             properties: {
               model: {
                 type: "string",
-                description:
-                  "Odoo model name to describe, e.g. 'account.move'.",
+                description: "Odoo model name to describe, e.g. 'account.move'.",
               },
               fields: {
                 type: "array",
@@ -2243,8 +3618,7 @@ const plugin = {
               },
               limit: {
                 type: "number",
-                description:
-                  "Cap on field count when `fields` is omitted (default 40).",
+                description: "Cap on field count when `fields` is omitted (default 40).",
               },
               verbose: {
                 type: "boolean",
@@ -2259,7 +3633,7 @@ const plugin = {
           },
         };
       },
-      { name: "odoo_describe_model" },
+      { name: "odoo_describe_model" }
     );
 
     // 2b. odoo_schema (deprecated alias — kept for AGENTS.md files written by
@@ -2284,8 +3658,7 @@ const plugin = {
             properties: {
               model: {
                 type: "string",
-                description:
-                  "Odoo model name to describe. Omit to list available models.",
+                description: "Odoo model name to describe. Omit to list available models.",
               },
               fields: {
                 type: "array",
@@ -2295,8 +3668,7 @@ const plugin = {
               },
               limit: {
                 type: "number",
-                description:
-                  "Cap on field count when `fields` is omitted (default 40).",
+                description: "Cap on field count when `fields` is omitted (default 40).",
               },
               verbose: {
                 type: "boolean",
@@ -2314,7 +3686,7 @@ const plugin = {
           },
         };
       },
-      { name: "odoo_schema" },
+      { name: "odoo_schema" }
     );
 
     // 3. odoo_read
@@ -2328,7 +3700,7 @@ const plugin = {
         return {
           name: "odoo_read",
           label: "Odoo Read",
-          description: `Query records from Odoo. Returns matching records with field selection and pagination. Always returns { records, total, limit, offset } so you know if there's more data. ${PRODUCT_REF_DISAMBIGUATION_HINT}`,
+          description: `Query records from Odoo. Returns matching records with field selection and pagination. Always returns { records, total, limit, offset } so you know if there's more data. If a result is too large for the context, it is trimmed to fit and flagged with { truncated: true, returned } — read \`returned\` of \`total\`, then narrow \`fields\`, tighten \`filters\`, or page with \`offset\` to get the rest rather than re-issuing the same broad read. ${PRODUCT_REF_DISAMBIGUATION_HINT}`,
           parameters: {
             type: "object",
             properties: {
@@ -2341,11 +3713,11 @@ const plugin = {
                 items: {
                   type: "array",
                   items: {},
-                  description:
-                    "A [field, operator, value] tuple, e.g. ['state', '=', 'sale']",
+                  description: "A [field, operator, value] tuple, e.g. ['state', '=', 'sale']",
                 },
                 description:
-                  "Odoo domain filter. Array of [field, operator, value] tuples. Operators: =, !=, >, >=, <, <=, in, not in, like, ilike. Optional — omit or pass [] to match all records.",
+                  `Odoo domain filter. A plain array of [field, operator, value] tuples, e.g. [["state", "=", "posted"]] — never wrap it as {"item": …}. ` +
+                  `Operators: ${[...ODOO_DOMAIN_OPERATORS].join(", ")}. Optional — omit or pass [] to match all records.`,
               },
               fields: {
                 type: "array",
@@ -2354,7 +3726,7 @@ const plugin = {
               },
               limit: {
                 type: "number",
-                description: "Max records (default: 100)",
+                description: `Max records (default: ${ODOO_READ_DEFAULT_LIMIT}, capped at ${ODOO_READ_LIMIT_CAP})`,
               },
               offset: {
                 type: "number",
@@ -2373,39 +3745,40 @@ const plugin = {
               if (!checkPermission(config.permissions, model, "read")) {
                 return permissionDenied("read", model);
               }
+              // Reject the {item: …} array-serialization artifact in the domain
+              // or field list before querying — Odoo otherwise fails it with an
+              // opaque "unhashable type: 'dict'" (see hasItemWrappedArray).
+              if (hasItemWrappedArray(params.filters)) {
+                throw itemWrappedError("filters");
+              }
+              if (hasItemWrappedArray(params.fields)) {
+                throw itemWrappedError("fields");
+              }
 
-              const result = await withAuthRetry(
-                agentId,
-                config,
-                async (client) => {
-                  const modelFields = normalizeFields(
-                    await client.fields(model),
-                  );
-                  const effectiveFields = augmentFieldsWithCompanyId(
-                    params.fields as string[] | undefined,
-                    modelFields,
-                  );
-                  const records = await client.searchRead(
-                    model,
-                    asDomain(params.filters),
-                    {
-                      fields: effectiveFields,
-                      limit: params.limit as number | undefined,
-                      offset: params.offset as number | undefined,
-                      order: params.order as string | undefined,
-                    },
-                  );
-                  return wrapReadResult(
-                    config.connectionId,
-                    model,
-                    modelFields,
-                    records,
-                  );
-                },
-              );
+              // Decode and validate the domain HERE, before a client exists (#1198).
+              // A bad operator is the model's mistake, not the connection's — and an
+              // error raised inside withAuthRetry is put through isAuthError, which
+              // reads prose and would spend a credential refresh plus a
+              // report-auth-failure POST on it.
+              const domain = asDomain(params.filters);
+
+              const result = await withAuthRetry(agentId, config, async (client) => {
+                const modelFields = normalizeFields(await client.fields(model));
+                const effectiveFields = augmentFieldsWithCompanyId(
+                  stripSyntheticFields(params.fields as string[] | undefined),
+                  modelFields
+                );
+                const records = await client.searchRead(model, domain, {
+                  fields: effectiveFields,
+                  limit: clampReadLimit(params.limit),
+                  offset: params.offset as number | undefined,
+                  order: params.order as string | undefined,
+                });
+                return wrapReadResult(config.connectionId, model, modelFields, records);
+              });
 
               return {
-                content: [{ type: "text", text: JSON.stringify(result) }],
+                content: [{ type: "text", text: JSON.stringify(enforceReadResultBudget(result)) }],
               };
             } catch (error) {
               return errorResult(error, {
@@ -2416,7 +3789,7 @@ const plugin = {
           },
         };
       },
-      { name: "odoo_read" },
+      { name: "odoo_read" }
     );
 
     // 3. odoo_count
@@ -2442,8 +3815,7 @@ const plugin = {
                   items: {},
                   description: "A [field, operator, value] tuple",
                 },
-                description:
-                  "Odoo domain filter. Optional — omit or pass [] to match all records.",
+                description: "Odoo domain filter. Optional — omit or pass [] to match all records.",
               },
             },
             required: ["model"],
@@ -2454,9 +3826,17 @@ const plugin = {
               if (!checkPermission(config.permissions, model, "read")) {
                 return permissionDenied("read", model);
               }
+              // Reject the {item: …} array-serialization artifact in the domain
+              // before querying (see hasItemWrappedArray / odoo_read).
+              if (hasItemWrappedArray(params.filters)) {
+                throw itemWrappedError("filters");
+              }
+
+              // Decode and validate the domain before querying (see asDomain / odoo_read).
+              const domain = asDomain(params.filters);
 
               const count = await withAuthRetry(agentId, config, (client) =>
-                client.searchCount(model, asDomain(params.filters)),
+                client.searchCount(model, domain)
               );
 
               return {
@@ -2471,7 +3851,7 @@ const plugin = {
           },
         };
       },
-      { name: "odoo_count" },
+      { name: "odoo_count" }
     );
 
     // 4. odoo_aggregate
@@ -2497,8 +3877,7 @@ const plugin = {
                   items: {},
                   description: "A [field, operator, value] tuple",
                 },
-                description:
-                  "Odoo domain filter. Optional — omit or pass [] to match all records.",
+                description: "Odoo domain filter. Optional — omit or pass [] to match all records.",
               },
               fields: {
                 type: "array",
@@ -2509,10 +3888,12 @@ const plugin = {
               groupby: {
                 type: "array",
                 items: { type: "string" },
-                description:
-                  "Fields to group by, e.g. ['partner_id'] or ['date_order:month']",
+                description: "Fields to group by, e.g. ['partner_id'] or ['date_order:month']",
               },
-              limit: { type: "number", description: "Max groups to return" },
+              limit: {
+                type: "number",
+                description: `Max groups to return (capped at ${ODOO_READ_LIMIT_CAP})`,
+              },
               offset: {
                 type: "number",
                 description: "Skip N groups for pagination",
@@ -2528,22 +3909,40 @@ const plugin = {
                 return permissionDenied("read", model);
               }
 
+              // Reject the {item: …} array-serialization artifact in the domain
+              // before querying (see hasItemWrappedArray / odoo_read).
+              if (hasItemWrappedArray(params.filters)) {
+                throw itemWrappedError("filters");
+              }
+
+              // Decode and validate the domain before querying (see asDomain / odoo_read).
+              const domain = asDomain(params.filters);
+
+              const fields = prepareAggregateFields(params.fields, "fields");
+              const groupby = prepareAggregateFields(params.groupby, "groupby");
+
               const result = await withAuthRetry(agentId, config, (client) =>
-                client.readGroup(
-                  model,
-                  asDomain(params.filters),
-                  params.fields as string[],
-                  params.groupby as string[],
-                  {
-                    limit: params.limit as number | undefined,
-                    offset: params.offset as number | undefined,
-                    orderby: params.orderby as string | undefined,
-                  },
-                ),
+                client.readGroup(model, domain, fields, groupby, {
+                  limit: clampOptionalLimit(params.limit),
+                  offset: params.offset as number | undefined,
+                  orderby: params.orderby as string | undefined,
+                })
               );
 
               return {
-                content: [{ type: "text", text: JSON.stringify(result) }],
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify(
+                      enforceReadResultBudget(
+                        result,
+                        ODOO_READ_RESULT_BUDGET_CHARS,
+                        "groups",
+                        ODOO_AGGREGATE_TRUNCATION_HINT
+                      )
+                    ),
+                  },
+                ],
               };
             } catch (error) {
               return errorResult(error, {
@@ -2554,7 +3953,7 @@ const plugin = {
           },
         };
       },
-      { name: "odoo_aggregate" },
+      { name: "odoo_aggregate" }
     );
 
     // 5. odoo_create
@@ -2569,7 +3968,9 @@ const plugin = {
           name: "odoo_create",
           label: "Odoo Create",
           description:
-            "Create a new record in Odoo. Returns `{id, _pinchy_ref}` — pass the `_pinchy_ref` verbatim to any tool that takes an opaque reference (e.g. `odoo_attach_file.targetRef`). For many2one fields, do not pass raw numeric IDs; use an opaque ref from odoo_read, an exact display name, or a supported lookup such as a country code. Note: in invoice/order line models (e.g. `account.move.line`, `sale.order.line`, `purchase.order.line`), `price_unit` is tax-exclusive (net); Odoo computes gross totals from `tax_ids`. Convert receipt gross amounts to net before writing.",
+            "Create a new record in Odoo. Returns `{id, _pinchy_ref}` — pass the `_pinchy_ref` verbatim to any tool that takes an opaque reference (e.g. `odoo_attach_file.targetRef`). " +
+            MANY2ONE_VALUE_HINT +
+            ' One2many and many2many fields use Odoo command tuples emitted as plain JSON arrays: a new line is invoice_line_ids: [[0, 0, {…}]] and a tag link is tax_ids: [[6, 0, [<taxId>]]] — never wrap arrays as {"item": …}. Note: in invoice/order line models (e.g. `account.move.line`, `sale.order.line`, `purchase.order.line`), `price_unit` is tax-exclusive (net); Odoo computes gross totals from `tax_ids`. Convert receipt gross amounts to net before writing. Vendor bills and vendor credit notes (account.move `in_invoice` / `in_refund`) are duplicate-guarded: a create whose `ref` already exists on file is BLOCKED and the existing bill returned so you can relay it to the user instead of double-booking. Set `allow_duplicate: true` only to deliberately re-file a bill you have confirmed should exist twice.',
           parameters: {
             type: "object",
             properties: {
@@ -2578,6 +3979,11 @@ const plugin = {
                 type: "object",
                 description:
                   "Field values for the new record. Many2one text values must be exact names or supported codes, not partial/fuzzy matches.",
+              },
+              allow_duplicate: {
+                type: "boolean",
+                description:
+                  "Set true ONLY to deliberately re-file a vendor bill/credit note (account.move in_invoice/in_refund) whose reference already exists in Odoo. Normally leave unset: the plugin blocks a duplicate vendor-bill create and returns the existing bill so you relay it to the user instead of double-booking (a double-payment risk).",
               },
             },
             required: ["model", "values"],
@@ -2588,11 +3994,42 @@ const plugin = {
               if (!checkPermission(config.permissions, model, "create")) {
                 return permissionDenied("create", model);
               }
+              // Reject the {item: …} array-serialization artifact before any
+              // Odoo round-trip — forwarding it produces opaque server errors
+              // the model cannot recover from (see hasItemWrappedArray).
+              if (hasItemWrappedArray(params.values)) {
+                throw itemWrappedError("values");
+              }
 
-              const id = await withAuthRetry(
+              // Explicit override for a deliberate re-filing of a bill that
+              // already exists (pinchy#721). Read from the raw params: it is a
+              // tool-level flag, not an Odoo field, so it never enters `values`.
+              const allowDuplicate = params.allow_duplicate === true;
+
+              const outcome = await withAuthRetry(
                 agentId,
                 config,
-                async (client) => {
+                async (
+                  client
+                ): Promise<
+                  | {
+                      kind: "created";
+                      id: number;
+                      override: ExistingBillSnapshot | null;
+                      ref: string | null;
+                      moveType: string;
+                      // #720: carried out so the post-create read-back can
+                      // compare the submitted verbatim scalars.
+                      sentValues: Record<string, unknown>;
+                      modelFields: OdooField[] | null;
+                    }
+                  | {
+                      kind: "blocked";
+                      moveType: string;
+                      ref: string;
+                      snapshot: ExistingBillSnapshot;
+                    }
+                > => {
                   let values: Record<string, unknown>;
                   // The model's field schema, fetched once during many2one
                   // normalization and reused for #5 selection validation below
@@ -2606,15 +4043,11 @@ const plugin = {
                       config.connectionId,
                       model,
                       cleaned,
-                      config.permissions,
+                      config.permissions
                     );
                     values = normalized.values;
                     modelFields = normalized.fields;
-                    values = await ensureActivityResModelId(
-                      client,
-                      model,
-                      values,
-                    );
+                    values = await ensureActivityResModelId(client, model, values);
                   } else {
                     values = params.values as Record<string, unknown>;
                   }
@@ -2624,36 +4057,38 @@ const plugin = {
                   // options, instead of forwarding a bad enum to Odoo where it
                   // surfaces as an opaque server error the agent has to guess at.
                   if (modelFields) {
-                    const invalidSelections = findInvalidSelectionValues(
-                      modelFields,
-                      values,
-                    );
+                    const invalidSelections = findInvalidSelectionValues(modelFields, values);
                     if (invalidSelections.length > 0) {
-                      throw new Error(
-                        formatInvalidSelectionError(model, invalidSelections),
-                      );
+                      throw new Error(formatInvalidSelectionError(model, invalidSelections));
                     }
                   }
 
-                  // #3: duplicate-invoice guard. An account.move (vendor/customer
-                  // invoice) is keyed by its `ref` — the supplier's invoice
-                  // number. Agents that fail to find an existing bill (e.g. a
-                  // search with an invalid move_type returns empty) otherwise book
-                  // a DUPLICATE: on staging the agent created move_id 40 duplicating
-                  // move_id 39, both ref 083000981540. Before creating, surface any
-                  // existing move that already carries the same ref (+ move_type +
-                  // partner) so the agent updates it or confirms a deliberate
-                  // second entry rather than silently double-booking.
+                  // #3: deterministic vendor-bill duplicate guard (pinchy#721).
+                  // A vendor bill/credit note is keyed by its `ref` — the
+                  // supplier's invoice number. On staging an agent created
+                  // move_id 40 duplicating move_id 39, both ref 083000981540; in
+                  // the eval, 13/14 models filed the duplicate anyway. Pinchy owns
+                  // the tool layer, so Pinchy owns the guarantee: before creating,
+                  // search for an existing bill with the same ref (+ move_type +
+                  // company + partner). On a hit, BLOCK and return the existing
+                  // bill so the model relays it; `allow_duplicate: true` is the
+                  // explicit escape hatch for a deliberate second entry. Scope is
+                  // in_invoice/in_refund only — matching Odoo's own ref-based
+                  // dedup, which never ref-dedups customer invoices or entries.
+                  let override: ExistingBillSnapshot | null = null;
+                  const moveType = typeof values.move_type === "string" ? values.move_type : "";
                   if (
+                    governanceEnforced() &&
                     model === "account.move" &&
+                    VENDOR_DOCUMENT_MOVE_TYPES.has(moveType) &&
                     typeof values.ref === "string" &&
                     values.ref.trim() &&
                     checkPermission(config.permissions, model, "read")
                   ) {
-                    const dupDomain: OdooDomain = [["ref", "=", values.ref]];
-                    if (typeof values.move_type === "string") {
-                      dupDomain.push(["move_type", "=", values.move_type]);
-                    }
+                    const dupDomain: OdooDomain = [
+                      ["ref", "=", values.ref],
+                      ["move_type", "=", moveType],
+                    ];
                     // Scope by company: the same supplier invoice number can be
                     // booked legitimately by two separate companies in one Odoo
                     // instance, so a global ref match would falsely reject the
@@ -2667,29 +4102,64 @@ const plugin = {
                     }
                     const existing = getSearchReadRecords(
                       await client.searchRead("account.move", dupDomain, {
-                        fields: ["id", "name", "state"],
+                        fields: ["id", "name", "state", "amount_total", "invoice_date"],
                         limit: 1,
-                      }),
+                      })
                     );
                     if (existing.length > 0) {
-                      const dup = existing[0] as { id: number; name?: string; state?: string };
-                      throw new Error(
-                        `A record already exists in account.move with ref "${values.ref}"` +
-                          (typeof values.move_type === "string"
-                            ? ` (move_type "${values.move_type}")`
-                            : "") +
-                          `: id ${dup.id}` +
-                          (dup.name ? ` "${dup.name}"` : "") +
-                          (dup.state ? `, state "${dup.state}"` : "") +
-                          `. To avoid a duplicate, update it with odoo_write, or confirm you ` +
-                          `intend a second entry before creating.`,
-                      );
+                      const snapshot = toBillSnapshot(existing[0]);
+                      if (!allowDuplicate) {
+                        return { kind: "blocked", moveType, ref: values.ref, snapshot };
+                      }
+                      // Override authorized: remember what was overridden so the
+                      // deliberate double-booking is traceable in the audit trail.
+                      override = snapshot;
                     }
                   }
 
-                  return client.create(model, values);
-                },
+                  const createdId = await client.create(model, values);
+                  return {
+                    kind: "created",
+                    id: createdId,
+                    override,
+                    ref: typeof values.ref === "string" ? values.ref : null,
+                    moveType,
+                    sentValues: values,
+                    modelFields,
+                  };
+                }
               );
+
+              if (outcome.kind === "blocked") {
+                // isError:true → the pinchy-audit hook + tool-use route record
+                // outcome=failure with the snapshot lifted into detail.error.
+                // toolError emits an error-ONLY `details: { error }`, which the
+                // route deliberately does not treat as curation — so the blocked
+                // create's params survive in the audit row for forensics.
+                return toolError(
+                  duplicateBillBlockMessage(outcome.moveType, outcome.ref, outcome.snapshot)
+                );
+              }
+
+              const id = outcome.id;
+
+              // #720: read the record back and confirm it persisted before
+              // reporting success. On a silent no-op (id returned, nothing
+              // saved) or a verbatim-scalar mismatch this returns a hard error
+              // so the model surfaces the failure instead of narrating success.
+              // #723: skipped in the ungoverned eval arm (governance off) so the
+              // sweep can measure the silent no-op the guard was built to catch.
+              const verify = governanceEnforced()
+                ? await verifyCreate(
+                    agentId,
+                    config,
+                    model,
+                    id,
+                    outcome.sentValues,
+                    outcome.modelFields
+                  )
+                : ({ ok: true, verified: false } as const);
+              if (!verify.ok) return verificationError(verify.error);
 
               // Emit a self-ref so the LLM can chain into tools that consume
               // opaque references (most importantly odoo_attach_file). Without
@@ -2711,13 +4181,55 @@ const plugin = {
                 label,
               });
 
-              return {
-                content: [
-                  {
-                    type: "text",
-                    text: JSON.stringify({ id, _pinchy_ref: selfRef }),
+              // Deliberate duplicate override (pinchy#721): a distinct curated
+              // payload naming what was booked and the bill it duplicated. The
+              // create was already read back and verified above (#720).
+              if (outcome.override) {
+                const body: Record<string, unknown> = {
+                  id,
+                  _pinchy_ref: selfRef,
+                  duplicate_override: { existing_bill: outcome.override },
+                };
+                if (verify.verified) body.verified = true;
+                return {
+                  content: [{ type: "text", text: JSON.stringify(body) }],
+                  // Curated audit detail (the tool-use route lifts result.details
+                  // and, because it carries non-error fields, suppresses the raw
+                  // create params): the deliberate double-booking described inline
+                  // — what was booked (ref + move type + new id) AND the bill it
+                  // duplicated — so an auditor sees the full decision without a
+                  // second lookup. The snapshot deliberately carries the existing
+                  // bill's amount/date/state (auditor context, not PII) but no
+                  // partner identity, so no personal identifiers reach the log.
+                  details: {
+                    duplicateOverride: true,
+                    bookedRef: outcome.ref,
+                    bookedMoveType: outcome.moveType,
+                    createdId: id,
+                    existingBill: outcome.override,
+                    ...(verify.verified ? { verified: true } : {}),
                   },
-                ],
+                };
+              }
+
+              // Enrich the success payload with the verification outcome (#720).
+              // Only claim `verified: true` when we actually read the record back
+              // (covered model + read permission); otherwise omit the flag rather
+              // than assert a verification we did not perform.
+              const payload: Record<string, unknown> = { id, _pinchy_ref: selfRef };
+              if (verify.verified) {
+                payload.verified = true;
+                if (verify.verifiedValues && Object.keys(verify.verifiedValues).length > 0) {
+                  payload.verifiedValues = verify.verifiedValues;
+                }
+              }
+
+              return {
+                content: [{ type: "text", text: JSON.stringify(payload) }],
+                // `details.verified` flows into the audit row (#720). Only set
+                // it when we verified — an unverified create must not audit a
+                // verification claim.
+                ...(verify.verified ? { details: { verified: true } } : {}),
               };
             } catch (error) {
               return errorResult(error, {
@@ -2728,7 +4240,7 @@ const plugin = {
           },
         };
       },
-      { name: "odoo_create" },
+      { name: "odoo_create" }
     );
 
     // 5b. odoo_schedule_activity
@@ -2754,8 +4266,7 @@ const plugin = {
               },
               summary: {
                 type: "string",
-                description:
-                  'Short title of the follow-up, e.g. "Call about the quote".',
+                description: 'Short title of the follow-up, e.g. "Call about the quote".',
               },
               dueDate: {
                 type: "string",
@@ -2763,8 +4274,7 @@ const plugin = {
               },
               note: {
                 type: "string",
-                description:
-                  "Optional longer description / context for the activity.",
+                description: "Optional longer description / context for the activity.",
               },
               assignee: {
                 type: "string",
@@ -2786,8 +4296,8 @@ const plugin = {
               if (typeof target !== "string" || target.length === 0) {
                 return errorResult(
                   new Error(
-                    "`target` is required: pass the _pinchy_ref of the record to attach the activity to.",
-                  ),
+                    "`target` is required: pass the _pinchy_ref of the record to attach the activity to."
+                  )
                 );
               }
               const summary = params.summary;
@@ -2795,95 +4305,55 @@ const plugin = {
                 return errorResult(new Error("`summary` is required."));
               }
               const dueDate = params.dueDate;
-              if (
-                typeof dueDate !== "string" ||
-                !/^\d{4}-\d{2}-\d{2}$/.test(dueDate)
-              ) {
-                return errorResult(
-                  new Error("`dueDate` is required in YYYY-MM-DD format."),
-                );
+              if (typeof dueDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) {
+                return errorResult(new Error("`dueDate` is required in YYYY-MM-DD format."));
               }
+              const assigneeRequested = assigneeParam(params.assignee);
 
               const decoded = decodeTargetRef(config.connectionId, target);
-              if (decoded === null) {
-                return errorResult(
-                  new Error(
-                    "`target` ref does not belong to this Odoo connection.",
-                  ),
-                );
-              }
               const targetModel = decoded.model;
               const targetId = decoded.id;
 
-              if (
-                !checkPermission(config.permissions, "mail.activity", "create")
-              ) {
+              if (!checkPermission(config.permissions, "mail.activity", "create")) {
                 return permissionDenied("create", "mail.activity");
               }
               if (!checkPermission(config.permissions, targetModel, "read")) {
                 return permissionDenied("read", targetModel);
               }
 
-              const id = await withAuthRetry(
-                agentId,
-                config,
-                async (client) => {
-                  const resModelId = await resolveIrModelId(
-                    client,
-                    targetModel,
-                  );
+              const id = await withAuthRetry(agentId, config, async (client) => {
+                const resModelId = await resolveIrModelId(client, targetModel);
 
-                  const activityTypeRequested =
-                    typeof params.activityType === "string"
-                      ? params.activityType.trim()
-                      : "";
-                  const activityTypeId =
-                    activityTypeRequested.length > 0
-                      ? await resolveActivityTypeByName(
-                          client,
-                          activityTypeRequested,
-                        )
-                      : await resolveDefaultActivityTypeId(client);
+                const activityTypeRequested =
+                  typeof params.activityType === "string" ? params.activityType.trim() : "";
+                const activityTypeId =
+                  activityTypeRequested.length > 0
+                    ? await resolveActivityTypeByName(client, activityTypeRequested)
+                    : await resolveDefaultActivityTypeId(client);
 
-                  const assigneeRequested =
-                    typeof params.assignee === "string"
-                      ? params.assignee.trim()
-                      : "";
-                  const userId =
-                    assigneeRequested.length > 0
-                      ? await resolveAssigneeUserId(
-                          client,
-                          config.connectionId,
-                          assigneeRequested,
-                        )
-                      : await resolveTargetSalespersonId(
-                          client,
-                          targetModel,
-                          targetId,
-                        );
+                const userId =
+                  assigneeRequested.length > 0
+                    ? await resolveAssigneeUserId(client, config.connectionId, assigneeRequested)
+                    : await resolveTargetSalespersonId(client, targetModel, targetId);
 
-                  const values: Record<string, unknown> = {
-                    res_model_id: resModelId,
-                    res_id: targetId,
-                    date_deadline: dueDate,
-                    summary: summary.trim(),
-                  };
-                  if (
-                    typeof params.note === "string" &&
-                    params.note.length > 0
-                  ) {
-                    values.note = params.note;
-                  }
-                  if (activityTypeId != null) {
-                    values.activity_type_id = activityTypeId;
-                  }
-                  if (userId != null) {
-                    values.user_id = userId;
-                  }
+                const values: Record<string, unknown> = {
+                  res_model_id: resModelId,
+                  res_id: targetId,
+                  date_deadline: dueDate,
+                  summary: summary.trim(),
+                };
+                if (typeof params.note === "string" && params.note.length > 0) {
+                  values.note = params.note;
+                }
+                if (activityTypeId != null) {
+                  values.activity_type_id = activityTypeId;
+                }
+                if (userId != null) {
+                  values.user_id = userId;
+                }
 
-                  return client.create("mail.activity", values);
-                },
-              );
+                return client.create("mail.activity", values);
+              });
 
               const ref = encodeRef({
                 integrationType: "odoo",
@@ -2910,7 +4380,7 @@ const plugin = {
           },
         };
       },
-      { name: "odoo_schedule_activity" },
+      { name: "odoo_schedule_activity" }
     );
 
     // 5c. odoo_complete_activity
@@ -2949,46 +4419,29 @@ const plugin = {
               if (typeof target !== "string" || target.length === 0) {
                 return errorResult(
                   new Error(
-                    "`target` is required: pass the _pinchy_ref of the activity to complete.",
-                  ),
+                    "`target` is required: pass the _pinchy_ref of the activity to complete."
+                  )
                 );
               }
               const decoded = decodeTargetRef(config.connectionId, target);
-              if (decoded === null) {
-                return errorResult(
-                  new Error(
-                    "`target` ref does not belong to this Odoo connection.",
-                  ),
-                );
-              }
               if (decoded.model !== "mail.activity") {
                 return errorResult(
                   new Error(
-                    "`target` must be a mail.activity ref — read the activity with `odoo_read` on `mail.activity` first.",
-                  ),
+                    "`target` must be a mail.activity ref — read the activity with `odoo_read` on `mail.activity` first."
+                  )
                 );
               }
-              if (
-                !checkPermission(config.permissions, "mail.activity", "write")
-              ) {
+              if (!checkPermission(config.permissions, "mail.activity", "write")) {
                 return permissionDenied("write", "mail.activity");
               }
 
               const kwargs: Record<string, unknown> = {};
-              if (
-                typeof params.feedback === "string" &&
-                params.feedback.trim().length > 0
-              ) {
+              if (typeof params.feedback === "string" && params.feedback.trim().length > 0) {
                 kwargs.feedback = params.feedback.trim();
               }
 
               await withAuthRetry(agentId, config, (client) =>
-                client.callMethod(
-                  "mail.activity",
-                  "action_feedback",
-                  [[decoded.id]],
-                  kwargs,
-                ),
+                client.callMethod("mail.activity", "action_feedback", [[decoded.id]], kwargs)
               );
 
               return {
@@ -3008,7 +4461,7 @@ const plugin = {
           },
         };
       },
-      { name: "odoo_complete_activity" },
+      { name: "odoo_complete_activity" }
     );
 
     // 5d. odoo_reschedule_activity
@@ -3038,8 +4491,7 @@ const plugin = {
               },
               assignee: {
                 type: "string",
-                description:
-                  "New assignee: exact user name or an opaque res.users ref.",
+                description: "New assignee: exact user name or an opaque res.users ref.",
               },
             },
             required: ["target"],
@@ -3051,69 +4503,47 @@ const plugin = {
               if (typeof target !== "string" || target.length === 0) {
                 return errorResult(
                   new Error(
-                    "`target` is required: pass the _pinchy_ref of the activity to reschedule.",
-                  ),
+                    "`target` is required: pass the _pinchy_ref of the activity to reschedule."
+                  )
                 );
               }
-              const dueDateRaw =
-                typeof params.dueDate === "string" ? params.dueDate.trim() : "";
-              const assigneeRaw =
-                typeof params.assignee === "string"
-                  ? params.assignee.trim()
-                  : "";
+              const dueDateRaw = typeof params.dueDate === "string" ? params.dueDate.trim() : "";
+              const assigneeRaw = assigneeParam(params.assignee);
               if (dueDateRaw.length === 0 && assigneeRaw.length === 0) {
                 return errorResult(
                   new Error(
-                    "Provide at least one of `dueDate` (YYYY-MM-DD) or `assignee` to reschedule.",
-                  ),
+                    "Provide at least one of `dueDate` (YYYY-MM-DD) or `assignee` to reschedule."
+                  )
                 );
               }
-              if (
-                dueDateRaw.length > 0 &&
-                !/^\d{4}-\d{2}-\d{2}$/.test(dueDateRaw)
-              ) {
-                return errorResult(
-                  new Error("`dueDate` must be in YYYY-MM-DD format."),
-                );
+              if (dueDateRaw.length > 0 && !/^\d{4}-\d{2}-\d{2}$/.test(dueDateRaw)) {
+                return errorResult(new Error("`dueDate` must be in YYYY-MM-DD format."));
               }
 
               const decoded = decodeTargetRef(config.connectionId, target);
-              if (decoded === null) {
-                return errorResult(
-                  new Error(
-                    "`target` ref does not belong to this Odoo connection.",
-                  ),
-                );
-              }
               if (decoded.model !== "mail.activity") {
                 return errorResult(
                   new Error(
-                    "`target` must be a mail.activity ref — read the activity with `odoo_read` on `mail.activity` first.",
-                  ),
+                    "`target` must be a mail.activity ref — read the activity with `odoo_read` on `mail.activity` first."
+                  )
                 );
               }
-              if (
-                !checkPermission(config.permissions, "mail.activity", "write")
-              ) {
+              if (!checkPermission(config.permissions, "mail.activity", "write")) {
                 return permissionDenied("write", "mail.activity");
               }
 
-              const success = await withAuthRetry(
-                agentId,
-                config,
-                async (client) => {
-                  const values: Record<string, unknown> = {};
-                  if (dueDateRaw.length > 0) values.date_deadline = dueDateRaw;
-                  if (assigneeRaw.length > 0) {
-                    values.user_id = await resolveAssigneeUserId(
-                      client,
-                      config.connectionId,
-                      assigneeRaw,
-                    );
-                  }
-                  return client.write("mail.activity", [decoded.id], values);
-                },
-              );
+              const success = await withAuthRetry(agentId, config, async (client) => {
+                const values: Record<string, unknown> = {};
+                if (dueDateRaw.length > 0) values.date_deadline = dueDateRaw;
+                if (assigneeRaw.length > 0) {
+                  values.user_id = await resolveAssigneeUserId(
+                    client,
+                    config.connectionId,
+                    assigneeRaw
+                  );
+                }
+                return client.write("mail.activity", [decoded.id], values);
+              });
 
               return {
                 content: [
@@ -3132,7 +4562,7 @@ const plugin = {
           },
         };
       },
-      { name: "odoo_reschedule_activity" },
+      { name: "odoo_reschedule_activity" }
     );
 
     // 5e–5h. Governed record-action tools. Each invokes one allow-listed Odoo
@@ -3173,29 +4603,20 @@ const plugin = {
               if (typeof target !== "string" || target.length === 0) {
                 return errorResult(
                   new Error(
-                    `\`target\` is required: pass the _pinchy_ref of the ${spec.model} record.`,
-                  ),
+                    `\`target\` is required: pass the _pinchy_ref of the ${spec.model} record.`
+                  )
                 );
               }
               const decoded = decodeTargetRef(config.connectionId, target);
-              if (decoded === null) {
-                return errorResult(
-                  new Error(
-                    "`target` ref does not belong to this Odoo connection.",
-                  ),
-                );
-              }
               if (decoded.model !== spec.model) {
-                return errorResult(
-                  new Error(`\`target\` must be a ${spec.model} ref.`),
-                );
+                return errorResult(new Error(`\`target\` must be a ${spec.model} ref.`));
               }
               if (!checkPermission(config.permissions, spec.model, "write")) {
                 return permissionDenied("write", spec.model);
               }
 
               const result = await withAuthRetry(agentId, config, (client) =>
-                client.callMethod(spec.model, spec.method, [[decoded.id]], {}),
+                client.callMethod(spec.model, spec.method, [[decoded.id]], {})
               );
 
               const pending = describePendingWizard(result);
@@ -3242,7 +4663,7 @@ const plugin = {
         model: "sale.order",
         method: "action_confirm",
       }),
-      { name: "odoo_confirm_order" },
+      { name: "odoo_confirm_order" }
     );
 
     api.registerTool(
@@ -3254,7 +4675,7 @@ const plugin = {
         model: "stock.quant",
         method: "action_apply_inventory",
       }),
-      { name: "odoo_apply_inventory" },
+      { name: "odoo_apply_inventory" }
     );
 
     api.registerTool(
@@ -3266,7 +4687,7 @@ const plugin = {
         model: "stock.picking",
         method: "button_validate",
       }),
-      { name: "odoo_validate_picking" },
+      { name: "odoo_validate_picking" }
     );
 
     api.registerTool(
@@ -3278,7 +4699,7 @@ const plugin = {
         model: "mrp.production",
         method: "button_mark_done",
       }),
-      { name: "odoo_mark_mo_done" },
+      { name: "odoo_mark_mo_done" }
     );
 
     // 5i. odoo_set_approval (parameterized over an allow-list of approval models)
@@ -3299,8 +4720,7 @@ const plugin = {
             properties: {
               target: {
                 type: "string",
-                description:
-                  "Opaque `_pinchy_ref` of the record to approve or refuse.",
+                description: "Opaque `_pinchy_ref` of the record to approve or refuse.",
               },
               decision: {
                 type: "string",
@@ -3321,9 +4741,7 @@ const plugin = {
               const target = params.target;
               if (typeof target !== "string" || target.length === 0) {
                 return errorResult(
-                  new Error(
-                    "`target` is required: pass the _pinchy_ref of the record.",
-                  ),
+                  new Error("`target` is required: pass the _pinchy_ref of the record.")
                 );
               }
               const decision: "approve" | "refuse" | null =
@@ -3333,44 +4751,32 @@ const plugin = {
                     ? "refuse"
                     : null;
               if (!decision) {
-                return errorResult(
-                  new Error('`decision` must be "approve" or "refuse".'),
-                );
+                return errorResult(new Error('`decision` must be "approve" or "refuse".'));
               }
               const decoded = decodeTargetRef(config.connectionId, target);
-              if (decoded === null) {
-                return errorResult(
-                  new Error(
-                    "`target` ref does not belong to this Odoo connection.",
-                  ),
-                );
-              }
               const route = APPROVAL_ROUTES[decoded.model];
               if (!route) {
                 return errorResult(
                   new Error(
                     `${decoded.model} is not an approvable model. Supported: ${Object.keys(
-                      APPROVAL_ROUTES,
-                    ).join(", ")}.`,
-                  ),
+                      APPROVAL_ROUTES
+                    ).join(", ")}.`
+                  )
                 );
               }
-              if (
-                !checkPermission(config.permissions, decoded.model, "write")
-              ) {
+              if (!checkPermission(config.permissions, decoded.model, "write")) {
                 return permissionDenied("write", decoded.model);
               }
 
               const method = route[decision];
-              const reason =
-                typeof params.reason === "string" ? params.reason.trim() : "";
+              const reason = typeof params.reason === "string" ? params.reason.trim() : "";
               const args: unknown[] =
                 decision === "refuse" && route.reasonPositional
                   ? [[decoded.id], reason || "Refused"]
                   : [[decoded.id]];
 
               const result = await withAuthRetry(agentId, config, (client) =>
-                client.callMethod(decoded.model, method, args, {}),
+                client.callMethod(decoded.model, method, args, {})
               );
 
               const pending = describePendingWizard(result);
@@ -3407,7 +4813,487 @@ const plugin = {
           },
         };
       },
-      { name: "odoo_set_approval" },
+      { name: "odoo_set_approval" }
+    );
+
+    // 5j. odoo_reconcile. Odoo has no single "reconcile" button we could wrap,
+    // and the Enterprise bank-reconciliation widget is unusable over RPC (in
+    // Odoo 19 its model is gone entirely; in 16-18 every action on it is
+    // private and the model has no table). So this tool reproduces what the
+    // widget does, using only public methods of the free `account` module —
+    // which is also why it works on Odoo Community, not just Enterprise.
+    api.registerTool(
+      (ctx: PluginToolContext) => {
+        const agentId = ctx.agentId;
+        if (!agentId) return null;
+        const config = getAgentConfig(agentConfigs, agentId);
+        if (!config) return null;
+
+        return {
+          name: "odoo_reconcile",
+          label: "Odoo Reconcile Payment",
+          description:
+            "Reconcile a POSTED bill or invoice against the money that settled it — either a bank transaction (`account.bank.statement.line`) or an existing payment (`account.payment`). Pass the `_pinchy_ref` of the bill/invoice as `invoice` and the `_pinchy_ref` of the bank transaction or payment as `counterpart`. This is the only correct way to reconcile: do NOT try to write `full_reconcile_id` or create `account.full.reconcile` records — Odoo maintains those itself. The tool verifies the result by re-reading the bill and reports honestly if nothing was reconciled. Reconcile only after the user has confirmed the match.",
+          parameters: {
+            type: "object",
+            properties: {
+              invoice: {
+                type: "string",
+                description:
+                  "Opaque `_pinchy_ref` of the posted `account.move` (vendor bill or customer invoice) to settle.",
+              },
+              counterpart: {
+                type: "string",
+                description:
+                  "Opaque `_pinchy_ref` of the money movement that settled it: an `account.bank.statement.line` (bank transaction) or an `account.payment`.",
+              },
+            },
+            required: ["invoice", "counterpart"],
+            additionalProperties: false,
+          },
+          async execute(_toolCallId: string, params: Record<string, unknown>) {
+            try {
+              const invoiceRef = params.invoice;
+              const counterpartRef = params.counterpart;
+              if (typeof invoiceRef !== "string" || invoiceRef.length === 0) {
+                return errorResult(
+                  new Error(
+                    "`invoice` is required: pass the _pinchy_ref of the bill or invoice (account.move)."
+                  )
+                );
+              }
+              if (typeof counterpartRef !== "string" || counterpartRef.length === 0) {
+                return errorResult(
+                  new Error(
+                    "`counterpart` is required: pass the _pinchy_ref of the bank transaction (account.bank.statement.line) or payment (account.payment)."
+                  )
+                );
+              }
+
+              // decodeTargetRef throws (never returns null) on a malformed or
+              // foreign ref; the throw is caught below and surfaced with the
+              // parameter name we pass here, so the user is told which ref was
+              // wrong rather than a generic "target".
+              const inv = decodeTargetRef(config.connectionId, invoiceRef, "invoice");
+              if (inv.model !== "account.move") {
+                return errorResult(
+                  new Error(
+                    "`invoice` must be an account.move ref (a vendor bill or customer invoice)."
+                  )
+                );
+              }
+              const cp = decodeTargetRef(config.connectionId, counterpartRef, "counterpart");
+              if (cp.model !== "account.bank.statement.line" && cp.model !== "account.payment") {
+                return errorResult(
+                  new Error(
+                    `\`counterpart\` must be an account.bank.statement.line (bank transaction) or account.payment ref, not ${cp.model}.`
+                  )
+                );
+              }
+
+              // Reconciling rewrites and matches journal items in every case.
+              if (!checkPermission(config.permissions, "account.move.line", "write")) {
+                return permissionDenied("write", "account.move.line");
+              }
+              // The bank flow additionally restates the statement line's move.
+              if (
+                cp.model === "account.bank.statement.line" &&
+                !checkPermission(config.permissions, "account.bank.statement.line", "write")
+              ) {
+                return permissionDenied("write", "account.bank.statement.line");
+              }
+
+              const invoice = (
+                await withAuthRetry(agentId, config, (client) =>
+                  client.searchRead("account.move", [["id", "=", inv.id]], {
+                    fields: [
+                      "name",
+                      "state",
+                      "payment_state",
+                      "amount_residual",
+                      "company_id",
+                      "partner_id",
+                    ],
+                    limit: 1,
+                  })
+                )
+              ).records[0];
+              if (!invoice) {
+                return errorResult(new Error(`account.move ${inv.id} was not found in Odoo.`));
+              }
+              const invoiceName = typeof invoice.name === "string" ? invoice.name : `#${inv.id}`;
+
+              // Odoo 19 no longer refuses to reconcile a draft entry — it just
+              // silently does nothing. Catch it here or ship a false success.
+              if (invoice.state !== "posted") {
+                return errorResult(
+                  new Error(
+                    `${invoiceName} is in state "${String(invoice.state)}", not "posted". Odoo accepts a reconcile call on a draft entry but silently does nothing, so post it first (after the user confirms), then reconcile.`
+                  )
+                );
+              }
+
+              const invoiceLines = (
+                await withAuthRetry(agentId, config, (client) =>
+                  client.searchRead(
+                    "account.move.line",
+                    [
+                      ["move_id", "=", inv.id],
+                      ["account_type", "in", SETTLEMENT_ACCOUNT_TYPES],
+                      ["reconciled", "=", false],
+                    ],
+                    {
+                      fields: ["id", "account_id", "account_type", "debit", "credit"],
+                    }
+                  )
+                )
+              ).records;
+              if (invoiceLines.length === 0) {
+                return errorResult(
+                  new Error(
+                    `${invoiceName} has no open receivable/payable line — there is nothing left to reconcile (it may already be paid).`
+                  )
+                );
+              }
+              if (invoiceLines.length > 1) {
+                return errorResult(
+                  new Error(
+                    `${invoiceName} has ${invoiceLines.length} open receivable/payable lines, so the counterpart is ambiguous. Reconcile it in Odoo.`
+                  )
+                );
+              }
+              const invoiceLine = invoiceLines[0];
+              const settlementAccountId = relationId(invoiceLine.account_id);
+              if (settlementAccountId === null) {
+                return errorResult(
+                  new Error(`Could not read the settlement account of ${invoiceName}.`)
+                );
+              }
+              const invoiceCompanyId = relationId(invoice.company_id);
+              const residualBefore = invoice.amount_residual;
+
+              /**
+               * Re-read the bill and report only what Odoo actually did. On
+               * failure the caller gets an error, never a success claim.
+               */
+              const confirm = async (
+                extra: Record<string, unknown>,
+                rollback?: () => Promise<void>
+              ) => {
+                const after = (
+                  await withAuthRetry(agentId, config, (client) =>
+                    client.searchRead("account.move", [["id", "=", inv.id]], {
+                      fields: ["payment_state", "amount_residual"],
+                      limit: 1,
+                    })
+                  )
+                ).records[0];
+                if (!didReconcile(residualBefore, after?.amount_residual)) {
+                  if (rollback) await rollback();
+                  return toolError(
+                    `Odoo accepted the reconcile call but ${invoiceName} did not reconcile: its open balance is still ${String(after?.amount_residual ?? residualBefore)}. Odoo reports no error in this case, so this is not a transient failure — the entries were not matched. Check in Odoo that both sides are posted and on the same account.`
+                  );
+                }
+                return {
+                  content: [
+                    {
+                      type: "text",
+                      text: JSON.stringify({
+                        reconciled: true,
+                        invoice: { id: inv.id, name: invoiceName },
+                        paymentState: after?.payment_state,
+                        amountResidual: after?.amount_residual,
+                        ...extra,
+                      }),
+                    },
+                  ],
+                };
+              };
+
+              // ---- Counterpart is an existing payment -------------------
+              if (cp.model === "account.payment") {
+                const payment = (
+                  await withAuthRetry(agentId, config, (client) =>
+                    client.searchRead("account.payment", [["id", "=", cp.id]], {
+                      fields: ["move_id", "state", "company_id"],
+                      limit: 1,
+                    })
+                  )
+                ).records[0];
+                if (!payment) {
+                  return errorResult(new Error(`account.payment ${cp.id} was not found in Odoo.`));
+                }
+                // A canceled or rejected payment has no live journal entry to
+                // match against; reconcile() would silently no-op, so refuse it
+                // up front with a message the agent can act on.
+                if (payment.state === "canceled" || payment.state === "rejected") {
+                  return errorResult(
+                    new Error(
+                      `This payment is in state "${String(payment.state)}", so there is nothing to reconcile against. Use a payment that is in process or paid.`
+                    )
+                  );
+                }
+                const paymentCompanyId = relationId(payment.company_id);
+                if (
+                  invoiceCompanyId !== null &&
+                  paymentCompanyId !== null &&
+                  invoiceCompanyId !== paymentCompanyId
+                ) {
+                  return errorResult(
+                    new Error(
+                      `Cross-company match rejected: ${invoiceName} belongs to ${relationLabel(invoice.company_id) ?? invoiceCompanyId} but the payment belongs to ${relationLabel(payment.company_id) ?? paymentCompanyId}.`
+                    )
+                  );
+                }
+                // Odoo 19 payments may exist without a journal entry.
+                const paymentMoveId = relationId(payment.move_id);
+                if (paymentMoveId === null) {
+                  return errorResult(
+                    new Error(
+                      "This payment has no journal entry yet, so there is nothing to reconcile against."
+                    )
+                  );
+                }
+                const paymentLine = (
+                  await withAuthRetry(agentId, config, (client) =>
+                    client.searchRead(
+                      "account.move.line",
+                      [
+                        ["move_id", "=", paymentMoveId],
+                        ["account_id", "=", settlementAccountId],
+                        ["reconciled", "=", false],
+                      ],
+                      { fields: ["id"] }
+                    )
+                  )
+                ).records[0];
+                if (!paymentLine) {
+                  return errorResult(
+                    new Error(
+                      `This payment has no matching open line on ${relationLabel(invoiceLine.account_id) ?? "the settlement account"} — it does not post to the same account as ${invoiceName}, so Odoo cannot reconcile the two.`
+                    )
+                  );
+                }
+                // js_assign_outstanding_line adds the invoice's own line for
+                // us and reconciles both. It takes a scalar line id.
+                await withAuthRetry(agentId, config, (client) =>
+                  client.callMethod(
+                    "account.move",
+                    "js_assign_outstanding_line",
+                    [[inv.id], paymentLine.id],
+                    {}
+                  )
+                );
+                return await confirm({ payment: { id: cp.id } });
+              }
+
+              // ---- Counterpart is a bank transaction --------------------
+              const stLine = (
+                await withAuthRetry(agentId, config, (client) =>
+                  client.searchRead("account.bank.statement.line", [["id", "=", cp.id]], {
+                    fields: ["payment_ref", "move_id", "journal_id", "is_reconciled", "company_id"],
+                    limit: 1,
+                  })
+                )
+              ).records[0];
+              if (!stLine) {
+                return errorResult(
+                  new Error(`account.bank.statement.line ${cp.id} was not found in Odoo.`)
+                );
+              }
+              if (stLine.is_reconciled === true) {
+                return errorResult(
+                  new Error(
+                    "This bank transaction is already reconciled. Undo the existing match in Odoo first if it is wrong."
+                  )
+                );
+              }
+              const stCompanyId = relationId(stLine.company_id);
+              if (
+                invoiceCompanyId !== null &&
+                stCompanyId !== null &&
+                invoiceCompanyId !== stCompanyId
+              ) {
+                return errorResult(
+                  new Error(
+                    `Cross-company match rejected: ${invoiceName} belongs to ${relationLabel(invoice.company_id) ?? invoiceCompanyId} but the bank transaction belongs to ${relationLabel(stLine.company_id) ?? stCompanyId}.`
+                  )
+                );
+              }
+              const stMoveId = relationId(stLine.move_id);
+              const journalId = relationId(stLine.journal_id);
+              if (stMoveId === null || journalId === null) {
+                return errorResult(
+                  new Error("Could not read the bank transaction's journal entry or journal.")
+                );
+              }
+              const journal = (
+                await withAuthRetry(agentId, config, (client) =>
+                  client.searchRead("account.journal", [["id", "=", journalId]], {
+                    fields: ["default_account_id", "suspense_account_id"],
+                    limit: 1,
+                  })
+                )
+              ).records[0];
+              if (!journal) {
+                return errorResult(new Error(`account.journal ${journalId} was not found.`));
+              }
+              const bankAccountId = relationId(journal.default_account_id);
+              const suspenseAccountId = relationId(journal.suspense_account_id);
+
+              const stMoveLines = (
+                await withAuthRetry(agentId, config, (client) =>
+                  client.searchRead("account.move.line", [["move_id", "=", stMoveId]], {
+                    fields: [
+                      "id",
+                      "account_id",
+                      "debit",
+                      "credit",
+                      "amount_currency",
+                      "partner_id",
+                      "name",
+                    ],
+                  })
+                )
+              ).records;
+              const liquidityLines = stMoveLines.filter(
+                (l) => relationId(l.account_id) === bankAccountId
+              );
+              const suspenseLines = stMoveLines.filter(
+                (l) => relationId(l.account_id) === suspenseAccountId
+              );
+              // `_synchronize_from_moves` enforces exactly one liquidity line
+              // and at most one suspense line; a shape we don't recognise means
+              // this transaction is already partly matched.
+              if (liquidityLines.length !== 1) {
+                return errorResult(
+                  new Error(
+                    `This bank transaction has ${liquidityLines.length} bank lines; Odoo requires exactly one. Reconcile it in Odoo.`
+                  )
+                );
+              }
+              if (suspenseLines.length !== 1) {
+                return errorResult(
+                  new Error(
+                    "This bank transaction has no suspense line to replace — it is probably already matched to something else. Reset it in Odoo first."
+                  )
+                );
+              }
+              // The rewrite below clears every line ([5,0,0]) and recreates only
+              // the liquidity + counterpart pair. A move carrying any additional
+              // line (e.g. a split bank fee on its own account) would have that
+              // line silently dropped, so refuse anything that isn't the plain
+              // two-line liquidity/suspense shape and let a human handle it.
+              if (stMoveLines.length !== 2) {
+                return errorResult(
+                  new Error(
+                    `This bank transaction's journal entry has ${stMoveLines.length} lines, not the expected two (one bank line, one suspense line). It carries an extra line this tool would drop on rewrite — reconcile it in Odoo.`
+                  )
+                );
+              }
+              const liquidity = liquidityLines[0];
+              const suspense = suspenseLines[0];
+
+              // Step 1: restate the counterpart from the suspense account onto
+              // the bill's payable/receivable account, preserving the
+              // liquidity line and the original signs. This is exactly what
+              // the bank-reconciliation widget does, and what core's own
+              // `action_undo_reconciliation` does in reverse. Odoo refuses the
+              // write on a posted move without these context flags.
+              await withAuthRetry(agentId, config, (client) =>
+                client.callMethod(
+                  "account.bank.statement.line",
+                  "write",
+                  [
+                    [cp.id],
+                    {
+                      line_ids: [
+                        [5, 0, 0],
+                        [
+                          0,
+                          0,
+                          {
+                            account_id: bankAccountId,
+                            debit: liquidity.debit,
+                            credit: liquidity.credit,
+                            amount_currency: liquidity.amount_currency,
+                            partner_id: relationId(liquidity.partner_id),
+                            name: liquidity.name,
+                          },
+                        ],
+                        [
+                          0,
+                          0,
+                          {
+                            account_id: settlementAccountId,
+                            debit: suspense.debit,
+                            credit: suspense.credit,
+                            amount_currency: suspense.amount_currency,
+                            partner_id:
+                              relationId(invoice.partner_id) ?? relationId(suspense.partner_id),
+                            name: suspense.name,
+                          },
+                        ],
+                      ],
+                    },
+                  ],
+                  { context: { force_delete: true, skip_readonly_check: true } }
+                )
+              );
+
+              const newCounterpart = (
+                await withAuthRetry(agentId, config, (client) =>
+                  client.searchRead(
+                    "account.move.line",
+                    [
+                      ["move_id", "=", stMoveId],
+                      ["account_id", "=", settlementAccountId],
+                    ],
+                    { fields: ["id"] }
+                  )
+                )
+              ).records[0];
+              if (!newCounterpart) {
+                return errorResult(
+                  new Error(
+                    "Odoo did not create the counterpart line on the settlement account; the bank transaction was left unchanged."
+                  )
+                );
+              }
+
+              // Step 2: same-account reconcile.
+              await withAuthRetry(agentId, config, (client) =>
+                client.callMethod(
+                  "account.move.line",
+                  "reconcile",
+                  [[newCounterpart.id, invoiceLine.id]],
+                  {}
+                )
+              );
+
+              return await confirm(
+                { bankTransaction: { id: cp.id, ref: stLine.payment_ref } },
+                // Never leave the statement line restated-but-unmatched: put
+                // its suspense counterpart back so the books look exactly as
+                // they did before, and a human can retry in Odoo.
+                async () => {
+                  await withAuthRetry(agentId, config, (client) =>
+                    client.callMethod(
+                      "account.bank.statement.line",
+                      "action_undo_reconciliation",
+                      [[cp.id]],
+                      {}
+                    )
+                  );
+                }
+              );
+            } catch (error) {
+              return errorResult(error, { operation: "write" });
+            }
+          },
+        };
+      },
+      { name: "odoo_reconcile" }
     );
 
     // 6. odoo_write
@@ -3422,7 +5308,9 @@ const plugin = {
           name: "odoo_write",
           label: "Odoo Write",
           description:
-            "Update an existing record in Odoo. For many2one fields, do not pass raw numeric IDs; use an opaque ref from odoo_read, an exact display name, or a supported lookup such as a country code. Note: in invoice/order line models (e.g. `account.move.line`, `sale.order.line`, `purchase.order.line`), `price_unit` is tax-exclusive (net); Odoo computes gross totals from `tax_ids`. Convert receipt gross amounts to net before writing.",
+            "Update an existing record in Odoo. " +
+            MANY2ONE_VALUE_HINT +
+            ' One2many and many2many fields use Odoo command tuples emitted as plain JSON arrays: a new line is invoice_line_ids: [[0, 0, {…}]] and a tag link is tax_ids: [[6, 0, [<taxId>]]] — never wrap arrays as {"item": …}. Note: in invoice/order line models (e.g. `account.move.line`, `sale.order.line`, `purchase.order.line`), `price_unit` is tax-exclusive (net); Odoo computes gross totals from `tax_ids`. Convert receipt gross amounts to net before writing.',
           parameters: {
             type: "object",
             properties: {
@@ -3446,38 +5334,63 @@ const plugin = {
               if (!checkPermission(config.permissions, model, "write")) {
                 return permissionDenied("write", model);
               }
+              // Reject the {item: …} array-serialization artifact before any
+              // Odoo round-trip — `values` carries the same one2many/many2many
+              // command tuples as odoo_create, so it hits the identical opaque
+              // "unhashable type: 'dict'" if forwarded (see hasItemWrappedArray).
+              if (hasItemWrappedArray(params.values)) {
+                throw itemWrappedError("values");
+              }
 
-              const success = await withAuthRetry(
+              const written = await withAuthRetry(agentId, config, async (client) => {
+                let values: Record<string, unknown>;
+                let modelFields: OdooField[] | null = null;
+                if (isRecord(params.values)) {
+                  const cleaned = unquoteFieldKeys(params.values);
+                  assertNoCrossCompanyRefs(cleaned);
+                  const normalized = await normalizeMany2OneValues(
+                    client,
+                    config.connectionId,
+                    model,
+                    cleaned,
+                    config.permissions
+                  );
+                  values = normalized.values;
+                  modelFields = normalized.fields;
+                  values = await ensureActivityResModelId(client, model, values);
+                } else {
+                  values = params.values as Record<string, unknown>;
+                }
+                const ok = await client.write(model, params.ids as number[], values);
+                return { success: ok, sentValues: values, modelFields };
+              });
+
+              const success = written.success;
+
+              // #720: read the written records back and confirm the change
+              // persisted. A backend that returns `true` but saved nothing (or
+              // saved a different value) becomes a hard, visible error instead
+              // of a false success.
+              const verify = await verifyWrite(
                 agentId,
                 config,
-                async (client) => {
-                  let values: Record<string, unknown>;
-                  if (isRecord(params.values)) {
-                    const cleaned = unquoteFieldKeys(params.values);
-                    assertNoCrossCompanyRefs(cleaned);
-                    values = (
-                      await normalizeMany2OneValues(
-                        client,
-                        config.connectionId,
-                        model,
-                        cleaned,
-                        config.permissions,
-                      )
-                    ).values;
-                    values = await ensureActivityResModelId(
-                      client,
-                      model,
-                      values,
-                    );
-                  } else {
-                    values = params.values as Record<string, unknown>;
-                  }
-                  return client.write(model, params.ids as number[], values);
-                },
+                model,
+                params.ids as number[],
+                written.sentValues,
+                written.modelFields
               );
+              if (!verify.ok) return verificationError(verify.error);
 
               return {
-                content: [{ type: "text", text: JSON.stringify({ success }) }],
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify(
+                      verify.verified ? { success, verified: true } : { success }
+                    ),
+                  },
+                ],
+                ...(verify.verified ? { details: { verified: true } } : {}),
               };
             } catch (error) {
               return errorResult(error, {
@@ -3488,7 +5401,7 @@ const plugin = {
           },
         };
       },
-      { name: "odoo_write" },
+      { name: "odoo_write" }
     );
 
     // 7. odoo_delete
@@ -3502,43 +5415,151 @@ const plugin = {
         return {
           name: "odoo_delete",
           label: "Odoo Delete",
-          description: "Delete records from Odoo.",
+          description:
+            "Permanently delete records from Odoo. Pass the `_pinchy_ref` of every record to delete in `targets` (from `odoo_read` or `odoo_create`) — raw numeric IDs are NOT accepted, so you can only delete records you have actually looked up. There is no `ids` parameter. Deleting cannot be undone: read the records first, show the user what you are about to remove, and delete only after they confirm.",
           parameters: {
             type: "object",
             properties: {
-              model: { type: "string", description: "Odoo model name" },
-              ids: {
+              model: {
+                type: "string",
+                description:
+                  "Odoo model name. Every ref in `targets` must point at a record of this model.",
+              },
+              targets: {
                 type: "array",
-                items: { type: "number" },
-                description: "IDs of records to delete",
+                items: { type: "string" },
+                description:
+                  'Opaque `_pinchy_ref` values of the records to delete, from `odoo_read` or `odoo_create`. Each is a token starting with `pinchy_ref:v1:` — do NOT construct strings like `"<model>,<id>"` and do NOT pass raw numeric IDs.',
               },
             },
-            required: ["model", "ids"],
+            required: ["model", "targets"],
           },
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
-              const model = params.model as string;
+              const model = params.model;
+              if (typeof model !== "string" || model.trim().length === 0) {
+                return errorResult(
+                  new Error(
+                    "`model` is required: pass the Odoo model name of the records to delete."
+                  )
+                );
+              }
               if (!checkPermission(config.permissions, model, "delete")) {
                 return permissionDenied("delete", model);
               }
 
-              const success = await withAuthRetry(agentId, config, (client) =>
-                client.unlink(model, params.ids as number[]),
+              // The `{item: …}` array-serialization artifact reaches `targets`
+              // exactly as it reaches `values` elsewhere (see hasItemWrappedArray);
+              // caught here so the model gets the actionable shape error rather
+              // than a decode failure per element.
+              if (hasItemWrappedArray(params.targets)) {
+                throw itemWrappedError("targets");
+              }
+
+              const targets = params.targets;
+              if (
+                !Array.isArray(targets) ||
+                targets.length === 0 ||
+                !targets.every((t) => typeof t === "string" && t.length > 0)
+              ) {
+                return errorResult(
+                  new Error(
+                    "`targets` is required: pass a non-empty array of `_pinchy_ref` strings " +
+                      "(from `odoo_read` or `odoo_create`), one per record to delete."
+                  )
+                );
+              }
+
+              // Decode everything before touching Odoo, so a mixed batch with
+              // one bad ref deletes nothing at all. The map also dedupes: the
+              // same ref twice is one record, and the audit detail should count
+              // records rather than mentions.
+              const labelByRef = new Map<number, string>();
+              for (const target of targets as string[]) {
+                const decoded = decodeTargetRef(config.connectionId, target, "targets");
+                // The permission check above read `model`; a ref pointing
+                // elsewhere would unlink on a model this agent may never delete.
+                if (decoded.model !== model) {
+                  return errorResult(
+                    new Error(
+                      `\`targets\` must all be ${model} refs — one of them points at ` +
+                        `${decoded.model}. Re-read the records you mean with \`odoo_read\` on ` +
+                        `${model} and pass those refs.`
+                    )
+                  );
+                }
+                if (!labelByRef.has(decoded.id)) labelByRef.set(decoded.id, decoded.label);
+              }
+              const ids = [...labelByRef.keys()];
+
+              // Names first — after the unlink there is nothing left to read.
+              // Only the ids the audit detail can actually show are worth a
+              // round trip: everything past the cap falls back to the ref's own
+              // label anyway, so reading 500 names to print 20 would be pure
+              // payload.
+              const freshLabels = await readDeleteLabels(
+                agentId,
+                config,
+                model,
+                ids.slice(0, ODOO_DELETE_DETAIL_LABEL_CAP)
               );
 
+              const success = await withAuthRetry(agentId, config, (client) =>
+                client.unlink(model, ids)
+              );
+
+              const deleted = ids.map((id) => ({
+                id,
+                label: freshLabels.get(id) ?? labelByRef.get(id) ?? `${model}#${id}`,
+              }));
+
+              // A falsy `unlink` must not be reported as a delete. Odoo returns
+              // True or raises, so this is the defensive edge — but the shape it
+              // guards against is the one this repo has been bitten by before
+              // (#404, the false-success incident): an outcome=success audit row
+              // whose detail names records as deleted that are still there.
+              // errorResult keeps `details` to `{error}` only, so the route
+              // retains the params and forensics can see what was attempted.
+              if (!success) {
+                return errorResult(
+                  new Error(
+                    `Odoo did not confirm the delete of ${deleted.length} ${model} record(s) ` +
+                      `(unlink returned ${JSON.stringify(success)}). Nothing is recorded as ` +
+                      `deleted; re-read the records to see what is still there.`
+                  ),
+                  { operation: "delete", model }
+                );
+              }
+
+              const details = buildDeleteAuditDetail(model, deleted);
+
               return {
-                content: [{ type: "text", text: JSON.stringify({ success }) }],
+                content: [
+                  {
+                    type: "text",
+                    // The FULL list, not the audit detail's capped one. The
+                    // budget that caps `details` is the audit row's, and handing
+                    // the model a silently shortened list is how it ends up
+                    // telling the user it deleted twenty when it deleted forty.
+                    text: JSON.stringify({
+                      success,
+                      count: deleted.length,
+                      deleted,
+                    }),
+                  },
+                ],
+                details,
               };
             } catch (error) {
               return errorResult(error, {
                 operation: "delete",
-                model: params.model as string,
+                model: typeof params.model === "string" ? params.model : undefined,
               });
             }
           },
         };
       },
-      { name: "odoo_delete" },
+      { name: "odoo_delete" }
     );
 
     // 8. odoo_attach_file
@@ -3589,7 +5610,7 @@ const plugin = {
               // and empty names.
               if (!isSafeFilename(filename)) {
                 return toolError(
-                  `Invalid filename: "${filename}". Must be a plain file name without path components (no "/", no "\\", no "..", no leading ".").`,
+                  `Invalid filename: "${filename}". Must be a plain file name without path components (no "/", no "\\", no "..", no leading ".").`
                 );
               }
 
@@ -3598,23 +5619,12 @@ const plugin = {
               // connection decodes validly under this deployment's single ref
               // key, so reject it before acting — same gate every other
               // ref-consuming Odoo tool applies (decodeTargetRef).
-              const decoded = decodeTargetRef(config.connectionId, targetRef);
-              if (decoded === null) {
-                return errorResult(
-                  new Error(
-                    "`targetRef` ref does not belong to this Odoo connection.",
-                  ),
-                );
-              }
+              const decoded = decodeTargetRef(config.connectionId, targetRef, "targetRef");
 
-              if (
-                !checkPermission(config.permissions, "ir.attachment", "create")
-              ) {
+              if (!checkPermission(config.permissions, "ir.attachment", "create")) {
                 return permissionDenied("create", "ir.attachment");
               }
-              if (
-                !checkPermission(config.permissions, decoded.model, "write")
-              ) {
+              if (!checkPermission(config.permissions, decoded.model, "write")) {
                 return permissionDenied("write", decoded.model);
               }
 
@@ -3631,7 +5641,7 @@ const plugin = {
                     : "";
                 if (code === "ENOENT") {
                   return toolError(
-                    `File not found: ${filename}. Chat uploads and Telegram media land in the uploads directory automatically (Telegram media keeps the basename shown in "[media attached: …]"). If it is missing, tell the user honestly and ask the user to re-send the file — never guess or invent filenames.`,
+                    `File not found: ${filename}. Chat uploads and Telegram media land in the uploads directory automatically (Telegram media keeps the basename shown in "[media attached: …]"). If it is missing, tell the user honestly and ask the user to re-send the file — never guess or invent filenames.`
                   );
                 }
                 throw err;
@@ -3641,7 +5651,7 @@ const plugin = {
                 const sizeMb = (fileSize / 1024 / 1024).toFixed(1);
                 const maxMb = (MAX_ATTACHMENT_BYTES / 1024 / 1024).toFixed(0);
                 return toolError(
-                  `File too large: ${filename} is ${sizeMb} MB, max allowed is ${maxMb} MB.`,
+                  `File too large: ${filename} is ${sizeMb} MB, max allowed is ${maxMb} MB.`
                 );
               }
 
@@ -3656,7 +5666,7 @@ const plugin = {
                   name: filename,
                   datas,
                   mimetype,
-                }),
+                })
               );
 
               const ref = encodeRef({
@@ -3684,7 +5694,7 @@ const plugin = {
           },
         };
       },
-      { name: "odoo_attach_file" },
+      { name: "odoo_attach_file" }
     );
   },
 };

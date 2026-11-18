@@ -65,6 +65,8 @@ vi.mock("@/db/schema", async (importOriginal) => {
 
 import { auth } from "@/lib/auth";
 import { appendAuditLog } from "@/lib/audit";
+import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
+import { getAuditWriteFailedCount, resetAuditWriteFailedCount } from "@/lib/audit-deferred";
 
 // ── PUT /api/users/[userId]/groups ──────────────────────────────────────
 
@@ -377,6 +379,32 @@ describe("PUT /api/users/[userId]/groups", () => {
         },
       })
     );
+  });
+
+  it("still answers success and counts the failure when the audit write fails after the commit", async () => {
+    resetAuditWriteFailedCount();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+    mockSelectWhere.mockReset();
+    mockSelectWhere
+      .mockResolvedValueOnce([{ id: "user-1", name: "Max Müller" }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: "g1", name: "Engineering" }]);
+    vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("audit db down"));
+
+    const request = new NextRequest("http://localhost:7777/api/users/user-1/groups", {
+      method: "PUT",
+      body: JSON.stringify({ groupIds: ["g1"] }),
+    });
+    const res = await PUT(request, { params: Promise.resolve({ userId: "user-1" }) });
+    // A retry would diff against the committed state: added = removed = [].
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => expect(getAuditWriteFailedCount()).toBe(1));
+    // The trailing side effect must not be skipped: a removed group must lose Telegram access.
+    expect(recalculateTelegramAllowStores).toHaveBeenCalledTimes(1);
   });
 
   it("handles empty groupIds (remove all groups, no insert)", async () => {

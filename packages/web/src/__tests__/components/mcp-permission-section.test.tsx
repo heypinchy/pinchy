@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi, beforeEach } from "vitest";
@@ -432,6 +433,20 @@ describe("McpPermissionSection — load failure", () => {
       expect(screen.getByLabelText("list_repos")).toBeInTheDocument();
       expect(screen.getByLabelText("list_repos")).not.toBeChecked();
     });
+  });
+
+  it("never reports to the parent when the GET fails", async () => {
+    // The parent reads a report as "these are the agent's MCP grants". After a
+    // failed load the section knows nothing about them, and reporting [] would
+    // let an otherwise empty save DELETE grants nobody saw (#1216).
+    const conn = makeMcpConnection("mcp-1", "GitHub MCP", [{ name: "list_repos" }]);
+    apiGetMock.mockRejectedValue(new Error("network down"));
+    const onChange = vi.fn();
+
+    render(<McpPermissionSection agentId="agent-1" connections={[conn]} onChange={onChange} />);
+
+    await waitFor(() => expect(mockToastError).toHaveBeenCalled());
+    expect(onChange).not.toHaveBeenCalled();
   });
 });
 

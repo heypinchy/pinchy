@@ -1,400 +1,161 @@
-import { NextResponse, after } from "next/server";
+import { NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
-import { z } from "zod";
 import { withAuth, withAdmin } from "@/lib/api-auth";
-import { and, eq } from "drizzle-orm";
-import { db } from "@/db";
-import { agents, agentConnectionPermissions, integrationConnections } from "@/db/schema";
-import { getTemplate, generateAgentsMd, applyRecommendedTools } from "@/lib/agent-templates";
-import type { McpConnectionInfo } from "@/lib/agent-templates";
-import { getPersonalityPreset, resolveGreetingMessage } from "@/lib/personality-presets";
-import { generateAvatarSeed } from "@/lib/avatar";
-import { AGENT_NAME_MAX_LENGTH } from "@/lib/agents";
-import { validateAllowedPaths } from "@/lib/path-validation";
-import { validatePinchyWebConfig, pluginConfigSchema } from "@/lib/domain-validation";
 import { parseRequestBody } from "@/lib/api-validation";
-import {
-  ensureWorkspace,
-  writeWorkspaceFile,
-  writeWorkspaceFileInternal,
-  writeIdentityFile,
-} from "@/lib/workspace";
-import { getContextForAgent } from "@/lib/context-sync";
-import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
-import { waitForAgentInRuntime } from "@/lib/wait-for-agent-in-runtime";
-import { getOpenClawClient } from "@/server/openclaw-client";
-import { getSetting } from "@/lib/settings";
-import { type ProviderName } from "@/lib/providers";
-import { getDefaultModel } from "@/lib/provider-models";
-import { resolveModelForTemplate, TemplateCapabilityUnavailableError } from "@/lib/model-resolver";
-import { appendAuditLog } from "@/lib/audit";
+import { createAgent } from "@/lib/agents";
+import { createAgentSchema } from "@/lib/schemas/agents";
 import { deferAuditLog } from "@/lib/audit-deferred";
+import {
+  incompletePermissionsDetail,
+  incompletePermissionsWarning,
+} from "@/lib/agent-permission-gaps";
 import { getVisibleAgents } from "@/lib/visible-agents";
-import { validateOdooTemplate } from "@/lib/integrations/odoo-template-validation";
-import { detectEmailOperations } from "@/lib/tool-registry";
-import { isMcpEnabled } from "@/lib/feature-flags";
-import type { McpIntegrationData } from "@/lib/integrations/types";
-
-const createAgentSchema = z.object({
-  name: z
-    .string()
-    .min(1)
-    .max(AGENT_NAME_MAX_LENGTH)
-    .refine((v) => v.trim().length > 0, "Name is required"),
-  templateId: z.string().min(1),
-  tagline: z.string().nullish(),
-  pluginConfig: pluginConfigSchema.nullish(),
-  connectionId: z.string().nullish(),
-  defaultAllowedTools: z.array(z.string()).optional(),
-});
+import { queueFirstIndex } from "@/lib/knowledge/first-index";
 
 export const GET = withAuth(async (_req, _ctx, session) => {
   const visibleAgents = await getVisibleAgents(session.user.id!, session.user.role ?? "member");
-  // Short private cache absorbs back-and-forth agent-switch navigation
-  // without re-querying on every mount; the list is per-user (private) and
-  // 5 s keeps it fresh for operational changes (#261).
+  // Never cached. The browser keys its cache by URL, not by user, so a short
+  // private cache served one user's list to the next person signing in on
+  // the same browser (#1286). It no longer bought anything either: the list
+  // lives in AgentsProvider's client state, so navigation does not refetch
+  // (#261's reason for the cache), and the poll/focus/refresh fetches that
+  // remain want fresh data.
   return NextResponse.json(visibleAgents, {
-    headers: { "Cache-Control": "private, max-age=5, must-revalidate" },
+    headers: { "Cache-Control": "no-store" },
   });
 });
 
 export const POST = withAdmin(async (request, _ctx, session) => {
   const parsed = await parseRequestBody(createAgentSchema, request);
   if ("error" in parsed) return parsed.error;
-  const { name, templateId, tagline, pluginConfig, connectionId, defaultAllowedTools } =
-    parsed.data;
 
-  const template = getTemplate(templateId);
-  if (!template) {
-    return NextResponse.json({ error: `Unknown template: ${templateId}` }, { status: 400 });
-  }
+  // The domain work lives in the auth-/audit-/HTTP-agnostic createAgent()
+  // service (#572) so the key-authenticated POST /api/v1/agents route can
+  // reuse it. This route owns auth (withAdmin), audit (actorType: "user"),
+  // and HTTP — mapping the service's discriminated result onto responses.
+  //
+  // Both audits are registered the instant their rows exist — NOT after
+  // createAgent returns. Everything it still has to do (workspace, OpenClaw
+  // regen) can throw, and none of it rolls the committed writes back. after()
+  // fires on response close even when the handler threw, so a 500 here yields
+  // an agent and grants that exist AND are audited. Reading the return value
+  // instead would lose both records precisely when something went wrong.
+  const result = await createAgent(parsed.data, session.user.id!, {
+    onCreated: (agent, audit) =>
+      deferAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "agent.created",
+        resource: `agent:${agent.id}`,
+        detail: {
+          name: agent.name,
+          model: agent.model,
+          templateId: parsed.data.templateId,
+          skills: audit.templateSkills,
+          modelSelection: audit.modelSelection,
+        },
+        outcome: "success",
+      }),
+    onPermissionsConfigured: (agent, entry) =>
+      deferAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "config.changed",
+        resource: `agent:${agent.id}`,
+        detail: {
+          action: "agent_integration_permissions_auto_configured",
+          agentId: agent.id,
+          connectionId: entry.connectionId,
+          permissions: entry.permissions,
+          ...(entry.skippedTools ? { skippedTools: entry.skippedTools } : {}),
+        },
+        outcome: "success",
+      }),
+    // #1208: what the connection could not grant used to be computed and
+    // discarded, so an agent came out unable to do part of what its template
+    // describes with nothing said anywhere. `failure` is the honest outcome —
+    // the agent exists, the capability does not. The detail is built by the
+    // shared helper so this route and the key-authenticated one cannot drift.
+    onPermissionsIncomplete: (agent, entry) =>
+      deferAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "config.changed",
+        resource: `agent:${agent.id}`,
+        detail: incompletePermissionsDetail(agent, entry),
+        outcome: "failure",
+      }),
+  });
 
-  // Validate pinchy-web domain lists (parity with PATCH — agents created with
-  // a knowledge-base template may carry a pinchy-web block in pluginConfig
-  // alongside pinchy-files.allowed_paths).
-  const pluginConfigError = validatePinchyWebConfig(pluginConfig);
-  if (pluginConfigError) {
-    return NextResponse.json({ error: pluginConfigError }, { status: 400 });
-  }
-
-  // Only file-access plugin requires directory selection
-  if (template.pluginId === "pinchy-files") {
-    const paths = pluginConfig?.["pinchy-files"]?.allowed_paths;
-    if (!paths || paths.length === 0) {
-      return NextResponse.json(
-        { error: "At least one directory must be selected" },
-        { status: 400 }
-      );
-    }
-    try {
-      validateAllowedPaths(paths);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Invalid paths";
-      return NextResponse.json({ error: message }, { status: 400 });
-    }
-  }
-
-  // Odoo templates require a connection
-  if (template.requiresOdooConnection && !connectionId) {
-    return NextResponse.json(
-      { error: "An Odoo connection is required for this template" },
-      { status: 400 }
-    );
-  }
-
-  // Email templates require a connection
-  if (template.requiresEmailConnection && !connectionId) {
-    return NextResponse.json(
-      { error: "An email connection is required for this template" },
-      { status: 400 }
-    );
-  }
-
-  // Resolve personality preset from template
-  const preset = getPersonalityPreset(template.defaultPersonality);
-
-  // Determine model: use template-aware resolver when modelHint is present,
-  // fall back to provider default for templates without a hint (e.g. "custom").
-  const defaultProvider = (await getSetting("default_provider")) as ProviderName | null;
-
-  let model: string;
-  let modelSelectionSource: "template-hint" | "provider-default" = "provider-default";
-  let modelSelectionReason: string;
-
-  if (template.modelHint && defaultProvider) {
-    try {
-      const resolved = await resolveModelForTemplate({
-        hint: template.modelHint,
-        provider: defaultProvider,
+  if (!result.ok) {
+    // Only the capability path (422) is audited (parity with the pre-extraction
+    // route). Plain 400 validation failures were never logged. Keying off the
+    // status discriminant also narrows `error` to the arm carrying
+    // `capabilityFailure`. Both return before the insert, so the callback
+    // above never fired.
+    if (result.error.status === 422) {
+      deferAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "agent.created",
+        outcome: "failure",
+        detail: result.error.capabilityFailure,
       });
-      model = resolved.model;
-      modelSelectionReason = resolved.reason;
-      modelSelectionSource = "template-hint";
-    } catch (err) {
-      if (err instanceof TemplateCapabilityUnavailableError) {
-        await appendAuditLog({
-          actorType: "user",
-          actorId: session.user.id!,
-          eventType: "agent.created",
-          outcome: "failure",
-          detail: {
-            templateId,
-            missingCapabilities: err.missingCapabilities,
-            provider: err.provider,
-          },
-        });
-        return NextResponse.json(
-          {
-            error: "template_capability_unavailable",
-            message: err.message,
-            missingCapabilities: err.missingCapabilities,
-            docsUrl: err.docsUrl,
-          },
-          { status: 422 }
-        );
-      }
-      throw err;
     }
-  } else {
-    model = defaultProvider
-      ? await getDefaultModel(defaultProvider)
-      : "anthropic/claude-haiku-4-5-20251001";
-    modelSelectionReason = `provider-default (${defaultProvider ?? "anthropic fallback"})`;
+    return NextResponse.json(result.error.body, { status: result.error.status });
   }
 
-  const mergedAllowedTools = [
-    ...new Set([...(template.allowedTools ?? []), ...(defaultAllowedTools ?? [])]),
-  ];
+  const { agent, runtimeWarning, runtimeApplyError, incompletePermissions, skippedMcpTools } =
+    result;
 
-  // Skills from the template seed the agent's allowlist. Templates without
-  // defaultSkills get an empty list — same shape as a pre-migration agent.
-  // See master issue #543.
-  const templateSkills = [...new Set(template.defaultSkills ?? [])];
-
-  const [agent] = await db
-    .insert(agents)
-    .values({
-      name,
-      model,
-      templateId,
-      pluginConfig: template.pluginId && pluginConfig ? pluginConfig : null,
-      ownerId: session.user.id,
-      allowedTools: mergedAllowedTools,
-      skills: templateSkills,
-      // Seed the empty-chat starter chips from the template (#570). Templates
-      // without a curated set (e.g. custom) fall back to [] — no chips.
-      starterPrompts: template.defaultStarterPrompts ?? [],
-      tagline: tagline || template.defaultTagline || null,
-      avatarSeed: generateAvatarSeed(),
-      personalityPresetId: template.defaultPersonality,
-      greetingMessage: resolveGreetingMessage(
-        template.defaultGreetingMessage ?? preset?.greetingMessage ?? "Hi {user}. How can I help?",
-        name.trim()
-      ),
-    })
-    .returning();
-
-  after(() =>
-    appendAuditLog({
+  // The agent row is committed (audited success above) but never reached the
+  // runtime (#880). Record a distinct failure event so the trail shows "created
+  // but not applied" instead of implying a clean create. deferAuditLog: the
+  // create already happened and must not be rolled back if this write fails.
+  if (runtimeWarning) {
+    deferAuditLog({
       actorType: "user",
       actorId: session.user.id!,
-      eventType: "agent.created",
+      eventType: "config.changed",
       resource: `agent:${agent.id}`,
       detail: {
+        action: "runtime_apply_failed",
+        agentId: agent.id,
         name: agent.name,
-        model: agent.model,
-        templateId,
-        skills: templateSkills,
-        modelSelection: {
-          source: modelSelectionSource,
-          hint: template.modelHint ?? null,
-          reason: modelSelectionReason,
-        },
+        error: runtimeApplyError,
       },
-      outcome: "success",
-    })
-  );
-
-  // Auto-configure Odoo permissions when template has odooConfig
-  if (template.odooConfig && connectionId) {
-    const connRows = await db
-      .select()
-      .from(integrationConnections)
-      .where(eq(integrationConnections.id, connectionId));
-
-    if (connRows.length > 0) {
-      const connectionData = connRows[0].data as {
-        models?: Array<{
-          model: string;
-          name: string;
-          access?: { read: boolean; create: boolean; write: boolean; delete: boolean };
-        }>;
-      } | null;
-      const models = connectionData?.models ?? [];
-
-      const validation = validateOdooTemplate(template.odooConfig, models);
-
-      if (validation.availableModels.length > 0) {
-        const permissionRows = validation.availableModels.flatMap((m) =>
-          m.operations.map((op) => ({
-            agentId: agent.id,
-            connectionId,
-            model: m.model,
-            operation: op,
-          }))
-        );
-
-        await db.insert(agentConnectionPermissions).values(permissionRows);
-
-        deferAuditLog({
-          actorType: "user",
-          actorId: session.user.id!,
-          eventType: "config.changed",
-          resource: `agent:${agent.id}`,
-          detail: {
-            action: "agent_integration_permissions_auto_configured",
-            agentId: agent.id,
-            connectionId,
-            permissions: permissionRows.map((p) => ({ model: p.model, operation: p.operation })),
-          },
-          outcome: "success",
-        });
-      }
-    }
-  }
-
-  // Auto-configure email permissions when template requires email connection
-  if (template.requiresEmailConnection && connectionId) {
-    const emailOps = detectEmailOperations(template.allowedTools);
-
-    if (emailOps.length > 0) {
-      const permissionRows = emailOps.map((op) => ({
-        agentId: agent.id,
-        connectionId,
-        model: "email",
-        operation: op,
-      }));
-
-      await db.insert(agentConnectionPermissions).values(permissionRows);
-
-      deferAuditLog({
-        actorType: "user",
-        actorId: session.user.id!,
-        eventType: "config.changed",
-        resource: `agent:${agent.id}`,
-        detail: {
-          action: "agent_integration_permissions_auto_configured",
-          agentId: agent.id,
-          connectionId,
-          permissions: permissionRows.map((p) => ({ model: p.model, operation: p.operation })),
-        },
-        outcome: "success",
-      });
-    }
-  }
-
-  // Auto-grant MCP tools from the template's recommendedTools wish-list
-  // (agent-templates/recommended-tools.ts). Unlike Odoo/email, this doesn't
-  // need a user-selected connectionId: the match is automatic — first ACTIVE
-  // connection whose preset matches each wish-list entry. A tool that isn't
-  // in that connection's synced `data.tools` (renamed/removed upstream, or
-  // no connection for the preset at all) is silently skipped — templates
-  // must never fail to create an agent over this. Gated behind the feature
-  // flag: with PINCHY_MCP_ENABLED off, "mcp" connections/permissions are
-  // never touched by this route (D3 — the entire MCP surface stays absent).
-  // Surfaced in the 201 response so the client can raise a non-blocking
-  // toast. Not failing on a renamed tool is right; not TELLING the person
-  // who just created the agent is not — they'd only discover the gap when
-  // the agent says "I can't do that".
-  let skippedMcpTools: string[] = [];
-
-  if (isMcpEnabled() && template.recommendedTools?.length) {
-    const mcpConnRows = await db
-      .select()
-      .from(integrationConnections)
-      .where(
-        and(eq(integrationConnections.type, "mcp"), eq(integrationConnections.status, "active"))
-      );
-
-    const mcpConnections: McpConnectionInfo[] = mcpConnRows.flatMap((row) => {
-      const data = row.data as McpIntegrationData | null;
-      if (!data?.preset) return [];
-      return [{ id: row.id, preset: data.preset, tools: (data.tools ?? []).map((t) => t.name) }];
+      outcome: "failure",
     });
-
-    const { grants, skipped } = applyRecommendedTools(template.recommendedTools, mcpConnections);
-    skippedMcpTools = skipped.map((rt) => rt.tool);
-
-    if (grants.length > 0) {
-      const permissionRows = grants.map((g) => ({
-        agentId: agent.id,
-        connectionId: g.connectionId,
-        model: "mcp",
-        operation: g.toolName,
-      }));
-
-      await db.insert(agentConnectionPermissions).values(permissionRows);
-
-      deferAuditLog({
-        actorType: "user",
-        actorId: session.user.id!,
-        eventType: "config.changed",
-        resource: `agent:${agent.id}`,
-        detail: {
-          action: "agent_integration_permissions_auto_configured",
-          agentId: agent.id,
-          permissions: permissionRows.map((p) => ({
-            connectionId: p.connectionId,
-            model: p.model,
-            operation: p.operation,
-          })),
-          // Visible to analysts drilling into this row — not surfaced to the
-          // end user as an error (templates never fail over a skipped tool).
-          skippedTools: skipped,
-        },
-        outcome: "success",
-      });
-    }
   }
 
-  // Create workspace with personality preset's SOUL.md
-  ensureWorkspace(agent.id);
-  writeWorkspaceFile(agent.id, "SOUL.md", preset?.soulMd ?? "");
-  writeIdentityFile(agent.id, { name: agent.name, tagline: agent.tagline });
-  const agentsMd = generateAgentsMd(
-    template,
-    template.pluginId && pluginConfig ? pluginConfig : undefined
-  );
-  if (agentsMd) {
-    writeWorkspaceFile(agent.id, "AGENTS.md", agentsMd);
-  }
-  const context = await getContextForAgent({
-    isPersonal: false,
-    ownerId: session.user.id!,
-  });
-  writeWorkspaceFileInternal(agent.id, "USER.md", context);
-
-  await regenerateOpenClawConfig();
-
-  // Wait until OC's runtime has the new agent visible in `agents.list`.
-  // Pinchy's regenerate is fire-and-forget (`pushConfigInBackground`) and OC
-  // applies the hot reload asynchronously; without this gate the first
-  // dispatch after POST /api/agents can race the reload and fail with
-  // `invalid agent params: unknown agent id`. Best-effort with a 5 s cap so
-  // we don't block the interactive save flow if OC is restarting.
-  let client = null;
+  // A Knowledge Base agent finds nothing until its folders are indexed, and an
+  // admin who creates one and asks it something straight away would take the
+  // "nothing found" for a broken agent (#1280). So the first index is queued
+  // here, as this admin's request. When another run holds the instance's one
+  // job slot it is not queued now; the index worker queues it the moment the
+  // slot frees. Never a reason to fail the create: the agent exists, and the
+  // worker's next look catches what this could not do.
   try {
-    client = getOpenClawClient();
-  } catch {
-    // OC client not initialised (rare in tests / pre-setup). Skip the wait.
+    await queueFirstIndex(agent.id, { actorType: "user", actorId: session.user.id! }, (entry) =>
+      deferAuditLog(entry)
+    );
+  } catch (err) {
+    console.error(`[agents] could not queue the first index of agent ${agent.id}:`, err);
   }
-  await waitForAgentInRuntime(client, agent.id);
 
   revalidatePath("/", "layout");
 
-  // Spread rather than nest: the response contract is "the agent row", and
-  // existing callers read `agent.id` off the top level. `skippedMcpTools` is
-  // always present (empty for non-MCP templates) so the client never has to
-  // distinguish "no skips" from "old server".
-  return NextResponse.json({ ...agent, skippedMcpTools }, { status: 201 });
+  // One `warning` field, every reason a 201 is not a clean create. The audit
+  // row above is the durable record; this is what reaches the admin who is
+  // standing right there — the form raises it as a toast. Absent when nothing
+  // went wrong, so its presence stays the whole check.
+  const warning =
+    [runtimeWarning, incompletePermissionsWarning(incompletePermissions)]
+      .filter(Boolean)
+      .join(" ") || undefined;
+
+  // `skippedMcpTools` is always present (empty for non-MCP templates) so the
+  // client never has to distinguish "no skips" from "old server"; the form
+  // raises a non-blocking toast naming the recommended MCP tools it lacks.
+  return NextResponse.json({ ...agent, warning, skippedMcpTools }, { status: 201 });
 });

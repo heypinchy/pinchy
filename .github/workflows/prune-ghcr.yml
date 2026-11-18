@@ -43,6 +43,7 @@ jobs:
   prune:
     name: Prune sha-* tags
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:

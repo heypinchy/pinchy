@@ -12,7 +12,7 @@ vi.mock("@/db", () => ({
         findMany: vi.fn().mockResolvedValue([]),
       },
       users: {
-        findFirst: vi.fn().mockResolvedValue(null),
+        findMany: vi.fn().mockResolvedValue([]),
       },
     },
   },
@@ -38,11 +38,9 @@ describe("migrateExistingSmithers", () => {
     vi.mocked(db.query.agents.findMany).mockResolvedValue([
       { id: "smithers-1", ownerId: "user-1", isPersonal: true, allowedTools: [] },
     ] as any);
-    vi.mocked(db.query.users.findFirst).mockResolvedValue({
-      id: "user-1",
-      role: "member",
-      context: null,
-    } as any);
+    vi.mocked(db.query.users.findMany).mockResolvedValue([
+      { id: "user-1", role: "member", context: null },
+    ] as any);
 
     const { migrateExistingSmithers } = await import("@/lib/migrate-onboarding");
     await migrateExistingSmithers();
@@ -59,11 +57,9 @@ describe("migrateExistingSmithers", () => {
     vi.mocked(db.query.agents.findMany).mockResolvedValue([
       { id: "smithers-2", ownerId: "user-2", isPersonal: true, allowedTools: [] },
     ] as any);
-    vi.mocked(db.query.users.findFirst).mockResolvedValue({
-      id: "user-2",
-      role: "member",
-      context: "I am a developer",
-    } as any);
+    vi.mocked(db.query.users.findMany).mockResolvedValue([
+      { id: "user-2", role: "member", context: "I am a developer" },
+    ] as any);
 
     const { migrateExistingSmithers } = await import("@/lib/migrate-onboarding");
     await migrateExistingSmithers();
@@ -76,11 +72,9 @@ describe("migrateExistingSmithers", () => {
     vi.mocked(db.query.agents.findMany).mockResolvedValue([
       { id: "smithers-3", ownerId: "admin-1", isPersonal: true, allowedTools: [] },
     ] as any);
-    vi.mocked(db.query.users.findFirst).mockResolvedValue({
-      id: "admin-1",
-      role: "admin",
-      context: null,
-    } as any);
+    vi.mocked(db.query.users.findMany).mockResolvedValue([
+      { id: "admin-1", role: "admin", context: null },
+    ] as any);
 
     const { migrateExistingSmithers } = await import("@/lib/migrate-onboarding");
     await migrateExistingSmithers();
@@ -98,5 +92,41 @@ describe("migrateExistingSmithers", () => {
     await expect(migrateExistingSmithers()).resolves.not.toThrow();
 
     expect(writeWorkspaceFileInternal).not.toHaveBeenCalled();
+    // No owner ids to look up when there are no personal agents.
+    expect(db.query.users.findMany).not.toHaveBeenCalled();
+  });
+
+  it("resolves every Smithers owner in a single batched query, not one findFirst per agent", async () => {
+    vi.mocked(db.query.agents.findMany).mockResolvedValue([
+      { id: "smithers-1", ownerId: "user-1", isPersonal: true, allowedTools: [] },
+      { id: "smithers-2", ownerId: "user-2", isPersonal: true, allowedTools: [] },
+      { id: "smithers-3", ownerId: "user-1", isPersonal: true, allowedTools: [] }, // shared owner
+    ] as any);
+    vi.mocked(db.query.users.findMany).mockResolvedValue([
+      { id: "user-1", role: "member", context: null },
+      { id: "user-2", role: "member", context: "already onboarded" },
+    ] as any);
+
+    const { migrateExistingSmithers } = await import("@/lib/migrate-onboarding");
+    await migrateExistingSmithers();
+
+    // One batched lookup covering every owner, regardless of agent count.
+    expect(db.query.users.findMany).toHaveBeenCalledTimes(1);
+    // user-1 has null context (write); user-2 already has context (skip).
+    expect(writeWorkspaceFileInternal).toHaveBeenCalledWith(
+      "smithers-1",
+      "USER.md",
+      expect.any(String)
+    );
+    expect(writeWorkspaceFileInternal).toHaveBeenCalledWith(
+      "smithers-3",
+      "USER.md",
+      expect.any(String)
+    );
+    expect(writeWorkspaceFileInternal).not.toHaveBeenCalledWith(
+      "smithers-2",
+      "USER.md",
+      expect.any(String)
+    );
   });
 });

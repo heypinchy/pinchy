@@ -6,6 +6,7 @@ import {
 import { db } from "@/db";
 import { models } from "@/db/schema";
 import { seedBuiltinModels } from "@/lib/model-capabilities/seed";
+import { BALANCED_ANCHORS } from "@/lib/provider-model-constants";
 import { beforeEach, it, expect, describe } from "vitest";
 
 beforeEach(async () => {
@@ -32,6 +33,28 @@ describe("full-vision providers (all models in DB)", () => {
     expect(isModelVisionCapable("google/gemini-2.5-flash")).toBe(true);
   });
 
+  // Each provider's balanced model is what the pdf/image tools and the
+  // knowledge-base OCR are routed to, and that routing only happens when this
+  // returns true — a balanced default missing from the seeded table left its
+  // provider out of PDF reading entirely.
+  it.each([BALANCED_ANCHORS.anthropic, BALANCED_ANCHORS.openai, BALANCED_ANCHORS.google])(
+    "returns true for the balanced default %s",
+    (model) => {
+      expect(isModelVisionCapable(model)).toBe(true);
+    }
+  );
+
+  // The live model picker lists models this release does not curate. With no
+  // capability row they read as text-only, and the provider silently dropped
+  // out of the pdf/image chain; the vendored models.dev snapshot answers for
+  // them instead, by exact id.
+  it.each(["anthropic/claude-sonnet-4-5-20250929", "anthropic/claude-opus-4-8"])(
+    "returns true for %s, which only the models.dev snapshot knows",
+    (model) => {
+      expect(isModelVisionCapable(model)).toBe(true);
+    }
+  );
+
   it("returns false for a known-provider model NOT in the DB (not treated as vision by default)", () => {
     // The old hardcoded implementation would return true for any anthropic model.
     // The cache-backed implementation must return false for models not in the DB.
@@ -40,50 +63,36 @@ describe("full-vision providers (all models in DB)", () => {
 });
 
 describe("Ollama cloud vision models (from DB seed)", () => {
-  it("returns true for kimi-k2.5", () => {
-    expect(isModelVisionCapable("ollama-cloud/kimi-k2.5")).toBe(true);
-  });
-
-  it("returns true for gemini-3-flash-preview", () => {
-    expect(isModelVisionCapable("ollama-cloud/gemini-3-flash-preview")).toBe(true);
-  });
-
-  it("returns true for mistral-large-3:675b", () => {
-    expect(isModelVisionCapable("ollama-cloud/mistral-large-3:675b")).toBe(true);
+  it("no longer reports kimi-k2.5 or mistral-large-3:675b as vision (retired 2026-11-16)", () => {
+    // Ollama stopped serving both (`pnpm models:discover`, 2026-11-16), so they
+    // left the catalog and the seed no longer carries a capability row.
+    expect(isModelVisionCapable("ollama-cloud/kimi-k2.5")).toBe(false);
+    expect(isModelVisionCapable("ollama-cloud/mistral-large-3:675b")).toBe(false);
   });
 
   it("returns true for minimax-m3", () => {
     expect(isModelVisionCapable("ollama-cloud/minimax-m3")).toBe(true);
   });
 
-  it("returns FALSE for qwen3.5:397b (claims vision, hallucinates)", () => {
-    // The library page lists image input, but the live `/v1/chat/completions`
-    // endpoint hallucinates image contents rather than rejecting them — it
-    // does not actually see images. qwen3.5 is a text/reasoning model, not a
-    // VL model (contrast qwen3-vl). Flagged vision:false in the catalog.
+  it("no longer reports qwen3.5:397b as vision (retired 2026-11-16)", () => {
+    // It was vision:true from the 2026-07-30 re-probe (6/6 trials) until Ollama
+    // stopped serving it; the seed row left with the catalog entry.
     expect(isModelVisionCapable("ollama-cloud/qwen3.5:397b")).toBe(false);
   });
 
-  it("returns FALSE for kimi-k2.7-code (library claims vision, live API 500s)", () => {
-    // Unlike its kimi-k2.5/2.6 siblings (vision-capable above), the -code
-    // variant's library page claims image input (MoonViT) but the live
-    // `/v1/chat/completions` returns HTTP 500 on image_url payloads (probed
-    // 2026-06-25, 2 rounds). Flagged vision:false so it's never picked for
-    // images — its value is reliable tools, not vision.
-    expect(isModelVisionCapable("ollama-cloud/kimi-k2.7-code")).toBe(false);
-  });
-
-  it("returns true for every ministral-3 variant", () => {
-    expect(isModelVisionCapable("ollama-cloud/ministral-3:3b")).toBe(true);
-    expect(isModelVisionCapable("ollama-cloud/ministral-3:8b")).toBe(true);
-    expect(isModelVisionCapable("ollama-cloud/ministral-3:14b")).toBe(true);
+  it("returns true for kimi-k2.7-code since the 2026-07-30 re-probe", () => {
+    // Also FALSE until 2026-07-30, for a different reason: the live endpoint
+    // HTTP 500'd on every image_url payload (probed 2026-06-25). It reads the
+    // 512x512 fixture correctly in 6/6 trials now. Part of the same flip is a
+    // fixture fix — the old 64x64 probe image is refused outright by Ollama's
+    // decoders today, and this model still 500s on it.
+    expect(isModelVisionCapable("ollama-cloud/kimi-k2.7-code")).toBe(true);
   });
 
   it("returns true for kimi-k2.6", () => {
     // Replaces the old qwen3-vl:235b(-instruct) block — Ollama dropped both
-    // from the cloud catalog (2026-06-17). kimi-k2.5 / minimax-m3 /
-    // mistral-large-3 already have their own dedicated cases above; kimi-k2.6
-    // was the one vision model still lacking one.
+    // from the cloud catalog (2026-06-17). minimax-m3 already has its own
+    // dedicated case above; kimi-k2.6 was the one vision model still lacking one.
     expect(isModelVisionCapable("ollama-cloud/kimi-k2.6")).toBe(true);
   });
 
@@ -101,13 +110,16 @@ describe("Ollama cloud vision models (from DB seed)", () => {
     expect(isModelVisionCapable("ollama-cloud/devstral-small-2:24b")).toBe(false);
   });
 
-  it("returns false for a model without vision (e.g. deepseek-v4-pro)", () => {
-    expect(isModelVisionCapable("ollama-cloud/deepseek-v4-pro")).toBe(false);
+  it("returns false for a model without vision (e.g. glm-5.2)", () => {
+    expect(isModelVisionCapable("ollama-cloud/glm-5.2")).toBe(false);
   });
 
   it("returns false for tool-capable cloud models that are text-only", () => {
     expect(isModelVisionCapable("ollama-cloud/deepseek-v3.2")).toBe(false);
     expect(isModelVisionCapable("ollama-cloud/glm-4.7")).toBe(false);
+    // Dropped from the catalog on 2026-07-30 for skipping tool calls, so this
+    // now also covers the "model we no longer carry" path — same answer either
+    // way, which is the point: nothing removed may come back vision-capable.
     expect(isModelVisionCapable("ollama-cloud/nemotron-3-nano:30b")).toBe(false);
     expect(isModelVisionCapable("ollama-cloud/gpt-oss:20b")).toBe(false);
     expect(isModelVisionCapable("ollama-cloud/qwen3-coder:480b")).toBe(false);

@@ -127,7 +127,9 @@ describe("JSON column types — compile-time contracts", () => {
     // Top-level keys are plugin IDs — the namespacing this test guards. Catches
     // a renamed/removed plugin key, unlike the old toMatchObjectType assertion
     // which silently drifted once pinchy-files/pinchy-web grew extra fields.
-    expectTypeOf<keyof AgentPluginConfig>().toEqualTypeOf<"pinchy-files" | "pinchy-web">();
+    expectTypeOf<keyof AgentPluginConfig>().toEqualTypeOf<
+      "pinchy-files" | "pinchy-web" | "pinchy-approvals"
+    >();
     // Each plugin's key config field keeps its type. Asserting the specific
     // fields (not the whole object) stays green when a plugin gains new optional
     // config, while still catching a type change on the fields that matter.
@@ -137,6 +139,15 @@ describe("JSON column types — compile-time contracts", () => {
     expectTypeOf<NonNullable<AgentPluginConfig["pinchy-web"]>["allowedDomains"]>().toEqualTypeOf<
       string[] | undefined
     >();
+    expectTypeOf<NonNullable<AgentPluginConfig["pinchy-approvals"]>["confirm"]>().toEqualTypeOf<
+      Record<string, "confirm" | "allow"> | undefined
+    >();
+    // Pre-#1133, kept readable so an agent nobody has saved since the upgrade
+    // keeps its policy. Optional on purpose: required would make every new
+    // config object carry a key nothing writes any more.
+    expectTypeOf<
+      NonNullable<AgentPluginConfig["pinchy-approvals"]>["confirmTools"]
+    >().toEqualTypeOf<string[] | undefined>();
   });
 
   it("auditLog.detail is typed AuditDetail | null (not unknown)", () => {

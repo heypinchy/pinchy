@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { z } from "zod";
 import { requireAdmin, withAuth } from "@/lib/api-auth";
 import {
   validateTelegramBotToken,
@@ -14,24 +13,31 @@ import {
   recalculateTelegramAllowStores,
 } from "@/lib/telegram-allow-store";
 import { db } from "@/db";
-import { agents, channelLinks, settings } from "@/db/schema";
+import { channelLinks, settings } from "@/db/schema";
 import { eq, like } from "drizzle-orm";
 import { parseRequestBody } from "@/lib/api-validation";
-
-const setBotTokenSchema = z.object({
-  botToken: z.string().min(1),
-});
+import { setBotTokenSchema } from "@/lib/schemas/telegram";
+import { getAgentWithAccess } from "@/lib/agent-access";
 
 export async function GET(req: Request, { params }: { params: Promise<{ agentId: string }> }) {
   const admin = await requireAdmin();
   if (admin instanceof NextResponse) return admin;
   const { agentId } = await params;
 
-  const [agent, botToken, globalMainBot] = await Promise.all([
-    db.query.agents.findFirst({
-      where: eq(agents.id, agentId),
-      columns: { isPersonal: true },
-    }),
+  // Read gate before anything else, and it must be awaited on its own rather
+  // than folded into the Promise.all below: a refusal has to cost no lookup of
+  // this agent's token. Being an admin is not a visibility rule — see
+  // getAgentWithAccess's docblock. The role check above is not an oracle: it
+  // refuses every id alike.
+  //
+  // The personal agent that matters here is the admin's OWN Smithers, which the
+  // gate lets an owner through; telegram-link-settings.tsx finds it in the
+  // admin's own `/api/agents` list. Only somebody else's is turned away.
+  const agentOrError = await getAgentWithAccess(agentId, admin.user.id, admin.user.role);
+  if (agentOrError instanceof NextResponse) return agentOrError;
+  const agent = agentOrError;
+
+  const [botToken, globalMainBot] = await Promise.all([
     getSetting(`telegram_bot_token:${agentId}`),
     hasMainTelegramBot(),
   ]);
@@ -39,7 +45,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ agentId:
   // Personal agents (Smithers) are themselves the main bot — the prerequisite
   // is trivially satisfied from their perspective, otherwise first-time setup
   // would hit an unresolvable chicken-and-egg.
-  const mainBotConfigured = agent?.isPersonal ? true : globalMainBot;
+  const mainBotConfigured = agent.isPersonal ? true : globalMainBot;
 
   if (!botToken) {
     return NextResponse.json({ configured: false, mainBotConfigured });
@@ -84,16 +90,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ age
   const admin = await requireAdmin();
   if (admin instanceof NextResponse) return admin;
   const { agentId } = await params;
+
+  // Read gate first, before the body is even parsed: connecting a bot to
+  // another user's private Smithers is a write into an agent nobody can list,
+  // and a validation error only a real id can reach would disclose which ids
+  // are real. Same rule as the DELETE below.
+  const agentOrError = await getAgentWithAccess(agentId, admin.user.id, admin.user.role);
+  if (agentOrError instanceof NextResponse) return agentOrError;
+  const agent = agentOrError;
+
   const parsed = await parseRequestBody(setBotTokenSchema, req);
   if ("error" in parsed) return parsed.error;
   const { botToken } = parsed.data;
-
-  const agent = await db.query.agents.findFirst({
-    where: eq(agents.id, agentId),
-  });
-  if (!agent) {
-    return NextResponse.json({ error: "Agent not found" }, { status: 404 });
-  }
 
   // Guard: main Telegram bot must exist before additional agents can connect.
   // Users can only link their Telegram account via the main bot — without it,
@@ -162,18 +170,30 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ age
   // [Reconnect] path referenced in the disabled-state UI.
   await deleteSetting(`telegram_conflict_disabled:${agentId}`);
 
-  // Update only Telegram channel config (targeted write — preserves OpenClaw-enriched
+  // A personal agent's bot (the main bot) hands each linked user their own
+  // agent through per-peer bindings, and the allow store lets a user in only
+  // once OpenClaw routes them there. The targeted write carries only the
+  // account-wide binding, so after a reconnect or a token change every linked
+  // member would stay locked out until some unrelated change regenerated the
+  // config. The full regeneration writes the account and its peer bindings
+  // together.
+  //
+  // A shared agent's bot needs just the one account-wide binding: update only
+  // the Telegram channel config (targeted write — preserves OpenClaw-enriched
   // fields like agents.defaults to avoid hot-reloads that break polling).
   // updateTelegramChannelConfig() also notifies restart-state on actual write so
   // /api/health/openclaw reflects the pending OC restart.
-  const targetedResult = updateTelegramChannelConfig(agentId, { botToken });
-  if (targetedResult === "agent-not-in-config") {
-    // The on-disk agents.list predates this agent (its create-regen is still
-    // in flight). OpenClaw ≥2026.7.1 rejects a config whose bindings
-    // reference an agent missing from agents.list, so the targeted patch was
-    // not written — regenerate the full config instead, which emits
-    // agents.list, the account, and the binding consistently from the DB
-    // (the token is already stored above).
+  //
+  // The targeted write also falls back to the full one when the on-disk
+  // roster predates this agent (its create-regen is still in flight):
+  // OpenClaw ≥2026.7.1 rejects a config whose bindings reference an agent
+  // missing from the roster, so the targeted patch was not written. The full
+  // regeneration emits the roster, the account and its bindings consistently
+  // from the DB (the token is already stored above).
+  const needsFullConfig =
+    agent.isPersonal ||
+    updateTelegramChannelConfig(agentId, { botToken }) === "agent-not-in-config";
+  if (needsFullConfig) {
     await regenerateOpenClawConfig();
   }
 
@@ -199,16 +219,22 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ age
   });
 }
 
+// The audit row is immutable, so it gets a fixed message rather than the
+// error's, which can carry a file system path.
+const CONFIG_WRITE_FAILED = "Could not remove the bot from the OpenClaw config";
+
 export const DELETE = withAuth<{ params: Promise<{ agentId: string }> }>(
   async (_req, { params }, session) => {
     const { agentId } = await params;
 
-    const agent = await db.query.agents.findFirst({
-      where: eq(agents.id, agentId),
-    });
-    if (!agent) {
-      return NextResponse.json({ error: "Agent not found" }, { status: 404 });
-    }
+    // Read gate first, write gate second. This route used to look the agent up
+    // itself — 404 when the row was missing, 403 when the caller was neither
+    // admin nor owner — which handed any logged-in member the existence oracle
+    // `getAgentWithAccess` exists to close: someone else's personal agent is
+    // enumerable by nobody, so 403 confirmed what no list would tell them.
+    const agentOrError = await getAgentWithAccess(agentId, session.user.id!, session.user.role);
+    if (agentOrError instanceof NextResponse) return agentOrError;
+    const agent = agentOrError;
 
     // Gap 2 (#476): a personal agent's owner may disconnect its own bot without
     // an admin — the org-wide "Remove Telegram for everyone" was the only prior
@@ -216,6 +242,9 @@ export const DELETE = withAuth<{ params: Promise<{ agentId: string }> }>(
     // any agent (shared or personal). The connect path stays admin-only.
     const isOwner = agent.isPersonal && agent.ownerId === session.user.id;
     if (session.user.role !== "admin" && !isOwner) {
+      // Still 403, and for the reason the helper's docblock gives: the gate above
+      // already answered 404 for anything this caller cannot see, so reaching
+      // here means they can — "not yours to disconnect" reveals nothing further.
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
@@ -225,11 +254,27 @@ export const DELETE = withAuth<{ params: Promise<{ agentId: string }> }>(
     // been fully disconnected and may later be reconnected with a fresh token.
     await deleteSetting(`telegram_conflict_disabled:${agentId}`);
 
-    // Clear only this account's allow-from store (other agents' bots are unaffected)
-    clearAllowStoreForAccount(agentId);
-    // Remove this account from config (other accounts preserved).
-    // updateTelegramChannelConfig() notifies restart-state on actual write.
-    updateTelegramChannelConfig(agentId, null);
+    // Take this account out of the config (other accounts stay) and empty its
+    // allow list (other bots are unaffected), each whichever way the other
+    // goes. The config reaches OpenClaw in the background, up to a minute
+    // later, and until then the empty list is what keeps the bot from
+    // answering anyone. A failing clear must not undo the removal: once the
+    // config lands the bot no longer runs, and the next recalculation drops
+    // its list. updateTelegramChannelConfig() notifies restart-state on actual
+    // write. A config write that fails doesn't stop the rest: the token is
+    // already gone from the database, so the disconnect is audited, marked
+    // failed, and the error reaches the caller afterwards.
+    let configError: unknown = null;
+    try {
+      updateTelegramChannelConfig(agentId, null);
+    } catch (err) {
+      configError = err;
+    }
+    try {
+      await clearAllowStoreForAccount(agentId);
+    } catch (err) {
+      console.error("[telegram] could not clear the allow list of a removed bot:", err);
+    }
 
     // Gap 3 (#476): if this was the last Telegram bot, clear the user↔telegram-user
     // channel_links so a later re-registered bot can't re-grant access to stale
@@ -264,8 +309,11 @@ export const DELETE = withAuth<{ params: Promise<{ agentId: string }> }>(
         // attributable, not silent — 0 when other bots remain.
         channelLinksCleared,
       },
-      outcome: "success",
+      ...(configError
+        ? { outcome: "failure" as const, error: { message: CONFIG_WRITE_FAILED } }
+        : { outcome: "success" as const }),
     });
+    if (configError) throw configError;
 
     return NextResponse.json({ success: true });
   }

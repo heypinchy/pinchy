@@ -25,8 +25,47 @@ describe("describePageImage", () => {
     expect(result?.text).toBe("Extracted text from page");
     expect(globalThis.fetch).toHaveBeenCalledWith(
       "https://api.anthropic.com/v1/messages",
-      expect.objectContaining({ method: "POST" }),
+      expect.objectContaining({ method: "POST" })
     );
+  });
+
+  // Claude Sonnet 5 — the default reading model on Anthropic — thinks by
+  // default, and its thinking spends out of the same max_tokens. A page cut off
+  // at the cap must not be indexed as if it were the whole page.
+  it("treats an Anthropic answer cut off at max_tokens as a failed read", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        content: [{ type: "text", text: "Werkszeugnis 3.1 nach EN 10204, Charge 4" }],
+        stop_reason: "max_tokens",
+        usage: { input_tokens: 1500, output_tokens: 8192 },
+      }),
+    });
+
+    const result = await describePageImage("base64data", {
+      model: "anthropic/claude-sonnet-5",
+      resolveApiKey: async () => "test-key",
+    });
+
+    expect(result).toBeNull();
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("max_tokens"));
+    errorSpy.mockRestore();
+  });
+
+  it("leaves Anthropic room for thinking on top of a dense page's text", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ content: [{ type: "text", text: "x" }], stop_reason: "end_turn" }),
+    });
+
+    await describePageImage("base64data", {
+      model: "anthropic/claude-sonnet-5",
+      resolveApiKey: async () => "test-key",
+    });
+
+    const body = JSON.parse(vi.mocked(globalThis.fetch).mock.calls[0][1]!.body as string);
+    expect(body.max_tokens).toBeGreaterThanOrEqual(8192);
   });
 
   it("returns null when API key is not available", async () => {
@@ -63,7 +102,8 @@ describe("describePageImage", () => {
   });
 
   it("retries on 429 rate limit and succeeds", async () => {
-    const mockFetch = vi.fn()
+    const mockFetch = vi
+      .fn()
       .mockResolvedValueOnce({
         ok: false,
         status: 429,
@@ -104,6 +144,160 @@ describe("describePageImage", () => {
     expect((globalThis.fetch as any).mock.calls.length).toBeLessThanOrEqual(4);
   });
 
+  it("clamps an oversized Retry-After header to 30s instead of sleeping for a day", async () => {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 429,
+        // A malicious/misbehaving provider sending a 24h Retry-After.
+        headers: new Headers({ "retry-after": "86400" }),
+        text: async () => "Rate limited",
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          content: [{ type: "text", text: "Extracted after retry" }],
+        }),
+      });
+    globalThis.fetch = mockFetch;
+
+    const waits: number[] = [];
+    const setTimeoutSpy = vi
+      .spyOn(globalThis, "setTimeout")
+      .mockImplementation((cb: (...args: unknown[]) => void, ms?: number) => {
+        waits.push(ms ?? 0);
+        cb();
+        return 0 as unknown as NodeJS.Timeout;
+      });
+
+    const result = await describePageImage("base64data", {
+      model: "anthropic/claude-haiku-4-5-20251001",
+      resolveApiKey: async () => "test-key",
+    });
+
+    expect(result?.text).toBe("Extracted after retry");
+    // The 86400s (24h) header must be clamped to 30s (30_000ms), not honored
+    // verbatim — which would put this PDF read to sleep for a day.
+    expect(waits).toEqual([30_000]);
+    setTimeoutSpy.mockRestore();
+  });
+
+  it("clamps a negative Retry-After to zero instead of passing it through", async () => {
+    // `Math.min(x, 30)` alone lets a negative header past — -3600 is finite, so
+    // the "clamp" hands setTimeout -3_600_000. Harmless in effect today (the
+    // timer floors at 0), but then the constant does not bound what it claims
+    // to bound, and the next reader has to rediscover that.
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 429,
+        headers: new Headers({ "retry-after": "-3600" }),
+        text: async () => "Rate limited",
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          content: [{ type: "text", text: "Extracted after retry" }],
+        }),
+      });
+    globalThis.fetch = mockFetch;
+
+    const waits: number[] = [];
+    const setTimeoutSpy = vi
+      .spyOn(globalThis, "setTimeout")
+      .mockImplementation((cb: (...args: unknown[]) => void, ms?: number) => {
+        waits.push(ms ?? 0);
+        cb();
+        return 0 as unknown as NodeJS.Timeout;
+      });
+
+    const result = await describePageImage("base64data", {
+      model: "anthropic/claude-haiku-4-5-20251001",
+      resolveApiKey: async () => "test-key",
+    });
+
+    expect(result?.text).toBe("Extracted after retry");
+    expect(waits).toEqual([0]);
+    setTimeoutSpy.mockRestore();
+  });
+
+  it("gives a local Ollama vision call a longer bound than a hosted one", async () => {
+    // Ollama is the offline/self-hosted path: a cold start pays the model load
+    // before decoding starts, and CPU-only inference on a full page runs into
+    // minutes. Sharing the hosted bound here would abort exactly the
+    // deployments the offline-first promise covers.
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: "Local text" } }] }),
+    });
+
+    const result = await describePageImage("base64data", {
+      model: "ollama/llama3.2-vision",
+      resolveApiKey: async () => "unused",
+      ollamaBaseUrl: "http://ollama:11434",
+    });
+
+    expect(result?.text).toBe("Local text");
+    expect(timeoutSpy).toHaveBeenCalledWith(300_000);
+    timeoutSpy.mockRestore();
+  });
+
+  it("bounds a hosted vision call well above a dense page's real decode time", async () => {
+    // The bound exists to make a blackhole terminate, not to enforce a latency
+    // budget. Several thousand output tokens at typical decode rates is tens
+    // of seconds, so a bound anywhere near that turns working page reads into
+    // failures indistinguishable from a broken PDF.
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ content: [{ type: "text", text: "Extracted" }] }),
+    });
+
+    await describePageImage("base64data", {
+      model: "anthropic/claude-haiku-4-5-20251001",
+      resolveApiKey: async () => "test-key",
+    });
+
+    expect(timeoutSpy).toHaveBeenCalledWith(120_000);
+    timeoutSpy.mockRestore();
+  });
+
+  it("aborts a hung vision API call via AbortSignal.timeout instead of blocking forever", async () => {
+    // Simulates a vision provider that never answers and never resets the
+    // connection (network blackhole) — the mock only ever settles via the
+    // AbortSignal fetchWithRetry passes in, exactly like a real hung `fetch`
+    // would once the signal fires.
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockImplementation((_ms: number) => {
+      const controller = new AbortController();
+      setTimeout(
+        () => controller.abort(new DOMException("The operation timed out.", "TimeoutError")),
+        1
+      );
+      return controller.signal;
+    });
+    globalThis.fetch = vi.fn((_url: RequestInfo | URL, init?: RequestInit) => {
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        signal?.addEventListener("abort", () => {
+          reject(signal.reason ?? new Error("The operation was aborted"));
+        });
+      });
+    });
+
+    await expect(
+      describePageImage("base64data", {
+        model: "anthropic/claude-haiku-4-5-20251001",
+        resolveApiKey: async () => "test-key",
+      })
+    ).rejects.toThrow();
+
+    expect(timeoutSpy).toHaveBeenCalledWith(120_000);
+    timeoutSpy.mockRestore();
+  });
+
   it("calls OpenAI API with image_url format", async () => {
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
@@ -120,7 +314,7 @@ describe("describePageImage", () => {
     expect(result?.text).toBe("OpenAI extracted text");
     expect(globalThis.fetch).toHaveBeenCalledWith(
       "https://api.openai.com/v1/chat/completions",
-      expect.objectContaining({ method: "POST" }),
+      expect.objectContaining({ method: "POST" })
     );
   });
 
@@ -140,8 +334,28 @@ describe("describePageImage", () => {
     expect(result?.text).toBe("Google extracted text");
     expect(globalThis.fetch).toHaveBeenCalledWith(
       expect.stringContaining("generativelanguage.googleapis.com"),
-      expect.objectContaining({ method: "POST" }),
+      expect.objectContaining({ method: "POST" })
     );
+  });
+
+  it("sends the Google API key in the x-goog-api-key header, never in the URL", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        candidates: [{ content: { parts: [{ text: "Google extracted text" }] } }],
+      }),
+    });
+
+    await describePageImage("base64data", {
+      model: "google/gemini-2.5-flash",
+      resolveApiKey: async () => "secret-google-key",
+    });
+
+    const [url, init] = vi.mocked(globalThis.fetch).mock.calls[0] as [string, RequestInit];
+    expect(url).not.toContain("key=");
+    expect(url).not.toContain("secret-google-key");
+    expect((init.headers as Record<string, string>)["x-goog-api-key"]).toBe("secret-google-key");
+    expect(init.signal).toBeInstanceOf(AbortSignal);
   });
 
   it("rejects invalid model IDs to prevent URL injection", async () => {
@@ -149,7 +363,7 @@ describe("describePageImage", () => {
       describePageImage("base64data", {
         model: "google/../../admin",
         resolveApiKey: async () => "test-key",
-      }),
+      })
     ).rejects.toThrow("Invalid model ID");
   });
 
@@ -176,13 +390,39 @@ describe("describePageImage", () => {
           headers: expect.objectContaining({
             "content-type": "application/json",
           }),
-        }),
+        })
       );
       // Verify no Authorization header
       const callArgs = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
       const headers = (callArgs[1] as RequestInit).headers as Record<string, string>;
       expect(headers).not.toHaveProperty("authorization");
       expect(headers).not.toHaveProperty("Authorization");
+    });
+
+    it("does not double the /v1 the emitted config already carries", async () => {
+      // The URL every real install has. `rewriteOllamaHostForOpenClaw` appends
+      // `/v1` when emitting `models.providers.ollama.baseUrl` (pi-ai adds only
+      // `/chat/completions`), and `createVisionConfig` reads that same value —
+      // so appending `/v1/chat/completions` here produced
+      // `…/v1/v1/chat/completions` and a 404 on every scanned page. Every test
+      // above passes a bare host, which is a shape production never emits: the
+      // assertion was on what the caller asked for, not on what the URL
+      // resolves to.
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: "text" } }] }),
+      });
+
+      await describePageImage("base64data", {
+        model: "ollama/llava:7b",
+        ollamaBaseUrl: "http://ollama.local:11434/v1",
+        resolveApiKey: async () => null,
+      });
+
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "http://ollama.local:11434/v1/chat/completions",
+        expect.anything()
+      );
     });
 
     it("returns null when ollamaBaseUrl is not configured", async () => {
@@ -210,15 +450,87 @@ describe("describePageImage", () => {
       });
       expect(result).toBeNull();
     });
+  });
 
-    it("does not handle ollama-cloud models", async () => {
+  describe("Ollama Cloud provider", () => {
+    // This provider used to fall through to the `default: return null` arm,
+    // asserted by a test that recorded the gap without explaining it. The gap
+    // was not harmless: Pinchy's own model resolver
+    // (`resolveDefaultVisionModelChain`) emits `ollama-cloud/<id>` whenever
+    // that is the configured stack, so web picked a model this consumer could
+    // not call — a scanned PDF then produced no text, with no error anywhere.
+    // Ollama Cloud speaks the same OpenAI-compatible dialect as the local
+    // server; the only differences are the host and the Bearer key.
+    it("calls Ollama Cloud with a bearer key at the configured base URL", async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          choices: [{ message: { content: "AFNOR VALIDATION CERTIFICATE" } }],
+          usage: { prompt_tokens: 900, completion_tokens: 40 },
+        }),
+      });
+
+      const result = await describePageImage("base64imagedata", {
+        model: "ollama-cloud/gemini-3-flash-preview",
+        ollamaCloudBaseUrl: "https://ollama.com",
+        resolveApiKey: async (provider) => (provider === "ollama-cloud" ? "sk-cloud" : null),
+      });
+
+      expect(result?.text).toBe("AFNOR VALIDATION CERTIFICATE");
+      expect(result?.usage).toEqual({ inputTokens: 900, outputTokens: 40 });
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "https://ollama.com/v1/chat/completions",
+        expect.objectContaining({ method: "POST" })
+      );
+      const callArgs = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+      const headers = (callArgs[1] as RequestInit).headers as Record<string, string>;
+      expect(headers.Authorization).toBe("Bearer sk-cloud");
+    });
+
+    it("returns null without a key rather than calling unauthenticated", async () => {
       globalThis.fetch = vi.fn();
 
       const result = await describePageImage("base64data", {
-        model: "ollama-cloud/gemini-3-flash-preview:cloud",
-        ollamaBaseUrl: "http://localhost:11434",
+        model: "ollama-cloud/gemini-3-flash-preview",
+        ollamaCloudBaseUrl: "https://ollama.com",
         resolveApiKey: async () => null,
       });
+
+      expect(result).toBeNull();
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
+    it("falls back to the canonical host when none is configured", async () => {
+      // Unlike the local server, Ollama Cloud has ONE canonical host, and
+      // `resolveProviderBaseUrl` on the web side already defaults to it. A
+      // missing baseUrl here is a config that never set an override, not a
+      // provider that is unreachable — so it must not disable OCR.
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: "text" } }] }),
+      });
+
+      await describePageImage("base64data", {
+        model: "ollama-cloud/gemini-3-flash-preview",
+        resolveApiKey: async () => "sk-cloud",
+      });
+
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "https://ollama.com/v1/chat/completions",
+        expect.anything()
+      );
+    });
+  });
+
+  describe("an unknown provider", () => {
+    it("returns null rather than guessing a protocol", async () => {
+      globalThis.fetch = vi.fn();
+
+      const result = await describePageImage("base64data", {
+        model: "some-future-provider/some-model",
+        resolveApiKey: async () => "key",
+      });
+
       expect(result).toBeNull();
       expect(globalThis.fetch).not.toHaveBeenCalled();
     });
@@ -348,6 +660,44 @@ describe("createVisionConfig", () => {
       model: "ollama/llava:7b",
     });
     expect(config.ollamaBaseUrl).toBe("http://host.docker.internal:11434");
+  });
+
+  it("resolves provider keys as the reading agent through cfg, the only field OpenClaw forwards", async () => {
+    // OpenClaw 2026.9's plugin runtime forwards only {provider, cfg,
+    // workspaceDir} to the key lookup, which then takes its owner from
+    // cfg.agents.defaults.systemAgent. With none set on a multi-agent install
+    // it throws AgentSelectionRequiredError.
+    const resolveApiKeyForProvider = vi.fn().mockResolvedValue({ apiKey: "k" });
+    const cfg = {
+      agents: { list: [{ id: "agent-1" }, { id: "agent-2" }], defaults: { model: "x/y" } },
+      models: { providers: { anthropic: { api: "anthropic" } } },
+    };
+    const config = createVisionConfig({
+      modelAuth: { resolveApiKeyForProvider },
+      cfg,
+      model: "anthropic/claude-haiku-4-5-20251001",
+      ownerAgentId: "agent-1",
+    });
+    await expect(config.resolveApiKey("anthropic")).resolves.toBe("k");
+    const passed = resolveApiKeyForProvider.mock.calls[0][0];
+    expect(passed.cfg.agents.defaults.systemAgent).toEqual({ agentId: "agent-1" });
+    // Everything else in the config is the same, and the live config is untouched.
+    expect(passed.cfg.agents.list).toBe(cfg.agents.list);
+    expect(passed.cfg.agents.defaults.model).toBe("x/y");
+    expect(passed.cfg.models).toBe(cfg.models);
+    expect(cfg.agents.defaults).toEqual({ model: "x/y" });
+  });
+
+  it("passes cfg through unchanged when no owner is known", async () => {
+    const resolveApiKeyForProvider = vi.fn().mockResolvedValue({ apiKey: "k" });
+    const cfg = {};
+    const config = createVisionConfig({
+      modelAuth: { resolveApiKeyForProvider },
+      cfg,
+      model: "anthropic/claude-haiku-4-5-20251001",
+    });
+    await config.resolveApiKey("anthropic");
+    expect(resolveApiKeyForProvider).toHaveBeenCalledWith({ provider: "anthropic", cfg });
   });
 
   it("sets ollamaBaseUrl to undefined when no ollama provider configured", () => {

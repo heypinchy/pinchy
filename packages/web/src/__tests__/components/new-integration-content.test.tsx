@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Tests for NewIntegrationContent — the page-level wrapper that renders the
  * picker grid and opens the dialog with the selected type pre-filled.

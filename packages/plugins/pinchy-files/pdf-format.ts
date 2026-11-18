@@ -1,9 +1,6 @@
 import type { PdfExtractionResult } from "./pdf-extract";
 
-export function formatPdfResult(
-  result: PdfExtractionResult,
-  sourcePath: string,
-): string {
+export function formatPdfResult(result: PdfExtractionResult, sourcePath: string): string {
   const lines: string[] = [];
 
   lines.push("<document>");
@@ -12,7 +9,7 @@ export function formatPdfResult(
 
   if (result.truncated) {
     lines.push(
-      `  <note>Document truncated: showing first ${result.pages.length} of ${result.totalPages} pages.</note>`,
+      `  <note>Document truncated: showing first ${result.pages.length} of ${result.totalPages} pages.</note>`
     );
   }
 
@@ -25,9 +22,7 @@ export function formatPdfResult(
     }
 
     if (page.isScanned && !page.text.trim()) {
-      lines.push(
-        "[Unable to extract text from this scanned page.]",
-      );
+      lines.push("[Unable to extract text from this scanned page.]");
       lines.push("");
     }
   }

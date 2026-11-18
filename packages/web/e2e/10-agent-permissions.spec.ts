@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import {
   seedProviderConfig,
+  apiSignInAsAdmin,
   loginAsAdmin,
   loginAs,
   switchUser,
@@ -15,21 +16,27 @@ test.describe.serial("Agent permissions — restricted visibility", () => {
 
   test.beforeAll(async ({ browser }) => {
     await seedProviderConfig();
-    const page = await browser.newPage();
-    await loginAsAdmin(page);
+
+    // This hook is pure data setup — it only ever uses the request context,
+    // never the page UI. Authenticate over the API (not the UI `loginAsAdmin`,
+    // which navigates and waits up to 15 s for hydration) so the hook stays
+    // well inside its 30 s budget under CI load. See `apiSignInAsAdmin`.
+    const context = await browser.newContext();
+    const request = context.request;
+    await apiSignInAsAdmin(request);
 
     // Enable enterprise mode (same pattern as 09-groups.spec.ts)
-    const status = await page.request.get("/api/enterprise/status");
+    const status = await request.get("/api/enterprise/status");
     const { enterprise } = await status.json();
     if (!enterprise) {
-      await page.request.post("/api/dev/enterprise-toggle");
+      await request.post("/api/dev/enterprise-toggle");
     }
 
     // Create second user (idempotent: ignore if already exists)
-    await createSecondUserViaInvite(page.context().request).catch(() => {});
+    await createSecondUserViaInvite(request).catch(() => {});
 
     // Resolve second user's ID from the users list
-    const usersRes = await page.context().request.get("/api/users");
+    const usersRes = await request.get("/api/users");
     const { users } = await usersRes.json();
     const secondUser = users.find(
       (u: { email: string; id: string }) => u.email === SECOND_USER.email
@@ -38,7 +45,7 @@ test.describe.serial("Agent permissions — restricted visibility", () => {
     secondUserId = secondUser.id;
 
     // Create a group with no members yet
-    const groupRes = await page.context().request.post("/api/groups", {
+    const groupRes = await request.post("/api/groups", {
       data: { name: "Restricted Group", description: null },
     });
     const groupData = await groupRes.json();
@@ -49,7 +56,7 @@ test.describe.serial("Agent permissions — restricted visibility", () => {
 
     // Create an agent using the "custom" template (no extra config required).
     // Note: the DB default for visibility is "restricted", so we explicitly PATCH to "all" below.
-    const agentRes = await page.context().request.post("/api/agents", {
+    const agentRes = await request.post("/api/agents", {
       data: {
         name: "Permissions Test Agent",
         templateId: "custom",
@@ -63,7 +70,7 @@ test.describe.serial("Agent permissions — restricted visibility", () => {
     agentId = agentData.id;
 
     // Set initial visibility to "all" so tests 1+2 can verify non-admin access
-    const patchRes = await page.context().request.patch(`/api/agents/${agentId}`, {
+    const patchRes = await request.patch(`/api/agents/${agentId}`, {
       data: { visibility: "all" },
     });
     if (!patchRes.ok()) {
@@ -72,7 +79,7 @@ test.describe.serial("Agent permissions — restricted visibility", () => {
       );
     }
 
-    await page.close();
+    await context.close();
   });
 
   test("admin sees the agent (visibility: all)", async ({ page }) => {
@@ -135,7 +142,9 @@ test.describe.serial("Agent permissions — restricted visibility", () => {
       // source of truth and the sidebar is a derived view of it. We assert
       // both sides of the contract via the API:
       //   1) the agent is absent from the user's agent list
-      //   2) a direct fetch of the agent resource returns 403
+      //   2) a direct fetch of the agent resource returns 404 — the same
+      //      answer an unknown id gets, so a member outside the group cannot
+      //      even confirm the agent exists (see getAgentWithAccess).
 
       const memberAgents = await memberPage.context().request.get("/api/agents");
       expect(memberAgents.ok()).toBeTruthy();
@@ -146,9 +155,26 @@ test.describe.serial("Agent permissions — restricted visibility", () => {
       ).toBe(false);
 
       const direct = await memberPage.context().request.get(`/api/agents/${agentId}`);
-      expect(direct.status()).toBe(403);
+      expect(direct.status()).toBe(404);
     } finally {
       await memberContext.close();
+    }
+
+    // A 404 on its own is a weak assertion: it is also what a deleted agent or
+    // a mistyped id would return, which is exactly why this test asserted 403
+    // before the status changed. Anchor it — an admin, who bypasses visibility
+    // filtering, must still get the agent. That pins the 404 above to the
+    // access gate rather than to the agent having gone missing.
+    const adminContext = await browser.newContext();
+    try {
+      await apiSignInAsAdmin(adminContext.request);
+      const adminDirect = await adminContext.request.get(`/api/agents/${agentId}`);
+      expect(
+        adminDirect.status(),
+        `Agent ${agentId} must still exist — otherwise the member's 404 proves nothing`
+      ).toBe(200);
+    } finally {
+      await adminContext.close();
     }
   });
 

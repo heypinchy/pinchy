@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
+import { useScrollEdgeFade } from "@/hooks/use-scroll-edge-fade";
 import { useTabParam, AGENT_SETTINGS_TABS, type AgentSettingsTab } from "@/hooks/use-tab-param";
 import { authClient } from "@/lib/auth-client";
 import { toast } from "sonner";
@@ -25,9 +26,15 @@ import { AgentSettingsPermissions } from "@/components/agent-settings-permission
 import { AgentSettingsAccess } from "@/components/agent-settings-access";
 import { AgentSettingsDiagnostics } from "@/components/agent-settings-diagnostics";
 import { AgentTelegramSettings } from "@/components/agent-telegram-settings";
+import { AgentSettingsAutomations } from "@/components/agent-settings-automations";
 import { useRestart } from "@/components/restart-provider";
 import { normalizeStarterPrompts } from "@/lib/schemas/starter-prompts";
+import { apiGet, apiPatch, apiPut, apiDelete, ApiError, errorMessage } from "@/lib/api-client";
+import type { UpdateAgentInput, WriteAgentFileInput } from "@/lib/schemas/agents";
+import type { SetAgentIntegrationsInput } from "@/lib/schemas/agent-integrations";
+import { takeInstructionDraft } from "@/lib/instruction-handoff";
 import type { AgentPluginConfig } from "@/db/schema";
+import type { AgentVisibility } from "@/db/enums";
 
 interface Agent {
   id: string;
@@ -40,7 +47,9 @@ interface Agent {
   starterPrompts: string[];
   avatarSeed: string | null;
   personalityPresetId: string | null;
-  visibility: string;
+  // Narrowed to the enum the agents table's CHECK constraint enforces, so the
+  // unified PATCH body below type-checks against the route's own schema.
+  visibility: AgentVisibility;
   groupIds: string[];
 }
 
@@ -84,10 +93,12 @@ interface PermissionsValues {
     permissions: Array<{ model: string; operation: string }>;
   }>;
   webSearchConfig?: AgentPluginConfig["pinchy-web"];
+  confirm?: Record<string, "confirm" | "allow">;
+  integrationsLoaded: boolean;
 }
 
 interface AccessValues {
-  visibility: string;
+  visibility: AgentVisibility;
   groupIds: string[];
 }
 
@@ -96,7 +107,12 @@ type DirtyTabs = Set<"general" | "personality" | "instructions" | "permissions" 
 // Single source of truth for which agent-settings tabs require admin (or
 // personal-agent-owner) access. Non-admin visibility is derived from this
 // instead of being a second, hand-maintained tab list that could drift.
-const ADMIN_ONLY_TABS = new Set<AgentSettingsTab>(["permissions", "access", "telegram"]);
+const ADMIN_ONLY_TABS = new Set<AgentSettingsTab>([
+  "permissions",
+  "access",
+  "telegram",
+  "automations",
+]);
 
 function DirtyDot() {
   return (
@@ -107,11 +123,38 @@ function DirtyDot() {
   );
 }
 
+/**
+ * Turns a failed save response into a message that says WHY.
+ *
+ * This used to be the constant "Failed to save some settings" — the same
+ * sentence for a validation refusal, a permission refusal and a server fault,
+ * with the server's own explanation read and discarded. #1095 is the bill:
+ * production rejected every agent save for two days over a root-owned
+ * TOOLS.md, the 500 named the EACCES, and the only place that text survived
+ * was `docker compose logs`.
+ *
+ * The body is the primary source; status is the fallback, because a proxy 502
+ * or a crashed process answers with HTML or nothing at all. Never returns
+ * empty — the caller renders this as the sole feedback for a failed save.
+ *
+ * The saves now reject with an `ApiError` rather than resolving to a Response,
+ * so the body has already been read: `ApiError.message` IS the route's `error`
+ * when it sent one. `errorMessage` falls back exactly when it did not, which
+ * is where the status belongs — a bare "Something went wrong" would throw away
+ * the one fact a body-less 502 still carries.
+ */
+function describeSaveFailure(reason: unknown): string {
+  if (reason instanceof ApiError) {
+    return errorMessage(reason, `Failed to save settings (HTTP ${String(reason.status)})`);
+  }
+  // Not an ApiError: a network failure or an abort, whose own message is an
+  // internal string ("Failed to fetch"), never user-facing copy.
+  return "Failed to save settings";
+}
+
 export function AgentSettingsPageContent({
-  initialTab,
   mcpEnabled = false,
 }: {
-  initialTab?: string;
   /**
    * Server-gated MCP feature flag (PINCHY_MCP_ENABLED), read by the settings
    * route's server component via `isMcpEnabled()` and passed down here as a
@@ -119,7 +162,7 @@ export function AgentSettingsPageContent({
    * false (fail closed) so this remains a purely additive prop.
    */
   mcpEnabled?: boolean;
-}) {
+} = {}) {
   const params = useParams();
   const router = useRouter();
   const agentId = params.agentId as string;
@@ -131,25 +174,69 @@ export function AgentSettingsPageContent({
   // being an admin. The page is only viewable by the owner or an admin (see
   // `canEdit`), so `isPersonal` here implies the viewer owns it. (#476 gap 2)
   const canManageTelegram = isAdmin || agent?.isPersonal === true;
+  // Deliberately NOT the Telegram gate above, though it used to be.
+  //
+  // Automations are email-only, and an agent's email access is granted on the
+  // Permissions tab — which exists for SHARED agents and admins alone. A
+  // personal agent has no way to hold an email connection at all, so an
+  // Automations tab there could only ever offer an empty mailbox picker and a
+  // create form that cannot be completed: a dead tab on every personal agent,
+  // Smithers included. Telegram earns its broader gate because a personal
+  // agent's owner really can manage a bot; there is no equivalent here.
+  //
+  // So the gate is the condition under which the agent can hold an email
+  // connection in the first place — one value feeding both tabs (see
+  // `showPermissions`), so the surface that configures email workflows cannot
+  // drift away from the surface that grants the access they need.
+  //
+  // The management API stays deliberately broader (`canManageAgentWorkflows`
+  // still admits a personal agent's owner) and that is not a disagreement: this
+  // is UI reachability, not an authorization boundary. The write routes refuse
+  // any workflow pointed at a mailbox the agent cannot read, so nothing here is
+  // load-bearing for security.
+  const canManageAgentConnections = isAdmin && agent?.isPersonal === false;
+  const canManageAutomations = canManageAgentConnections;
   const visibleTabs: AgentSettingsTab[] =
     isPending || isAdmin
       ? [...AGENT_SETTINGS_TABS]
       : AGENT_SETTINGS_TABS.filter(
-          (tab) => !ADMIN_ONLY_TABS.has(tab) || (tab === "telegram" && canManageTelegram)
+          (tab) =>
+            !ADMIN_ONLY_TABS.has(tab) ||
+            (tab === "telegram" && canManageTelegram) ||
+            (tab === "automations" && canManageAutomations)
         );
-  const [activeTab, setActiveTab] = useTabParam("general", visibleTabs, initialTab);
+  const [activeTab, setActiveTab] = useTabParam("general", visibleTabs);
+  const {
+    ref: tabListRef,
+    element: tabListElement,
+    style: tabListStyle,
+  } = useScrollEdgeFade<HTMLDivElement>();
 
   const [providers, setProviders] = useState<Provider[]>([]);
   const [soulContent, setSoulContent] = useState("");
   const [agentsContent, setAgentsContent] = useState("");
   const [directories, setDirectories] = useState<Directory[]>([]);
-  const [connections, setConnections] = useState<Connection[]>([]);
+  // `null` until the list loads, and for as long as it fails to: unknown is
+  // not "no integrations", and the permissions tab must not save it as such.
+  const [connections, setConnections] = useState<Connection[] | null>(null);
   const [loading, setLoading] = useState(true);
+  // Why the page has nothing to show, when its first load failed.
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   // Accumulated draft values from each tab
   const generalDraft = useRef<GeneralValues | null>(null);
   const personalityDraft = useRef<PersonalityValues | null>(null);
   const instructionsDraft = useRef<string | null>(null);
+  /**
+   * A draft carried over from chat by "Save as instruction" (#1144).
+   *
+   * Read ONCE, before the first paint, and removed from sessionStorage in the
+   * same step: a draft that survived its own consumption would reappear the
+   * next time someone opened this tab for an unrelated edit, and they would
+   * save it without noticing. Nothing is written to the agent here — the text
+   * lands in the editor, dirty, and the user still presses Save.
+   */
+  const [carriedDraft] = useState(() => takeInstructionDraft(agentId));
   const permissionsDraft = useRef<PermissionsValues | null>(null);
   const accessDraft = useRef<AccessValues | null>(null);
 
@@ -158,45 +245,76 @@ export function AgentSettingsPageContent({
   const [showNavWarning, setShowNavWarning] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  const fetchData = useCallback(async () => {
-    try {
-      const [agentRes, modelsRes, soulRes, agentsRes, dirRes, connRes] = await Promise.all([
-        fetch(`/api/agents/${agentId}`),
-        fetch("/api/providers/models"),
-        fetch(`/api/agents/${agentId}/files/SOUL.md`),
-        fetch(`/api/agents/${agentId}/files/AGENTS.md`),
-        fetch("/api/data-directories"),
-        fetch("/api/integrations"),
-      ]);
-
-      if (agentRes.ok) setAgent(await agentRes.json());
-      if (modelsRes.ok) {
-        const data = await modelsRes.json();
-        setProviders(data.providers || []);
+  // The mount effect passes its signal and aborts it on cleanup. A failure
+  // there replaces the page: every tab edits something these loads supply, and
+  // an editor opened empty for a SOUL.md that failed to load would save the
+  // emptiness over the real file. The refresh after a save passes no signal;
+  // its failure leaves the page as it was and says so in a toast.
+  const fetchData = useCallback(
+    async (signal?: AbortSignal) => {
+      try {
+        const [agentData, modelsData, soulData, agentsData, dirData, connData] = await Promise.all([
+          apiGet<Agent>(`/api/agents/${agentId}`, { signal }),
+          apiGet<{ providers?: Provider[] }>("/api/providers/models", { signal }),
+          apiGet<{ content?: string }>(`/api/agents/${agentId}/files/SOUL.md`, { signal }),
+          apiGet<{ content?: string }>(`/api/agents/${agentId}/files/AGENTS.md`, { signal }),
+          apiGet<{ directories?: Directory[] }>("/api/data-directories", { signal }),
+          // Admin-only: a member's own personal agent gets a 403 here, which
+          // means "no integrations to grant". Any other failure leaves the list
+          // unknown (`null`), which the permissions tab must not save as "none";
+          // it does not fail the page.
+          apiGet<unknown>("/api/integrations", { signal }).catch((err: unknown) =>
+            err instanceof ApiError && err.status === 403 ? [] : null
+          ),
+        ]);
+        if (signal?.aborted) return;
+        setAgent(agentData);
+        setProviders(modelsData.providers || []);
+        setSoulContent(soulData.content || "");
+        setAgentsContent(agentsData.content || "");
+        setDirectories(dirData.directories || []);
+        // A refresh that loses the list keeps the one already loaded: it has
+        // not become "unknown" because a second GET failed.
+        setConnections((previous) =>
+          Array.isArray(connData) ? (connData as Connection[]) : signal ? null : previous
+        );
+        setLoadError(null);
+      } catch (err) {
+        // Classify on the signal alone: an abort's error is not reliably an
+        // AbortError (see audit-log-table.tsx).
+        if (signal?.aborted) return;
+        if (!signal) {
+          toast.error(errorMessage(err, "Failed to reload agent settings"));
+        } else if (err instanceof ApiError && err.status === 404) {
+          // Rendered as "Agent not found." below.
+          setAgent(null);
+        } else {
+          // A refusal the route explains (a 4xx such as personal agents being
+          // switched off) is not fixed by reloading: show its own reason. A
+          // 401 is: reloading is what sends an expired session to login.
+          const reload = "We couldn't load this agent's settings. Reload the page to try again.";
+          setLoadError(
+            err instanceof ApiError && err.status > 401 && err.status < 500
+              ? errorMessage(err, reload)
+              : reload
+          );
+        }
+      } finally {
+        if (!signal?.aborted) setLoading(false);
       }
-      if (soulRes.ok) {
-        const data = await soulRes.json();
-        setSoulContent(data.content || "");
-      }
-      if (agentsRes.ok) {
-        const data = await agentsRes.json();
-        setAgentsContent(data.content || "");
-      }
-      if (dirRes.ok) {
-        const data = await dirRes.json();
-        setDirectories(data.directories || []);
-      }
-      if (connRes.ok) {
-        const data = await connRes.json();
-        setConnections(Array.isArray(data) ? data : []);
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, [agentId]);
+    },
+    [agentId]
+  );
 
   useEffect(() => {
-    fetchData();
+    // Deferred past the effect body (react-hooks/set-state-in-effect), same
+    // pattern as settings-groups.tsx.
+    const controller = new AbortController();
+    const { signal } = controller;
+    void Promise.resolve().then(() => {
+      if (!signal.aborted) void fetchData(signal);
+    });
+    return () => controller.abort();
   }, [fetchData]);
 
   // Non-admins cannot edit shared agents — redirect to chat
@@ -206,6 +324,14 @@ export function AgentSettingsPageContent({
       router.replace(`/chat/${agentId}`);
     }
   }, [isPending, agent, canEdit, router, agentId]);
+
+  // Keep the active tab visible in the scrolling tab list (#1400), e.g. after a
+  // deep link to ?tab=diagnostics on a phone. "nearest" only scrolls what is
+  // needed, so the page does not jump vertically.
+  useEffect(() => {
+    const active = tabListElement?.querySelector<HTMLElement>('[role="tab"][data-state="active"]');
+    active?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [activeTab, tabListElement]);
 
   const handleGeneralChange = useCallback((values: GeneralValues, isDirty: boolean) => {
     generalDraft.current = values;
@@ -280,10 +406,12 @@ export function AgentSettingsPageContent({
       // Integration saves must complete before the agent PATCH: the PATCH triggers
       // regenerateOpenClawConfig() which reads integration permissions from the DB.
       // Saving integrations first ensures the config reflects the latest state.
-      const integrationPromises: Promise<Response>[] = [];
+      const integrationPromises: Promise<unknown>[] = [];
 
-      // Build unified agent PATCH body
-      const agentPatch: Record<string, unknown> = {};
+      // Build unified agent PATCH body. Typed against the route's own schema,
+      // so a renamed field is a compile error here rather than a 400 nobody
+      // sees until the settings page silently stops saving one tab.
+      const agentPatch: UpdateAgentInput = {};
       if (dirtyTabs.has("general") && generalDraft.current) {
         agentPatch.name = generalDraft.current.name;
         agentPatch.tagline = generalDraft.current.tagline;
@@ -303,26 +431,27 @@ export function AgentSettingsPageContent({
           ...agent?.pluginConfig,
           "pinchy-files": { allowed_paths: permissionsDraft.current.allowedPaths },
           "pinchy-web": permissionsDraft.current.webSearchConfig,
+          // Writes only the new shape, never `confirmTools`. A saved agent is
+          // therefore migrated for good, and the read-side fallback in
+          // getConfirmMap only ever covers agents nobody has saved yet.
+          "pinchy-approvals": { confirm: permissionsDraft.current.confirm ?? {} },
         };
 
-        // Save each active integration separately, or clear all if none
+        // Save each active integration separately, or clear all if none.
+        // An empty list only means "none" once every integration section has
+        // loaded: one that has not (or whose load failed) never reported the
+        // agent's grants, and clearing them would delete what nobody saw (#1216).
         if (permissionsDraft.current.integrations.length > 0) {
           for (const integration of permissionsDraft.current.integrations) {
             integrationPromises.push(
-              fetch(`/api/agents/${agentId}/integrations`, {
-                method: "PUT",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(integration),
-              })
+              apiPut<unknown, SetAgentIntegrationsInput>(
+                `/api/agents/${agentId}/integrations`,
+                integration
+              )
             );
           }
-        } else {
-          // Clear all integration permissions when no connections are configured
-          integrationPromises.push(
-            fetch(`/api/agents/${agentId}/integrations`, {
-              method: "DELETE",
-            })
-          );
+        } else if (permissionsDraft.current.integrationsLoaded) {
+          integrationPromises.push(apiDelete(`/api/agents/${agentId}/integrations`));
         }
       }
       if (dirtyTabs.has("access") && accessDraft.current) {
@@ -330,47 +459,43 @@ export function AgentSettingsPageContent({
         agentPatch.groupIds = accessDraft.current.groupIds;
       }
 
-      // Phase 1: Save integration permissions to DB (no config regen yet)
-      const integrationResults = await Promise.all(integrationPromises);
+      // Phase 1: Save integration permissions to DB (no config regen yet).
+      // allSettled, not all: a failed integration write must NOT skip phase 2 —
+      // that is how it behaved on raw fetch (which never rejects on a 4xx), and
+      // the partial save is reported below rather than silently dropped.
+      const integrationResults = await Promise.allSettled(integrationPromises);
 
       // Phase 2: Agent PATCH + file saves (PATCH triggers single config regen)
-      const otherPromises: Promise<Response>[] = [];
+      const otherPromises: Promise<unknown>[] = [];
 
       if (Object.keys(agentPatch).length > 0) {
         otherPromises.push(
-          fetch(`/api/agents/${agentId}`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(agentPatch),
-          })
+          apiPatch<unknown, UpdateAgentInput>(`/api/agents/${agentId}`, agentPatch)
         );
       }
 
       if (dirtyTabs.has("personality") && personalityDraft.current) {
         otherPromises.push(
-          fetch(`/api/agents/${agentId}/files/SOUL.md`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ content: personalityDraft.current.soulContent }),
+          apiPut<unknown, WriteAgentFileInput>(`/api/agents/${agentId}/files/SOUL.md`, {
+            content: personalityDraft.current.soulContent,
           })
         );
       }
 
       if (dirtyTabs.has("instructions") && instructionsDraft.current !== null) {
         otherPromises.push(
-          fetch(`/api/agents/${agentId}/files/AGENTS.md`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ content: instructionsDraft.current }),
+          apiPut<unknown, WriteAgentFileInput>(`/api/agents/${agentId}/files/AGENTS.md`, {
+            content: instructionsDraft.current,
           })
         );
       }
 
-      const otherResults = await Promise.all(otherPromises);
+      const otherResults = await Promise.allSettled(otherPromises);
       const results = [...integrationResults, ...otherResults];
 
-      if (results.some((r) => !r.ok)) {
-        toast.error("Failed to save some settings");
+      const firstFailure = results.find((r) => r.status === "rejected");
+      if (firstFailure) {
+        toast.error(describeSaveFailure(firstFailure.reason));
         return;
       }
 
@@ -402,12 +527,25 @@ export function AgentSettingsPageContent({
     return <div className="p-8 text-muted-foreground">Loading...</div>;
   }
 
+  if (loadError) {
+    return (
+      <div role="alert" className="p-8 text-red-600">
+        {loadError}
+      </div>
+    );
+  }
+
   if (!agent) {
     return <div className="p-8 text-muted-foreground">Agent not found.</div>;
   }
 
   const canDelete = isAdmin && !agent.isPersonal;
-  const showPermissions = isAdmin && !agent.isPersonal;
+  // Same value as the Automations gate, on purpose and by reference rather than
+  // by a second copy of the expression: this tab is where an agent's email
+  // access is granted, so the tab that configures email workflows must appear
+  // exactly where that grant is possible. Two hand-maintained copies are what
+  // let them drift apart in the first place.
+  const showPermissions = canManageAgentConnections;
 
   // Non-admins cannot edit shared agents — redirect handled by effect above
   if (!canEdit) {
@@ -434,7 +572,15 @@ export function AgentSettingsPageContent({
         </div>
 
         <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList>
+          {/* The tabs are wider than a phone screen (#1400). The list scrolls on
+              its own so the page never scrolls sideways; justify-start because a
+              centred row that overflows clips its first tabs out of reach. The
+              scrollbar is hidden; an edge fade marks the side with more tabs. */}
+          <TabsList
+            ref={tabListRef}
+            style={tabListStyle}
+            className="max-w-full justify-start overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          >
             <TabsTrigger value="general">
               General {dirtyTabs.has("general") && <DirtyDot />}
             </TabsTrigger>
@@ -455,6 +601,7 @@ export function AgentSettingsPageContent({
               </TabsTrigger>
             )}
             {canManageTelegram && <TabsTrigger value="telegram">Telegram</TabsTrigger>}
+            {canManageAutomations && <TabsTrigger value="automations">Automations</TabsTrigger>}
             <TabsTrigger value="diagnostics">Diagnostics</TabsTrigger>
           </TabsList>
 
@@ -485,6 +632,7 @@ export function AgentSettingsPageContent({
               agentId={agentId}
               filename="AGENTS.md"
               content={agentsContent}
+              appendDraft={carriedDraft ?? undefined}
               onChange={handleInstructionsChange}
             />
           </TabsContent>
@@ -523,7 +671,25 @@ export function AgentSettingsPageContent({
             </TabsContent>
           )}
 
-          <TabsContent value="diagnostics" keepMounted>
+          {/* Self-contained and lazily mounted (no `keepMounted`), like Telegram
+              and Diagnostics: it does its own GET/PATCH/DELETE and persists each
+              toggle immediately, so it stays out of the shared draft/Save flow
+              and its list fetch only fires when the tab is actually opened. */}
+          {canManageAutomations && (
+            <TabsContent value="automations">
+              <AgentSettingsAutomations
+                agentId={agentId}
+                memberPolicyApplies={!isAdmin && agent?.isPersonal === true}
+              />
+            </TabsContent>
+          )}
+
+          {/* No `keepMounted`, unlike the editing tabs: mounting lazily keeps
+              this tab's chat-list fetch off every Settings page load, including
+              the vast majority that never open Diagnostics. The trade-off is
+              real but small — a half-typed description is lost when switching
+              tabs mid-report. Worth revisiting if anyone actually hits it. */}
+          <TabsContent value="diagnostics">
             <AgentSettingsDiagnostics agentId={agentId} agentName={agent.name} />
           </TabsContent>
         </Tabs>

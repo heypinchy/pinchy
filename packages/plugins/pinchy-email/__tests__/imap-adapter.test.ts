@@ -6,8 +6,10 @@ import {
   tlsModeForPort,
   encodeMessageId,
   decodeMessageId,
+  MAX_MESSAGE_BYTES,
   type ImapAdapterOptions,
 } from "../imap-adapter.js";
+import { MAX_ATTACHMENT_BYTES } from "../email-adapter.js";
 
 // Shared mock SMTP transport for send() tests. Created inside vi.hoisted() so
 // it's visible to the vi.mock("nodemailer", ...) factory below, which vitest
@@ -34,6 +36,10 @@ const opts: ImapAdapterOptions = {
   username: "user@example.com",
   password: "app-pw",
   security: "tls",
+  // The addresses Pinchy checked for the two hosts (pinned-target.ts) — the
+  // adapter refuses to connect without them outside the mail-mock seam.
+  imapTarget: [{ address: "203.0.113.10", family: 4 }],
+  smtpTarget: [{ address: "203.0.113.11", family: 4 }],
 };
 
 // Shared mock ImapFlow client. Each test configures list/search/fetch return
@@ -124,9 +130,7 @@ beforeEach(() => {
 // mailparser's REAL parsing (not mocked) end-to-end through read()/
 // getAttachment(). CRLF line endings match real IMAP message sources.
 function buildMultipartFixture(): string {
-  const attachmentContent = Buffer.from("quarterly numbers here").toString(
-    "base64",
-  );
+  const attachmentContent = Buffer.from("quarterly numbers here").toString("base64");
   return [
     "From: Alice Sender <alice@example.com>",
     "To: Bob Recipient <bob@example.com>",
@@ -193,7 +197,7 @@ describe("ImapAdapter#read", () => {
     expect(mockClient.fetchOne).toHaveBeenCalledWith(
       42,
       { source: true, flags: true },
-      { uid: true },
+      { uid: true }
     );
     expect(result.id).toBe("42");
     expect(result.from).toBe('"Alice Sender" <alice@example.com>');
@@ -203,7 +207,7 @@ describe("ImapAdapter#read", () => {
     expect(result.date).toBe("2026-07-06T12:00:00.000Z");
     // Prefers text/plain over text/html
     expect(result.body).toContain(
-      "Hello Bob, please find the quarterly report attached. Thanks, Alice",
+      "Hello Bob, please find the quarterly report attached. Thanks, Alice"
     );
     expect(result.body).not.toContain("<b>");
     expect(result.unread).toBe(false);
@@ -219,7 +223,7 @@ describe("ImapAdapter#read", () => {
     const result = await adapter.read("42");
 
     expect(result.snippet).toBe(
-      "Hello Bob, please find the quarterly report attached. Thanks, Alice",
+      "Hello Bob, please find the quarterly report attached. Thanks, Alice"
     );
     expect(result.snippet).not.toMatch(/\n/);
   });
@@ -296,7 +300,7 @@ describe("ImapAdapter#read folder-encoded ids", () => {
     expect(mockClient.fetchOne).toHaveBeenCalledWith(
       42,
       { source: true, flags: true },
-      { uid: true },
+      { uid: true }
     );
     // read() returns the encoded id unchanged so the caller can re-address it.
     expect(result.id).toBe(encodedSentId);
@@ -348,7 +352,7 @@ describe("ImapAdapter#getAttachment", () => {
     expect(mockClient.fetchOne).toHaveBeenCalledWith(
       42,
       expect.objectContaining({ source: true }),
-      { uid: true },
+      { uid: true }
     );
   });
 
@@ -360,7 +364,7 @@ describe("ImapAdapter#getAttachment", () => {
 
     const adapter = new ImapAdapter(opts);
     await expect(adapter.getAttachment("42", "does-not-exist")).rejects.toThrow(
-      "attachment does-not-exist not found",
+      "attachment does-not-exist not found"
     );
   });
 
@@ -368,9 +372,128 @@ describe("ImapAdapter#getAttachment", () => {
     mockClient.fetchOne.mockResolvedValue(false);
 
     const adapter = new ImapAdapter(opts);
-    await expect(adapter.getAttachment("999", "whatever")).rejects.toThrow(
-      "message 999 not found",
+    await expect(adapter.getAttachment("999", "whatever")).rejects.toThrow("message 999 not found");
+  });
+});
+
+describe("ImapAdapter fetchParsed message-size precheck (#1093)", () => {
+  // IMAP has no cheap way to learn a SINGLE attachment's size before
+  // download (see the note above ImapAdapter#getAttachment), but it CAN
+  // learn the whole message's declared byte count via RFC822.SIZE before
+  // paying for the full `{ source: true }` fetch that materializes every
+  // attachment's bytes. Both read() and getAttachment() share fetchParsed(),
+  // so a message-level precheck protects both call sites.
+  function mockSizedMessage(size: number, uid = 42) {
+    mockClient.fetchOne
+      .mockReset()
+      .mockImplementation(async (_uid: number, query: Record<string, unknown>) => {
+        if (query.size) {
+          return { uid, size, flags: new Set(["\\Seen"]) };
+        }
+        return {
+          source: Buffer.from(buildMultipartFixture()),
+          flags: new Set(["\\Seen"]),
+        };
+      });
+  }
+
+  // The cap is derived from MAX_ATTACHMENT_BYTES rather than restating 25 MB,
+  // and the factor is the load-bearing part: RFC822.SIZE counts bytes on the
+  // wire, MAX_ATTACHMENT_BYTES counts decoded ones, and base64 costs 4/3 plus
+  // CRLF folding (~1.37×). A message cap set to the attachment cap would
+  // refuse a 20 MB PDF that the Gmail and Graph paths both deliver.
+  it("leaves wire-format room for an attachment at the full decoded cap", () => {
+    expect(MAX_MESSAGE_BYTES).toBeGreaterThan(MAX_ATTACHMENT_BYTES * 1.37);
+  });
+
+  it("rejects an oversized message by RFC822.SIZE via read(), without ever fetching the source", async () => {
+    mockSizedMessage(MAX_MESSAGE_BYTES * 2);
+
+    const adapter = new ImapAdapter(opts);
+    // Names the message, its size and the limit — and what still works, since
+    // there is nothing the caller can retry.
+    await expect(adapter.read("42")).rejects.toThrow(
+      /message 42 is too large.*100\.0 MB.*limit is 50\.0 MB.*email_search/is
     );
+
+    expect(mockClient.fetchOne).toHaveBeenCalledWith(42, { size: true }, { uid: true });
+    // The whole point: never download the full message body once its
+    // declared size already exceeds the cap.
+    expect(mockClient.fetchOne).not.toHaveBeenCalledWith(
+      42,
+      expect.objectContaining({ source: true }),
+      { uid: true }
+    );
+  });
+
+  it("rejects an oversized message by RFC822.SIZE via getAttachment(), without ever fetching the source", async () => {
+    mockSizedMessage(MAX_MESSAGE_BYTES * 2);
+
+    const adapter = new ImapAdapter(opts);
+    await expect(adapter.getAttachment("42", "whatever")).rejects.toThrow(/too large/i);
+    expect(mockClient.fetchOne).not.toHaveBeenCalledWith(
+      42,
+      expect.objectContaining({ source: true }),
+      { uid: true }
+    );
+  });
+
+  // The precheck runs after mailboxOpen and must address the SAME uid the
+  // source fetch would: a folder-encoded id carries a non-INBOX mailbox, and
+  // pricing the wrong mailbox's uid 42 would gate on an unrelated message.
+  it("prices the decoded uid in the message's own mailbox for a folder-encoded id", async () => {
+    mockSizedMessage(MAX_MESSAGE_BYTES * 2, 7);
+
+    const adapter = new ImapAdapter(opts);
+    await expect(adapter.read(encodeMessageId("Sent Items", 7))).rejects.toThrow(/too large/i);
+
+    expect(mockClient.mailboxOpen).toHaveBeenCalledWith("Sent Items");
+    expect(mockClient.fetchOne).toHaveBeenCalledWith(7, { size: true }, { uid: true });
+  });
+
+  // The pair below is the actual boundary. "a size under the cap is allowed"
+  // says nothing about where the cut sits — a `>=` typo would pass it — so
+  // these pin the exact threshold from both sides, mirroring the Graph/Gmail
+  // boundary tests in PR #1094.
+  it("allows a message whose RFC822.SIZE is EXACTLY MAX_MESSAGE_BYTES", async () => {
+    mockSizedMessage(MAX_MESSAGE_BYTES);
+
+    const adapter = new ImapAdapter(opts);
+    const result = await adapter.read("42");
+    expect(result.subject).toBe("Quarterly report attached");
+  });
+
+  it("rejects a message ONE byte over MAX_MESSAGE_BYTES", async () => {
+    mockSizedMessage(MAX_MESSAGE_BYTES + 1);
+
+    const adapter = new ImapAdapter(opts);
+    await expect(adapter.read("42")).rejects.toThrow(/too large/i);
+  });
+
+  it("falls through to the full fetch when RFC822.SIZE is absent — a missing signal must not block a legal message", async () => {
+    mockClient.fetchOne
+      .mockReset()
+      .mockImplementation(async (_uid: number, query: Record<string, unknown>) => {
+        if (query.size) {
+          // No `size` field at all on the size-check response.
+          return { uid: 42, flags: new Set(["\\Seen"]) };
+        }
+        return {
+          source: Buffer.from(buildMultipartFixture()),
+          flags: new Set(["\\Seen"]),
+        };
+      });
+
+    const adapter = new ImapAdapter(opts);
+    const result = await adapter.read("42");
+    expect(result.subject).toBe("Quarterly report attached");
+  });
+
+  it("falls through to the existing not-found error when the size-check fetchOne itself returns false", async () => {
+    mockClient.fetchOne.mockReset().mockResolvedValue(false);
+
+    const adapter = new ImapAdapter(opts);
+    await expect(adapter.read("999")).rejects.toThrow("message 999 not found");
   });
 });
 
@@ -396,9 +519,27 @@ describe("ImapAdapter mock env overrides", () => {
         host: opts.imapHost,
         port: opts.imapPort,
         secure: true, // security: "tls"
-      }),
+      })
     );
   });
+
+  it.each([
+    ["starttls", 143, true],
+    ["tls", 143, true],
+    ["none", 143, undefined],
+    ["tls", 993, undefined],
+  ] as const)(
+    "security=%s on IMAP port %i sets doSTARTTLS=%s (true = demanded, undefined = imapflow upgrades only if offered)",
+    async (security, imapPort, expected) => {
+      const adapter = new ImapAdapter({ ...opts, security, imapPort });
+      await adapter.list({});
+
+      const { ImapFlow } = await import("imapflow");
+      expect(ImapFlow).toHaveBeenLastCalledWith(
+        expect.objectContaining({ port: imapPort, doSTARTTLS: expected })
+      );
+    }
+  );
 
   it("overrides IMAP host/port and forces secure:false when IMAP_MOCK_HOST/PORT and the insecure flag are set", async () => {
     vi.stubEnv("IMAP_MOCK_HOST", "greenmail");
@@ -414,7 +555,7 @@ describe("ImapAdapter mock env overrides", () => {
         host: "greenmail",
         port: 3143,
         secure: false,
-      }),
+      })
     );
   });
 
@@ -431,7 +572,7 @@ describe("ImapAdapter mock env overrides", () => {
         host: "greenmail",
         port: 3143,
         secure: false,
-      }),
+      })
     );
   });
 
@@ -450,7 +591,7 @@ describe("ImapAdapter mock env overrides", () => {
         host: opts.imapHost,
         port: opts.imapPort,
         secure: true, // port 993 → implicit TLS
-      }),
+      })
     );
   });
 
@@ -468,7 +609,7 @@ describe("ImapAdapter mock env overrides", () => {
         greetingTimeout: 10_000,
         socketTimeout: 20_000,
         logger: false,
-      }),
+      })
     );
   });
 
@@ -482,7 +623,7 @@ describe("ImapAdapter mock env overrides", () => {
         port: opts.smtpPort, // 587 → STARTTLS submission
         secure: false,
         requireTLS: true,
-      }),
+      })
     );
   });
 
@@ -501,7 +642,7 @@ describe("ImapAdapter mock env overrides", () => {
         port: 3025,
         secure: false,
         requireTLS: false,
-      }),
+      })
     );
   });
 
@@ -517,7 +658,7 @@ describe("ImapAdapter mock env overrides", () => {
         host: "greenmail",
         port: 3025,
         secure: false,
-      }),
+      })
     );
   });
 
@@ -535,7 +676,7 @@ describe("ImapAdapter mock env overrides", () => {
         port: opts.smtpPort,
         secure: false, // port 587 → STARTTLS, not implicit TLS
         requireTLS: true,
-      }),
+      })
     );
   });
 
@@ -550,7 +691,7 @@ describe("ImapAdapter mock env overrides", () => {
         connectionTimeout: 10_000,
         greetingTimeout: 10_000,
         socketTimeout: 20_000,
-      }),
+      })
     );
   });
 
@@ -567,7 +708,7 @@ describe("ImapAdapter mock env overrides", () => {
         host: opts.imapHost,
         port: opts.imapPort,
         secure: true,
-      }),
+      })
     );
   });
 });
@@ -593,10 +734,7 @@ describe("buildImapSearch", () => {
 
   it("maps from/to/subject directly", () => {
     expect(
-      buildImapSearch(
-        { from: "a@example.com", to: "b@example.com", subject: "hello" },
-        now,
-      ),
+      buildImapSearch({ from: "a@example.com", to: "b@example.com", subject: "hello" }, now)
     ).toEqual({ from: "a@example.com", to: "b@example.com", subject: "hello" });
   });
 
@@ -609,18 +747,11 @@ describe("buildImapSearch", () => {
   it("maps sinceDays to a deterministic since Date relative to the given now", () => {
     const result = buildImapSearch({ sinceDays: 7 }, now);
     expect(result.since).toBeInstanceOf(Date);
-    expect((result.since as Date).toISOString()).toBe(
-      "2026-06-29T12:00:00.000Z",
-    );
+    expect((result.since as Date).toISOString()).toBe("2026-06-29T12:00:00.000Z");
   });
 
   it("combines multiple fields", () => {
-    expect(
-      buildImapSearch(
-        { from: "a@example.com", unread: true, sinceDays: 1 },
-        now,
-      ),
-    ).toEqual({
+    expect(buildImapSearch({ from: "a@example.com", unread: true, sinceDays: 1 }, now)).toEqual({
       from: "a@example.com",
       seen: false,
       since: new Date("2026-07-05T12:00:00.000Z"),
@@ -735,11 +866,9 @@ describe("resolveFolders", () => {
   });
 
   it("always resolves INBOX even with no other folders", () => {
-    expect(
-      resolveFolders([
-        { path: "INBOX", specialUse: undefined, flags: new Set() },
-      ]).INBOX,
-    ).toBe("INBOX");
+    expect(resolveFolders([{ path: "INBOX", specialUse: undefined, flags: new Set() }]).INBOX).toBe(
+      "INBOX"
+    );
   });
 
   it("matches full name-heuristic set case-insensitively", () => {
@@ -858,17 +987,14 @@ describe("ImapAdapter#list", () => {
       asyncIterableOf([
         envelopeMessage({ uid: 1, from: "a@example.com", subject: "hi" }),
         envelopeMessage({ uid: 2, from: "b@example.com", subject: "yo" }),
-      ]),
+      ])
     );
 
     const adapter = new ImapAdapter(opts);
     const result = await adapter.list({});
 
     expect(mockClient.mailboxOpen).toHaveBeenCalledWith("INBOX");
-    expect(mockClient.search).toHaveBeenCalledWith(
-      { all: true },
-      { uid: true },
-    );
+    expect(mockClient.search).toHaveBeenCalledWith({ all: true }, { uid: true });
     expect(result).toHaveLength(2);
     // newest UID first — ids are folder-encoded, so decode to compare uids
     expect(decodeMessageId(result[0].id)).toEqual({
@@ -887,10 +1013,7 @@ describe("ImapAdapter#list", () => {
     const adapter = new ImapAdapter(opts);
     await adapter.list({ unreadOnly: true });
 
-    expect(mockClient.search).toHaveBeenCalledWith(
-      { seen: false },
-      { uid: true },
-    );
+    expect(mockClient.search).toHaveBeenCalledWith({ seen: false }, { uid: true });
   });
 
   it("maps EmailSummary fields including unread from flags", async () => {
@@ -911,7 +1034,7 @@ describe("ImapAdapter#list", () => {
           subject: "Unread message",
           seen: false,
         }),
-      ]),
+      ])
     );
 
     const adapter = new ImapAdapter(opts);
@@ -948,7 +1071,7 @@ describe("ImapAdapter#list", () => {
         envelopeMessage({ uid: 5 }),
         envelopeMessage({ uid: 4 }),
         envelopeMessage({ uid: 3 }),
-      ]),
+      ])
     );
 
     const adapter = new ImapAdapter(opts);
@@ -966,8 +1089,8 @@ describe("ImapAdapter#list", () => {
         many
           .slice(-20)
           .reverse()
-          .map((uid) => envelopeMessage({ uid })),
-      ),
+          .map((uid) => envelopeMessage({ uid }))
+      )
     );
 
     const adapter = new ImapAdapter(opts);
@@ -992,7 +1115,7 @@ describe("ImapAdapter#search", () => {
 
     expect(mockClient.search).toHaveBeenCalledWith(
       { from: "boss@example.com", seen: false },
-      { uid: true },
+      { uid: true }
     );
   });
 
@@ -1013,7 +1136,7 @@ describe("ImapAdapter#search", () => {
   it("encodes result ids with the opened SENT mailbox path", async () => {
     mockClient.search.mockResolvedValue([9]);
     mockClient.fetch.mockReturnValue(
-      asyncIterableOf([envelopeMessage({ uid: 9, subject: "Reply" })]),
+      asyncIterableOf([envelopeMessage({ uid: 9, subject: "Reply" })])
     );
 
     const adapter = new ImapAdapter(opts);
@@ -1038,7 +1161,7 @@ describe("ImapAdapter#search", () => {
           subject: "Match",
           seen: false,
         }),
-      ]),
+      ])
     );
 
     const adapter = new ImapAdapter(opts);
@@ -1063,10 +1186,7 @@ describe("ImapAdapter#search", () => {
   it("caps results at limit", async () => {
     mockClient.search.mockResolvedValue([1, 2, 3]);
     mockClient.fetch.mockReturnValue(
-      asyncIterableOf([
-        envelopeMessage({ uid: 3 }),
-        envelopeMessage({ uid: 2 }),
-      ]),
+      asyncIterableOf([envelopeMessage({ uid: 3 }), envelopeMessage({ uid: 2 })])
     );
 
     const adapter = new ImapAdapter(opts);
@@ -1077,9 +1197,9 @@ describe("ImapAdapter#search", () => {
 
   it("throws a clear error when the requested folder is not found on the server", async () => {
     const adapter = new ImapAdapter(opts);
-    await expect(
-      adapter.search({ folder: "TRASH", subject: "x" }),
-    ).rejects.toThrow("folder TRASH not found on server");
+    await expect(adapter.search({ folder: "TRASH", subject: "x" })).rejects.toThrow(
+      "folder TRASH not found on server"
+    );
   });
 
   it("always closes the connection, even when search criteria match nothing", async () => {
@@ -1105,6 +1225,67 @@ const SERVER_MAILBOXES_WITH_DRAFTS = [
   { path: "Sent Items", specialUse: "\\Sent", flags: new Set(["\\Sent"]) },
   { path: "Drafts", specialUse: "\\Drafts", flags: new Set(["\\Drafts"]) },
 ];
+
+// SKILL.md tells the model to write `Name <address>`. nodemailer is handed
+// the name and the address as an object, so it encodes the name (RFC 2047)
+// instead of re-parsing a string that is not ours to re-parse.
+describe("ImapAdapter named recipients", () => {
+  it("passes Name <address> to nodemailer as { name, address } on send", async () => {
+    const adapter = new ImapAdapter(opts);
+    await adapter.send({
+      to: "Jos\u00E9 M\u00FCller <jose@example.com>",
+      subject: "Hi",
+      body: "Hi",
+    });
+    expect(mockTransport.sendMail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: { name: "Jos\u00E9 M\u00FCller", address: "jose@example.com" },
+      })
+    );
+  });
+
+  // A quoted name with a comma is one mailbox — handed to nodemailer unquoted,
+  // as a name, so it cannot be split into two.
+  it("passes a quoted name with a comma to nodemailer as one name", async () => {
+    const adapter = new ImapAdapter(opts);
+    await adapter.send({ to: '"M\u00FCller, Hans" <hans@x.de>', subject: "Hi", body: "Hi" });
+    expect(mockTransport.sendMail).toHaveBeenCalledWith(
+      expect.objectContaining({ to: { name: "M\u00FCller, Hans", address: "hans@x.de" } })
+    );
+  });
+
+  it("writes a quoted name with a comma into a draft as one encoded mailbox", async () => {
+    mockClient.list.mockResolvedValue(SERVER_MAILBOXES_WITH_DRAFTS);
+    const adapter = new ImapAdapter(opts);
+    await adapter.draft({ to: '"M\u00FCller, Hans" <hans@x.de>', subject: "S", body: "B" });
+    const raw = mockClient.append.mock.calls[0][1];
+    const rawStr = Buffer.isBuffer(raw) ? raw.toString("utf-8") : String(raw);
+    const to = /^To: (.*)\r$/m.exec(rawStr)![1];
+    expect(to).toMatch(/^=\?UTF-8\?[BQ]\?[^\r\n]+\?= <hans@x\.de>$/);
+    expect(to.match(/@/g)).toHaveLength(1);
+  });
+
+  it("passes a bare address through unchanged", async () => {
+    const adapter = new ImapAdapter(opts);
+    await adapter.send({ to: "bob@example.com", subject: "Hi", body: "Hi" });
+    expect(mockTransport.sendMail).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "bob@example.com" })
+    );
+  });
+
+  it("writes an RFC 2047 encoded display name into a draft's To header", async () => {
+    mockClient.list.mockResolvedValue(SERVER_MAILBOXES_WITH_DRAFTS);
+    const adapter = new ImapAdapter(opts);
+    await adapter.draft({
+      to: "Jos\u00E9 M\u00FCller <jose@example.com>",
+      subject: "S",
+      body: "B",
+    });
+    const raw = mockClient.append.mock.calls[0][1];
+    const rawStr = Buffer.isBuffer(raw) ? raw.toString("utf-8") : String(raw);
+    expect(rawStr).toMatch(/^To: =\?UTF-8\?[BQ]\?[^\r\n]+\?= <jose@example\.com>\r$/m);
+  });
+});
 
 describe("ImapAdapter#draft", () => {
   it("appends a raw RFC822 message to the resolved DRAFTS path with the \\Draft flag", async () => {
@@ -1170,7 +1351,7 @@ describe("ImapAdapter#draft", () => {
         to: "bob@example.com",
         subject: "hi",
         body: "hi",
-      }),
+      })
     ).rejects.toThrow("folder DRAFTS not found on server");
     expect(mockClient.append).not.toHaveBeenCalled();
     expect(mockClient.connect).toHaveBeenCalledTimes(1);
@@ -1186,7 +1367,7 @@ describe("ImapAdapter#draft", () => {
         to: "victim@example.com\r\nBcc: attacker@evil.com",
         subject: "hi",
         body: "hi",
-      }),
+      })
     ).rejects.toThrow();
     expect(mockClient.append).not.toHaveBeenCalled();
   });
@@ -1200,7 +1381,7 @@ describe("ImapAdapter#draft", () => {
         to: "bob@example.com",
         subject: "Innocent\r\nBcc: attacker@evil.com",
         body: "hi",
-      }),
+      })
     ).rejects.toThrow();
     expect(mockClient.append).not.toHaveBeenCalled();
   });
@@ -1218,7 +1399,7 @@ describe("ImapAdapter#draft", () => {
         subject: "hi",
         body: "hi",
         replyTo: "<x>\r\nBcc: attacker@evil.com",
-      }),
+      })
     ).rejects.toThrow();
     expect(mockClient.append).not.toHaveBeenCalled();
   });
@@ -1240,7 +1421,7 @@ describe("ImapAdapter#send", () => {
         secure: false,
         requireTLS: true,
         auth: { user: opts.username, pass: opts.password },
-      }),
+      })
     );
     expect(mockTransport.sendMail).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1248,7 +1429,7 @@ describe("ImapAdapter#send", () => {
         to: "bob@example.com",
         subject: "Hello",
         text: "World",
-      }),
+      })
     );
     expect(result.messageId).toBe("<generated@smtp.example.com>");
     expect(mockTransport.close).toHaveBeenCalledTimes(1);
@@ -1260,7 +1441,7 @@ describe("ImapAdapter#send", () => {
     await adapter.send({ to: "bob@example.com", subject: "Hi", body: "Hi" });
 
     expect(createTransportMock).toHaveBeenCalledWith(
-      expect.objectContaining({ port: 465, secure: true, requireTLS: false }),
+      expect.objectContaining({ port: 465, secure: true, requireTLS: false })
     );
   });
 
@@ -1270,7 +1451,7 @@ describe("ImapAdapter#send", () => {
     await adapter.send({ to: "bob@example.com", subject: "Hi", body: "Hi" });
 
     expect(createTransportMock).toHaveBeenCalledWith(
-      expect.objectContaining({ secure: false, requireTLS: true }),
+      expect.objectContaining({ secure: false, requireTLS: true })
     );
   });
 
@@ -1280,7 +1461,7 @@ describe("ImapAdapter#send", () => {
     await adapter.send({ to: "bob@example.com", subject: "Hi", body: "Hi" });
 
     expect(createTransportMock).toHaveBeenCalledWith(
-      expect.objectContaining({ secure: false, requireTLS: false }),
+      expect.objectContaining({ secure: false, requireTLS: false })
     );
   });
 
@@ -1296,7 +1477,7 @@ describe("ImapAdapter#send", () => {
     expect(mockTransport.sendMail).toHaveBeenCalledWith(
       expect.objectContaining({
         inReplyTo: "<original-msg-id@example.com>",
-      }),
+      })
     );
   });
 
@@ -1317,7 +1498,7 @@ describe("ImapAdapter#send", () => {
     const adapter = new ImapAdapter(opts);
 
     await expect(
-      adapter.send({ to: "bob@example.com", subject: "Hi", body: "Hi" }),
+      adapter.send({ to: "bob@example.com", subject: "Hi", body: "Hi" })
     ).rejects.toThrow("smtp down");
     expect(mockTransport.close).toHaveBeenCalledTimes(1);
   });
@@ -1330,7 +1511,7 @@ describe("ImapAdapter#send", () => {
         to: "victim@example.com\r\nBcc: attacker@evil.com",
         subject: "hi",
         body: "hi",
-      }),
+      })
     ).rejects.toThrow();
     expect(createTransportMock).not.toHaveBeenCalled();
     expect(mockTransport.sendMail).not.toHaveBeenCalled();
@@ -1344,7 +1525,7 @@ describe("ImapAdapter#send", () => {
         to: "bob@example.com",
         subject: "Innocent\r\nBcc: attacker@evil.com",
         body: "hi",
-      }),
+      })
     ).rejects.toThrow();
     expect(createTransportMock).not.toHaveBeenCalled();
     expect(mockTransport.sendMail).not.toHaveBeenCalled();
@@ -1359,7 +1540,7 @@ describe("ImapAdapter#send", () => {
         subject: "hi",
         body: "hi",
         replyTo: "<x>\r\nBcc: attacker@evil.com",
-      }),
+      })
     ).rejects.toThrow();
     expect(createTransportMock).not.toHaveBeenCalled();
     expect(mockTransport.sendMail).not.toHaveBeenCalled();
@@ -1433,7 +1614,7 @@ describe("ImapAdapter#send with senderName", () => {
     expect(mockTransport.sendMail).toHaveBeenCalledWith(
       expect.objectContaining({
         from: { name: "Clemens Helm", address: opts.username },
-      }),
+      })
     );
   });
 
@@ -1446,7 +1627,7 @@ describe("ImapAdapter#send with senderName", () => {
     });
 
     expect(mockTransport.sendMail).toHaveBeenCalledWith(
-      expect.objectContaining({ from: opts.username }),
+      expect.objectContaining({ from: opts.username })
     );
   });
 
@@ -1478,7 +1659,7 @@ describe("ImapAdapter#send with senderName", () => {
     const adapter = new ImapAdapter(withInjection);
 
     await expect(
-      adapter.send({ to: "bob@example.com", subject: "Hi", body: "Hi" }),
+      adapter.send({ to: "bob@example.com", subject: "Hi", body: "Hi" })
     ).rejects.toThrow(/senderName/);
     expect(createTransportMock).not.toHaveBeenCalled();
     expect(mockTransport.sendMail).not.toHaveBeenCalled();
@@ -1552,7 +1733,7 @@ describe("ImapAdapter#draft with senderName", () => {
         to: "bob@example.com",
         subject: "hi",
         body: "hi",
-      }),
+      })
     ).rejects.toThrow(/senderName/);
     expect(mockClient.append).not.toHaveBeenCalled();
   });

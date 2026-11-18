@@ -101,8 +101,8 @@ vi.mock("@/server/openclaw-client", () => ({
   getOpenClawClient: vi.fn(() => mockOpenClawClient),
 }));
 const mockWaitForAgentInRuntime = vi.fn().mockResolvedValue(true);
-vi.mock("@/lib/wait-for-agent-in-runtime", () => ({
-  waitForAgentInRuntime: (...args: unknown[]) => mockWaitForAgentInRuntime(...args),
+vi.mock("@/server/agent-readiness", () => ({
+  waitForAgentInRuntimeOnClient: (...args: unknown[]) => mockWaitForAgentInRuntime(...args),
 }));
 
 vi.mock("@/lib/path-validation", () => ({
@@ -128,13 +128,14 @@ const { mockResolveModelForTemplate } = vi.hoisted(() => ({
   }),
 }));
 
-vi.mock("@/lib/model-resolver", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/model-resolver")>();
-  return {
-    ...actual,
-    resolveModelForTemplate: mockResolveModelForTemplate,
-  };
-});
+// The route resolves the agent's model through the live-availability wrapper
+// (#883). Mock that; the barrel stays real so TemplateCapabilityUnavailableError
+// is the genuine class. (mockResolveModelForTemplate keeps its name — it now
+// stands in for the wrapper, whose own live-catalog logic is unit-tested in
+// model-resolver/__tests__/resolve-available.)
+vi.mock("@/lib/model-resolver/resolve-available", () => ({
+  resolveAvailableModelForTemplate: mockResolveModelForTemplate,
+}));
 
 vi.mock("@/lib/personality-presets", () => ({
   getPersonalityPreset: vi.fn((id: string) => {
@@ -171,6 +172,13 @@ vi.mock("@/lib/audit", () => ({
   appendAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
+const { mockQueueFirstIndex } = vi.hoisted(() => ({
+  mockQueueFirstIndex: vi.fn().mockResolvedValue({ status: "queued", jobId: "job-1" }),
+}));
+vi.mock("@/lib/knowledge/first-index", () => ({
+  queueFirstIndex: mockQueueFirstIndex,
+}));
+
 const mockValidateOdooTemplate = vi.fn();
 vi.mock("@/lib/integrations/odoo-template-validation", () => ({
   validateOdooTemplate: (...args: unknown[]) => mockValidateOdooTemplate(...args),
@@ -193,6 +201,8 @@ import {
 } from "@/lib/workspace";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { appendAuditLog } from "@/lib/audit";
+import { getAuditWriteFailedCount, resetAuditWriteFailedCount } from "@/lib/audit-deferred";
+import { buildKbSweepAgentPayload } from "../../../eval/kb/sweep-agent";
 
 describe("POST /api/agents", () => {
   beforeEach(() => {
@@ -225,6 +235,57 @@ describe("POST /api/agents", () => {
     const regenInvocations = vi.mocked(regenerateOpenClawConfig).mock.invocationCallOrder;
     const waitInvocations = mockWaitForAgentInRuntime.mock.invocationCallOrder;
     expect(waitInvocations[0]).toBeGreaterThan(regenInvocations[0]);
+  });
+
+  it("still returns 201 and counts the failure when the agent.created audit write fails", async () => {
+    resetAuditWriteFailedCount();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("audit db down"));
+
+    const response = await POST(
+      new NextRequest("http://localhost:7777/api/agents", {
+        method: "POST",
+        body: JSON.stringify({ name: "Audit Down", templateId: "custom" }),
+      }),
+      routeContext()
+    );
+
+    // The agent row is committed; a retry would create a duplicate.
+    expect(response.status).toBe(201);
+    expect(getAuditWriteFailedCount()).toBe(1);
+  });
+
+  it("still returns 201 with the created agent and a warning when config regeneration fails", async () => {
+    // Regression for #880: the agent row already committed, so a failed
+    // runtime apply must not surface as a hard 500 that implies nothing saved.
+    vi.mocked(regenerateOpenClawConfig).mockRejectedValueOnce(
+      new Error("EACCES: permission denied, open '/config/openclaw.json'")
+    );
+
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({ name: "Best Effort", templateId: "custom" }),
+    });
+
+    const response = await POST(request, routeContext());
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    // The persisted agent must still be returned so the UI can navigate to it.
+    expect(body.id).toBe("new-agent-id");
+    expect(typeof body.warning).toBe("string");
+    expect(body.warning.length).toBeGreaterThan(0);
+  });
+
+  it("does not include a warning when config regeneration succeeds", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({ name: "Happy Path", templateId: "custom" }),
+    });
+
+    const response = await POST(request, routeContext());
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.warning).toBeUndefined();
   });
 
   it("should return 403 for non-admin users", async () => {
@@ -270,6 +331,66 @@ describe("POST /api/agents", () => {
     expect(regenerateOpenClawConfig).toHaveBeenCalled();
   });
 
+  it("starts the first index of the folders it was granted, as the admin who created it (#1280)", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "HR Knowledge Base",
+        templateId: "knowledge-base",
+        pluginConfig: { "pinchy-files": { allowed_paths: ["/data/hr-docs/"] } },
+      }),
+    });
+
+    const response = await POST(request, routeContext());
+
+    expect(response.status).toBe(201);
+    expect(mockQueueFirstIndex).toHaveBeenCalledWith(
+      "new-agent-id",
+      { actorType: "user", actorId: "1" },
+      expect.any(Function)
+    );
+    // The rows it hands back reach the audit trail.
+    const { appendAuditLog } = await import("@/lib/audit");
+    const audit = mockQueueFirstIndex.mock.calls.at(-1)![2];
+    const entry = { eventType: "knowledge.reindex", outcome: "success" };
+    audit(entry);
+    await vi.waitFor(() => expect(vi.mocked(appendAuditLog)).toHaveBeenCalledWith(entry));
+  });
+
+  it("still creates the agent when its first index cannot be queued", async () => {
+    mockQueueFirstIndex.mockRejectedValueOnce(new Error("connection reset"));
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "HR Knowledge Base",
+        templateId: "knowledge-base",
+        pluginConfig: { "pinchy-files": { allowed_paths: ["/data/hr-docs/"] } },
+      }),
+    });
+
+    const response = await POST(request, routeContext());
+
+    expect(response.status).toBe(201);
+  });
+
+  it("accepts the KB Layer-3 sweep's own create payload", async () => {
+    // The sweep builds this body itself; putting it through the real handler
+    // is the only check that does not restate the route's rules in a test
+    // that would then drift from them. It used to create a bare `custom`
+    // agent, whose template carries no `pluginId`, so the "at least one
+    // directory" rule never applied — and switching to the KB template
+    // (#869 item 4) turned the missing `pluginConfig` into a 400 that only a
+    // live sweep could surface, after a full stack boot and a corpus seed.
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify(buildKbSweepAgentPayload("KB-Sweep-1")),
+    });
+
+    const response = await POST(request, routeContext());
+
+    expect(response.status).toBe(201);
+  });
+
   it("should set ownerId to the current user's id", async () => {
     const request = new NextRequest("http://localhost:7777/api/agents", {
       method: "POST",
@@ -305,9 +426,11 @@ describe("POST /api/agents", () => {
 
     await POST(request, routeContext());
 
+    // knowledge-base grants knowledge_search (Task 11 of the KB plan), plus the
+    // curated defaults every non-custom template carries.
     expect(insertValuesMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        allowedTools: [],
+        allowedTools: ["knowledge_search", "pinchy_memory", "pinchy_write"],
       })
     );
   });
@@ -316,18 +439,18 @@ describe("POST /api/agents", () => {
     const request = new NextRequest("http://localhost:7777/api/agents", {
       method: "POST",
       body: JSON.stringify({
-        name: "HR Knowledge Base",
-        templateId: "knowledge-base",
+        name: "Contract Review",
+        templateId: "contract-analyzer",
         pluginConfig: {
-          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
+          "pinchy-files": { allowed_paths: ["/data/contracts/"] },
         },
       }),
     });
 
     await POST(request, routeContext());
 
-    const expected = AGENT_TEMPLATES["knowledge-base"].defaultStarterPrompts;
-    expect(expected, "knowledge-base must define defaultStarterPrompts").toBeDefined();
+    const expected = AGENT_TEMPLATES["contract-analyzer"].defaultStarterPrompts;
+    expect(expected, "contract-analyzer must define defaultStarterPrompts").toBeDefined();
     expect(insertValuesMock).toHaveBeenCalledWith(
       expect.objectContaining({
         starterPrompts: expected,
@@ -339,6 +462,30 @@ describe("POST /api/agents", () => {
     const request = new NextRequest("http://localhost:7777/api/agents", {
       method: "POST",
       body: JSON.stringify({ name: "Blank", templateId: "custom" }),
+    });
+
+    await POST(request, routeContext());
+
+    expect(insertValuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        starterPrompts: [],
+      })
+    );
+  });
+
+  it("seeds no starter prompts for a knowledge-base agent (#1270)", async () => {
+    // Pinchy cannot know what an organisation's documents cover, or in which
+    // language — so a new knowledge base starts with no chips rather than
+    // generic English ones that name topics the corpus may not contain.
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "HR Knowledge Base",
+        templateId: "knowledge-base",
+        pluginConfig: {
+          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
+        },
+      }),
     });
 
     await POST(request, routeContext());
@@ -518,6 +665,7 @@ describe("POST /api/agents", () => {
       warnings: [],
       availableModels: [],
       missingModels: [],
+      deniedOperations: [],
     });
 
     const request = new NextRequest("http://localhost:7777/api/agents", {
@@ -663,7 +811,15 @@ describe("POST /api/agents", () => {
     );
   });
 
-  it("should include pinchy_ls instructions in AGENTS.md for knowledge-base agents", async () => {
+  // The route-level counterpart to the generateAgentsMd unit test: the file that
+  // actually lands in the workspace must not tell a KB agent to start from the
+  // file tools. It used to prescribe "1. Always start with `pinchy_ls`", which
+  // outranked the template's own "use knowledge_search for any question" and
+  // sent the agent walking the folder tree — producing answers whose sources
+  // carried no citation numbers, because only retrieval returns page anchors.
+  // Which tool to prefer is now stated in the tool descriptions themselves.
+  // The test above already pins that the granted paths still reach the file.
+  it("should not prescribe file-tool steps in AGENTS.md for knowledge-base agents", async () => {
     const request = new NextRequest("http://localhost:7777/api/agents", {
       method: "POST",
       body: JSON.stringify({
@@ -680,7 +836,7 @@ describe("POST /api/agents", () => {
     expect(writeWorkspaceFile).toHaveBeenCalledWith(
       "new-agent-id",
       "AGENTS.md",
-      expect.stringContaining("pinchy_ls")
+      expect.not.stringContaining("pinchy_ls")
     );
   });
 
@@ -805,6 +961,129 @@ describe("POST /api/agents", () => {
     );
   });
 
+  // #1208. The grants that COULD be made are audited as a success above. The
+  // ones that could not used to be computed and dropped, so an agent came out
+  // unable to do part of what its template describes and nothing anywhere said
+  // so. On production that silence cost the whole reconciliation feature.
+  //
+  // Asserted at the route because that is where the actor and the writer live —
+  // the service only hands over the moment.
+  it("audits a config.changed failure naming the required models it could not grant", async () => {
+    const { appendAuditLog } = await import("@/lib/audit");
+    const spy = vi.mocked(appendAuditLog);
+
+    dbSelectFromMock.mockReturnValueOnce({
+      where: vi.fn().mockResolvedValue([
+        {
+          id: "conn-1",
+          name: "My Odoo",
+          type: "odoo",
+          // The catalogue a stale sync leaves behind: no bank statement line.
+          data: { models: [{ model: "sale.order", name: "Sales Order" }] },
+        },
+      ]),
+    });
+
+    mockValidateOdooTemplate.mockReturnValue({
+      valid: false,
+      warnings: ["account.bank.statement.line: model not available"],
+      availableModels: [{ model: "sale.order", operations: ["read"] }],
+      missingModels: ["account.bank.statement.line"],
+      deniedOperations: [],
+    });
+
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Sales Analyst",
+        templateId: "odoo-sales-analyst",
+        connectionId: "conn-1",
+      }),
+    });
+
+    // The agent is still created — a partly-capable agent beats a failed
+    // create, and an admin can grant the rest by hand.
+    const response = await POST(request, routeContext());
+    expect(response.status).toBe(201);
+
+    expect(spy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "config.changed",
+        outcome: "failure",
+        detail: expect.objectContaining({
+          action: "agent_integration_permissions_incomplete",
+          connectionId: "conn-1",
+          // Snapshotted beside the id: the row may be deleted long before
+          // anyone reads this, and the audit row cannot be rewritten.
+          connectionName: "My Odoo",
+          missingModels: ["account.bank.statement.line"],
+          deniedOperations: [],
+          warnings: ["account.bank.statement.line: model not available"],
+        }),
+      })
+    );
+
+    // An audit row nobody opens is not "being told". The admin who pressed
+    // Create is standing right there, and the form raises `warning` as a
+    // toast — so the 201 has to carry it.
+    const body = await response.json();
+    expect(body.warning).toContain("account.bank.statement.line");
+    expect(body.warning).toContain("My Odoo");
+  });
+
+  // The sibling hole: `missingModels` only ever names a model the catalogue
+  // has never heard of. A model it HAS, but may not write, produces the same
+  // "Permission denied: write on …" at first use and left `valid` true — so
+  // keying the report on missing models alone reported nothing at all.
+  it("audits and warns when the connection denies an operation on a model it does have", async () => {
+    const { appendAuditLog } = await import("@/lib/audit");
+    const spy = vi.mocked(appendAuditLog);
+
+    dbSelectFromMock.mockReturnValueOnce({
+      where: vi.fn().mockResolvedValue([
+        {
+          id: "conn-1",
+          name: "My Odoo",
+          type: "odoo",
+          data: { models: [{ model: "account.bank.statement.line", name: "Bank Transactions" }] },
+        },
+      ]),
+    });
+
+    mockValidateOdooTemplate.mockReturnValue({
+      valid: true,
+      warnings: ["account.bank.statement.line: write not available"],
+      availableModels: [{ model: "account.bank.statement.line", operations: ["read"] }],
+      missingModels: [],
+      deniedOperations: [{ model: "account.bank.statement.line", operations: ["write"] }],
+    });
+
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Books",
+        templateId: "odoo-sales-analyst",
+        connectionId: "conn-1",
+      }),
+    });
+
+    const response = await POST(request, routeContext());
+    expect(response.status).toBe(201);
+
+    expect(spy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "config.changed",
+        outcome: "failure",
+        detail: expect.objectContaining({
+          action: "agent_integration_permissions_incomplete",
+          missingModels: [],
+          deniedOperations: [{ model: "account.bank.statement.line", operations: ["write"] }],
+        }),
+      })
+    );
+    expect((await response.json()).warning).toContain("account.bank.statement.line (write)");
+  });
+
   it("creates Odoo permissions when using Odoo template with connectionId", async () => {
     // Mock connection lookup: select().from().where() returns a connection
     const connectionData = {
@@ -844,6 +1123,8 @@ describe("POST /api/agents", () => {
 
     mockValidateOdooTemplate.mockReturnValue({
       valid: true,
+      missingModels: [],
+      deniedOperations: [],
       warnings: [],
       availableModels: [
         { model: "sale.order", operations: ["read"] },
@@ -1054,6 +1335,7 @@ describe("POST /api/agents", () => {
       warnings: [],
       availableModels: [],
       missingModels: [],
+      deniedOperations: [],
     });
     dbSelectFromMock.mockReturnValueOnce({
       where: vi.fn().mockResolvedValue([{ id: "conn-1", name: "Odoo", type: "odoo", data: {} }]),
@@ -1180,11 +1462,68 @@ describe("POST /api/agents", () => {
 
     await POST(request, routeContext());
 
+    // knowledge-base's template allowedTools is knowledge_search (Task 11 of
+    // the KB plan) plus the curated defaults — this test asserts the template's
+    // list passes through unmodified, i.e. the caller adds nothing.
     expect(insertValuesMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        allowedTools: [],
+        allowedTools: ["knowledge_search", "pinchy_memory", "pinchy_write"],
       })
     );
+  });
+
+  // The skill layer (#543) only reaches an agent if creation copies the
+  // template's defaultSkills onto the agent row: build.ts reads agent.skills,
+  // not the template, when it materializes SKILL.md files and writes the
+  // OpenClaw allowlist. Every "template X carries skill Y" contract test is
+  // asserted one level above this hand-off, so without these two the whole
+  // chain could stay green while no agent ever received a skill.
+  it("seeds the agent's skills column from the template's defaultSkills", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "HR Knowledge Base",
+        templateId: "knowledge-base",
+        pluginConfig: { "pinchy-files": { allowed_paths: ["/data/hr-docs/"] } },
+      }),
+    });
+
+    await POST(request, routeContext());
+
+    expect(insertValuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({ skills: ["knowledge-search"] })
+    );
+  });
+
+  it("seeds every skill when a template declares more than one", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Contract Bot",
+        templateId: "contract-analyzer",
+        pluginConfig: { "pinchy-files": { allowed_paths: ["/data/contracts/"] } },
+      }),
+    });
+
+    await POST(request, routeContext());
+
+    expect(insertValuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({ skills: ["files-search-and-read", "document-comparison"] })
+    );
+  });
+
+  it("seeds an empty skills list for a template that declares none", async () => {
+    // Backwards compatibility: a pre-migration template must produce [], not
+    // undefined — build.ts treats an absent skills field as "let OpenClaw's 58
+    // bundled desktop skills in", which is the opposite of fail-closed.
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({ name: "Blank", templateId: "custom" }),
+    });
+
+    await POST(request, routeContext());
+
+    expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({ skills: [] }));
   });
 
   it("audit log includes modelSelection source and reason", async () => {
@@ -1218,6 +1557,69 @@ describe("POST /api/agents", () => {
       source: "template-hint",
       hint: expect.objectContaining({ tier: "balanced" }),
       reason: expect.stringContaining("balanced"),
+    });
+  });
+
+  // ── config.changed, on a failing tail ───────────────────────────────────
+  //
+  // This route's permission grants had NO test at all — which is how they came
+  // to be read off createAgent's return value, a value that does not exist
+  // when the tail throws. The grant commits, and nothing records who gave an
+  // agent access to the mailbox. The entry is written the moment the grant
+  // commits (onPermissionsConfigured) — the route has no other mechanism, the
+  // return-value loop is gone — so it survives whatever the tail does next.
+  //
+  // #880 reconciled: a failed OpenClaw regen no longer 500s. The agent row is
+  // committed, so the route catches the failure and returns 201 with a warning.
+  // The grant audit still has to be there — it was written before the regen even
+  // ran.
+  it("STILL audits config.changed when the OpenClaw regen fails after the grants exist", async () => {
+    const { appendAuditLog } = await import("@/lib/audit");
+    const { regenerateOpenClawConfig } = await import("@/lib/openclaw-config");
+    const spy = vi.mocked(appendAuditLog);
+
+    vi.mocked(regenerateOpenClawConfig).mockRejectedValueOnce(new Error("openclaw unreachable"));
+
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        // email-assistant requires a connection and carries email_read /
+        // email_draft, so this genuinely reaches the permission insert.
+        name: "Mail Bot",
+        templateId: "email-assistant",
+        connectionId: "conn-1",
+      }),
+    });
+
+    const response = await POST(request, routeContext());
+    expect(response.status).toBe(201);
+    // The regen failure surfaces as a non-blocking warning, not a 500.
+    expect((await response.json()).warning).toEqual(expect.any(String));
+
+    // Two config.changed rows now exist (the grant, and the #880
+    // runtime_apply_failed) — assert on the grant one specifically.
+    const call = spy.mock.calls.find(
+      ([arg]) =>
+        (arg as { eventType: string; detail?: { action?: string } }).eventType ===
+          "config.changed" &&
+        (arg as { detail?: { action?: string } }).detail?.action ===
+          "agent_integration_permissions_auto_configured"
+    );
+    expect(call).toBeDefined();
+    expect(call![0]).toMatchObject({
+      actorType: "user",
+      eventType: "config.changed",
+      resource: "agent:new-agent-id",
+      outcome: "success",
+      detail: {
+        action: "agent_integration_permissions_auto_configured",
+        agentId: "new-agent-id",
+        connectionId: "conn-1",
+        permissions: [
+          { model: "email", operation: "read" },
+          { model: "email", operation: "draft" },
+        ],
+      },
     });
   });
 });
@@ -1256,7 +1658,7 @@ describe("MCP auto-grant from recommendedTools (T9)", () => {
       body: JSON.stringify({ name: "Merlin", templateId: "github-pr-reviewer" }),
     });
 
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     expect(response.status).toBe(201);
 
     expect(permissionsInsertValuesMock).toHaveBeenCalledWith([
@@ -1288,9 +1690,12 @@ describe("MCP auto-grant from recommendedTools (T9)", () => {
         detail: expect.objectContaining({
           action: "agent_integration_permissions_auto_configured",
           agentId: "new-agent-id",
-          permissions: expect.arrayContaining([
-            { connectionId: "gh-conn-1", model: "mcp", operation: "pull_request_read" },
-          ]),
+          connectionId: "gh-conn-1",
+          permissions: [
+            { model: "mcp", operation: "pull_request_read" },
+            { model: "mcp", operation: "list_pull_requests" },
+            { model: "mcp", operation: "pull_request_review_write" },
+          ],
         }),
       })
     );
@@ -1305,7 +1710,7 @@ describe("MCP auto-grant from recommendedTools (T9)", () => {
       body: JSON.stringify({ name: "Merlin", templateId: "github-pr-reviewer" }),
     });
 
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     expect(response.status).toBe(201);
     expect(permissionsInsertValuesMock).not.toHaveBeenCalled();
   });
@@ -1332,7 +1737,7 @@ describe("MCP auto-grant from recommendedTools (T9)", () => {
       body: JSON.stringify({ name: "Merlin", templateId: "github-pr-reviewer" }),
     });
 
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     const body = await response.json();
 
     expect(response.status).toBe(201);
@@ -1367,7 +1772,7 @@ describe("MCP auto-grant from recommendedTools (T9)", () => {
       body: JSON.stringify({ name: "Merlin", templateId: "github-pr-reviewer" }),
     });
 
-    const body = await (await POST(request)).json();
+    const body = await (await POST(request, routeContext())).json();
     expect(body.skippedMcpTools).toEqual([]);
   });
 
@@ -1381,7 +1786,7 @@ describe("MCP auto-grant from recommendedTools (T9)", () => {
       body: JSON.stringify({ name: "Merlin", templateId: "github-pr-reviewer" }),
     });
 
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     const body = await response.json();
 
     expect(response.status).toBe(201);
@@ -1412,7 +1817,7 @@ describe("MCP auto-grant from recommendedTools (T9)", () => {
       body: JSON.stringify({ name: "Merlin", templateId: "github-pr-reviewer" }),
     });
 
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     expect(response.status).toBe(201);
 
     expect(permissionsInsertValuesMock).toHaveBeenCalledWith([
@@ -1438,7 +1843,7 @@ describe("MCP auto-grant from recommendedTools (T9)", () => {
       body: JSON.stringify({ name: "Merlin", templateId: "github-pr-reviewer" }),
     });
 
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     expect(response.status).toBe(201);
     expect(permissionsInsertValuesMock).not.toHaveBeenCalled();
   });
@@ -1451,7 +1856,7 @@ describe("MCP auto-grant from recommendedTools (T9)", () => {
       body: JSON.stringify({ name: "Dev Assistant", templateId: "custom" }),
     });
 
-    await POST(request);
+    await POST(request, routeContext());
     expect(permissionsInsertValuesMock).not.toHaveBeenCalled();
   });
 });

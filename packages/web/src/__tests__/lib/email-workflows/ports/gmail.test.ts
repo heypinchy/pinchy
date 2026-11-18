@@ -1,0 +1,372 @@
+// Unit tests for the Gmail mailbox port.
+//
+// Two halves: the pure mapping (Gmail's header-array + MIME-part-tree shape ->
+// the lister's EmailReadResult), and the listing query — where Gmail has a trap
+// the pinchy-email plugin already paid for (see the labelIds guard below).
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+
+import { mapGmailMessage, createGmailPort } from "@/lib/email-workflows/ports/gmail";
+import { resetInsecureMockWarningsForTest } from "@/lib/integrations/insecure-mock-base-url";
+
+const credentials = {
+  accessToken: "test-access-token",
+  refreshToken: "test-refresh-token",
+  expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+};
+
+function jsonResponse(body: unknown) {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+describe("Gmail port — mapGmailMessage", () => {
+  it("maps headers into an EmailReadResult", () => {
+    const mapped = mapGmailMessage({
+      folder: "INBOX",
+      message: {
+        id: "18c0ff33",
+        internalDate: "1752483600000",
+        payload: {
+          mimeType: "multipart/mixed",
+          headers: [
+            { name: "From", value: "Clemens Helm <clemens@example.com>" },
+            { name: "To", value: "billing@acme.test, ops@acme.test" },
+            { name: "Cc", value: "archive@acme.test" },
+            { name: "Subject", value: "Invoice 4711" },
+            { name: "Date", value: "Tue, 14 Jul 2026 09:00:00 +0000" },
+            { name: "Message-ID", value: "<msg-4711@example.com>" },
+          ],
+        },
+      },
+    });
+
+    expect(mapped.id).toBe("18c0ff33");
+    // Raw header values are passed through: the lister is what normalizes
+    // `Display Name <addr>` and splits the recipient list, and it already
+    // handles quoted names containing commas.
+    expect(mapped.from).toBe("Clemens Helm <clemens@example.com>");
+    expect(mapped.to).toBe("billing@acme.test, ops@acme.test");
+    expect(mapped.cc).toBe("archive@acme.test");
+    expect(mapped.subject).toBe("Invoice 4711");
+    expect(mapped.date).toBe("Tue, 14 Jul 2026 09:00:00 +0000");
+    expect(mapped.folder).toBe("INBOX");
+    expect(mapped.messageIdHeader).toBe("<msg-4711@example.com>");
+    expect(mapped.attachments).toEqual([]);
+  });
+
+  it("reads headers case-insensitively", () => {
+    // RFC 5322 header names are case-insensitive and Gmail echoes whatever the
+    // sender wrote, so a `MESSAGE-ID`/`from` spelling must not silently drop the
+    // field (a missing Message-ID is invisible; a missing Date is a dropped mail).
+    const mapped = mapGmailMessage({
+      folder: "INBOX",
+      message: {
+        id: "m1",
+        internalDate: "1752483600000",
+        payload: {
+          headers: [
+            { name: "from", value: "a@x.test" },
+            { name: "SUBJECT", value: "shouty" },
+            { name: "message-id", value: "<lower@x.test>" },
+          ],
+        },
+      },
+    });
+
+    expect(mapped.from).toBe("a@x.test");
+    expect(mapped.subject).toBe("shouty");
+    expect(mapped.messageIdHeader).toBe("<lower@x.test>");
+  });
+
+  it("falls back to internalDate when the message has no Date header", () => {
+    // Same trap as IMAP: without the fallback the lister rejects it as an
+    // unparseable date and its poison-message isolation drops a real email.
+    const mapped = mapGmailMessage({
+      folder: "INBOX",
+      message: {
+        id: "m2",
+        internalDate: "1752576600000", // ms since epoch, as a string
+        payload: { headers: [{ name: "From", value: "a@x.test" }] },
+      },
+    });
+
+    expect(mapped.date).toBe(new Date(1752576600000).toISOString());
+  });
+
+  it("collects real attachments from the part tree but skips inline parts", () => {
+    const mapped = mapGmailMessage({
+      folder: "INBOX",
+      message: {
+        id: "m3",
+        internalDate: "1752483600000",
+        payload: {
+          mimeType: "multipart/mixed",
+          headers: [],
+          parts: [
+            { mimeType: "text/plain", filename: "", headers: [] },
+            {
+              mimeType: "multipart/related",
+              filename: "",
+              headers: [],
+              parts: [
+                {
+                  mimeType: "image/png",
+                  filename: "logo.png",
+                  headers: [{ name: "Content-Disposition", value: 'inline; filename="logo.png"' }],
+                  body: { attachmentId: "a1" },
+                },
+              ],
+            },
+            {
+              mimeType: "application/pdf",
+              filename: "invoice.pdf",
+              headers: [
+                { name: "Content-Disposition", value: 'attachment; filename="invoice.pdf"' },
+              ],
+              body: { attachmentId: "a2" },
+            },
+          ],
+        },
+      },
+    });
+
+    // The inline logo is the HTML body's own image — counting it would fire
+    // every workflow's hasAttachment filter on ordinary newsletters.
+    expect(mapped.attachments).toEqual([{ mimeType: "application/pdf", filename: "invoice.pdf" }]);
+  });
+});
+
+describe("Gmail port — mock base-url override", () => {
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValue(jsonResponse({ messages: [] }));
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+    vi.unstubAllEnvs();
+    resetInsecureMockWarningsForTest();
+    vi.restoreAllMocks();
+  });
+
+  it("ignores GMAIL_API_BASE_URL and calls the real Gmail host when the insecure flag is absent", async () => {
+    vi.stubEnv("GMAIL_API_BASE_URL", "http://gmail-mock:9004");
+    // No PINCHY_INSECURE_MAIL_MOCK: the sweep sends the stored access token.
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await createGmailPort(credentials).search({ sinceDays: 14, folder: "INBOX", limit: 50 });
+
+    expect(String(fetchSpy.mock.calls[0][0])).toContain("https://gmail.googleapis.com/gmail/");
+  });
+
+  it("uses GMAIL_API_BASE_URL when the insecure flag is set", async () => {
+    vi.stubEnv("GMAIL_API_BASE_URL", "http://gmail-mock:9004");
+    vi.stubEnv("PINCHY_INSECURE_MAIL_MOCK", "1");
+
+    await createGmailPort(credentials).search({ sinceDays: 14, folder: "INBOX", limit: 50 });
+
+    expect(String(fetchSpy.mock.calls[0][0])).toContain("http://gmail-mock:9004/gmail/");
+  });
+});
+
+describe("Gmail port — listing query", () => {
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValue(jsonResponse({ messages: [] }));
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+  });
+
+  function urlOf(callIndex: number): string {
+    return decodeURIComponent(String(fetchSpy.mock.calls[callIndex][0]));
+  }
+
+  it("scopes the folder with the labelIds API param, never with the q query", async () => {
+    // LOAD-BEARING, and learned the hard way in the pinchy-email plugin: Gmail's
+    // `q` language only documents `in:trash`/`in:spam` for folder scoping.
+    // `label:INBOX` works only via undocumented aliasing in the q parser, and
+    // Gmail search excludes Trash/Spam by default — so scoping a folder through
+    // `q` risks SILENTLY EMPTY results. For a sweep, silently-empty is the worst
+    // possible failure: it reads as "nothing new" and the workflow looks healthy
+    // while quietly processing no mail at all. labelIds is the documented param.
+    const port = createGmailPort(credentials);
+
+    await port.search({ sinceDays: 14, folder: "INBOX", limit: 50 });
+
+    const url = urlOf(0);
+    expect(url).toContain("labelIds=INBOX");
+    expect(url).not.toMatch(/q=[^&]*(in:|label:)/);
+  });
+
+  it("bounds the window with newer_than and the volume with maxResults", async () => {
+    const port = createGmailPort(credentials);
+
+    await port.search({ sinceDays: 14, folder: "INBOX", limit: 50 });
+
+    const url = urlOf(0);
+    expect(url).toContain("newer_than:14d");
+    expect(url).toContain("maxResults=50");
+  });
+
+  it("surfaces a Gmail error instead of reporting an empty mailbox", async () => {
+    fetchSpy.mockResolvedValue(
+      new Response(JSON.stringify({ error: { message: "Invalid Credentials" } }), { status: 401 })
+    );
+    const port = createGmailPort(credentials);
+
+    await expect(port.search({ sinceDays: 14 })).rejects.toThrow(/401|Invalid Credentials/i);
+  });
+
+  it("returns an empty list for a mailbox with no matching mail", async () => {
+    // Gmail omits `messages` entirely (rather than sending []) when nothing
+    // matches — a .map on undefined would crash the whole sweep unit.
+    fetchSpy.mockResolvedValue(jsonResponse({ resultSizeEstimate: 0 }));
+    const port = createGmailPort(credentials);
+
+    await expect(port.search({ sinceDays: 14 })).resolves.toEqual([]);
+  });
+});
+
+describe("Gmail port — label resolution", () => {
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    fetchSpy = vi.spyOn(globalThis, "fetch");
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+  });
+
+  function urlOf(callIndex: number): string {
+    return decodeURIComponent(String(fetchSpy.mock.calls[callIndex][0]));
+  }
+
+  it("resolves a user label's name to its opaque id", async () => {
+    // A system label's id IS its name (INBOX, SPAM, …), which is why upper-casing
+    // the folder worked at all. A user-created label's id is an opaque `Label_17`
+    // and its name is never a valid labelId — so `labelIds=RECEIPTS` is a 400 from
+    // Gmail, and every workflow watching a user label is dead on arrival.
+    fetchSpy
+      .mockResolvedValueOnce(
+        jsonResponse({
+          labels: [
+            { id: "INBOX", name: "INBOX", type: "system" },
+            { id: "Label_17", name: "Receipts", type: "user" },
+          ],
+        })
+      )
+      .mockResolvedValueOnce(jsonResponse({ messages: [] }));
+    const port = createGmailPort(credentials);
+
+    await port.search({ sinceDays: 14, folder: "Receipts", limit: 50 });
+
+    expect(urlOf(0)).toContain("/users/me/labels");
+    expect(urlOf(1)).toContain("labelIds=Label_17");
+  });
+
+  it("spends no round trip on a system label", async () => {
+    // The overwhelmingly common case. A system label's id is its upper-cased
+    // name by definition, so resolving it over the wire would be pure latency.
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ messages: [] }));
+    const port = createGmailPort(credentials);
+
+    await port.search({ sinceDays: 14, folder: "inbox", limit: 50 });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(urlOf(0)).toContain("labelIds=INBOX");
+  });
+
+  it("resolves the label list once per port, not once per search", async () => {
+    fetchSpy
+      .mockResolvedValueOnce(jsonResponse({ labels: [{ id: "Label_17", name: "Receipts" }] }))
+      // A fresh Response per call: a Response body can only be read once, so a
+      // single shared instance would fail the second search on the body, not on
+      // the behaviour under test.
+      .mockImplementation(async () => jsonResponse({ messages: [] }));
+    const port = createGmailPort(credentials);
+
+    await port.search({ sinceDays: 14, folder: "Receipts" });
+    await port.search({ sinceDays: 14, folder: "Receipts" });
+
+    const labelCalls = fetchSpy.mock.calls.filter((call: unknown[]) =>
+      String(call[0]).includes("/labels")
+    );
+    expect(labelCalls).toHaveLength(1);
+  });
+
+  it("fails loudly for a label the mailbox does not have", async () => {
+    // Never fall back to searching the whole mailbox or to INBOX: a workflow
+    // pointed at a renamed/deleted label must surface as the workflow's `error`
+    // status, not quietly act on the wrong mail.
+    fetchSpy.mockResolvedValue(jsonResponse({ labels: [{ id: "Label_17", name: "Receipts" }] }));
+    const port = createGmailPort(credentials);
+
+    await expect(port.search({ sinceDays: 14, folder: "Gone" })).rejects.toThrow(/Gone/);
+  });
+
+  it("reports the label's NAME on read, not its opaque id", async () => {
+    // matchesFilter compares `email.folder` against the workflow's configured
+    // folder — which is the name the user typed, never `Label_17`.
+    fetchSpy
+      .mockResolvedValueOnce(jsonResponse({ labels: [{ id: "Label_17", name: "Receipts" }] }))
+      .mockResolvedValueOnce(jsonResponse({ messages: [{ id: "m1" }] }))
+      .mockResolvedValueOnce(
+        jsonResponse({ id: "m1", internalDate: "1752483600000", payload: { headers: [] } })
+      );
+    const port = createGmailPort(credentials);
+
+    await port.search({ sinceDays: 14, folder: "Receipts" });
+
+    await expect(port.read("m1")).resolves.toMatchObject({ folder: "Receipts" });
+  });
+});
+
+describe("Gmail port — folder round trip", () => {
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    fetchSpy = vi.spyOn(globalThis, "fetch");
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+  });
+
+  it("reports the folder search scoped to, not the default label", async () => {
+    // LOAD-BEARING, and silent when wrong. `read` has no folder argument, so the
+    // port must remember what `search` scoped to — exactly as the IMAP port does
+    // with its open mailbox. Reporting the default instead makes matchesFilter's
+    // folder re-check (`email.folder !== filter.folder`) drop EVERY hydrated mail
+    // of a non-INBOX workflow: no error, no failed run, the workflow stays
+    // `active` and processes nothing. That is the sweep's worst failure mode.
+    fetchSpy
+      .mockResolvedValueOnce(jsonResponse({ messages: [{ id: "m1" }] }))
+      .mockResolvedValueOnce(
+        jsonResponse({ id: "m1", internalDate: "1752483600000", payload: { headers: [] } })
+      );
+    const port = createGmailPort(credentials);
+
+    await port.search({ sinceDays: 14, folder: "SPAM", limit: 50 });
+    const mail = await port.read("m1");
+
+    expect(mail.folder).toBe("SPAM");
+  });
+
+  it("falls back to INBOX when read runs without a preceding scoped search", async () => {
+    fetchSpy.mockResolvedValue(
+      jsonResponse({ id: "m1", internalDate: "1752483600000", payload: { headers: [] } })
+    );
+    const port = createGmailPort(credentials);
+
+    await expect(port.read("m1")).resolves.toMatchObject({ folder: "INBOX" });
+  });
+});

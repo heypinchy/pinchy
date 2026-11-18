@@ -2,7 +2,7 @@ import { db } from "@/db";
 import { users } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { auth } from "@/lib/auth";
-import { seedDefaultAgent } from "@/db/seed";
+import { seedAdminSmithers } from "@/db/seed";
 import { getSetting } from "@/lib/settings";
 import { setOrgTimezone, isValidIanaTimezone } from "@/lib/settings-timezone";
 
@@ -44,7 +44,7 @@ export async function createAdmin(
     // Set admin role directly in DB
     await db.update(users).set({ role: "admin" }).where(eq(users.id, result.user.id));
 
-    await seedDefaultAgent(result.user.id);
+    await seedAdminSmithers(result.user.id);
 
     // A malformed or spoofed browserTimezone must never block account
     // creation: validate before storing and fall back to UTC on invalid input

@@ -14,7 +14,7 @@ export const GET = withAuth(async (_req, _ctx, session) => {
   // Skipping it everywhere else keeps the frequently polled status endpoint
   // free of extra DB work.
   const gatedConfig =
-    session.user.role === "admin" && !isLicenseActive(state) ? await hasGatedConfig() : false;
+    session.user.role === "admin" && !isLicenseActive(state) ? await hasGatedConfig(state) : false;
   return NextResponse.json({
     enterprise: status.active,
     state,

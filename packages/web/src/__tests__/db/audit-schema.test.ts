@@ -8,7 +8,7 @@ describe("audit log schema", () => {
   });
 
   it("actorTypeEnum should have correct values", () => {
-    expect(schema.actorTypeEnum.enumValues).toEqual(["user", "agent", "system"]);
+    expect(schema.actorTypeEnum.enumValues).toEqual(["user", "agent", "system", "api_key"]);
   });
 
   it("should export auditLog table", () => {

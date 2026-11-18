@@ -14,6 +14,18 @@
  * hints into the OpenClaw config so context pruning can kick in before
  * requests bump into the real provider limit.
  *
+ * Source priority for contextWindow: Ollama's own `/api/show` beats the
+ * ollama.com/library/<name> page and the registry manifest when they
+ * disagree. The library page is a marketing figure; `/api/show` is what the
+ * runtime enforces. Check a value with:
+ *
+ *     ollama show <id>:cloud     # "context length" row
+ *
+ * deepseek-v4-pro was the confirmed example (since retired, 2026-11-16):
+ * library page and manifest both said 1M, `/api/show` said 524288, and 524288
+ * was the value here. Don't "reconcile" a `/api/show`-sourced
+ * value back to the library page — re-run the command instead.
+ *
  * Cost is always zero: Ollama Cloud uses subscription pricing (Free / Pro /
  * Max plans — see ollama.com/pricing), not per-token billing. A fabricated
  * per-token rate would make Pinchy's Usage & Costs dashboard lie about
@@ -27,8 +39,23 @@
 export interface OllamaCloudModel {
   /** ID exactly as returned by https://ollama.com/v1/models (no ":cloud" suffix). */
   id: string;
-  /** Native context window in tokens (from ollama.com/library/<name>). */
+  /** Native context window in tokens. Source: `ollama show <name>:cloud`
+   * (i.e. `/api/show`), which wins over the library page when they disagree —
+   * see the source-priority note in the file header. */
   contextWindow: number;
+  /** Optional Pinchy policy cap on the *effective* runtime context budget,
+   * below the native contextWindow. Emitted as OpenClaw's
+   * `models.providers.*.models[].contextTokens`, which the runtime budgets
+   * compaction against (resolveContextWindowInfo, source "modelsConfig") while
+   * contextWindow stays the honest native size. Set ONLY where a model's
+   * quality degrades well before its advertised window — deepseek-v4-pro
+   * (retired 2026-11-16) was the example, capped at 131072.
+   *
+   * NOTE: this is a *static budget cap* (config input) and is a different
+   * concept from the per-turn `context_tokens` / `contextTokens` in
+   * usage-per-turn.ts / db/schema.ts, which is the *measured* context size of a
+   * turn (#767 observability). Same word, opposite direction — don't conflate. */
+  contextTokens?: number;
   /** Pinchy's max output tokens hint. Ollama doesn't publish this, so we use
    * the output-heavy value for Gemini Flash and a conservative 8192 elsewhere. */
   maxTokens: number;
@@ -45,93 +72,11 @@ const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as const;
 // the `OllamaCloudModel` shape.
 export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
   {
-    id: "deepseek-v3.1:671b",
-    contextWindow: 163840,
-    maxTokens: 8192,
-    reasoning: true,
-    vision: false,
-  },
-  {
-    id: "deepseek-v3.2",
-    contextWindow: 163840,
-    maxTokens: 8192,
-    reasoning: true,
-    vision: false,
-  },
-  {
-    id: "deepseek-v4-flash",
-    contextWindow: 1048576,
-    maxTokens: 8192,
-    reasoning: true,
-    vision: false,
-  },
-  {
-    id: "deepseek-v4-pro",
-    contextWindow: 1048576,
-    maxTokens: 8192,
-    reasoning: true,
-    vision: false,
-  },
-  {
-    id: "devstral-2:123b",
-    contextWindow: 262144,
-    maxTokens: 8192,
-    reasoning: false,
-    vision: false,
-  },
-  {
-    // ollama.com/library/devstral-small-2 lists "Text, Image" in the input
-    // types, but the live `/v1/chat/completions` endpoint returns HTTP 400
-    // "Image input is not enabled for this model" on image_url payloads —
-    // confirmed by the empirical API smoke test in #416. Devstral is
-    // Mistral's coding series, not a vision model; the library page is
-    // misleading. Flagged `vision: false` so it isn't picked as an image
-    // model fallback.
-    id: "devstral-small-2:24b",
-    contextWindow: 393216,
-    maxTokens: 8192,
-    reasoning: false,
-    vision: false,
-  },
-  {
-    // Capable vision/long-context model for chat-only agents, but it leaks
-    // tool calls as plain text ("default_api" signature) in agentic sessions —
-    // observed in production 2026-06-11. The resolver blocklist (-preview +
-    // tools) keeps it out of every tool slot; do not hand-pick it for agents
-    // that use tools.
-    id: "gemini-3-flash-preview",
-    contextWindow: 1048576,
-    maxTokens: 65536,
-    reasoning: true,
-    vision: true,
-  },
-  {
     id: "gemma4:31b",
     contextWindow: 262144,
     maxTokens: 8192,
     reasoning: true,
     vision: true,
-  },
-  {
-    id: "glm-4.7",
-    contextWindow: 202752,
-    maxTokens: 8192,
-    reasoning: true,
-    vision: false,
-  },
-  {
-    id: "glm-5",
-    contextWindow: 202752,
-    maxTokens: 8192,
-    reasoning: true,
-    vision: false,
-  },
-  {
-    id: "glm-5.1",
-    contextWindow: 202752,
-    maxTokens: 8192,
-    reasoning: true,
-    vision: false,
   },
   {
     // GLM-5.2, verified against the live API on 2026-06-17: structured
@@ -161,13 +106,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     vision: false,
   },
   {
-    id: "kimi-k2.5",
-    contextWindow: 262144,
-    maxTokens: 8192,
-    reasoning: true,
-    vision: true,
-  },
-  {
     id: "kimi-k2.6",
     contextWindow: 262144,
     maxTokens: 8192,
@@ -176,37 +114,25 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
   },
   {
     // Tools verified 4/4 rounds (structured tool_call + clean multi-turn,
-    // 2026-06-25) — reliably tool-capable, no multi-turn-500 regression. The
-    // library page lists "vision" (image/video via MoonViT), but the live
-    // /v1/chat/completions returns HTTP 500 on image_url payloads (2026-06-25,
-    // 2 rounds), so vision:false — the page lies and we never hand it an image.
-    // `reasoning:true` from the library "thinking" tag (kimi-k2.5/2.6 parity).
+    // 2026-06-25) — reliably tool-capable, no multi-turn-500 regression.
+    // `reasoning:true` from the library "thinking" tag (kimi-k2.6 parity).
+    //
+    // vision:true since 2026-07-30. It was false from 2026-06-25, when
+    // /v1/chat/completions HTTP 500'd on every image_url payload (2 rounds).
+    // Re-probed 2026-07-30 with a 512x512 PNG carrying a random 4-digit number
+    // and a coloured circle: HTTP 200 and BOTH read correctly in 6/6 trials.
+    // Guessing the number alone is ~1/9000 per trial, so this is real sight,
+    // not a lucky pass — the serving path was fixed upstream.
+    //
+    // Read the old 500 in the light of the fixture bug fixed in the same
+    // change: verify-ollama-cloud-vision.mjs pinned a 64x64 PNG that Ollama's
+    // decoders now refuse outright, and this model still 500s on it today. The
+    // 6/6 above used a real image, which is why the probe now sends 512x512.
     id: "kimi-k2.7-code",
     contextWindow: 262144,
     maxTokens: 8192,
     reasoning: true,
-    vision: false,
-  },
-  {
-    id: "minimax-m2.1",
-    contextWindow: 204800,
-    maxTokens: 8192,
-    reasoning: false,
-    vision: false,
-  },
-  {
-    id: "minimax-m2.5",
-    contextWindow: 202752,
-    maxTokens: 8192,
-    reasoning: true,
-    vision: false,
-  },
-  {
-    id: "minimax-m2.7",
-    contextWindow: 204800,
-    maxTokens: 8192,
-    reasoning: true,
-    vision: false,
+    vision: true,
   },
   {
     // ollama.com/library/minimax-m3 tags: "vision tools thinking cloud",
@@ -223,41 +149,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     vision: true,
   },
   {
-    id: "ministral-3:3b",
-    contextWindow: 262144,
-    maxTokens: 8192,
-    reasoning: false,
-    vision: true,
-  },
-  {
-    id: "ministral-3:8b",
-    contextWindow: 262144,
-    maxTokens: 8192,
-    reasoning: false,
-    vision: true,
-  },
-  {
-    id: "ministral-3:14b",
-    contextWindow: 262144,
-    maxTokens: 8192,
-    reasoning: false,
-    vision: true,
-  },
-  {
-    id: "mistral-large-3:675b",
-    contextWindow: 262144,
-    maxTokens: 8192,
-    reasoning: false,
-    vision: true,
-  },
-  {
-    id: "nemotron-3-nano:30b",
-    contextWindow: 1048576,
-    maxTokens: 8192,
-    reasoning: true,
-    vision: false,
-  },
-  {
     id: "nemotron-3-super",
     contextWindow: 262144,
     maxTokens: 8192,
@@ -272,40 +163,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     contextWindow: 262144,
     maxTokens: 8192,
     reasoning: true,
-    vision: false,
-  },
-  {
-    id: "qwen3-coder-next",
-    contextWindow: 262144,
-    maxTokens: 8192,
-    reasoning: false,
-    vision: false,
-  },
-  {
-    id: "qwen3-coder:480b",
-    contextWindow: 262144,
-    maxTokens: 8192,
-    reasoning: false,
-    vision: false,
-  },
-  {
-    // The ollama.com/library/qwen3.5 page lists image input, but the live
-    // /v1/chat/completions endpoint hallucinates image contents (wrong number
-    // AND wrong color across distinct test images) rather than rejecting them
-    // — it does not actually see images. qwen3.5 is a text/reasoning model,
-    // not a VL model (contrast qwen3-vl). Flagged vision:false so it is never
-    // picked as an image model or offered as a vision-capable choice.
-    id: "qwen3.5:397b",
-    contextWindow: 262144,
-    maxTokens: 8192,
-    reasoning: true,
-    vision: false,
-  },
-  {
-    id: "rnj-1:8b",
-    contextWindow: 32768,
-    maxTokens: 8192,
-    reasoning: false,
     vision: false,
   },
 ] as const satisfies readonly OllamaCloudModel[];

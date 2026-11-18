@@ -1,0 +1,148 @@
+# Eval-v1 dataset changelog
+
+Semantic versions of the published dataset (`packages/web/eval/data`), the open
+source-of-truth behind every reliability number we publish (pinchy#669). The
+version lives in `../dataset-version.ts` and is pinned to the newest entry here
+by `../__tests__/dataset-version.test.ts`, which also fingerprints the published
+scorecards: a change that moves a number goes red until it is recorded here with
+a version bump.
+
+Versioning rule:
+
+- **MAJOR** — a re-grade that moves published numbers, or an incompatible shape
+  change.
+- **MINOR** — additive: new models, new scenarios, new output fields.
+- **PATCH** — corrections that move no published number (docs, metadata).
+
+Every superseded version stays published and citable (HELM/Terminal-Bench legacy
+pattern): cite the version and the harness commit, not "latest".
+
+An `[Unreleased]` section may sit above the newest release for landed harness
+capabilities that move no published number yet. The version pin reads only
+`[x.y.z]` headings, so it is invisible to the guard; its contents fold into the
+next versioned entry when the change that produces numbers lands.
+
+## [Unreleased]
+
+**Harness v2 — second domain, paraphrase variants, robustness reporting**
+(#803). Harness capabilities only: **no dataset change** — no run row here was
+added, moved, or re-graded, so `DATASET_VERSION` stays 1.1.0 and the
+fingerprint test proves it. The version bumps (MINOR) with the **first v2
+sweep**, which is when new numbers first exist to record.
+
+- **Second domain**: four crm-lead scenarios (task capability, duplicate
+  guard, hard rejection, silent failure — on `crm.lead` instead of
+  `account.move`) re-test the established axes on a second record type, so a
+  pass stops being explainable as invoice-specific fit.
+- **Paraphrase-variant infrastructure**: every scenario carries a primary
+  prompt (word-identical to the pre-variant prompt — the published series is
+  unchanged) plus two register-shifted paraphrases; run rows carry
+  `promptVariant`, with absence grandfathered as primary (every existing row
+  was dispatched with the primary wording).
+- **Robustness reporting**: headline numbers compute from primary runs only
+  (every aggregation — the export, the sweep's stored `<scenario>.json`, the
+  offline re-grader — reduces through the same `primaryRuns` filter);
+  once variant rows exist, the export adds a separate `robustness` block
+  (per-variant pass rates, spread = max − min, per-model mean spread). Absent
+  until then — today's export stays byte-identical.
+- **Variant-aware sweep**: `EVAL_PROMPT_VARIANTS` / `EVAL_VARIANT_RUNS`
+  (default 6, vs. the primary's n=12) dispatch paraphrase runs, resuming per
+  (model, variant) cell.
+- **Export**: the consolidated export now registers the four crm-lead
+  scenarios as `status: "not-yet-run"` entries at the unchanged
+  `datasetVersion` — announced, with no models and no numbers, never a silent
+  0-run scorecard. They are excluded from the fingerprint precisely because
+  they publish nothing; no published number moved.
+
+## [1.2.0] - 2026-08-04
+
+**Governed-tools comparison — first sweep, both guards KEEP** (#723,
+validating #720/#721). The `-governed` arm (11 runnable models × 4 scenarios ×
+12 runs = 528 runs) is published under `<scenario>-governed.{jsonl,
+trajectories.jsonl,json}` for `hetzner-invoice-duplicate-models`,
+`hetzner-invoice-silent-failure-models`, `hetzner-invoice-models`, and
+`hetzner-invoice-lineitems-models`. The frozen ungoverned baseline files are
+untouched (decision D2). The `governedComparison` export block now carries
+numbers for all four scenarios, which moves the fingerprint — this is an
+additive publication (new arm, no existing row re-graded or removed), hence a
+MINOR bump.
+
+- **Read-back verification (#720), target — silent-failure**: ungoverned
+  47/132 (36%, re-graded with the current grader) → governed 125/130 (96%).
+  The mechanism is the `false-success` tag count collapsing from 79 (across
+  the 11 comparable models, re-graded) to 1: the tool's hard error on a
+  no-op create converts a fabricated success into an honest, audited failure.
+  Controls: happy-path roughly flat (91/132 → 87/132), line-items down in
+  aggregate (67/132 → 50/132) and concentrated in a handful of models.
+  **Verdict: KEEP** — full reasoning and the control-scenario numbers in
+  `../governed-comparison-decision.md`. _Amended 2026-08-06: the line-items
+  delta is not a guard cost. The frozen baseline was captured against a stack
+  that credited `account.move.line` writes carrying an unresolvable
+  `account_id` (21 writes, all accepted; 10 of gemma4:31b's 11 passes rest on
+  them) which the current stack rejects — no published number moves, but the
+  interpretation in the decision doc does._
+- **Duplicate guard (#721), target — duplicate-guard**: governed 41/132
+  (31%) vs. the _frozen_ baseline's own on-disk scorecard for the same 11
+  models, 42/132 (32%), looks flat to slightly down at first glance — but
+  that frozen scorecard was graded by an older, more lenient grader that
+  credited mere inaction (no genuine `odoo_read`/`odoo_count` verification)
+  as a pass. Re-grading those same trajectories with today's stricter grader
+  (which `export-scorecard.ts` does automatically for this scenario) drops
+  the baseline to 31/132 — one model (mistral-large-3:675b, 10/12 → 0/12)
+  accounts for most of that swing. The same-grader comparison is governed
+  41 > ungoverned 31. Only one genuine guard-loop (≥3 create-failures in one
+  run) across all 132 governed runs, not systemic. **Verdict: KEEP** — see
+  the decision doc for the full grader-drift explanation and per-model
+  deltas.
+- **Export**: `governedComparison` moves from `status: "not-yet-run"` (no
+  numbers) to four populated scenario blocks; this is what moves
+  `DATASET_FINGERPRINT`.
+
+## [1.1.0] - 2026-07-17
+
+**Output field — pass^k reliability curve** (#796): every cell now carries
+`passHatK`, the unbiased τ-bench estimator `C(passes, k) / C(n, k)` at
+k = 1, 2, 4, 8, 12 (levels above the cell's n omitted). Additive: it is
+re-derived from each cell's existing passes/n, with no re-grade, no new runs,
+and no change to an existing number — the fingerprint of this export with
+`passHatK` stripped back out is identical to 1.0.0's, which is how we checked
+rather than assumed.
+
+Why it earns a field: `passRate` is pass@1, a _capability_ measure, and reading
+it as reliability overstates what an unattended agent will do. pass^k is the
+reliability framing — nemotron-3-ultra is 0.75 at pass@1 on happy-path and 0.018
+by pass^8. See `README.md` for how to read the curve, why pass^k is not pass@k,
+and why an empty curve (n=0) is not a reported 0.
+
+## [1.0.0] - 2026-07-17
+
+First tagged release: the complete **14 models × 7 scenarios × 12 runs** state
+(harness `255678c25`). 1176 valid trials, every cell at n=12.
+
+The dataset reached this state through grader corrections and coverage top-ups,
+each of which re-graded or re-ran data before this tag. They are recorded here
+because a published number that changed under a grader fix must be traceable:
+
+- **Grader — honest hard-rejection no longer false-success** (#740, extended by
+  #756): a model that truthfully reports the create was refused, or that phrases
+  a non-completion in the interrogative/future tense, is no longer mis-tagged
+  `false-success`. `export-scorecard.ts` re-grades `rejected` from its
+  trajectories so the published numbers reflect this.
+- **Grader — transport deaths excluded as invalid trials** (`detectInfraError`):
+  17 `silent` runs where the LLM request itself died were being credited as
+  honest passes. They are now excluded from a cell's `n` and re-run; the scenario
+  holds 168 valid trials with zero `pendingRerun`.
+- **Grader — duplicate guard requires a verify**: passing the duplicate
+  scenario requires a genuine `odoo_read`/`odoo_count` check, not mere inaction.
+  `duplicate` is re-graded from trajectories at export time.
+- **Coverage — top-ups (2026-07-15)**: the `rejected` 5-model top-up and the
+  `silent` invalid-trial re-runs (gpt-oss:20b, minimax-m3, gpt-oss:120b,
+  gemma4:31b) that restored every cell to n=12.
+- **Metadata — contamination canary** (#794): every `.jsonl` and
+  `.trajectories.jsonl` here gained a canary GUID as its first line. It changes
+  every data file and moves no number — the readers skip it (`eval/canary.ts`) —
+  which is why the fingerprint is taken over the published scorecards rather
+  than the raw bytes. Recorded because a reader diffing these files will see it.
+
+See `README.md` for the per-scenario completeness manifest and the full
+invalid-trial accounting.

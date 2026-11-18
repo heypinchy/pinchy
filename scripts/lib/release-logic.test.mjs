@@ -1,10 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   parseAndValidateVersion,
+  compareVersions,
   bumpPackageJson,
   buildTagName,
   buildCommitMessage,
+  buildPushCommand,
   assertUpgradingSectionExists,
   extractUpgradeNotes,
   bumpEnvExample,
@@ -13,8 +18,20 @@ import {
   assertNoStaleUpgradeSections,
   deriveStagingChecklist,
   checkReleaseVerification,
-  bumpReadmeComposePin,
+  checkCiGreenForHead,
+  parseVerifiedSha,
+  bumpReadmeQuickstartPins,
+  isReleasableBranch,
+  findSkippedReleases,
+  openNextUpgradeSection,
+  buildNextUpgradeSkeleton,
+  assertUpgradeNotesWritten,
+  movingTagForRef,
+  stagingImageTagForBranch,
+  stagingPinAdvice,
+  nextDevVersion,
 } from "./release-logic.mjs";
+import { checkVersionIdentity } from "./version-identity.mjs";
 
 // parseAndValidateVersion
 
@@ -47,7 +64,11 @@ test("bumpPackageJson updates version field", () => {
 });
 
 test("bumpPackageJson preserves other fields", () => {
-  const input = JSON.stringify({ name: "pinchy", version: "0.2.0", private: true }, null, 2);
+  const input = JSON.stringify(
+    { name: "pinchy", version: "0.2.0", private: true },
+    null,
+    2,
+  );
   const output = bumpPackageJson(input, "0.3.0");
   const parsed = JSON.parse(output);
   assert.equal(parsed.name, "pinchy");
@@ -149,6 +170,17 @@ test("buildCommitMessage follows conventional commit format", () => {
   assert.equal(buildCommitMessage("0.3.0"), "chore: release v0.3.0");
 });
 
+// buildPushCommand
+
+test("buildPushCommand pushes the branch and the tag in one atomic push", () => {
+  // Two separate pushes could land the tag without the -dev commit (or the
+  // reverse) when the second one fails — a release half-published.
+  assert.equal(
+    buildPushCommand("v0.10.3"),
+    "git push --atomic origin HEAD refs/tags/v0.10.3",
+  );
+});
+
 // assertUpgradingSectionExists
 
 test("assertUpgradingSectionExists accepts %%PINCHY_VERSION%% placeholder", () => {
@@ -163,7 +195,9 @@ test("assertUpgradingSectionExists accepts %%PINCHY_VERSION%% placeholder", () =
     "",
     "Notes go here.",
   ].join("\n");
-  assert.doesNotThrow(() => assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"));
+  assert.doesNotThrow(() =>
+    assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"),
+  );
 });
 
 test("assertUpgradingSectionExists accepts concrete target version", () => {
@@ -178,7 +212,9 @@ test("assertUpgradingSectionExists accepts concrete target version", () => {
     "",
     "Notes.",
   ].join("\n");
-  assert.doesNotThrow(() => assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"));
+  assert.doesNotThrow(() =>
+    assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"),
+  );
 });
 
 test("assertUpgradingSectionExists rejects missing section", () => {
@@ -200,7 +236,9 @@ test("assertUpgradingSectionExists rejects stale section (wrong 'from' version)"
 test("assertUpgradingSectionExists is whitespace-tolerant in the heading", () => {
   const mdx =
     "##   Upgrading  from  v0.4.4  to  %%PINCHY_VERSION%%  \n\n### Breaking changes\n\nNone.\n\n### Upgrade notes\n\nNotes.\n";
-  assert.doesNotThrow(() => assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"));
+  assert.doesNotThrow(() =>
+    assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"),
+  );
 });
 
 test("assertUpgradingSectionExists error message suggests the heading to add", () => {
@@ -222,7 +260,9 @@ None.
 
 Standard upgrade.
 `;
-  assert.doesNotThrow(() => assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"));
+  assert.doesNotThrow(() =>
+    assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"),
+  );
 });
 
 test("assertUpgradingSectionExists rejects a section missing the Breaking changes subsection", () => {
@@ -309,7 +349,8 @@ test("extractUpgradeNotes replaces %%PINCHY_VERSION%% with v<target>", () => {
 });
 
 test("extractUpgradeNotes returns empty string when section is missing", () => {
-  const mdx = "# Upgrading Pinchy\n\n## Upgrading from v0.4.2 to v0.4.3\n\nOld.\n";
+  const mdx =
+    "# Upgrading Pinchy\n\n## Upgrading from v0.4.2 to v0.4.3\n\nOld.\n";
   assert.equal(extractUpgradeNotes(mdx, "0.4.4", "0.5.0"), "");
 });
 
@@ -381,7 +422,10 @@ test("bumpEnvExample throws when PINCHY_VERSION line is missing", () => {
   const input = `# Only optional vars, no PINCHY_VERSION
 # DB_PASSWORD=
 `;
-  assert.throws(() => bumpEnvExample(input, "0.5.0"), /No PINCHY_VERSION= line in \.env\.example/);
+  assert.throws(
+    () => bumpEnvExample(input, "0.5.0"),
+    /No PINCHY_VERSION= line in \.env\.example/,
+  );
 });
 
 test("bumpEnvExample preserves order and other variables when many exist", () => {
@@ -402,15 +446,18 @@ BAZ=qux
   assert.equal(matches.length, 1);
 });
 
-// bumpReadmeComposePin — keeps the README quick-start curl pin on the released
-// tag so a fresh one-command install is reproducible. Orphaned before this:
-// the pin sat on v0.5.7 through the v0.5.8 and v0.6.0 releases.
+// bumpReadmeQuickstartPins — keeps BOTH README quick-start pins on the released
+// tag so a fresh install is reproducible: the curl'd compose URL and the
+// PINCHY_VERSION= line that compose file resolves its image tags from.
+// Orphaned before this: the curl pin sat on v0.5.7 through the v0.5.8 and
+// v0.6.0 releases.
 
-test("bumpReadmeComposePin updates the pinned docker-compose tag, preserves the rest", () => {
+test("bumpReadmeQuickstartPins updates both quick-start pins, preserves the rest", () => {
   const input = `## Quick Start
 
 \`\`\`bash
 curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.5.7/docker-compose.yml -o docker-compose.yml
+echo "PINCHY_VERSION=v0.5.7" > .env
 docker compose up -d
 \`\`\`
 `;
@@ -418,26 +465,60 @@ docker compose up -d
 
 \`\`\`bash
 curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.6.0/docker-compose.yml -o docker-compose.yml
+echo "PINCHY_VERSION=v0.6.0" > .env
 docker compose up -d
 \`\`\`
 `;
-  assert.equal(bumpReadmeComposePin(input, "0.6.0"), expected);
+  assert.equal(bumpReadmeQuickstartPins(input, "0.6.0"), expected);
 });
 
-test("bumpReadmeComposePin throws when the pinned docker-compose URL is missing", () => {
+// The regression this pairing exists for: bumping the compose URL alone leaves
+// the reader curling the new release's compose file while pinning the previous
+// release's images. That starts cleanly — no error anywhere — and silently runs
+// the wrong software, which is worse than the stale-but-consistent pin.
+test("bumpReadmeQuickstartPins leaves no pin behind on the previous version", () => {
+  const input = [
+    "curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.9.1/docker-compose.yml -o docker-compose.yml",
+    'echo "PINCHY_VERSION=v0.9.1" > .env',
+    "docker compose up -d",
+  ].join("\n");
+  const bumped = bumpReadmeQuickstartPins(input, "0.10.0");
+  assert.doesNotMatch(
+    bumped,
+    /v0\.9\.1/,
+    `a v0.9.1 pin survived the bump: ${bumped}`,
+  );
+  assert.match(bumped, /pinchy\/v0\.10\.0\/docker-compose\.yml/);
+  assert.match(bumped, /PINCHY_VERSION=v0\.10\.0/);
+});
+
+test("bumpReadmeQuickstartPins throws when the pinned docker-compose URL is missing", () => {
   const input = `## Quick Start\n\nNo pinned compose URL here.\n`;
   assert.throws(
-    () => bumpReadmeComposePin(input, "0.6.0"),
+    () => bumpReadmeQuickstartPins(input, "0.6.0"),
     /No pinned docker-compose URL in README\.md/,
   );
 });
 
-test("bumpReadmeComposePin replaces any prior version, not just a specific one", () => {
+// A missing PINCHY_VERSION pin is an error, not a no-op: silently skipping it
+// is exactly how one half of the pair drifts behind the other.
+test("bumpReadmeQuickstartPins throws when the PINCHY_VERSION pin is missing", () => {
   const input =
     "curl https://raw.githubusercontent.com/heypinchy/pinchy/v0.4.12/docker-compose.yml -o docker-compose.yml\n";
+  assert.throws(
+    () => bumpReadmeQuickstartPins(input, "0.6.0"),
+    /No PINCHY_VERSION=v<version> pin in README\.md/,
+  );
+});
+
+test("bumpReadmeQuickstartPins replaces any prior version, not just a specific one", () => {
+  const input =
+    "curl https://raw.githubusercontent.com/heypinchy/pinchy/v0.4.12/docker-compose.yml -o docker-compose.yml\n" +
+    'echo "PINCHY_VERSION=v0.4.12" > .env\n';
   assert.equal(
-    bumpReadmeComposePin(input, "0.6.0"),
-    "curl https://raw.githubusercontent.com/heypinchy/pinchy/v0.6.0/docker-compose.yml -o docker-compose.yml\n",
+    bumpReadmeQuickstartPins(input, "0.6.0"),
+    "curl https://raw.githubusercontent.com/heypinchy/pinchy/v0.6.0/docker-compose.yml -o docker-compose.yml\n" +
+      'echo "PINCHY_VERSION=v0.6.0" > .env\n',
   );
 });
 
@@ -525,6 +606,14 @@ test("finalizeUpgradeSection is a no-op when no matching section exists", () => 
   assert.equal(finalizeUpgradeSection(mdx, "0.5.8", "0.6.0"), mdx);
 });
 
+test("compareVersions orders numerically, not lexically", () => {
+  // The trap this exists for: "0.10.0" < "0.9.0" as strings.
+  assert.ok(compareVersions("0.9.0", "0.10.0") < 0);
+  assert.ok(compareVersions("0.10.0", "0.9.0") > 0);
+  assert.equal(compareVersions("0.9.0", "0.9.0"), 0);
+  assert.ok(compareVersions("0.9.1", "0.9.0") > 0);
+});
+
 // assertNoStaleUpgradeSections — CI guard against unfrozen / drifted sections.
 
 test("assertNoStaleUpgradeSections passes when the single placeholder section matches latest", () => {
@@ -551,6 +640,40 @@ test("assertNoStaleUpgradeSections passes with zero placeholder sections (post-r
     "Older.",
   ].join("\n");
   assert.doesNotThrow(() => assertNoStaleUpgradeSections(mdx, "0.6.0"));
+});
+
+// The release-branch workflow: v0.9.0 was cut on release/0.9, so only that
+// branch took the version bump. main stays on 0.8.0 until its own next cut,
+// while its newest frozen section already reads v0.9.0. Reading package.json
+// alone made `from v0.9.0` unopenable on main — which is how d7ea428d's upgrade
+// note ended up inside the frozen v0.9.0 section.
+test("assertNoStaleUpgradeSections accepts a 'from' the file says is released but package.json has not caught up to", () => {
+  const mdx = [
+    "## Upgrading from v0.9.0 to %%PINCHY_VERSION%%",
+    "",
+    "Current, on main.",
+    "",
+    "## Upgrading from v0.8.0 to v0.9.0",
+    "",
+    "Frozen — cut on release/0.9, so main never bumped package.json.",
+  ].join("\n");
+  assert.doesNotThrow(() => assertNoStaleUpgradeSections(mdx, "0.8.0"));
+});
+
+test("assertNoStaleUpgradeSections still throws on a 'from' newer than anything released", () => {
+  const mdx = [
+    "## Upgrading from v1.0.0 to %%PINCHY_VERSION%%",
+    "",
+    "Invented a release that never happened.",
+    "",
+    "## Upgrading from v0.8.0 to v0.9.0",
+    "",
+    "Frozen.",
+  ].join("\n");
+  assert.throws(
+    () => assertNoStaleUpgradeSections(mdx, "0.8.0"),
+    /stale upgrade-notes section/i,
+  );
 });
 
 test("assertNoStaleUpgradeSections throws when the placeholder section's 'from' lags the latest tag (the v0.5.8 miss)", () => {
@@ -637,7 +760,10 @@ const CHECKLIST_MDX = [
 test("deriveStagingChecklist extracts #### subheadings as items, flagging breaking ones", () => {
   const items = deriveStagingChecklist(CHECKLIST_MDX, "0.5.8", "0.6.0");
   assert.deepEqual(items, [
-    { title: "Telegram and web no longer share one conversation", breaking: true },
+    {
+      title: "Telegram and web no longer share one conversation",
+      breaking: true,
+    },
     { title: "Multiple chats per agent", breaking: false },
     { title: "Sturdier streaming and reconnects", breaking: false },
   ]);
@@ -735,12 +861,907 @@ test("checkReleaseVerification fails on SHA mismatch", () => {
 });
 
 test("checkReleaseVerification fails when no attestation is provided", () => {
-  const r = checkReleaseVerification({ verifiedSha: "", headSha: "abc1234def" });
+  const r = checkReleaseVerification({
+    verifiedSha: "",
+    headSha: "abc1234def",
+  });
   assert.equal(r.ok, false);
   assert.match(r.message, /--verified|attestation|staging/i);
 });
 
 test("checkReleaseVerification rejects a too-short verified SHA", () => {
-  const r = checkReleaseVerification({ verifiedSha: "abc", headSha: "abc1234def567" });
+  const r = checkReleaseVerification({
+    verifiedSha: "abc",
+    headSha: "abc1234def567",
+  });
   assert.equal(r.ok, false);
+});
+
+// parseVerifiedSha — reads the attestation flag off argv.
+
+test("parseVerifiedSha reads --verified=<sha>", () => {
+  assert.equal(
+    parseVerifiedSha(["node", "release.mjs", "0.9.0", "--verified=abc1234def"]),
+    "abc1234def",
+  );
+});
+
+test("parseVerifiedSha reads the space-separated --verified <sha> form", () => {
+  // A plausible typo. Returning undefined here would report "no attestation
+  // provided" at somebody who provided one — the exact confusion this gate
+  // exists to remove.
+  assert.equal(
+    parseVerifiedSha(["node", "release.mjs", "0.9.0", "--verified", "abc1234"]),
+    "abc1234",
+  );
+});
+
+test("parseVerifiedSha returns undefined when the flag is absent", () => {
+  assert.equal(
+    parseVerifiedSha(["node", "release.mjs", "0.9.0", "--skip-audit"]),
+    undefined,
+  );
+});
+
+test("parseVerifiedSha returns empty string for --verified= with no value", () => {
+  assert.equal(
+    parseVerifiedSha(["node", "release.mjs", "0.9.0", "--verified="]),
+    "",
+  );
+});
+
+test("parseVerifiedSha does not swallow the next flag as a value", () => {
+  assert.equal(
+    parseVerifiedSha([
+      "node",
+      "release.mjs",
+      "0.9.0",
+      "--verified",
+      "--skip-audit",
+    ]),
+    "",
+  );
+});
+
+// checkCiGreenForHead — the green run must be HEAD's own run.
+
+const RUN_HEAD = "a".repeat(40);
+const RUN_OLDER = "b".repeat(40);
+
+test("checkCiGreenForHead ok when the newest run for HEAD succeeded", () => {
+  const r = checkCiGreenForHead({
+    runs: [{ conclusion: "success", headSha: RUN_HEAD }],
+    headSha: RUN_HEAD,
+    branch: "main",
+  });
+  assert.equal(r.ok, true);
+});
+
+test("checkCiGreenForHead fails when the green run belongs to an older commit", () => {
+  // The core bug: `gh run list --limit 1` answered "green" for a run that never
+  // saw HEAD's code, so the tag could contain code CI never built.
+  const r = checkCiGreenForHead({
+    runs: [{ conclusion: "success", headSha: RUN_OLDER }],
+    headSha: RUN_HEAD,
+    branch: "main",
+  });
+  assert.equal(r.ok, false);
+  assert.match(r.message, /no ci run/i);
+  assert.match(r.message, new RegExp(RUN_HEAD.slice(0, 12)));
+});
+
+test("checkCiGreenForHead finds HEAD's run behind a newer run for another commit", () => {
+  // A workflow_dispatch or a push that landed after the commit being released
+  // must not hide HEAD's own green run.
+  const r = checkCiGreenForHead({
+    runs: [
+      { conclusion: "failure", headSha: RUN_OLDER },
+      { conclusion: "success", headSha: RUN_HEAD },
+    ],
+    headSha: RUN_HEAD,
+    branch: "main",
+  });
+  assert.equal(r.ok, true);
+});
+
+test("checkCiGreenForHead takes the newest run when HEAD has several", () => {
+  // Runs arrive newest-first. A re-run that went red after a green one is the
+  // verdict that counts.
+  const r = checkCiGreenForHead({
+    runs: [
+      { conclusion: "failure", headSha: RUN_HEAD },
+      { conclusion: "success", headSha: RUN_HEAD },
+    ],
+    headSha: RUN_HEAD,
+    branch: "main",
+  });
+  assert.equal(r.ok, false);
+  assert.match(r.message, /failure/i);
+});
+
+test("checkCiGreenForHead fails while HEAD's run is still in progress", () => {
+  const r = checkCiGreenForHead({
+    runs: [{ conclusion: null, status: "in_progress", headSha: RUN_HEAD }],
+    headSha: RUN_HEAD,
+    branch: "main",
+  });
+  assert.equal(r.ok, false);
+  assert.match(r.message, /still running|in progress|not finished/i);
+});
+
+test("checkCiGreenForHead reports an unfinished run as running, not as failed", () => {
+  // Verified against real `gh run list --json conclusion,status,headSha` on
+  // 2026-08-04: an unfinished run reports conclusion as the EMPTY STRING, not
+  // null. Treating that as a conclusion tells the operator to "fix CI" when the
+  // only thing to do is wait — a gate that names the wrong cause.
+  for (const status of ["pending", "queued", "in_progress"]) {
+    const r = checkCiGreenForHead({
+      runs: [{ conclusion: "", status, headSha: RUN_HEAD }],
+      headSha: RUN_HEAD,
+      branch: "main",
+    });
+    assert.equal(r.ok, false);
+    assert.match(r.message, /still running|not finished/i);
+    assert.match(r.message, new RegExp(status));
+    assert.doesNotMatch(r.message, /fix ci/i);
+  }
+});
+
+test("checkCiGreenForHead fails on an empty run list rather than crashing", () => {
+  // `gh run list --jq .[0]` on a branch with no runs yields `null`, which the
+  // old code dereferenced — a TypeError stack trace instead of a gate verdict.
+  const r = checkCiGreenForHead({
+    runs: [],
+    headSha: RUN_HEAD,
+    branch: "main",
+  });
+  assert.equal(r.ok, false);
+  assert.match(r.message, /no ci run/i);
+});
+
+test("checkCiGreenForHead fails when the run list could not be read", () => {
+  const r = checkCiGreenForHead({
+    runs: null,
+    headSha: RUN_HEAD,
+    branch: "main",
+  });
+  assert.equal(r.ok, false);
+});
+
+test("checkCiGreenForHead fails when HEAD is unknown", () => {
+  // Never let an empty HEAD prefix-match its way to green.
+  const r = checkCiGreenForHead({
+    runs: [{ conclusion: "success", headSha: RUN_HEAD }],
+    headSha: "",
+    branch: "main",
+  });
+  assert.equal(r.ok, false);
+});
+
+test("checkCiGreenForHead names the branch and the commit it wanted", () => {
+  const r = checkCiGreenForHead({
+    runs: [],
+    headSha: RUN_HEAD,
+    branch: "release/0.9",
+  });
+  assert.match(r.message, /release\/0\.9/);
+  assert.match(r.message, /push/i);
+});
+
+test("checkCiGreenForHead picks the newest run by timestamp, not by array position", () => {
+  // The gate must not inherit its judgment from `gh`'s output order. That order
+  // is newest-first today and nothing pins it; if it ever flipped, a red re-run
+  // would be ignored in favour of an earlier green — silently, because a test
+  // that encodes array position would stay green too. So the array here is
+  // deliberately in the WRONG order relative to createdAt.
+  const r = checkCiGreenForHead({
+    runs: [
+      {
+        conclusion: "success",
+        headSha: RUN_HEAD,
+        createdAt: "2026-08-01T10:00:00Z",
+      },
+      {
+        conclusion: "failure",
+        headSha: RUN_HEAD,
+        createdAt: "2026-08-01T12:00:00Z",
+      },
+    ],
+    headSha: RUN_HEAD,
+    branch: "main",
+  });
+  assert.equal(r.ok, false);
+  assert.match(r.message, /failure/i);
+});
+
+test("checkCiGreenForHead falls back to gh's order when createdAt is unreadable", () => {
+  // Pins the contract, not a specific implementation bug: this case passes
+  // both before and after the timestamp ordering landed, because NaN
+  // comparisons are false either way. It is here so a future rewrite to an
+  // explicit sort has to keep answering "unreadable ⇒ keep gh's order"
+  // instead of letting a malformed timestamp reorder the verdict.
+  const r = checkCiGreenForHead({
+    runs: [
+      { conclusion: "failure", headSha: RUN_HEAD },
+      { conclusion: "success", headSha: RUN_HEAD, createdAt: "not-a-date" },
+    ],
+    headSha: RUN_HEAD,
+    branch: "main",
+  });
+  assert.equal(r.ok, false);
+  assert.match(r.message, /failure/i);
+});
+
+test("checkCiGreenForHead links the run the operator has to go look at", () => {
+  // The URL is already in the payload we fetch. Making the operator search the
+  // Actions tab for a run we are holding the link to is a gate that reports a
+  // problem and hides its evidence.
+  const url = "https://github.com/heypinchy/pinchy/actions/runs/30955121313";
+  const red = checkCiGreenForHead({
+    runs: [{ conclusion: "failure", headSha: RUN_HEAD, url }],
+    headSha: RUN_HEAD,
+    branch: "main",
+  });
+  assert.equal(red.ok, false);
+  assert.ok(
+    red.message.includes(url),
+    `expected the run URL in: ${red.message}`,
+  );
+
+  const pending = checkCiGreenForHead({
+    runs: [{ conclusion: "", status: "in_progress", headSha: RUN_HEAD, url }],
+    headSha: RUN_HEAD,
+    branch: "main",
+  });
+  assert.equal(pending.ok, false);
+  assert.ok(
+    pending.message.includes(url),
+    `expected the run URL in: ${pending.message}`,
+  );
+});
+
+// Wiring — the gates above must actually run in release.mjs.
+//
+// This is the load-bearing half. `checkReleaseVerification` shipped fully unit
+// tested and entirely unreachable: release.mjs never imported it and parsed no
+// `--verified`, so the preflight printed a command whose flag was silently
+// swallowed (#1085). A unit test cannot see that; only a wiring assertion can.
+
+const RELEASE_MJS_SRC = readFileSync(
+  resolve(dirname(fileURLToPath(import.meta.url)), "../release.mjs"),
+  "utf8",
+);
+
+test("release.mjs enforces the staging attestation", () => {
+  assert.match(
+    RELEASE_MJS_SRC,
+    /checkReleaseVerification/,
+    "release.mjs must call checkReleaseVerification, or --verified is a no-op",
+  );
+  assert.match(
+    RELEASE_MJS_SRC,
+    /parseVerifiedSha/,
+    "release.mjs must parse --verified off argv",
+  );
+});
+
+test("release.mjs checks CI against HEAD's own run", () => {
+  assert.match(
+    RELEASE_MJS_SRC,
+    /checkCiGreenForHead/,
+    "release.mjs must verify the green CI run belongs to HEAD",
+  );
+  assert.match(
+    RELEASE_MJS_SRC,
+    /headSha/,
+    "release.mjs must ask gh for each run's headSha",
+  );
+  // A field the gate reads but the caller never requests arrives as undefined,
+  // and the ordering silently degrades to whatever order gh happened to send —
+  // this PR's own bug, one level down. Every field the gate reads has to be in
+  // the --json list.
+  for (const field of ["conclusion", "status", "url", "createdAt"]) {
+    assert.match(
+      RELEASE_MJS_SRC,
+      new RegExp(`--json[\\s\\S]{0,80}${field}`),
+      `release.mjs must request "${field}" from gh run list — checkCiGreenForHead reads it`,
+    );
+  }
+});
+
+test("release.mjs fails the release when a gate returns not-ok", () => {
+  // A gate whose verdict is only logged is not a gate.
+  for (const call of ["checkCiGreenForHead", "checkReleaseVerification"]) {
+    const idx = RELEASE_MJS_SRC.indexOf(call + "(");
+    assert.ok(idx > 0, `${call} is not called in release.mjs`);
+    const window = RELEASE_MJS_SRC.slice(idx, idx + 500);
+    assert.match(
+      window,
+      /\.ok\b/,
+      `${call}'s result must be branched on, not just logged`,
+    );
+    assert.match(
+      window,
+      /fail\(/,
+      `${call} must fail() the release when not ok`,
+    );
+  }
+});
+
+// nextDevVersion — what the tree declares right after a release (#1372)
+//
+// Since #1044 every commit that is not a release commit must declare
+// `<next>-dev`. release.mjs used to leave both package.json files at the
+// released version in its post-release commit, so the branch it ran on stayed
+// non-dev and every backport PR after it went red until somebody bumped it by
+// hand (#1371, #1384, #1392).
+
+test("nextDevVersion opens the next patch on a release branch", () => {
+  assert.equal(nextDevVersion("0.10.2", "release/0.10"), "0.10.3-dev");
+  assert.equal(nextDevVersion("0.10.0", "release/0.10"), "0.10.1-dev");
+  assert.equal(nextDevVersion("1.2.9", "release/1.2"), "1.2.10-dev");
+});
+
+test("nextDevVersion opens the next minor on main", () => {
+  // main is trunk and becomes the next minor — patches of this minor come
+  // off a release/X.Y branch, so main never opens X.Y.(Z+1).
+  assert.equal(nextDevVersion("0.11.0", "main"), "0.12.0-dev");
+  assert.equal(nextDevVersion("0.11.3", "main"), "0.12.0-dev");
+  assert.equal(nextDevVersion("0.9.1", "main"), "0.10.0-dev");
+});
+
+test("nextDevVersion refuses a release branch of a different minor", () => {
+  // Releasing 0.11.0 from release/0.10 would tag the wrong line, and the
+  // dev version opened after it would be wrong on either reading.
+  assert.throws(
+    () => nextDevVersion("0.11.0", "release/0.10"),
+    /release\/0\.10.*0\.11\.0|0\.11\.0.*release\/0\.10/,
+  );
+  assert.throws(() => nextDevVersion("1.10.0", "release/1.1"), /release\/1\.1/);
+});
+
+test("nextDevVersion refuses a branch a release may not be cut from", () => {
+  assert.throws(() => nextDevVersion("0.10.0", "feat/x"), /feat\/x/);
+  assert.throws(() => nextDevVersion("0.10.0", ""), /branch/);
+});
+
+test("nextDevVersion refuses a target that is not a release version", () => {
+  assert.throws(() => nextDevVersion("0.10.0-dev", "main"));
+  assert.throws(() => nextDevVersion("v0.10.0", "main"));
+});
+
+test("the tree nextDevVersion leaves behind satisfies the version-identity guard", () => {
+  // Cross-check against the guard that defines "a consistent tree", so the
+  // two cannot disagree about what a post-release commit should look like.
+  const mdx =
+    "## Upgrading from v0.10.2 to %%PINCHY_VERSION%%\n\nx\n\n" +
+    "## Upgrading from v0.10.1 to v0.10.2\n\nx\n";
+  for (const branch of ["main", "release/0.10"]) {
+    const dev = nextDevVersion("0.10.2", branch);
+    assert.deepEqual(
+      checkVersionIdentity({
+        rootVersion: dev,
+        webVersion: dev,
+        envExample: "PINCHY_VERSION=v0.10.2\n",
+        readme:
+          "curl https://raw.githubusercontent.com/heypinchy/pinchy/v0.10.2/docker-compose.yml\n" +
+          'echo "PINCHY_VERSION=v0.10.2" > .env\n',
+        mdx,
+      }),
+      [],
+      `${branch} → ${dev}`,
+    );
+  }
+});
+
+test("release.mjs opens the next -dev version in its post-release commit", () => {
+  const src = RELEASE_MJS_SRC;
+  const derive = src.indexOf("nextDevVersion(");
+  const bump = src.indexOf("Bumping versions");
+  const tagAt = src.indexOf("git tag ${tag}");
+  assert.ok(derive > 0, "release.mjs must call nextDevVersion");
+  assert.ok(
+    bump > 0 && tagAt > 0,
+    "release.mjs layout changed — re-read this test",
+  );
+  // Derived before anything is written, so a branch/version mismatch aborts
+  // the release instead of surfacing after the tag is already pushed.
+  assert.ok(derive < bump, "nextDevVersion must run before the version bumps");
+
+  // Written AFTER the tag: the tagged tree must declare the release itself
+  // (assert-package-version compares package.json against the tag).
+  const afterTag = src.slice(tagAt);
+  for (const path of ["rootPkgPath", "webPkgPath"]) {
+    assert.match(
+      afterTag,
+      new RegExp(
+        `writeFileSync\\(\\s*${path},\\s*bumpPackageJson\\([^;]*devVersion`,
+      ),
+      `release.mjs must write the dev version into ${path} after tagging`,
+    );
+  }
+  assert.match(
+    afterTag,
+    /git add[^\n]*package\.json packages\/web\/package\.json/,
+    "the post-release commit must stage both package.json files",
+  );
+});
+
+test("release-preflight.mjs runs the same branch/version check before the cut", () => {
+  const preflight = readFileSync(
+    resolve(
+      dirname(fileURLToPath(import.meta.url)),
+      "../release-preflight.mjs",
+    ),
+    "utf8",
+  );
+  assert.ok(
+    preflight.includes("nextDevVersion("),
+    "release-preflight.mjs must call nextDevVersion, or a version that does not " +
+      "belong on the branch is only refused by `pnpm release` itself",
+  );
+});
+
+// isReleasableBranch
+
+test("isReleasableBranch accepts main", () => {
+  assert.equal(isReleasableBranch("main"), true);
+});
+
+test("isReleasableBranch accepts release/X.Y with numeric major.minor", () => {
+  assert.equal(isReleasableBranch("release/0.9"), true);
+  assert.equal(isReleasableBranch("release/0.10"), true);
+  assert.equal(isReleasableBranch("release/12.3"), true);
+});
+
+test("isReleasableBranch rejects feature/worktree branches and detached HEAD", () => {
+  assert.equal(isReleasableBranch("feat/release-branch-workflow"), false);
+  assert.equal(isReleasableBranch(""), false); // detached HEAD → empty string
+});
+
+test("isReleasableBranch rejects malformed release branches", () => {
+  assert.equal(isReleasableBranch("release/"), false);
+  assert.equal(isReleasableBranch("release/0"), false); // missing minor
+  assert.equal(isReleasableBranch("release/0.9.1"), false); // patch is not a branch
+  assert.equal(isReleasableBranch("release/foo"), false);
+  assert.equal(isReleasableBranch("release/0.9/hotfix"), false);
+  assert.equal(isReleasableBranch("hotfix/release/0.9"), false); // no anchor bypass
+});
+
+// movingTagForRef — the single source of truth pre-release.yml consumes via
+// scripts/moving-tag.mjs.
+
+test("movingTagForRef maps main to the :next channel staging tracks", () => {
+  assert.equal(movingTagForRef("main"), "next");
+});
+
+test("movingTagForRef gives each release branch its own rc-X.Y moving tag", () => {
+  assert.equal(movingTagForRef("release/0.9"), "rc-0.9");
+  assert.equal(movingTagForRef("release/0.10"), "rc-0.10");
+});
+
+test("movingTagForRef collapses any remaining slash so the tag stays valid", () => {
+  assert.equal(movingTagForRef("release/0.9/hotfix"), "rc-0.9-hotfix");
+});
+
+// stagingImageTagForBranch — what the preflight tells the operator to pin
+// staging to. `:next` tracks main, so hardcoding it sent a release-branch cut
+// to verify an image hundreds of commits away from what it was about to tag.
+
+test("stagingImageTagForBranch pins main to the :next channel", () => {
+  assert.equal(stagingImageTagForBranch("main"), "next");
+});
+
+test("stagingImageTagForBranch pins a release branch to its own rc-X.Y", () => {
+  assert.equal(stagingImageTagForBranch("release/0.9"), "rc-0.9");
+  assert.equal(stagingImageTagForBranch("release/1.10"), "rc-1.10");
+});
+
+// A branch no release can be cut from gets no tag at all, rather than a
+// plausible-looking one. `feature/foo` has no image (pre-release.yml never
+// builds it, so `movingTagForRef`'s `rc-feature-foo` names nothing);
+// `release/0.9/hotfix` does have one (the trigger is `release/**`) but
+// `isReleasableBranch` refuses the cut, so the pin is moot either way.
+test("stagingImageTagForBranch returns null for a branch no release can be cut from", () => {
+  assert.equal(stagingImageTagForBranch("feature/foo"), null);
+  assert.equal(stagingImageTagForBranch("release/0.9/hotfix"), null);
+  assert.equal(stagingImageTagForBranch(""), null); // detached HEAD
+});
+
+// The pin the operator verifies must be the tag pre-release.yml actually
+// pushed. Two derivations would drift; this asserts there is only one.
+test("stagingImageTagForBranch agrees with movingTagForRef wherever it answers", () => {
+  for (const branch of ["main", "release/0.9", "release/1.10"]) {
+    assert.equal(
+      stagingImageTagForBranch(branch),
+      movingTagForRef(branch),
+      `staging pin and published moving tag disagree for ${branch}`,
+    );
+  }
+});
+
+// stagingPinAdvice — the line the operator actually reads. The hardcoded
+// `:next` string was the whole bug, so the string is asserted here rather than
+// left to a script nothing checks.
+
+test("stagingPinAdvice names the branch's own candidate image", () => {
+  assert.equal(stagingPinAdvice("main", "a".repeat(40)).tag, "next");
+  assert.equal(stagingPinAdvice("release/0.9", "a".repeat(40)).tag, "rc-0.9");
+});
+
+// Staging is set up to track `:next` continuously, so on main the exact-ref
+// pin would argue against the working setup. The note is for the case the
+// default pin gets wrong.
+test("stagingPinAdvice adds no note on main", () => {
+  assert.equal(stagingPinAdvice("main", "a".repeat(40)).note, null);
+});
+
+test("stagingPinAdvice offers the exact :sha ref on a release branch", () => {
+  const { note } = stagingPinAdvice(
+    "release/0.9",
+    "0123456789abcdef".repeat(2),
+  );
+  assert.match(note, /:rc-0\.9 moves with every push to release\/0\.9/);
+  assert.match(note, /:sha-0123456789ab\b/); // 12 chars, not the full sha
+  assert.match(note, /Never :next/);
+});
+
+test("stagingPinAdvice degrades to a placeholder when git cannot answer", () => {
+  const { note } = stagingPinAdvice("release/0.9", null);
+  assert.match(note, /:sha-<short12>/);
+});
+
+// The reason must be "no release can be cut here", never "no image exists":
+// pre-release.yml triggers on `release/**`, so release/0.9/hotfix DOES publish
+// :rc-0.9-hotfix. Printing that it doesn't would be a false claim about the
+// workflow, in the one place an operator is being told what to trust.
+test("stagingPinAdvice explains an unreleasable branch by the cut, not by a missing image", () => {
+  for (const branch of ["feature/foo", "release/0.9/hotfix"]) {
+    const { tag, note } = stagingPinAdvice(branch, "a".repeat(40));
+    assert.equal(tag, null);
+    assert.match(note, /no release can be cut from/);
+    assert.ok(
+      note.includes(branch),
+      `the note should name the branch it refuses (${branch})`,
+    );
+    assert.doesNotMatch(
+      note,
+      /no candidate image is published|builds only/,
+      "release/**` really does publish an image — do not claim otherwise",
+    );
+  }
+});
+
+test("stagingPinAdvice describes a detached HEAD instead of an empty branch name", () => {
+  const { note } = stagingPinAdvice("", "a".repeat(40));
+  assert.match(note, /a detached HEAD/);
+});
+
+// findSkippedReleases — the guard against the v0.9.0-on-a-release-branch trap:
+// `main` never learned 0.9.0 happened, so both package.json and `git describe`
+// answer 0.8.0 and the next cut would relabel v0.9.0's upgrade notes.
+
+test("findSkippedReleases names a release the cut would step over", () => {
+  assert.deepEqual(
+    findSkippedReleases("0.8.0", "0.10.0", ["v0.8.0", "v0.9.0", "v0.10.0"]),
+    ["v0.9.0"],
+  );
+});
+
+test("findSkippedReleases is quiet on a consecutive release", () => {
+  assert.deepEqual(
+    findSkippedReleases("0.9.0", "0.9.1", ["v0.8.0", "v0.9.0"]),
+    [],
+  );
+});
+
+test("findSkippedReleases sorts numerically, not lexically", () => {
+  assert.deepEqual(
+    findSkippedReleases("0.8.0", "0.20.0", ["v0.9.0", "v0.10.0", "v0.8.0"]),
+    ["v0.9.0", "v0.10.0"],
+  );
+});
+
+test("findSkippedReleases ignores tags that are not releases", () => {
+  assert.deepEqual(
+    findSkippedReleases("0.8.0", "0.10.0", [
+      "pre-rebase-backup",
+      "next",
+      "rc-0.9",
+    ]),
+    [],
+  );
+});
+
+// openNextUpgradeSection — opens the NEXT cycle's section in the same release
+// run, so the first upgrade note after a release has somewhere to land other
+// than the section of the release that already shipped.
+
+const OPEN_FIXTURE = [
+  "## Standard upgrade",
+  "",
+  "Bump to PINCHY_VERSION=%%PINCHY_VERSION%% (build-time display).",
+  "",
+  "## Upgrading from v0.8.0 to v0.9.0",
+  "",
+  "### Breaking changes",
+  "",
+  "None.",
+  "",
+  "### Upgrade notes",
+  "",
+  "Frozen notes.",
+  "",
+  "## Upgrading from v0.7.0 to v0.8.0",
+  "",
+  "Older notes.",
+  "",
+].join("\n");
+
+test("openNextUpgradeSection adds a placeholder section for the next cycle", () => {
+  const out = openNextUpgradeSection(OPEN_FIXTURE, "0.8.0", "0.9.0");
+  assert.match(out, /^## Upgrading from v0\.9\.0 to %%PINCHY_VERSION%%$/m);
+});
+
+test("openNextUpgradeSection puts the new section ABOVE the one just frozen", () => {
+  const out = openNextUpgradeSection(OPEN_FIXTURE, "0.8.0", "0.9.0");
+  assert.ok(
+    out.indexOf("## Upgrading from v0.9.0 to %%PINCHY_VERSION%%") <
+      out.indexOf("## Upgrading from v0.8.0 to v0.9.0"),
+    "sections are listed newest-first",
+  );
+});
+
+test("openNextUpgradeSection leaves everything before the anchor byte-identical", () => {
+  const out = openNextUpgradeSection(OPEN_FIXTURE, "0.8.0", "0.9.0");
+  const anchor = "## Upgrading from v0.9.0 to %%PINCHY_VERSION%%";
+  assert.equal(
+    out.slice(0, out.indexOf(anchor)),
+    OPEN_FIXTURE.slice(0, OPEN_FIXTURE.indexOf("## Upgrading from v0.8.0")),
+  );
+});
+
+test("openNextUpgradeSection keeps the frozen section and its successors intact", () => {
+  const out = openNextUpgradeSection(OPEN_FIXTURE, "0.8.0", "0.9.0");
+  const frozenOnwards = out.slice(
+    out.indexOf("## Upgrading from v0.8.0 to v0.9.0"),
+  );
+  assert.equal(
+    frozenOnwards,
+    OPEN_FIXTURE.slice(
+      OPEN_FIXTURE.indexOf("## Upgrading from v0.8.0 to v0.9.0"),
+    ),
+  );
+});
+
+test("openNextUpgradeSection's skeleton carries both required subsections", () => {
+  const out = openNextUpgradeSection(OPEN_FIXTURE, "0.8.0", "0.9.0");
+  // The next release's own gate (assertUpgradingSectionExists) demands both.
+  assert.doesNotThrow(() =>
+    assertUpgradingSectionExists(out, "0.9.0", "0.10.0"),
+  );
+});
+
+test("openNextUpgradeSection's skeleton carries the standard-flow prune step (#370)", () => {
+  // The #370 guard slices the FIRST `## Upgrading from …` section and requires
+  // `docker image prune` in it. A headings-only skeleton would turn main red on
+  // every release.
+  const out = openNextUpgradeSection(OPEN_FIXTURE, "0.8.0", "0.9.0");
+  const newest = out.slice(
+    out.indexOf("## Upgrading from v0.9.0"),
+    out.indexOf("## Upgrading from v0.8.0"),
+  );
+  assert.match(
+    newest,
+    /docker compose pull && docker compose up -d && docker image prune -f/,
+  );
+  // Dangling-only prune, never the aggressive `-a` form the #370 guard rejects
+  // inside a fenced block.
+  assert.doesNotMatch(newest, /docker image prune -a/);
+});
+
+test("openNextUpgradeSection's skeleton satisfies the freshness guard after the bump", () => {
+  // In the release run package.json has already been bumped to the target, so
+  // the skeleton's `from v<target>` is exactly what assertNoStaleUpgradeSections
+  // demands of the single placeholder section.
+  const out = openNextUpgradeSection(OPEN_FIXTURE, "0.8.0", "0.9.0");
+  assert.doesNotThrow(() => assertNoStaleUpgradeSections(out, "0.9.0"));
+});
+
+test("openNextUpgradeSection leaves the body placeholder for the NEXT release to freeze", () => {
+  const out = openNextUpgradeSection(OPEN_FIXTURE, "0.8.0", "0.9.0");
+  const newest = out.slice(
+    out.indexOf("## Upgrading from v0.9.0"),
+    out.indexOf("## Upgrading from v0.8.0"),
+  );
+  assert.match(newest, /PINCHY_VERSION=v0\.9\.0/);
+  assert.match(newest, /PINCHY_VERSION=%%PINCHY_VERSION%%/);
+  // …and the next cut freezes exactly those.
+  const frozen = finalizeUpgradeSection(out, "0.9.0", "0.10.0");
+  assert.match(frozen, /^## Upgrading from v0\.9\.0 to v0\.10\.0$/m);
+  assert.match(frozen, /PINCHY_VERSION=v0\.10\.0/);
+});
+
+test("openNextUpgradeSection is a no-op when the next section already exists", () => {
+  const already = openNextUpgradeSection(OPEN_FIXTURE, "0.8.0", "0.9.0");
+  assert.equal(openNextUpgradeSection(already, "0.8.0", "0.9.0"), already);
+});
+
+test("openNextUpgradeSection is a no-op when the frozen anchor section is missing", () => {
+  const mdx = "## Upgrading from v0.5.6 to v0.5.7\n\nUnrelated.\n";
+  assert.equal(openNextUpgradeSection(mdx, "0.8.0", "0.9.0"), mdx);
+});
+
+// assertUpgradeNotesWritten — the net that openNextUpgradeSection would
+// otherwise have removed. A release used to fail when nobody wrote notes,
+// because no section existed at all; now one always does, and it satisfies
+// assertUpgradingSectionExists by construction.
+
+test("assertUpgradeNotesWritten refuses to release an untouched skeleton", () => {
+  const opened = openNextUpgradeSection(OPEN_FIXTURE, "0.8.0", "0.9.0");
+  // Exactly the state the release run leaves behind, one cycle later.
+  assert.doesNotThrow(() =>
+    assertUpgradingSectionExists(opened, "0.9.0", "0.10.0"),
+  );
+  assert.throws(
+    () => assertUpgradeNotesWritten(opened, "0.9.0", "0.10.0"),
+    /still the skeleton/,
+  );
+});
+
+test("assertUpgradeNotesWritten accepts any real edit, including a deliberate None.", () => {
+  const opened = openNextUpgradeSection(OPEN_FIXTURE, "0.8.0", "0.9.0");
+  const decided = opened.replace("None so far.", "None.");
+  assert.doesNotThrow(() =>
+    assertUpgradeNotesWritten(decided, "0.9.0", "0.10.0"),
+  );
+
+  const withNote = opened.replace(
+    "Upgrade with the standard flow:",
+    "#### Telegram chats now read from channel_messages\n\nUpgrade with the standard flow:",
+  );
+  assert.doesNotThrow(() =>
+    assertUpgradeNotesWritten(withNote, "0.9.0", "0.10.0"),
+  );
+});
+
+test("assertUpgradeNotesWritten leaves a missing section to assertUpgradingSectionExists", () => {
+  // Two failures for one cause would print two different remedies for it.
+  assert.doesNotThrow(() =>
+    assertUpgradeNotesWritten("## Something else\n\nnope\n", "0.9.0", "0.10.0"),
+  );
+});
+
+test("assertUpgradeNotesWritten does not fire on a hand-written section that predates skeletons", () => {
+  const handWritten = [
+    "## Upgrading from v0.9.0 to %%PINCHY_VERSION%%",
+    "",
+    "### Breaking changes",
+    "",
+    "None.",
+    "",
+    "### Upgrade notes",
+    "",
+    "Maintenance release.",
+    "",
+  ].join("\n");
+  assert.doesNotThrow(() =>
+    assertUpgradeNotesWritten(handWritten, "0.9.0", "0.10.0"),
+  );
+});
+
+test("buildNextUpgradeSkeleton is the single source both callers read", () => {
+  // If these two drift apart, the release gate stops recognising its own
+  // template and silently never fires again.
+  const opened = openNextUpgradeSection(OPEN_FIXTURE, "0.8.0", "0.9.0");
+  assert.ok(opened.includes(buildNextUpgradeSkeleton("0.9.0")));
+});
+
+// ─── A `## ` inside a code fence is not a section boundary ───────────────────
+//
+// One fixture, every function that cuts upgrading.mdx at a `## `. The defect
+// was fixed once, in the guard's own parser, while six functions here kept the
+// unmasked `^## ` — and one of them writes the GitHub Release body: v0.9.1
+// published with its notes ending at a dangling ```markdown, the remediation
+// the note exists to give missing. Adding a reader without masking must fail
+// here, not in a release.
+
+const FENCED_FIXTURE = [
+  "## Upgrading from v1.0.0 to %%PINCHY_VERSION%%",
+  "",
+  "### Breaking changes",
+  "",
+  "None.",
+  "",
+  "### Upgrade notes",
+  "",
+  "#### Before the fence",
+  "",
+  "Shorten the block to what a new agent gets:",
+  "",
+  "```markdown",
+  "## Document Access",
+  "",
+  "#### Not a note, a sample",
+  "```",
+  "",
+  "#### After the fence",
+  "",
+  "Starting with %%PINCHY_VERSION%% this is on by default.",
+  "",
+  "## Upgrading from v0.9.0 to v1.0.0",
+  "",
+  "Older, and must stay out of every slice above.",
+  "",
+].join("\n");
+
+test("extractUpgradeNotes carries the whole section past a fenced `## `", () => {
+  const body = extractUpgradeNotes(FENCED_FIXTURE, "1.0.0", "1.1.0");
+  assert.match(body, /## Document Access/, "the sample must survive verbatim");
+  assert.match(
+    body,
+    /#### After the fence/,
+    "this is what v0.9.1 published without",
+  );
+  assert.doesNotMatch(body, /Older, and must stay out/);
+});
+
+test("finalizeUpgradeSection freezes a placeholder that sits after a fenced `## `", () => {
+  const frozen = finalizeUpgradeSection(FENCED_FIXTURE, "1.0.0", "1.1.0");
+  const section = frozen.slice(
+    frozen.indexOf("## Upgrading from v1.0.0"),
+    frozen.indexOf("## Upgrading from v0.9.0"),
+  );
+  assert.doesNotMatch(section, /%%PINCHY_VERSION%%/);
+  assert.match(section, /Starting with v1\.1\.0 this is on by default/);
+});
+
+test("assertNoStaleUpgradeSections sees a stale placeholder after a fenced `## `", () => {
+  // The pair above is the one that has to hold together: finalize leaves the
+  // leftover, and this guard is the only thing that would notice. Reading the
+  // truncated body on both sides is symmetric blindness — it reads exactly
+  // like agreement, which is how the v0.5.8 miss shipped in the first place.
+  const frozen = FENCED_FIXTURE.replace(
+    "## Upgrading from v1.0.0 to %%PINCHY_VERSION%%",
+    "## Upgrading from v1.0.0 to v1.1.0",
+  );
+  assert.throws(
+    () => assertNoStaleUpgradeSections(frozen, "1.1.0"),
+    /Stale %%PINCHY_VERSION%% in the frozen/,
+  );
+});
+
+test("deriveStagingChecklist lists the note after a fence and not the fenced sample", () => {
+  const items = deriveStagingChecklist(FENCED_FIXTURE, "1.0.0", "1.1.0").map(
+    (i) => i.title,
+  );
+  assert.deepEqual(items, ["Before the fence", "After the fence"]);
+});
+
+test("assertUpgradingSectionExists is not satisfied by a `###` quoted in a fence", () => {
+  const quotedOnly = [
+    "## Upgrading from v1.0.0 to %%PINCHY_VERSION%%",
+    "",
+    "### Breaking changes",
+    "",
+    "None.",
+    "",
+    "```markdown",
+    "### Upgrade notes",
+    "```",
+    "",
+  ].join("\n");
+  assert.throws(
+    () => assertUpgradingSectionExists(quotedOnly, "1.0.0", "1.1.0"),
+    /Missing 'Upgrade notes' subsection/,
+  );
+  assert.doesNotThrow(() =>
+    assertUpgradingSectionExists(FENCED_FIXTURE, "1.0.0", "1.1.0"),
+  );
+});
+
+test("assertUpgradeNotesWritten reads the full body past a fenced `## `", () => {
+  assert.doesNotThrow(() =>
+    assertUpgradeNotesWritten(FENCED_FIXTURE, "1.0.0", "1.1.0"),
+  );
 });

@@ -8,6 +8,17 @@ const openclawVersion: string =
 
 const nextConfig: NextConfig = {
   devIndicators: false,
+  // pdfjs-dist must NOT be bundled: its Node fallback ("fake worker") loads
+  // pdf.worker.mjs via a runtime dynamic import that the bundler cannot see,
+  // so bundling breaks the KB ingest's PDF extraction at runtime with
+  // "Cannot find module '…/chunks/pdf.worker.mjs'" (found in the Phase-1
+  // live verify — unit tests run unbundled and can't catch this). External =
+  // resolved from node_modules at runtime, where the worker file exists.
+  // node-llama-cpp ships a native .node addon and is itself ESM-only; it must
+  // be resolved from node_modules at runtime via dynamic import, not bundled
+  // — same class of reason as pdfjs-dist above (bundling breaks native/worker
+  // resolution the bundler can't statically see).
+  serverExternalPackages: ["pdfjs-dist", "node-llama-cpp"],
   allowedDevOrigins: ["local.heypinchy.com", "https://local.heypinchy.com:8443"],
   // NOTE: only build-time constants belong here. Values in `env` are inlined
   // into the client bundle when the image is built, so a runtime toggle must
@@ -36,12 +47,56 @@ const nextConfig: NextConfig = {
         ],
       },
       {
+        // Every authenticated API response is user data: never let the browser
+        // or a shared cache keep it (#1287 did this for /api/agents only, so
+        // /api/users, /api/settings and /api/agents/:id went out with no header).
+        //
+        // A config header OVERRIDES a handler's own, so the routes that set a
+        // caching policy of their own are excluded by negative matching rather
+        // than clobbered: the conditional-GET file serving (uploads, artifacts,
+        // workspace-file, via streamWorkspaceFile / sessionScopedRevalidateHeaders)
+        // and the models capability cache (sessionScopedCacheHeaders).
+        // api-cache-control-route-coverage.test.ts keeps this list and the
+        // routes in step, in both directions.
+        source:
+          "/api/:path((?!agents/[^/]+/(?:uploads/[^/]+|artifacts/[^/]+|workspace-file(?:/[^/]+)?)$|models/capabilities$).*)",
+        headers: [{ key: "Cache-Control", value: "no-store" }],
+      },
+      {
         // The uploads API serves files that are embedded inline via <embed> and
         // <img> in AttachmentPreview. The global DENY rule above would block the
         // browser's PDF/image viewer from rendering them, so we relax to
         // SAMEORIGIN here. Same-origin only — cross-origin embedding is still
         // blocked. This rule comes after the catch-all so it takes precedence.
         source: "/api/agents/:agentId/uploads/:filename",
+        headers: [{ key: "X-Frame-Options", value: "SAMEORIGIN" }],
+      },
+      {
+        // An agent-delivered file (#703 / #788) opens in the SAME
+        // AttachmentPreview <embed> as an upload — only the source zone differs
+        // — so it needs the same relaxation. The route handler sets SAMEORIGIN
+        // itself, but that header LOSES to the catch-all above, which is how
+        // this shipped broken: a valid 200 application/pdf and a blank viewer
+        // pane with net::ERR_BLOCKED_BY_RESPONSE. Same-origin only.
+        source: "/api/agents/:agentId/artifacts/:filename",
+        headers: [{ key: "X-Frame-Options", value: "SAMEORIGIN" }],
+      },
+      {
+        // A cited knowledge-base source opens in the same PDF viewer, embedded
+        // over the chat. The route handler sets SAMEORIGIN itself, but that
+        // header LOSES to the catch-all above — which is how this shipped
+        // broken: perfect bytes, and a blank pane with
+        // ERR_BLOCKED_BY_RESPONSE. The relaxation has to be declared here, and
+        // stays same-origin only.
+        source: "/api/agents/:agentId/workspace-file",
+        headers: [{ key: "X-Frame-Options", value: "SAMEORIGIN" }],
+      },
+      {
+        // The same handler under the url the citation viewer actually opens,
+        // which ends in the document's name so the browser's PDF viewer titles
+        // it by that instead of "workspace-file" (#1268). A url of its own, so
+        // a relaxation of its own. Same-origin only.
+        source: "/api/agents/:agentId/workspace-file/:name",
         headers: [{ key: "X-Frame-Options", value: "SAMEORIGIN" }],
       },
       {

@@ -22,10 +22,42 @@ const BY_TIER_FAMILY: Record<
   }
 > = {
   fast: {
-    general: "ollama-cloud/deepseek-v4-flash",
-    coder: "ollama-cloud/qwen3-coder-next",
-    // Smallest practical vision model: 8B, vision+tools, 256K context.
-    vision: "ollama-cloud/ministral-3:8b",
+    // deepseek-v4-flash was retired from Ollama Cloud (2026-11-16: no longer in
+    // /v1/models). Nothing small is left to trade reliability for speed:
+    // gpt-oss:20b is 0/12 on happy-path, conflict and line-items in the 2026-07-11
+    // sweep, and nemotron-3-super has no eval data at all. kimi-k2.6 is the
+    // strongest remaining tool-driver (see the balanced tier), so this is a
+    // forced pick: the slot loses its "fast" character rather than its reliability.
+    general: "ollama-cloud/kimi-k2.6",
+    // qwen3-coder-next was retired from Ollama Cloud (2026-07-15), along with
+    // the whole qwen3-coder family. kimi-k2.7-code is the only coder-specialised
+    // model left on the platform, so this is a forced pick, not a ranking.
+    coder: "ollama-cloud/kimi-k2.7-code",
+    // ministral-3:8b ("smallest practical vision model: 8B, vision+tools") was
+    // retired 2026-07-15 with the entire ministral family. There is no small
+    // vision model left: the live vision set is gemma4:31b, kimi-k2.6/2.7-code
+    // and minimax-m3 (tools-blocked). So this tier's
+    // vision slot cannot be fast AND reliable, and reliability wins — the same
+    // trade-off the reasoning tier already made below, for the same reason: a
+    // corrupted invoice ref fails the turn outright, which is what the speed
+    // was meant to serve.
+    //
+    // Why kimi-k2.6 and not gemma4:31b, the one small-ish candidate:
+    //   - gemma4:31b is 0/12 on duplicate-guard and 0/12 on silent-failure in
+    //     the 2026-07-11 sweep — it never verifies before writing, and never
+    //     notices a create that did not persist. Both differences from kimi are
+    //     statistically significant (diff 0.42, CI [0.09, 0.68]; and 0.33, CI
+    //     [0.02, 0.61]); on the easy scenarios the two are tied. The aggregate
+    //     read is a TIE (diff -0.107, CI [-0.294, 0.08]) — which is exactly why
+    //     the aggregate is the wrong lens: it averages a tie on cheap scenarios
+    //     with a significant loss on the two that cost money.
+    //   - the id-corruption incident (see the balanced tier) is a long-identifier
+    //     failure the invoice scenarios do not probe at all, so the eval's tie
+    //     does not clear gemma4 of it — it is an unmeasured risk on top.
+    //   - rejecting gemma4 for balanced and reasoning but accepting it here
+    //     would be incoherent: carrying refs through a multi-turn tool loop is
+    //     this slot's job in every tier.
+    vision: "ollama-cloud/kimi-k2.6",
   },
   balanced: {
     // glm-4.7 (general) and gemma4:31b (vision) were replaced 2026-07-07
@@ -37,19 +69,55 @@ const BY_TIER_FAMILY: Record<
     // strongest non-thinking-preferred tool-driver: vision:true, 256K
     // context, already in the curated catalog (issue #669).
     general: "ollama-cloud/kimi-k2.6",
-    coder: "ollama-cloud/qwen3-coder:480b",
+    // qwen3-coder:480b retired 2026-07-15 with the rest of the qwen3-coder
+    // family; kimi-k2.7-code is the only coder-specialised model still served.
+    coder: "ollama-cloud/kimi-k2.7-code",
     vision: "ollama-cloud/kimi-k2.6",
   },
   reasoning: {
-    general: "ollama-cloud/deepseek-v4-pro",
-    // reasoning+vision+tools, 512K context. qwen3.5:397b was the previous pick
-    // but only claims vision — the live endpoint hallucinates image contents
-    // (see ollama-cloud-models.ts), so it is now flagged vision:false and can
-    // no longer fill a vision slot. minimax-m3's vision was confirmed against
-    // the live API (reads a random number + circle color correctly across
-    // distinct images). gemini-3-flash-preview is still blocked by the
-    // tools-blocklist (pinchy#344); kimi family avoided (v0.5.3 silent-500).
-    vision: "ollama-cloud/minimax-m3",
+    // deepseek-v4-pro (12/12 happy path, 12/12 line-items in the 2026-07-11
+    // sweep) was retired from Ollama Cloud (2026-11-16: no longer in /v1/models).
+    // Among the models still served, kimi-k2.6 beats glm-5.2 — the only other
+    // reasoning-capable candidate with real eval data — where it costs money:
+    // duplicate-guard 5/12 vs 1/12, silent-failure 4/12 vs 2/12, hard-rejection
+    // 12/12 vs 9/12, line-items 10/12 vs 9/12; glm-5.2 leads only the happy
+    // path (12/12 vs 10/12). GLM-family reasoning loops when the /v1
+    // client drops reasoning_content between turns (glm-4.7, see balanced tier).
+    // gpt-oss:120b and nemotron-3-ultra are far behind (happy path 2/12 and 9/12,
+    // hard-rejection 9/12 and 0/12). A forced pick, so this tier now resolves to
+    // the same model as balanced.
+    general: "ollama-cloud/kimi-k2.6",
+    // qwen3.5:397b was the original pick, then lost the slot because the live
+    // endpoint hallucinated image contents rather than seeing them. Ollama
+    // stopped serving it altogether (found 2026-11-16). A successor for this
+    // slot needs comparative evidence against kimi-k2.6 on a multi-turn tool
+    // loop — an eval sweep, not a vision probe.
+    //
+    // minimax-m3 replaced it on confirmed vision quality, then had to go too:
+    // it is now tools-blocked for mangling nested tool arguments (Penny,
+    // 2026-07-15 — see blocklist.ts). A vision slot always resolves alongside
+    // tools here, so a tools-blocked model cannot fill it, however good its
+    // eyes are — the ollama-cloud drift-guards enforce exactly that.
+    //
+    // That leaves gemma4:31b and kimi-k2.6. gemma4:31b is rejected on the
+    // balanced-tier evidence above: it corrupted a ~150-char Graph message ID
+    // across turns, and this slot's whole job is carrying invoice numbers and
+    // refs through a multi-turn tool loop. kimi-k2.6 is vision+tools with 256K
+    // context, already trusted for the balanced tier's vision+general slots,
+    // and emitted 0 malformed tool calls across 112 calls in the Penny session
+    // that minimax failed. The eval-v1 sweep agrees on aggregate (scorecard
+    // table in blocklist.ts): kimi beats gemma4:31b on duplicate, distractor and
+    // silent-failure, with gemma4 marginally ahead only on lineitems (11/12 vs
+    // 10/12) — an aggregate call, not a rout. The v0.5.3 kimi silent-500 note
+    // that previously kept the family out of this slot predates the k2.6
+    // catalog entry.
+    //
+    // Trade-off, deliberate: kimi-k2.6 is a non-thinking-preferred tool-driver,
+    // so a reasoning-tier turn that ALSO needs vision loses thinking. Reliable
+    // tool calls beat reasoning here — a mangled invoice_line_ids payload fails
+    // the turn outright, which is what the reasoning was meant to serve.
+    // gemini-3-flash-preview remains blocked (pinchy#344).
+    vision: "ollama-cloud/kimi-k2.6",
   },
 };
 

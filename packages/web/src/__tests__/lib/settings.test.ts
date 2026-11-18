@@ -38,6 +38,7 @@ import {
   deleteSetting,
   getAllSettings,
   getSettingsByPrefix,
+  getSettingsByKeys,
 } from "@/lib/settings";
 
 describe("getSetting", () => {
@@ -165,6 +166,33 @@ describe("getSettingsByPrefix", () => {
       { key: "default_provider", value: "anthropic", encrypted: false },
     ]);
     const map = await getSettingsByPrefix("telegram_bot_token:");
+    expect(map.size).toBe(0);
+  });
+});
+
+describe("getSettingsByKeys", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("asks the database for the named keys only and decrypts what comes back", async () => {
+    const whereMock = vi.fn().mockResolvedValue([
+      { key: "policy.member_personal_agents", value: "false", encrypted: false },
+      { key: "policy.member_automations", value: "encrypted:true", encrypted: true },
+    ]);
+    fromMock.mockReturnValueOnce({ where: whereMock });
+
+    const map = await getSettingsByKeys([
+      "policy.member_personal_agents",
+      "policy.member_automations",
+    ]);
+
+    expect(whereMock).toHaveBeenCalledTimes(1);
+    expect(map.get("policy.member_personal_agents")).toBe("false");
+    expect(map.get("policy.member_automations")).toBe("true");
+  });
+
+  it("does not query at all for an empty key list", async () => {
+    const map = await getSettingsByKeys([]);
+    expect(db.select).not.toHaveBeenCalled();
     expect(map.size).toBe(0);
   });
 });

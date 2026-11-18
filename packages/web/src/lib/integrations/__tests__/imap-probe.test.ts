@@ -33,12 +33,86 @@ vi.mock("nodemailer", () => ({
   createTransport: createTransportMock,
 }));
 
+// Fake TCP socket for probeSmtpPorts, hoisted so it's visible to the
+// vi.mock("node:net", ...) factory below (vitest hoists vi.mock calls above
+// these consts/imports). Each call to the mocked `connect()` returns a fresh
+// EventEmitter-based fake socket the test drives by hand (emit "connect" /
+// "timeout" / "error") instead of racing real sockets or fake timers.
+const { mockNetConnect, fakeSockets } = vi.hoisted(() => {
+  const fakeSockets: Array<{
+    emit: (event: string, ...args: unknown[]) => void;
+    destroy: ReturnType<typeof vi.fn>;
+  }> = [];
+  const mockNetConnect = vi.fn((_options: unknown) => {
+    const listeners = new Map<string, Array<(...args: unknown[]) => void>>();
+    const socket = {
+      once: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+        const existing = listeners.get(event) ?? [];
+        existing.push(listener);
+        listeners.set(event, existing);
+        return socket;
+      }),
+      on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+        const existing = listeners.get(event) ?? [];
+        existing.push(listener);
+        listeners.set(event, existing);
+        return socket;
+      }),
+      removeListener: vi.fn((event: string) => {
+        listeners.delete(event);
+        return socket;
+      }),
+      removeAllListeners: vi.fn(() => {
+        listeners.clear();
+        return socket;
+      }),
+      destroy: vi.fn(),
+      emit: (event: string, ...args: unknown[]) => {
+        const registered = listeners.get(event) ?? [];
+        // Mirror Node's EventEmitter: an "error" event with no listener throws
+        // (crashes the process), so a test that emits a late error reproduces
+        // the real unhandled-'error' hazard instead of silently swallowing it.
+        if (event === "error" && registered.length === 0) {
+          throw args[0] instanceof Error ? args[0] : new Error("Unhandled 'error' event");
+        }
+        for (const listener of registered) listener(...args);
+      },
+    };
+    fakeSockets.push(socket);
+    return socket;
+  });
+  return { mockNetConnect, fakeSockets };
+});
+
+// Only `connect` is faked: the guard and the probe still classify hosts with
+// the real `isIP`.
+vi.mock("node:net", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:net")>();
+  return {
+    ...actual,
+    connect: mockNetConnect,
+    default: { ...actual, connect: mockNetConnect },
+  };
+});
+
+// The SSRF guard resolves every probe host before connecting, so DNS is stubbed
+// here — no test in this file may depend on real name resolution.
+const { mockDnsLookup } = vi.hoisted(() => ({ mockDnsLookup: vi.fn() }));
+
+vi.mock("node:dns/promises", () => ({
+  lookup: mockDnsLookup,
+  default: { lookup: mockDnsLookup },
+}));
+
 import {
   testImapLogin,
   testSmtpVerify,
   friendlyError,
+  classifyProbeError,
+  probeSmtpPorts,
   tlsModeForPort,
 } from "@/lib/integrations/imap-probe";
+import { MailHostBlockedError } from "@/lib/integrations/mail-host-guard";
 
 const input = {
   imapHost: "imap.example.com",
@@ -56,6 +130,7 @@ describe("imap-probe", () => {
     mockImapClient.connect.mockResolvedValue(undefined);
     mockImapClient.logout.mockResolvedValue(undefined);
     mockTransport.verify.mockResolvedValue(true);
+    mockDnsLookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
   });
 
   describe("testImapLogin", () => {
@@ -64,7 +139,11 @@ describe("imap-probe", () => {
 
       expect(ImapFlowMock).toHaveBeenCalledWith(
         expect.objectContaining({
+          // The name stays `host` (SNI and certificate verification); the
+          // socket can only reach the addresses the guard classified, through
+          // the pinned lookup in `tls`.
           host: input.imapHost,
+          tls: { lookup: expect.any(Function), autoSelectFamily: true },
           port: input.imapPort,
           secure: true,
           auth: { user: input.username, pass: input.password },
@@ -93,6 +172,21 @@ describe("imap-probe", () => {
       );
     });
 
+    it.each([
+      ["starttls", 143, true],
+      ["none", 143, undefined],
+      ["tls", 993, undefined],
+    ] as const)(
+      "security=%s on port %i sets doSTARTTLS=%s (true = demanded, undefined = imapflow upgrades only if offered)",
+      async (security, imapPort, expected) => {
+        await testImapLogin({ ...input, security, imapPort });
+
+        expect(ImapFlowMock).toHaveBeenLastCalledWith(
+          expect.objectContaining({ port: imapPort, doSTARTTLS: expected })
+        );
+      }
+    );
+
     it("disables encryption for security 'none'", async () => {
       await testImapLogin({ ...input, security: "none", imapPort: 143 });
 
@@ -105,6 +199,62 @@ describe("imap-probe", () => {
       mockImapClient.connect.mockRejectedValue(new Error("Authentication failed"));
 
       await expect(testImapLogin(input)).rejects.toThrow("Authentication failed");
+    });
+
+    it("never opens a socket to a host resolving to an internal address", async () => {
+      mockDnsLookup.mockResolvedValue([{ address: "127.0.0.1", family: 4 }]);
+
+      await expect(testImapLogin(input)).rejects.toThrow(MailHostBlockedError);
+      expect(ImapFlowMock).not.toHaveBeenCalled();
+      expect(mockImapClient.connect).not.toHaveBeenCalled();
+    });
+
+    it("resolves the IMAP host, not the SMTP host", async () => {
+      await testImapLogin(input);
+
+      expect(mockDnsLookup).toHaveBeenCalledWith(input.imapHost, expect.anything());
+      expect(mockDnsLookup).not.toHaveBeenCalledWith(input.smtpHost, expect.anything());
+    });
+
+    it("connects to the checked answer, not to a second one (DNS rebinding)", async () => {
+      mockDnsLookup
+        .mockResolvedValueOnce([{ address: "93.184.216.34", family: 4 }])
+        .mockResolvedValue([{ address: "127.0.0.1", family: 4 }]);
+
+      await testImapLogin(input);
+
+      const options = ImapFlowMock.mock.calls[0][0] as {
+        host: string;
+        tls: { lookup: (h: string, o: object, cb: (e: unknown, a: unknown) => void) => void };
+      };
+      expect(options.host).toBe(input.imapHost);
+      // The connector's own lookup of the name can only answer the checked set.
+      const answered = await new Promise((resolve) =>
+        options.tls.lookup(options.host, { all: true }, (_e, a) => resolve(a))
+      );
+      expect(answered).toEqual([{ address: "93.184.216.34", family: 4 }]);
+      expect(mockDnsLookup).toHaveBeenCalledTimes(1);
+    });
+
+    it("opens no socket when the host does not resolve, and reports it as DNS", async () => {
+      // The guard used to let an unresolvable name through, and imapflow then
+      // resolved it again — free to land on an internal address.
+      mockDnsLookup.mockRejectedValue(
+        Object.assign(new Error("getaddrinfo ENOTFOUND imap.example.com"), { code: "ENOTFOUND" })
+      );
+
+      const failure = await testImapLogin(input).catch((err: unknown) => err);
+
+      expect(classifyProbeError(failure).code).toBe("dns");
+      expect(ImapFlowMock).not.toHaveBeenCalled();
+    });
+
+    it("connects to an IP literal as-is, with no SNI name", async () => {
+      await testImapLogin({ ...input, imapHost: "93.184.216.40" });
+
+      const options = ImapFlowMock.mock.calls[0][0] as Record<string, unknown>;
+      expect(options.host).toBe("93.184.216.40");
+      expect(options.servername).toBeUndefined();
     });
   });
 
@@ -147,6 +297,7 @@ describe("imap-probe", () => {
       expect(createTransportMock).toHaveBeenCalledWith(
         expect.objectContaining({
           host: input.smtpHost,
+          getSocket: expect.any(Function),
           port: input.smtpPort,
           // SMTP submission port 587 is STARTTLS, not implicit TLS: TLS mode is
           // keyed off the port, so even with security "tls" this is
@@ -193,6 +344,45 @@ describe("imap-probe", () => {
       await expect(testSmtpVerify(input)).rejects.toThrow("ECONNREFUSED");
       expect(mockTransport.close).toHaveBeenCalled();
     });
+
+    it("never builds a transport for a host resolving to an internal address", async () => {
+      mockDnsLookup.mockResolvedValue([{ address: "169.254.169.254", family: 4 }]);
+
+      await expect(testSmtpVerify(input)).rejects.toThrow(MailHostBlockedError);
+      expect(createTransportMock).not.toHaveBeenCalled();
+      expect(mockTransport.verify).not.toHaveBeenCalled();
+    });
+
+    it("resolves the SMTP host, not the IMAP host", async () => {
+      await testSmtpVerify(input);
+
+      expect(mockDnsLookup).toHaveBeenCalledWith(input.smtpHost, expect.anything());
+      expect(mockDnsLookup).not.toHaveBeenCalledWith(input.imapHost, expect.anything());
+    });
+
+    it("connects to the checked answer, not to a second one (DNS rebinding)", async () => {
+      mockDnsLookup
+        .mockResolvedValueOnce([{ address: "93.184.216.34", family: 4 }])
+        .mockResolvedValue([{ address: "169.254.169.254", family: 4 }]);
+
+      await testSmtpVerify(input);
+
+      expect(createTransportMock).toHaveBeenCalledWith(
+        expect.objectContaining({ host: input.smtpHost, getSocket: expect.any(Function) })
+      );
+      expect(mockDnsLookup).toHaveBeenCalledTimes(1);
+    });
+
+    it("builds no transport when the host does not resolve, and reports it as DNS", async () => {
+      mockDnsLookup.mockRejectedValue(
+        Object.assign(new Error("getaddrinfo ENOTFOUND smtp.example.com"), { code: "ENOTFOUND" })
+      );
+
+      const failure = await testSmtpVerify(input).catch((err: unknown) => err);
+
+      expect(classifyProbeError(failure).code).toBe("dns");
+      expect(createTransportMock).not.toHaveBeenCalled();
+    });
   });
 
   describe("friendlyError", () => {
@@ -217,6 +407,13 @@ describe("imap-probe", () => {
       );
     });
 
+    it("classifies a DNS failure on an auth-named host as connect-failure, not auth", () => {
+      // The hostname contains "auth"; the ENOTFOUND code must still win.
+      const message = friendlyError(new Error("getaddrinfo ENOTFOUND smtp-auth.example.com"));
+      expect(message).toMatch(/could not connect/i);
+      expect(message).not.toMatch(/authentication/i);
+    });
+
     it("maps TLS/certificate errors to a secure-connection message", () => {
       expect(friendlyError(new Error("self signed certificate"))).toMatch(/secure connection/i);
     });
@@ -224,6 +421,203 @@ describe("imap-probe", () => {
     it("falls back to a generic message for unrecognized errors", () => {
       expect(friendlyError(new Error("something weird"))).toMatch(/connection failed/i);
       expect(friendlyError("not an Error instance")).toMatch(/connection failed/i);
+    });
+
+    it("passes an SSRF-guard rejection through verbatim", () => {
+      // The guard's message already says what to do about it; the generic
+      // "check your settings" fallback would hide that.
+      const message = "Blocked: this host resolves to a private network address.";
+
+      expect(friendlyError(new MailHostBlockedError(message))).toBe(message);
+    });
+  });
+
+  describe("classifyProbeError", () => {
+    it.each([
+      [
+        "imapflow",
+        Object.assign(new Error("Server does not support STARTTLS"), { tlsFailed: true }),
+      ],
+      [
+        "nodemailer",
+        Object.assign(
+          new Error("Error upgrading connection with STARTTLS: 530 5.7.0 Authentication required"),
+          { code: "ETLS" }
+        ),
+      ],
+    ])(
+      "classifies a refused STARTTLS upgrade (%s) as a TLS failure, not auth or unknown",
+      (_n, failure) => {
+        expect(classifyProbeError(failure).code).toBe("tls");
+        expect(friendlyError(failure)).toMatch(/secure connection/);
+      }
+    );
+
+    it("classifies a total failure over several addresses by the per-address errors", () => {
+      // autoSelectFamily over >=2 addresses rejects with an AggregateError that
+      // has an empty message; the codes live on `errors`.
+      const failure = new AggregateError(
+        [
+          Object.assign(new Error("connect ECONNREFUSED ::1:993"), { code: "ECONNREFUSED" }),
+          Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:993"), { code: "ECONNREFUSED" }),
+        ],
+        ""
+      );
+      expect(classifyProbeError(failure).code).toBe("refused");
+    });
+
+    it.each([
+      ["ETIMEDOUT", new Error("connect ETIMEDOUT 1.2.3.4:465"), "timeout"],
+      ["'timed out' wording", new Error("Connection timed out"), "timeout"],
+      ["socket timeout", new Error("Socket timeout"), "timeout"],
+      ["ECONNREFUSED", new Error("connect ECONNREFUSED 127.0.0.1:465"), "refused"],
+      ["ENOTFOUND", new Error("getaddrinfo ENOTFOUND smtp.example.com"), "dns"],
+      ["EAI_AGAIN", new Error("getaddrinfo EAI_AGAIN smtp.example.com"), "dns"],
+      ["'auth' wording", new Error("Auth failed"), "auth"],
+      ["'invalid login' wording", new Error("Invalid login"), "auth"],
+      ["535 SMTP auth code", new Error("535 5.7.8 Authentication failed"), "auth"],
+      ["certificate error", new Error("unable to verify the first certificate"), "tls"],
+      ["self signed certificate", new Error("self signed certificate"), "tls"],
+      ["ssl wording", new Error("wrong version number (ssl)"), "tls"],
+      ["unmapped error", new Error("something totally unexpected"), "unknown"],
+      // Regression: the network-error CODE must win over a substring match on
+      // the (user-controlled) hostname. "smtp-auth.…" is a common mail host
+      // name; a DNS/timeout/refused failure on it must NOT be reported as an
+      // auth failure (which would also wrongly skip the port-reachability probe).
+      ["ENOTFOUND on an auth-named host", new Error("getaddrinfo ENOTFOUND smtp-auth.example.com"), "dns"], // prettier-ignore
+      ["ETIMEDOUT on an auth-named host", new Error("connect ETIMEDOUT 1.2.3.4:587 smtp-auth.example.com"), "timeout"], // prettier-ignore
+      ["ECONNREFUSED on an auth-named host", new Error("connect ECONNREFUSED smtp-auth.example.com:465"), "refused"], // prettier-ignore
+    ] as const)("classifies %s as code %s", (_label, error, expectedCode) => {
+      const result = classifyProbeError(error);
+      expect(result.code).toBe(expectedCode);
+      expect(typeof result.message).toBe("string");
+      expect(result.message.length).toBeGreaterThan(0);
+    });
+
+    it("notes that cloud hosts often block the port in the timeout message", () => {
+      const result = classifyProbeError(new Error("connect ETIMEDOUT 1.2.3.4:465"));
+      expect(result.message).toMatch(/cloud host/i);
+    });
+
+    it("handles a non-Error value the same way friendlyError does", () => {
+      const result = classifyProbeError("not an Error instance");
+      expect(result.code).toBe("unknown");
+    });
+
+    it("classifies an SSRF-guard rejection as 'blocked' and keeps its message", () => {
+      // Its own code, not "unknown": the route branches on the code to decide
+      // whether an SMTP port scan is worth running, and a blocked host must
+      // never trigger the very port scan the guard exists to prevent.
+      const error = new MailHostBlockedError("Blocked: this host resolves to something internal.");
+
+      const result = classifyProbeError(error);
+
+      expect(result.code).toBe("blocked");
+      expect(result.message).toBe("Blocked: this host resolves to something internal.");
+    });
+  });
+
+  describe("probeSmtpPorts", () => {
+    beforeEach(() => {
+      fakeSockets.length = 0;
+    });
+
+    /** Lets the probe's one host resolution settle before sockets are opened. */
+    const settled = () => new Promise((resolve) => setImmediate(resolve));
+
+    it("connects to the default ports (465, 587, 25) in parallel, by name through the pinned lookup", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const resultPromise = probeSmtpPorts("smtp.example.com");
+      await settled();
+
+      // All three connections must have been initiated together (in
+      // parallel), before any of them settle — each to the checked address.
+      expect(mockNetConnect).toHaveBeenCalledTimes(3);
+      expect(mockNetConnect).toHaveBeenCalledWith(
+        expect.objectContaining({
+          host: "smtp.example.com",
+          port: 465,
+          lookup: expect.any(Function),
+        })
+      );
+      expect(mockNetConnect).toHaveBeenCalledWith(
+        expect.objectContaining({
+          host: "smtp.example.com",
+          port: 587,
+          lookup: expect.any(Function),
+        })
+      );
+      expect(mockNetConnect).toHaveBeenCalledWith(
+        expect.objectContaining({
+          host: "smtp.example.com",
+          port: 25,
+          lookup: expect.any(Function),
+        })
+      );
+
+      fakeSockets[0].emit("error", new Error("ECONNREFUSED")); // 465
+      fakeSockets[1].emit("connect"); // 587
+      // 25 never answers: the 2500ms bound ends it.
+      await vi.advanceTimersByTimeAsync(2500);
+
+      const results = await resultPromise;
+      vi.useRealTimers();
+
+      expect(results).toEqual(
+        expect.arrayContaining([
+          { port: 465, reachable: false },
+          { port: 587, reachable: true },
+          { port: 25, reachable: false },
+        ])
+      );
+      // The one that connected and the one that timed out are closed; the
+      // refused one is already dead.
+      expect(fakeSockets[1].destroy).toHaveBeenCalled();
+      expect(fakeSockets[2].destroy).toHaveBeenCalled();
+    });
+
+    it("accepts a custom port list", async () => {
+      const resultPromise = probeSmtpPorts("smtp.example.com", [2525]);
+      await settled();
+
+      expect(mockNetConnect).toHaveBeenCalledTimes(1);
+      fakeSockets[0].emit("connect");
+
+      await expect(resultPromise).resolves.toEqual([{ port: 2525, reachable: true }]);
+    });
+
+    it("does not crash on a late error emitted after the port already resolved", async () => {
+      const resultPromise = probeSmtpPorts("smtp.example.com", [587]);
+      await settled();
+      fakeSockets[0].emit("connect");
+      await expect(resultPromise).resolves.toEqual([{ port: 587, reachable: true }]);
+
+      // destroy() on a still-connecting socket can emit a late 'error'; the
+      // probe must keep an error listener attached so it's handled, not thrown
+      // as an unhandled 'error' event (which would crash the process).
+      expect(() => fakeSockets[0].emit("error", new Error("late ECONNRESET"))).not.toThrow();
+    });
+
+    it("scans no port when the host now resolves to an internal address", async () => {
+      // It runs after the SMTP leg failed, i.e. after a lookup of its own. A
+      // name that answers differently the second time must not be scanned.
+      mockDnsLookup.mockResolvedValue([{ address: "127.0.0.1", family: 4 }]);
+
+      await expect(probeSmtpPorts("smtp.example.com")).resolves.toEqual([
+        { port: 465, reachable: false },
+        { port: 587, reachable: false },
+        { port: 25, reachable: false },
+      ]);
+      expect(mockNetConnect).not.toHaveBeenCalled();
+    });
+
+    it("scans no port when the host does not resolve", async () => {
+      mockDnsLookup.mockRejectedValue(new Error("getaddrinfo ENOTFOUND smtp.example.com"));
+
+      const results = await probeSmtpPorts("smtp.example.com", [587]);
+
+      expect(results).toEqual([{ port: 587, reachable: false }]);
+      expect(mockNetConnect).not.toHaveBeenCalled();
     });
   });
 });

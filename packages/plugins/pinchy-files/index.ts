@@ -1,8 +1,15 @@
 import { readdirSync, statSync, realpathSync, existsSync } from "fs";
-import { readFile, open, writeFile } from "fs/promises";
+import { readFile, open, writeFile, mkdir, chown, unlink } from "fs/promises";
 import { createHash } from "crypto";
-import { join, extname, basename } from "path";
-import { validateAccess, assertNoSymlinkEscape, MAX_FILE_SIZE, MAX_PDF_FILE_SIZE, MAX_DOCX_FILE_SIZE, type AgentFileConfig } from "./validate";
+import { join, extname, basename, dirname } from "path";
+import {
+  validateAccess,
+  assertNoSymlinkEscape,
+  MAX_FILE_SIZE,
+  MAX_PDF_FILE_SIZE,
+  MAX_DOCX_FILE_SIZE,
+  type AgentFileConfig,
+} from "./validate";
 import { extractDocxText } from "./docx-extract";
 import { extractPdfText } from "./pdf-extract";
 import { formatPdfResult } from "./pdf-format";
@@ -11,9 +18,27 @@ import { createVisionConfig, type VisionApiConfig } from "./pdf-vision-api";
 import { runVisionTasks, type AggregatedVisionUsage } from "./pdf-vision-runner";
 import { reportUsage } from "./usage-reporter";
 import { resolveAgentInfo } from "./resolve-agent-info";
+import { generateFile, type GenerateFileFormat } from "./generate-file";
+import { normalizeDeliverableBasename } from "./deliverable-filename";
+import { memoryPromptHook } from "./memory-prompt";
+import { assertPlainPath } from "./plain-path";
+import { refusingUnknownParams } from "./unknown-params";
+import { openVerified } from "./verified-open";
+import { isWebChatRun } from "./web-chat-run";
+
+// The Pinchy web process runs as uid/gid 999 in the container and must own a
+// generated file to serve it back to the user as a download (#703). Chowning
+// is best-effort — on a non-Linux host, or without CAP_CHOWN, it fails and
+// must not fail the tool itself (mirrors pinchy-email's DELIVERY_UID/GID).
+const DELIVERY_UID = 999;
+const DELIVERY_GID = 999;
+
+const GENERATE_FILE_FORMATS: GenerateFileFormat[] = ["csv", "xlsx", "pdf"];
 
 interface PluginToolContext {
   agentId?: string;
+  sessionKey?: string;
+  messageChannel?: string;
 }
 
 // Resolve a caller-supplied path to the Unicode form that actually exists on
@@ -31,7 +56,10 @@ interface PluginToolContext {
 // nor the NFD normalization of the whole string and won't resolve — it just
 // falls back to the original (safe). That case doesn't arise here because every
 // segment comes from the same macOS upload written in one normalization form.
-export function resolveOnDiskPath(requestedPath: string, exists: (p: string) => boolean = existsSync): string {
+export function resolveOnDiskPath(
+  requestedPath: string,
+  exists: (p: string) => boolean = existsSync
+): string {
   if (exists(requestedPath)) return requestedPath;
   for (const form of ["NFC", "NFD"] as const) {
     const variant = requestedPath.normalize(form);
@@ -62,7 +90,35 @@ function relativizeWritePath(absolutePath: string, writePaths: readonly string[]
 // way a freshly uploaded attachment reaches the model on the first turn.
 type ContentBlock =
   | { type: "text"; text: string }
-  | { type: "image"; data: string; mimeType: string };
+  | { type: "image"; data: string; mimeType: string }
+  // Metadata-only file block (no base64/data) — OpenClaw's isArtifactBlock
+  // picks this up via artifacts.list and the #703 serve route resolves the
+  // bytes from disk, so this block never carries the file content itself.
+  | { type: "file"; filename: string; mimeType: string };
+
+/**
+ * Build an MCP-style error result. Every error result MUST carry
+ * `details.error`, not just the `isError` flag: OpenClaw strips `isError`
+ * before forwarding the result to `/api/internal/audit/tool-use` (OC bug
+ * #404), and the audit endpoint then falls back to `result.details.error` to
+ * record `outcome: failure`. Without it, a failed pinchy-files tool call is
+ * silently audited as success. Route ALL error results through this helper
+ * so that invariant cannot be forgotten at an individual call site. (Some
+ * call sites below curate their own richer `details` — e.g. pinchy_write's
+ * error path also snapshots `path`/`overwrite` — and construct the object
+ * literal directly instead of using this helper.)
+ */
+function toolError(text: string): {
+  content: ContentBlock[];
+  isError: true;
+  details: { error: string };
+} {
+  return {
+    isError: true,
+    content: [{ type: "text", text }],
+    details: { error: text },
+  };
+}
 
 // Image extensions pinchy_read returns as image content blocks rather than
 // utf-8 text. Reading the bytes as utf-8 would hand the model binary garbage
@@ -142,6 +198,7 @@ interface PluginApi {
     factory: (ctx: PluginToolContext) => AgentTool | null,
     opts?: { name?: string }
   ) => void;
+  on?: (hookName: "before_prompt_build", handler: ReturnType<typeof memoryPromptHook>) => void;
 }
 
 interface AgentTool {
@@ -157,8 +214,10 @@ interface AgentTool {
 }
 
 const SYSTEM_FILES = new Set([
-  "Thumbs.db", "thumbs.db",
-  "desktop.ini", "Desktop.ini",
+  "Thumbs.db",
+  "thumbs.db",
+  "desktop.ini",
+  "Desktop.ini",
   "$RECYCLE.BIN",
   "System Volume Information",
   ".DS_Store",
@@ -187,6 +246,8 @@ async function readPdf(
   realPath: string,
   stats: { size: number; mtimeMs: number },
   visionConfig: VisionApiConfig | null,
+  /** Reads the bytes from the descriptor `openVerified` checked — never the path again. */
+  readBytes: () => Promise<Buffer>
 ): Promise<{ content: ContentBlock[]; visionUsage: AggregatedVisionUsage }> {
   const pdfCache = getCache();
   const zeroUsage: AggregatedVisionUsage = { inputTokens: 0, outputTokens: 0 };
@@ -198,7 +259,7 @@ async function readPdf(
   }
 
   // Cache miss or mtime changed — read file and compute hash
-  const fileBuffer = await readFile(realPath);
+  const fileBuffer = await readBytes();
   const contentHash = createHash("sha256").update(fileBuffer).digest("hex");
 
   // Slow path: check if content hash matches (mtime changed but content didn't)
@@ -239,7 +300,7 @@ async function readPdf(
 const plugin = {
   id: "pinchy-files",
   name: "Pinchy Files",
-  description: "Scoped read-only file access for Pinchy Knowledge Base agents.",
+  description: "Scoped file access to the directories an agent has been granted.",
   configSchema: {
     validate: (value: unknown) => {
       if (value && typeof value === "object" && "agents" in value) {
@@ -249,7 +310,9 @@ const plugin = {
     },
   },
 
-  register(api: PluginApi) {
+  register(pluginApi: PluginApi) {
+    // Every tool refuses a parameter it does not declare (unknown-params.ts).
+    const api = refusingUnknownParams(pluginApi);
     const agentConfigs = api.pluginConfig?.agents ?? {};
     const apiBaseUrl = api.pluginConfig?.apiBaseUrl;
     const gatewayToken = api.pluginConfig?.gatewayToken;
@@ -261,12 +324,36 @@ const plugin = {
     // the dispatch E2E), not mid-process.
     const visionModelOverride = api.pluginConfig?.visionModel;
 
-    // Capture runtime APIs for vision (direct LLM API calls for scanned pages)
-    const modelAuth = (api as any).runtime?.modelAuth as {
-      resolveApiKeyForProvider: (params: { provider: string; cfg: unknown }) => Promise<{ apiKey: string } | null>;
-    } | undefined;
-    const loadConfig = (api as any).runtime?.config?.loadConfig as
-      (() => Record<string, unknown>) | undefined;
+    // Runtime APIs for vision (direct LLM API calls for scanned pages). Read
+    // at the moment of use, never here: every `openclaw` CLI command loads
+    // plugins in "cli-metadata" mode, where `api.runtime` throws on any
+    // property read, and an eager read failed the whole registration.
+    //
+    // A runtime that throws costs the vision step, never the read: every PDF
+    // passes through here, text PDFs included.
+    //
+    // The config snapshot accessor is `config.current` since OpenClaw 2026.9,
+    // which dropped `config.loadConfig`; reading only the old name silently
+    // turned off vision for every scanned page.
+    const visionRuntime = (): {
+      modelAuth?: {
+        resolveApiKeyForProvider: (params: {
+          provider: string;
+          cfg: unknown;
+        }) => Promise<{ apiKey: string } | null>;
+      };
+      loadConfig?: () => Record<string, unknown>;
+    } => {
+      try {
+        const runtime = (api as any).runtime;
+        return {
+          modelAuth: runtime?.modelAuth,
+          loadConfig: runtime?.config?.current ?? runtime?.config?.loadConfig,
+        };
+      } catch {
+        return {};
+      }
+    };
 
     api.registerTool(
       (ctx: PluginToolContext) => {
@@ -281,18 +368,18 @@ const plugin = {
         return {
           name: "pinchy_ls",
           label: "List Files",
-          description: `List files and directories. Start here first to discover available files. Your knowledge base is at: ${pathList}`,
+          description: `List files and directories in the paths this agent may access: ${pathList}`,
           parameters: {
             type: "object",
             properties: {
-              path: { type: "string", description: `Directory to list. Use one of these paths: ${pathList}` },
+              path: {
+                type: "string",
+                description: `Directory to list. Use one of these paths: ${pathList}`,
+              },
             },
             required: ["path"],
           },
-          async execute(
-            _toolCallId: string,
-            params: Record<string, unknown>
-          ) {
+          async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
               const requestedPath = params.path as string;
               // Fall back to the other Unicode normalization form when the exact
@@ -303,7 +390,10 @@ const plugin = {
 
               const entries = readdirSync(realPath);
               const results = entries
-                .filter((name) => !name.startsWith(".") && !name.startsWith("~$") && !SYSTEM_FILES.has(name))
+                .filter(
+                  (name) =>
+                    !name.startsWith(".") && !name.startsWith("~$") && !SYSTEM_FILES.has(name)
+                )
                 .map((name) => {
                   const fullPath = join(realPath, name);
                   const stats = statSync(fullPath);
@@ -315,17 +405,11 @@ const plugin = {
                 });
 
               return {
-                content: [
-                  { type: "text", text: JSON.stringify(results, null, 2) },
-                ],
+                content: [{ type: "text", text: JSON.stringify(results, null, 2) }],
               };
             } catch (error) {
-              const message =
-                error instanceof Error ? error.message : "Unknown error";
-              return {
-                isError: true,
-                content: [{ type: "text", text: message }],
-              };
+              const message = error instanceof Error ? error.message : "Unknown error";
+              return toolError(message);
             }
           },
         };
@@ -346,7 +430,7 @@ const plugin = {
         return {
           name: "pinchy_read",
           label: "Read File",
-          description: `Read a file's content. Use pinchy_ls first to discover the exact file path. Your knowledge base is at: ${pathList}`,
+          description: `Read one file in full. Needs an exact path — use pinchy_ls to discover it. Best when you already know which document you need; it returns no page numbers, so what you read here cannot be cited. Accessible paths: ${pathList}`,
           parameters: {
             type: "object",
             properties: {
@@ -357,10 +441,7 @@ const plugin = {
             },
             required: ["path"],
           },
-          async execute(
-            _toolCallId: string,
-            params: Record<string, unknown>
-          ) {
+          async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
               const requestedPath = params.path as string;
               // Fall back to the other Unicode normalization form when the exact
@@ -375,60 +456,76 @@ const plugin = {
 
               // PDF detection
               if (isPdf) {
-                const stats = statSync(realPath);
-                if (stats.size > MAX_PDF_FILE_SIZE) {
-                  return {
-                    isError: true,
-                    content: [
-                      {
-                        type: "text",
-                        text: `File too large (${stats.size} bytes). Maximum: ${MAX_PDF_FILE_SIZE} bytes.`,
-                      },
-                    ],
-                  };
-                }
-
-                // Resolve agent name + model from OpenClaw config in one walk.
-                // The model drives vision API calls; the name makes rows on
-                // the Usage Dashboard readable (agentId alone is opaque).
-                let visionConfig: VisionApiConfig | null = null;
-                let resolvedAgentName: string | undefined;
-                if (modelAuth && loadConfig) {
-                  const cfg = loadConfig();
-                  const agentInfo = resolveAgentInfo(cfg, agentId);
-                  resolvedAgentName = agentInfo.name;
-                  // Prefer Pinchy's dedicated, live-resolved vision model; fall
-                  // back to the agent's own model only when none was emitted.
-                  const visionModel = visionModelOverride ?? agentInfo.model;
-                  if (visionModel) {
-                    visionConfig = createVisionConfig({
-                      modelAuth,
-                      cfg,
-                      model: visionModel,
-                    });
+                // Opened once, without following a link, and checked to be
+                // the file at realPath (verified-open.ts): the size gate, the
+                // cache key and the bytes all come from this descriptor, so a
+                // link swapped in after validateAccess is never read.
+                const { handle, stats } = await openVerified(realPath);
+                try {
+                  if (stats.size > MAX_PDF_FILE_SIZE) {
+                    return toolError(
+                      `File too large (${stats.size} bytes). Maximum: ${MAX_PDF_FILE_SIZE} bytes.`
+                    );
                   }
-                }
-                const pdfResult = await readPdf(realPath, stats, visionConfig);
 
-                // Fire-and-forget: report any vision API tokens to Pinchy's
-                // internal usage endpoint so they show up on the Usage
-                // Dashboard. We intentionally do not await — telemetry must
-                // never block or fail a PDF read.
-                if (apiBaseUrl && gatewayToken && visionConfig) {
-                  void reportUsage(
-                    {
-                      agentId,
-                      agentName: resolvedAgentName ?? agentId,
-                      sessionKey: "plugin:pinchy-files",
-                      model: visionConfig.model,
-                      inputTokens: pdfResult.visionUsage.inputTokens,
-                      outputTokens: pdfResult.visionUsage.outputTokens,
-                    },
-                    { apiBaseUrl, gatewayToken },
+                  // Resolve agent name + model from OpenClaw config in one walk.
+                  // The model drives vision API calls; the name makes rows on
+                  // the Usage Dashboard readable (agentId alone is opaque).
+                  // A throw anywhere in here leaves vision off (visionConfig
+                  // null): text pages still read, scanned ones get the fallback.
+                  let visionConfig: VisionApiConfig | null = null;
+                  let resolvedAgentName: string | undefined;
+                  try {
+                    const { modelAuth, loadConfig } = visionRuntime();
+                    if (modelAuth && loadConfig) {
+                      const cfg = loadConfig();
+                      const agentInfo = resolveAgentInfo(cfg, agentId);
+                      resolvedAgentName = agentInfo.name;
+                      // Prefer Pinchy's dedicated, live-resolved vision model;
+                      // fall back to the agent's own model only when none was
+                      // emitted.
+                      const visionModel = visionModelOverride ?? agentInfo.model;
+                      if (visionModel) {
+                        visionConfig = createVisionConfig({
+                          modelAuth,
+                          cfg,
+                          model: visionModel,
+                          // OpenClaw 2026.9 has no default agent: a key
+                          // resolved without an owner throws on any
+                          // multi-agent install.
+                          ownerAgentId: agentId,
+                        });
+                      }
+                    }
+                  } catch {
+                    visionConfig = null;
+                  }
+                  const pdfResult = await readPdf(realPath, stats, visionConfig, () =>
+                    handle.readFile()
                   );
-                }
 
-                return { content: pdfResult.content };
+                  // Fire-and-forget: report any vision API tokens to Pinchy's
+                  // internal usage endpoint so they show up on the Usage
+                  // Dashboard. We intentionally do not await — telemetry must
+                  // never block or fail a PDF read.
+                  if (apiBaseUrl && gatewayToken && visionConfig) {
+                    void reportUsage(
+                      {
+                        agentId,
+                        agentName: resolvedAgentName ?? agentId,
+                        sessionKey: "plugin:pinchy-files",
+                        model: visionConfig.model,
+                        inputTokens: pdfResult.visionUsage.inputTokens,
+                        outputTokens: pdfResult.visionUsage.outputTokens,
+                      },
+                      { apiBaseUrl, gatewayToken }
+                    );
+                  }
+
+                  return { content: pdfResult.content };
+                } finally {
+                  await handle.close();
+                }
               }
 
               // Non-PDF (.docx, images, text): open the file once and read it
@@ -436,22 +533,15 @@ const plugin = {
               // SAME open handle. Binding the size check and the read to one fd
               // closes the time-of-check/time-of-use window (CodeQL
               // js/file-system-race): a file swapped after the check can no
-              // longer be read in its place.
-              const fh = await open(realPath, "r");
+              // longer be read in its place. And the open itself refuses to
+              // follow a link swapped in after validateAccess (verified-open.ts).
+              const { handle: fh, stats: opened } = await openVerified(realPath);
               let buffer: Buffer;
               try {
-                const { size } = await fh.stat();
+                const { size } = opened;
                 const sizeLimit = isDocx ? MAX_DOCX_FILE_SIZE : MAX_FILE_SIZE;
                 if (size > sizeLimit) {
-                  return {
-                    isError: true,
-                    content: [
-                      {
-                        type: "text",
-                        text: `File too large (${size} bytes). Maximum: ${sizeLimit} bytes.`,
-                      },
-                    ],
-                  };
+                  return toolError(`File too large (${size} bytes). Maximum: ${sizeLimit} bytes.`);
                 }
                 buffer = await fh.readFile();
               } finally {
@@ -485,12 +575,8 @@ const plugin = {
               }
               return { content: [{ type: "text", text: buffer.toString("utf-8") }] };
             } catch (error) {
-              const message =
-                error instanceof Error ? error.message : "Unknown error";
-              return {
-                isError: true,
-                content: [{ type: "text", text: message }],
-              };
+              const message = error instanceof Error ? error.message : "Unknown error";
+              return toolError(message);
             }
           },
         };
@@ -511,34 +597,40 @@ const plugin = {
 
         const pathList = writePaths.join(", ");
 
+        const parameters = {
+          type: "object",
+          properties: {
+            path: {
+              type: "string",
+              description: `Full file path. Must be under: ${pathList}`,
+            },
+            content: {
+              type: "string",
+              description: "Full file content as a string.",
+            },
+            overwrite: {
+              type: "boolean",
+              description: "Set to true to replace an existing file. Default: false.",
+            },
+          },
+          required: ["path", "content"],
+          additionalProperties: false,
+        };
+
         return {
           name: "pinchy_write",
           label: "Write File",
           description: `Write content to a file. Fails if the file already exists — set overwrite=true to replace. Writable paths: ${pathList}`,
-          parameters: {
-            type: "object",
-            properties: {
-              path: {
-                type: "string",
-                description: `Full file path. Must be under: ${pathList}`,
-              },
-              content: {
-                type: "string",
-                description: "Full file content as a string.",
-              },
-              overwrite: {
-                type: "boolean",
-                description: "Set to true to replace an existing file. Default: false.",
-              },
-            },
-            required: ["path", "content"],
-          },
+          parameters,
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
               if (typeof params.path !== "string") {
                 throw new Error("path must be a string");
               }
               const requestedPath = params.path;
+              // What the confirmation card showed must be the file that
+              // changes — refused before validateAccess resolves anything.
+              assertPlainPath(requestedPath, "path");
 
               if (typeof params.content !== "string") {
                 throw new Error("content must be a string");
@@ -575,6 +667,17 @@ const plugin = {
                   `Content too large (${buffer.byteLength} bytes). Maximum: ${MAX_FILE_SIZE} bytes.`
                 );
               }
+
+              // Ensure the parent directory chain exists before writing. Must run
+              // AFTER validateAccess and assertNoSymlinkEscape above — never
+              // before — so a rejected write (outside the allow-list, or escaping
+              // via a symlink) never leaves directories on disk as a side effect
+              // of the failure path. Uses `onDisk`, the symlink-resolved and
+              // already-validated form that is actually written to (not
+              // `requestedPath`/`resolved`), so `{ recursive: true }` can only
+              // instantiate the literal, already-checked non-existent tail —
+              // it cannot itself escape the sandbox.
+              await mkdir(dirname(onDisk), { recursive: true });
 
               let mode: "create" | "overwrite";
               let previousContentHash: string | undefined;
@@ -660,6 +763,376 @@ const plugin = {
       },
       { name: "pinchy_write" }
     );
+
+    /**
+     * Removing a file from a zone the agent may write.
+     *
+     * Gated on `write_paths` — the SAME zone grant as pinchy_write, and not a
+     * grant of its own. Deletion is an operation, and this permission model cuts
+     * by zone rather than by operation: whoever may put a file into a zone may
+     * take it out again (plans/2026-08-05-agent-permissions-by-zone-design.md).
+     * That is what makes it safe by construction — `uploads/` is the user's zone
+     * and left write_paths in #1136, the knowledge base is read-only and never
+     * appears in write_paths at all, and SOUL.md / AGENTS.md / IDENTITY.md are
+     * platform-managed and were never in it.
+     *
+     * Why an agent needs this at all: OpenClaw's memory is plain files the agent
+     * maintains itself, and a native agent prunes them with `apply_patch`'s
+     * `*** Delete File:` or with exec — both of which Pinchy denies. Without a
+     * delete the agent's only way to retire a topic note is to overwrite it with
+     * a tombstone, which stays indexed and, because non-dated files under
+     * `memory/` are never temporally decayed, keeps full weight in recall
+     * forever. memory-core's watcher already listens for `unlink`, so a real
+     * removal is reflected in the search index.
+     */
+    api.registerTool(
+      (ctx: PluginToolContext) => {
+        const agentId = ctx.agentId;
+        if (!agentId) return null;
+
+        const config = agentConfigs[agentId];
+        if (!config) return null;
+
+        const writePaths = config.write_paths;
+        if (!writePaths || writePaths.length === 0) return null;
+
+        const pathList = writePaths.join(", ");
+
+        const parameters = {
+          type: "object",
+          properties: {
+            path: {
+              type: "string",
+              description: `Full path of the file to delete. Must be under: ${pathList}`,
+            },
+          },
+          required: ["path"],
+          additionalProperties: false,
+        };
+
+        return {
+          name: "pinchy_delete",
+          label: "Delete File",
+          description:
+            `Delete a file you no longer need. Only files you can write can be deleted: ${pathList}. ` +
+            "Deletion is permanent — there is no undo.",
+          parameters,
+          async execute(_toolCallId: string, params: Record<string, unknown>) {
+            try {
+              if (typeof params.path !== "string") {
+                throw new Error("path must be a string");
+              }
+              const requestedPath = params.path;
+              // What the confirmation card showed must be the file that
+              // changes — refused before validateAccess resolves anything.
+              assertPlainPath(requestedPath, "path");
+
+              const resolved = validateAccess(
+                { allowed_paths: config.allowed_paths, write_paths: writePaths },
+                requestedPath,
+                "write"
+              );
+
+              // The same NFC/NFD reconciliation the write path does: the form
+              // the model emits and the form on disk can differ on a
+              // normalization-sensitive filesystem, and deleting the wrong
+              // spelling would silently do nothing.
+              const onDisk = resolveOnDiskPath(resolved);
+
+              // Defence in depth, exactly as on the write path: the lexical
+              // check above cannot see a symlink inside an allowed dir pointing
+              // out of it.
+              assertNoSymlinkEscape(onDisk, writePaths);
+
+              // Refuse directories. `unlink` would fail on one anyway, but the
+              // point is to be explicit: no single call may take out a whole
+              // zone, and an agent asking to delete `memory/` has misunderstood
+              // rather than found a feature.
+              let stats;
+              try {
+                stats = statSync(onDisk);
+              } catch (err) {
+                if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+                  // Deliberately an error, not a quiet success. A delete that
+                  // reports "done" for a path that was never there teaches the
+                  // agent its memory is tidier than it is, and mints an audit
+                  // row for a change that did not happen.
+                  return toolError(`No file at ${requestedPath}.`);
+                }
+                throw err;
+              }
+              if (stats.isDirectory()) {
+                return toolError(
+                  `${requestedPath} is a directory. This tool deletes one file at a time.`
+                );
+              }
+
+              const sizeBytes = stats.size;
+              await unlink(onDisk);
+
+              return {
+                content: [{ type: "text", text: `Deleted ${requestedPath}.` }],
+                details: {
+                  path: relativizeWritePath(onDisk, writePaths),
+                  sizeBytes,
+                },
+              };
+            } catch (error) {
+              const message = error instanceof Error ? error.message : "Unknown error";
+              const safePath = typeof params.path === "string" ? params.path : undefined;
+              return {
+                isError: true,
+                content: [{ type: "text", text: message }],
+                details: {
+                  ...(safePath !== undefined ? { path: safePath } : {}),
+                  error: message,
+                },
+              };
+            }
+          },
+        };
+      },
+      { name: "pinchy_delete" }
+    );
+
+    api.registerTool(
+      (ctx: PluginToolContext) => {
+        const agentId = ctx.agentId;
+        if (!agentId) return null;
+
+        const config = agentConfigs[agentId];
+        if (!config) return null;
+
+        const writePaths = config.write_paths;
+        if (!writePaths || writePaths.length === 0) return null;
+        const offeredInChat = isWebChatRun(ctx);
+
+        // Generated files always land in the workbench zone — the #703 serve
+        // route only resolves delivered files from "workbench" or "uploads",
+        // and workbench (not uploads, which is the user's own upload zone) is
+        // the agent-owned scratch space for agent-produced output.
+        //
+        // Strip trailing slashes with a linear scan, NOT a `/\/+$/` regex: the
+        // greedy `\/+$` backtracks polynomially on a path of many slashes
+        // (CodeQL js/polynomial-redos), and write_paths, though Pinchy-owned,
+        // is still library input the scanner treats as untrusted.
+        const workbench = writePaths.find((p) => {
+          let end = p.length;
+          while (end > 0 && p[end - 1] === "/") end--;
+          return p.slice(0, end).endsWith("/workbench");
+        });
+        if (!workbench) return null;
+
+        const parameters = {
+          type: "object",
+          properties: {
+            format: {
+              type: "string",
+              enum: GENERATE_FILE_FORMATS,
+              description: "Output file format.",
+            },
+            filename: {
+              type: "string",
+              description:
+                "Base name for the generated file, WITHOUT extension (the extension is " +
+                "added automatically based on format). Must not contain path separators.",
+            },
+            title: {
+              type: "string",
+              description: "Optional title, used as the sheet name (xlsx) or heading (pdf).",
+            },
+            columns: {
+              type: "array",
+              items: { type: "string" },
+              description: "Column headers, in order.",
+            },
+            rows: {
+              type: "array",
+              items: { type: "array" },
+              description:
+                "Table rows. Each row is an array of cell values (string, number, boolean, " +
+                "or null) with one entry per column, in the same order as `columns`.",
+            },
+          },
+          required: ["format", "filename", "columns", "rows"],
+          additionalProperties: false,
+        };
+
+        return {
+          name: "pinchy_generate_file",
+          label: "Generate File",
+          description:
+            "Generate a CSV, XLSX, or PDF file from tabular data (columns + rows) and save it " +
+            "into your workbench. In Pinchy's web chat the user gets it as a downloadable " +
+            "attachment; the result says whether this conversation is one. Supported " +
+            "formats: csv (spreadsheet-safe, UTF-8 with BOM), xlsx (a single-sheet Excel " +
+            "workbook), pdf (a simple table report). Existing files are " +
+            "never overwritten — on a name collision a numeric suffix is appended (e.g. " +
+            "export-2.csv); the tool result reports the actual filename used.",
+          parameters,
+          async execute(_toolCallId: string, params: Record<string, unknown>) {
+            try {
+              if (
+                typeof params.format !== "string" ||
+                !GENERATE_FILE_FORMATS.includes(params.format as GenerateFileFormat)
+              ) {
+                throw new Error(`format must be one of: ${GENERATE_FILE_FORMATS.join(", ")}`);
+              }
+              const format = params.format as GenerateFileFormat;
+
+              if (typeof params.filename !== "string" || params.filename.length === 0) {
+                throw new Error("filename must be a non-empty string");
+              }
+              // Refused rather than normalized: the name approved on the
+              // confirmation card is the name written.
+              // Surrounding whitespace is the one exception: the name is
+              // trimmed below, so both spellings write the same file, and
+              // the card marks the spaces.
+              assertPlainPath(params.filename, "filename", { trimmedByTool: true });
+              // Path confinement AND delivery-route alignment: the returned
+              // basename is exactly what the file will be stored and granted
+              // under (NFC, trimmed, no separators/traversal, no characters
+              // the #703 serve route's sanitizeFilename would reject or
+              // alter) — see deliverable-filename.ts for why each rule exists.
+              const baseFilename = normalizeDeliverableBasename(params.filename);
+
+              if (
+                !Array.isArray(params.columns) ||
+                !params.columns.every((c) => typeof c === "string")
+              ) {
+                throw new Error("columns must be an array of strings");
+              }
+              const columns = params.columns as string[];
+
+              if (!Array.isArray(params.rows)) {
+                throw new Error("rows must be an array");
+              }
+              const rows = params.rows as (string | number | boolean | null)[][];
+
+              const title = typeof params.title === "string" ? params.title : undefined;
+
+              const { buffer, mimeType, ext } = await generateFile({
+                format,
+                columns,
+                rows,
+                title,
+              });
+
+              // generate-file.ts's MAX_ROWS bounds row COUNT only — a single
+              // huge cell can still produce an arbitrarily large buffer, and
+              // that buffer is fully materialized in memory BEFORE this check
+              // can trip (all three renderers buffer their whole output).
+              // Acceptable because the input is model-emitted tool params,
+              // whose own size is bounded far below anything that could
+              // pressure the plugin process — this cap bounds what lands on
+              // DISK, same as pinchy_write's MAX_FILE_SIZE check above.
+              if (buffer.byteLength > MAX_FILE_SIZE) {
+                throw new Error(
+                  `Generated file too large (${buffer.byteLength} bytes). Maximum: ${MAX_FILE_SIZE} bytes.`
+                );
+              }
+
+              // NEVER overwrite an existing file. The workbench is shared per
+              // AGENT while the #703 download grant is (agent, filename, user):
+              // overwriting would silently swap the bytes under every earlier
+              // grant for that name — on a shared agent, user A's old chip
+              // would start serving user B's data. On collision, append a
+              // numeric suffix instead. `wx` makes create-or-fail atomic (no
+              // exists-then-write TOCTOU window against a concurrent run).
+              const MAX_COLLISION_ATTEMPTS = 100;
+              let name = "";
+              let resolved = "";
+              let written = false;
+              for (let attempt = 1; attempt <= MAX_COLLISION_ATTEMPTS && !written; attempt++) {
+                name =
+                  attempt === 1 ? `${baseFilename}.${ext}` : `${baseFilename}-${attempt}.${ext}`;
+                resolved = validateAccess(
+                  { allowed_paths: config.allowed_paths, write_paths: writePaths },
+                  join(workbench, name),
+                  "write"
+                );
+                assertNoSymlinkEscape(resolved, writePaths);
+
+                // mkdir must run AFTER validation, never before, so a rejected
+                // write never leaves directories on disk as a side effect of the
+                // failure path (same ordering rule as pinchy_write above).
+                await mkdir(dirname(resolved), { recursive: true });
+                try {
+                  await writeFile(resolved, buffer, { flag: "wx" });
+                  written = true;
+                } catch (writeError) {
+                  if ((writeError as NodeJS.ErrnoException).code !== "EEXIST") throw writeError;
+                }
+              }
+              if (!written) {
+                throw new Error(
+                  `A file named ${baseFilename}.${ext} (and ${MAX_COLLISION_ATTEMPTS - 1} suffixed variants) already exists — choose a different filename.`
+                );
+              }
+
+              try {
+                await chown(resolved, DELIVERY_UID, DELIVERY_GID);
+              } catch {
+                // Best-effort — see DELIVERY_UID/DELIVERY_GID comment above.
+              }
+
+              return {
+                content: [
+                  // File delivery (#703): a native file content block lands in
+                  // the session transcript, which Pinchy's client-router reads
+                  // via OpenClaw's `artifacts.list` RPC after the run to record
+                  // the per-user download grant and render the chip. Metadata
+                  // only — no base64/data — the served bytes come from disk.
+                  { type: "file", filename: name, mimeType },
+                  {
+                    type: "text",
+                    text:
+                      `Generated ${name} (${rows.length} rows, ${buffer.byteLength} bytes). ` +
+                      (offeredInChat
+                        ? `Delivered to the user in chat as a downloadable file.`
+                        : `Files are offered as a download only in Pinchy's web chat, and this ` +
+                          `conversation is not one, so do not tell the user it was delivered: ` +
+                          `it is saved in the agent's workbench.`),
+                  },
+                ],
+                details: {
+                  path: relativizeWritePath(resolved, writePaths),
+                  format,
+                  rows: rows.length,
+                  sizeBytes: buffer.byteLength,
+                },
+              };
+            } catch (error) {
+              const message = error instanceof Error ? error.message : "Unknown error";
+              // Set details on every error path so the audit endpoint suppresses
+              // raw params (params.rows/params.columns may hold PII). `format`
+              // and `filename` are ALWAYS present (null when absent/invalid) —
+              // never conditionally omitted — so `details` always has a
+              // non-"error" key. The audit route's curatesNonErrorFields check
+              // only suppresses raw params when such a key exists; an
+              // error-only `{ error }` (e.g. thrown by an invalid `format`,
+              // which is checked before filename) would otherwise leave the
+              // full raw params, including rows/columns, unredacted.
+              return {
+                isError: true,
+                content: [{ type: "text", text: message }],
+                details: {
+                  format: typeof params.format === "string" ? params.format : null,
+                  filename: typeof params.filename === "string" ? params.filename : null,
+                  error: message,
+                },
+              };
+            }
+          },
+        };
+      },
+      { name: "pinchy_generate_file" }
+    );
+
+    // The `## Memory` block for every turn of a memory-granted agent — web
+    // chat, Telegram, email workflow runs and scheduled runs alike. See
+    // memory-prompt.ts for why it is a hook and not a per-entry-point prompt.
+    api.on?.("before_prompt_build", memoryPromptHook(agentConfigs));
   },
 };
 

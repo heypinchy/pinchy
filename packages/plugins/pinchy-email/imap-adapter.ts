@@ -2,8 +2,10 @@ import { ImapFlow } from "imapflow";
 import type { FetchMessageObject, ListResponse } from "imapflow";
 import { simpleParser } from "mailparser";
 import type { AddressObject, ParsedMail } from "mailparser";
+import { connect as netConnect, type Socket } from "node:net";
 import nodemailer from "nodemailer";
 import MailComposer from "nodemailer/lib/mail-composer/index.js";
+import { MAX_ATTACHMENT_BYTES, stripHtml } from "./email-adapter.js";
 import type {
   EmailAdapter,
   EmailAttachment,
@@ -14,6 +16,8 @@ import type {
   ComposeOptions,
   Folder,
 } from "./email-adapter.js";
+import { splitMailbox } from "./recipient.js";
+import { pinnedLookup, type PinnedTarget } from "./pinned-target.js";
 
 export interface ImapAdapterOptions {
   imapHost: string;
@@ -29,7 +33,22 @@ export interface ImapAdapterOptions {
   // string-concatenated, so RFC-2047 encoding/quoting of the display name
   // (umlauts, commas, etc.) is handled correctly by the library.
   senderName?: string;
+  // The addresses Pinchy checked for imapHost / smtpHost when it handed out
+  // these credentials (pinned-target.ts). The adapter connects to these and
+  // never resolves the stored name itself — otherwise a resolver the name
+  // points at could answer Pinchy's check with a public address and the
+  // connect with an internal one (DNS rebinding). Missing means Pinchy checked
+  // nothing, and the adapter refuses to connect (outside the mail-mock seam).
+  imapTarget?: PinnedTarget;
+  smtpTarget?: PinnedTarget;
+  // Why Pinchy has no addresses for a host, when its lookup failed: the
+  // refusal to connect then tells the agent whether to retry or to fix the
+  // name. Absent on an older Pinchy that does not send the reason.
+  lookupFailures?: MailLookupFailures;
 }
+
+export type MailLookupFailure = "no-answer" | "temporary";
+export type MailLookupFailures = Partial<Record<"imapHost" | "smtpHost", MailLookupFailure>>;
 
 export interface ImapMailbox {
   path: string;
@@ -46,7 +65,7 @@ export interface ImapMailbox {
 const IMPLICIT_TLS_PORTS = new Set([993, 465]);
 export function tlsModeForPort(
   port: number,
-  security: string,
+  security: string
 ): { secure: boolean; requireTLS: boolean } {
   if (security === "none") return { secure: false, requireTLS: false };
   const implicit = IMPLICIT_TLS_PORTS.has(port);
@@ -75,9 +94,7 @@ export function decodeMessageId(id: string): {
     return { mailboxPath: "INBOX", uid: Number(id) };
   }
   const uid = Number(id.slice(0, at));
-  const mailboxPath = Buffer.from(id.slice(at + 1), "base64url").toString(
-    "utf8",
-  );
+  const mailboxPath = Buffer.from(id.slice(at + 1), "base64url").toString("utf8");
   return { mailboxPath, uid };
 }
 
@@ -106,17 +123,13 @@ const NAME_HEURISTICS: Record<Exclude<Folder, "INBOX">, RegExp> = {
 // localized folder names. INBOX is always the literal "INBOX". A folder that
 // matches neither is left unset rather than guessed — callers must handle a
 // missing key explicitly instead of silently operating on the wrong mailbox.
-export function resolveFolders(
-  mailboxes: ImapMailbox[],
-): Partial<Record<Folder, string>> {
+export function resolveFolders(mailboxes: ImapMailbox[]): Partial<Record<Folder, string>> {
   const result: Partial<Record<Folder, string>> = { INBOX: "INBOX" };
 
   for (const box of mailboxes) {
     if (box.path.toUpperCase() === "INBOX") continue;
 
-    const bySpecialUse = box.specialUse
-      ? SPECIAL_USE_TO_FOLDER[box.specialUse]
-      : undefined;
+    const bySpecialUse = box.specialUse ? SPECIAL_USE_TO_FOLDER[box.specialUse] : undefined;
     if (bySpecialUse && !result[bySpecialUse]) {
       result[bySpecialUse] = box.path;
       continue;
@@ -132,9 +145,7 @@ export function resolveFolders(
     // both common hierarchy delimiters ('.' and '/').
     const leaf = box.path.split(/[./]/).pop() ?? box.path;
 
-    for (const folder of Object.keys(NAME_HEURISTICS) as Array<
-      Exclude<Folder, "INBOX">
-    >) {
+    for (const folder of Object.keys(NAME_HEURISTICS) as Array<Exclude<Folder, "INBOX">>) {
       if (result[folder]) continue;
       if (NAME_HEURISTICS[folder].test(leaf)) {
         result[folder] = box.path;
@@ -148,16 +159,36 @@ export function resolveFolders(
 const DEFAULT_LIMIT = 20;
 const MS_PER_DAY = 86_400_000;
 
+// Bounds what fetchParsed() will pull over the wire. `{ source: true }`
+// downloads the ENTIRE RFC822 message — every attachment's bytes included —
+// and hands it to mailparser, so without a cap a single huge message can
+// exhaust the plugin's memory (#1093). Graph (Content-Length) and Gmail (the
+// part-listing `size` field) can price one attachment before downloading it;
+// IMAP can only price the whole message, via RFC822.SIZE. So this gate is
+// coarser: a message over the cap is refused even when the attachment
+// actually being requested is 1 KB. Matching a BODYSTRUCTURE node back to the
+// id mailparser assigns in `parsed.attachments` is the finer fix, tracked in
+// #1093 rather than attempted here. Both read() and getAttachment() go
+// through fetchParsed(), so one gate covers both.
+//
+// TWICE MAX_ATTACHMENT_BYTES, and the factor is the point: RFC822.SIZE counts
+// bytes on the wire while MAX_ATTACHMENT_BYTES counts DECODED ones. base64
+// inflates an attachment to ~1.37× (4/3 plus CRLF folding) and the message
+// carries headers and a body on top, so a cap equal to MAX_ATTACHMENT_BYTES
+// would refuse a 20 MB PDF that the Gmail and Graph paths both deliver.
+//
+// Best-effort, like the sibling adapters' prechecks: a missing RFC822.SIZE
+// falls straight through to the real fetch, and index.ts's post-download
+// check on the returned buffer stays the authoritative per-attachment guard.
+export const MAX_MESSAGE_BYTES = MAX_ATTACHMENT_BYTES * 2;
+
 // Maps the structured SearchOptions DSL to an imapflow SearchObject. Pure and
 // deterministic: `now` is supplied by the caller (never read internally via
 // Date.now()/new Date()) so `sinceDays` resolves to an exact, testable date.
 // `folder` and `limit` are NOT search criteria — they drive mailbox selection
 // and result slicing in the search()/list() methods, not the IMAP SEARCH
 // command itself.
-export function buildImapSearch(
-  opts: SearchOptions,
-  now: Date,
-): Record<string, unknown> {
+export function buildImapSearch(opts: SearchOptions, now: Date): Record<string, unknown> {
   const criteria: Record<string, unknown> = {};
   if (opts.from) criteria.from = opts.from;
   if (opts.to) criteria.to = opts.to;
@@ -177,25 +208,9 @@ const SNIPPET_LENGTH = 200;
 // per repeated To:/Cc: header line). Both siblings only ever see a single
 // combined address string from their provider APIs, so this collapses either
 // shape into the same ".text" rendering convention used elsewhere.
-function addressText(
-  addr: AddressObject | AddressObject[] | undefined,
-): string {
+function addressText(addr: AddressObject | AddressObject[] | undefined): string {
   if (!addr) return "";
   return Array.isArray(addr) ? addr.map((a) => a.text).join(", ") : addr.text;
-}
-
-// Very small HTML-to-text fallback for when a message has no text/plain
-// part. mailparser already derives ParsedMail.text from html in the common
-// case (via its bundled html-to-text), so this only matters for the rare
-// case where text is genuinely absent — kept intentionally simple rather
-// than pulling in another HTML-parsing dependency for a fallback path.
-function stripHtml(html: string): string {
-  return html
-    .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim();
 }
 
 // First ~200 chars of the body, whitespace-collapsed onto a single line —
@@ -230,9 +245,17 @@ function toAttachments(parsed: ParsedMail): EmailAttachment[] {
 function assertNoHeaderInjection(field: string, value: string): void {
   if (/[\r\n]/.test(value)) {
     throw new Error(
-      `${field} contains a line break, which is not allowed (possible header injection attempt)`,
+      `${field} contains a line break, which is not allowed (possible header injection attempt)`
     );
   }
+}
+
+// The recipient as nodemailer/MailComposer take it: `{ name, address }` when
+// there is a display name, so the library encodes the name (RFC 2047) instead
+// of re-parsing `Name <address>` as an address list; the bare address otherwise.
+function recipientField(to: string): string | { name: string; address: string } {
+  const { name, address } = splitMailbox(to);
+  return name ? { name, address } : address;
 }
 
 function assertComposeOptionsSafe(opts: ComposeOptions): void {
@@ -273,11 +296,89 @@ interface ResolvedConnection {
   host: string;
   port: number;
   secure: boolean;
+  // Require the STARTTLS upgrade instead of continuing in plaintext when the
+  // server does not offer it (imapflow's default is opportunistic).
+  doSTARTTLS: boolean | undefined;
+  // Where the socket goes; the name above stays the TLS SNI and certificate
+  // name. Undefined only on the mail-mock seam, which never connects to the
+  // stored host.
+  target?: PinnedTarget;
+}
+
+const CONNECTION_TIMEOUT_MS = 10_000;
+
+function requireTarget(
+  target: PinnedTarget | undefined,
+  field: string,
+  host: string,
+  failure: MailLookupFailure | undefined
+) {
+  if (target) return target;
+  const refusal = `so the email tools will not connect to ${field} "${host}".`;
+  if (failure === "temporary") {
+    throw new Error(
+      `pinchy-email: Pinchy's DNS lookup for ${field} "${host}" failed for a moment, ` +
+        `${refusal} Try again shortly.`
+    );
+  }
+  if (failure === "no-answer") {
+    throw new Error(
+      `pinchy-email: ${field} "${host}" does not resolve for Pinchy, ${refusal} ` +
+        "Check the host name in the connection's settings."
+    );
+  }
+  // Neither addresses nor a reason: a Pinchy older than this plugin, which
+  // sends neither.
+  throw new Error(
+    `pinchy-email: Pinchy did not send the addresses it checked for ${field} "${host}", ` +
+      `${refusal} Pinchy and its agent runtime (the openclaw container) are most likely on ` +
+      "different versions — run both from the same Pinchy release."
+  );
+}
+
+// nodemailer resolves the host itself (resolve4/resolve6, then lookup) and
+// has no lookup hook, so the plugin opens the socket for it: to the checked
+// addresses, with Node's per-address fallback across the set. The socket is
+// handed over plain — nodemailer runs implicit TLS or STARTTLS on top of it
+// itself, with the host name as SNI, exactly as for a socket it opened.
+function pinnedSmtpSocket(target: PinnedTarget) {
+  return (
+    options: { host?: string; port?: number | string },
+    callback: (err: Error | null, socketOptions?: { connection: Socket }) => void
+  ): void => {
+    const socket = netConnect({
+      host: options.host,
+      // nodemailer always fills the port in (its default for the mode) before
+      // it asks for a socket.
+      port: Number(options.port),
+      lookup: pinnedLookup(target) as never,
+      autoSelectFamily: true,
+    });
+    let settled = false;
+    const settle = (err: Error | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.removeListener("error", settle);
+      if (err) {
+        socket.destroy();
+        callback(err);
+      } else {
+        callback(null, { connection: socket });
+      }
+    };
+    const timer = setTimeout(
+      () => settle(new Error(`Connection timeout to ${options.host}:${options.port}`)),
+      CONNECTION_TIMEOUT_MS
+    );
+    socket.once("connect", () => settle(null));
+    socket.on("error", settle);
+  };
 }
 
 // SMTP-specific resolved connection: adds requireTLS (STARTTLS), which has
 // no IMAP equivalent.
-interface ResolvedSmtpConnection extends ResolvedConnection {
+interface ResolvedSmtpConnection extends Omit<ResolvedConnection, "doSTARTTLS"> {
   requireTLS: boolean;
 }
 
@@ -310,12 +411,22 @@ export class ImapAdapter implements EmailAdapter {
         host: mockHost,
         port: Number(process.env.IMAP_MOCK_PORT ?? DEFAULT_IMAP_MOCK_PORT),
         secure: false,
+        doSTARTTLS: false,
       };
     }
+    const mode = tlsModeForPort(this.opts.imapPort, this.opts.security);
     return {
       host: this.opts.imapHost,
       port: this.opts.imapPort,
-      secure: tlsModeForPort(this.opts.imapPort, this.opts.security).secure,
+      secure: mode.secure,
+      // undefined (not false) keeps STARTTLS opportunistic where it is not required.
+      doSTARTTLS: mode.requireTLS ? true : undefined,
+      target: requireTarget(
+        this.opts.imapTarget,
+        "the IMAP host",
+        this.opts.imapHost,
+        this.opts.lookupFailures?.imapHost
+      ),
     };
   }
 
@@ -341,17 +452,22 @@ export class ImapAdapter implements EmailAdapter {
       host: this.opts.smtpHost,
       port: this.opts.smtpPort,
       ...tlsModeForPort(this.opts.smtpPort, this.opts.security),
+      target: requireTarget(
+        this.opts.smtpTarget,
+        "the SMTP host",
+        this.opts.smtpHost,
+        this.opts.lookupFailures?.smtpHost
+      ),
     };
   }
 
-  private async withClient<T>(
-    fn: (client: ImapFlow) => Promise<T>,
-  ): Promise<T> {
+  private async withClient<T>(fn: (client: ImapFlow) => Promise<T>): Promise<T> {
     const conn = this.resolveImapConnection();
     const client = new ImapFlow({
       host: conn.host,
       port: conn.port,
       secure: conn.secure,
+      doSTARTTLS: conn.doSTARTTLS,
       auth: {
         user: this.opts.username,
         pass: this.opts.password,
@@ -363,6 +479,12 @@ export class ImapAdapter implements EmailAdapter {
       connectionTimeout: 10_000,
       greetingTimeout: 10_000,
       socketTimeout: 20_000,
+      // imapflow does no DNS of its own: it passes these to net/tls.connect,
+      // whose lookup then answers the checked addresses. The host name stays
+      // the servername (SNI and certificate check).
+      ...(conn.target
+        ? { tls: { lookup: pinnedLookup(conn.target), autoSelectFamily: true } as never }
+        : {}),
     });
     await client.connect();
     try {
@@ -375,17 +497,14 @@ export class ImapAdapter implements EmailAdapter {
   // Resolves a canonical Folder to a real mailbox path on the server. Throws
   // when the folder can't be resolved rather than silently falling back to
   // the wrong mailbox — INBOX always resolves via resolveFolders().
-  private async resolveMailboxPath(
-    client: ImapFlow,
-    folder: Folder,
-  ): Promise<string> {
+  private async resolveMailboxPath(client: ImapFlow, folder: Folder): Promise<string> {
     const mailboxes = (await client.list()) as ListResponse[];
     const resolved = resolveFolders(
       mailboxes.map((box) => ({
         path: box.path,
         specialUse: box.specialUse,
         flags: box.flags,
-      })),
+      }))
     );
     const path = resolved[folder];
     if (!path) {
@@ -398,7 +517,7 @@ export class ImapAdapter implements EmailAdapter {
     client: ImapFlow,
     path: string,
     criteria: Record<string, unknown>,
-    limit: number,
+    limit: number
   ): Promise<EmailSummary[]> {
     await client.mailboxOpen(path);
     const uids = await client.search(criteria, { uid: true });
@@ -410,27 +529,19 @@ export class ImapAdapter implements EmailAdapter {
     const wanted = sorted.slice(0, limit);
 
     const summaries: EmailSummary[] = [];
-    for await (const msg of client.fetch(
-      wanted,
-      { envelope: true, flags: true },
-      { uid: true },
-    )) {
+    for await (const msg of client.fetch(wanted, { envelope: true, flags: true }, { uid: true })) {
       summaries.push(toSummary(msg, path));
     }
     // Ids are now folder-encoded, so sort on the decoded uid (newest first)
     // rather than the raw id string.
-    summaries.sort(
-      (a, b) => decodeMessageId(b.id).uid - decodeMessageId(a.id).uid,
-    );
+    summaries.sort((a, b) => decodeMessageId(b.id).uid - decodeMessageId(a.id).uid);
     return summaries.slice(0, limit);
   }
 
   async list(opts: ListOptions): Promise<EmailSummary[]> {
     const folder = opts.folder ?? "INBOX";
     const limit = opts.limit ?? DEFAULT_LIMIT;
-    const criteria: Record<string, unknown> = opts.unreadOnly
-      ? { seen: false }
-      : { all: true };
+    const criteria: Record<string, unknown> = opts.unreadOnly ? { seen: false } : { all: true };
     return this.withClient(async (client) => {
       const path = await this.resolveMailboxPath(client, folder);
       return this.fetchSummaries(client, path, criteria, limit);
@@ -444,15 +555,33 @@ export class ImapAdapter implements EmailAdapter {
   // INBOX for backward compatibility (see decodeMessageId).
   private async fetchParsed(
     client: ImapFlow,
-    id: string,
+    id: string
   ): Promise<{ parsed: ParsedMail; unread: boolean }> {
     const decoded = decodeMessageId(id);
     await client.mailboxOpen(decoded.mailboxPath);
-    const msg = await client.fetchOne(
-      decoded.uid,
-      { source: true, flags: true },
-      { uid: true },
-    );
+
+    // Price the message before paying for `{ source: true }` below, which
+    // downloads and fully parses the ENTIRE message — every attachment's
+    // bytes included — into memory. This costs one extra FETCH round-trip on
+    // every read: asking for RFC822.SIZE is the only way to learn a message's
+    // size without downloading it, and a combined fetch would already have
+    // paid for the body. See MAX_MESSAGE_BYTES above for why the gate is
+    // message-level rather than per-attachment, and why it's best-effort.
+    const sizeCheck = await client.fetchOne(decoded.uid, { size: true }, { uid: true });
+    if (sizeCheck && sizeCheck.size != null && sizeCheck.size > MAX_MESSAGE_BYTES) {
+      const declaredMb = (sizeCheck.size / 1024 / 1024).toFixed(1);
+      const maxMb = (MAX_MESSAGE_BYTES / 1024 / 1024).toFixed(1);
+      // There is nothing to retry here, so say what still works instead of
+      // leaving the model to guess: list/search read envelopes, not bodies,
+      // and are unaffected by the message's size.
+      throw new Error(
+        `Message ${id} is too large to fetch: ${declaredMb} MB on the wire, and the limit ` +
+          `is ${maxMb} MB. Its sender, subject and date are still available through ` +
+          `email_list and email_search.`
+      );
+    }
+
+    const msg = await client.fetchOne(decoded.uid, { source: true, flags: true }, { uid: true });
     if (!msg || !msg.source) {
       throw new Error(`message ${id} not found`);
     }
@@ -501,7 +630,7 @@ export class ImapAdapter implements EmailAdapter {
 
     const raw = await new MailComposer({
       from,
-      to: opts.to,
+      to: recipientField(opts.to),
       subject: opts.subject,
       text: opts.body,
       ...(opts.replyTo ? { inReplyTo: opts.replyTo } : {}),
@@ -543,12 +672,13 @@ export class ImapAdapter implements EmailAdapter {
       connectionTimeout: 10_000,
       greetingTimeout: 10_000,
       socketTimeout: 20_000,
+      ...(conn.target ? { getSocket: pinnedSmtpSocket(conn.target) } : {}),
     });
     let messageId: string | null;
     try {
       const info = await transport.sendMail({
         from,
-        to: opts.to,
+        to: recipientField(opts.to),
         subject: opts.subject,
         text: opts.body,
         ...(opts.replyTo ? { inReplyTo: opts.replyTo } : {}),
@@ -567,7 +697,7 @@ export class ImapAdapter implements EmailAdapter {
     try {
       const raw = await new MailComposer({
         from,
-        to: opts.to,
+        to: recipientField(opts.to),
         subject: opts.subject,
         text: opts.body,
         ...(opts.replyTo ? { inReplyTo: opts.replyTo } : {}),
@@ -586,14 +716,21 @@ export class ImapAdapter implements EmailAdapter {
     return { messageId };
   }
 
+  // No per-attachment size precheck is possible here, unlike Graph and Gmail:
+  // by the time fetchParsed() returns, mailparser has already decoded every
+  // part. Learning one part's size beforehand would mean walking BODYSTRUCTURE
+  // and matching a node back to the id mailparser assigns below — see #1093.
+  // The message-level gate in fetchParsed() (MAX_MESSAGE_BYTES) is what bounds
+  // this path; index.ts's post-download `data.length` check stays the
+  // authoritative per-attachment guard.
   async getAttachment(
     messageId: string,
-    attachmentId: string,
+    attachmentId: string
   ): Promise<{ filename: string; mimeType: string; data: Buffer }> {
     return this.withClient(async (client) => {
       const { parsed } = await this.fetchParsed(client, messageId);
       const match = parsed.attachments.find(
-        (a, i) => (a.contentId ?? a.cid ?? String(i)) === attachmentId,
+        (a, i) => (a.contentId ?? a.cid ?? String(i)) === attachmentId
       );
       if (!match) {
         throw new Error(`attachment ${attachmentId} not found`);

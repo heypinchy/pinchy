@@ -1,7 +1,7 @@
 import type { ChatOptions, OpenClawClient } from "openclaw-node";
 
 import { RunDeferredError } from "@/lib/email-workflows/dispatch";
-import type { RunAgent, WorkflowForDispatch } from "@/lib/email-workflows/dispatch";
+import type { RunAgent, RunAgentResult, WorkflowForDispatch } from "@/lib/email-workflows/dispatch";
 import { parseInboxReport } from "@/lib/email-workflows/report";
 import type { DispatchableEmail } from "@/lib/email-workflows/types";
 import { inboxSessionKey } from "@/lib/session-key";
@@ -43,11 +43,23 @@ export interface OpenClawRunAgentDeps {
    * id" — which would terminally fail the email instead of retrying.
    */
   waitForAgentReady: (agentId: string) => Promise<boolean>;
+  /**
+   * Is a used-up blocking cost budget (#36) stopping this agent right now? A
+   * budget pauses a workflow, it does not break it: the loader skips paused
+   * workflows at batch start, and a budget crossed mid-batch is refused by
+   * pinchy-audit's runtime gate. Both must defer the email, never fail it.
+   */
+  isBudgetBlocked: (agentId: string) => Promise<boolean>;
   /** Watchdog for a single turn; default 5 minutes. */
   timeoutMs?: number;
 }
 
-const DEFAULT_TIMEOUT_MS = 5 * 60_000;
+/**
+ * Watchdog for a single inbox run. Exported because the reconciliation sweep's
+ * stuck-claim grace period is derived from it: the grace MUST exceed the run
+ * timeout, so the two must not drift apart (see `DEFAULT_STUCK_GRACE_MS`).
+ */
+export const DEFAULT_RUN_TIMEOUT_MS = 5 * 60_000;
 
 const REPORT_CONTRACT = `You are executing an automated inbox workflow run. No human reads this conversation or can answer questions — decide and act using your tools.
 End your reply with exactly one fenced \`\`\`json code block of this shape:
@@ -55,7 +67,7 @@ End your reply with exactly one fenced \`\`\`json code block of this shape:
 Use "status": "no_action" when the email needs nothing done. "outcome" is optional — include it when you created or changed a record. The JSON block must be the last thing in your reply.`;
 
 export function createOpenClawRunAgent(deps: OpenClawRunAgentDeps): RunAgent {
-  const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const timeoutMs = deps.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
 
   return async ({ workflow, email, ledgerId }) => {
     const model = await deps.loadAgentModel(workflow.agentId);
@@ -67,49 +79,87 @@ export function createOpenClawRunAgent(deps: OpenClawRunAgentDeps): RunAgent {
       // lagging a restart). Defer, don't fail — the sweep retries `processing`.
       throw new RunDeferredError(`agent ${workflow.agentId} is not in the OpenClaw runtime yet`);
     }
-
-    const sessionKey = inboxSessionKey(workflow.agentId, ledgerId);
-    const options: ChatOptions = {
-      sessionKey,
-      agentId: workflow.agentId,
-      extraSystemPrompt: REPORT_CONTRACT,
-    };
-    // Split on the FIRST '/' only: provider before, model after — model ids can
-    // themselves contain '/' (same convention as the WS router, #324).
-    const slashIdx = model.indexOf("/");
-    if (slashIdx > 0 && slashIdx < model.length - 1) {
-      options.provider = model.slice(0, slashIdx);
-      options.model = model.slice(slashIdx + 1);
+    if (await budgetBlocks(deps, workflow.agentId)) {
+      throw budgetDeferral(workflow.agentId);
     }
+    try {
+      return await runTurns(deps.client, workflow, email, ledgerId, model, timeoutMs);
+    } catch (err) {
+      // The runtime gate refuses a turn as an error chunk or as replacement
+      // text with no report — neither names the budget in a form worth
+      // parsing. Asking the budget again is the reliable reading.
+      if (!(err instanceof RunDeferredError) && (await budgetBlocks(deps, workflow.agentId))) {
+        throw budgetDeferral(workflow.agentId);
+      }
+      throw err;
+    }
+  };
+}
 
-    const first = await collectTurn(deps.client, taskMessage(workflow, email), options, {
+async function budgetBlocks(deps: OpenClawRunAgentDeps, agentId: string): Promise<boolean> {
+  try {
+    return await deps.isBudgetBlocked(agentId);
+  } catch {
+    // An unanswerable budget question must not fail an email: run as usual.
+    return false;
+  }
+}
+
+function budgetDeferral(agentId: string): RunDeferredError {
+  return new RunDeferredError(
+    `agent ${agentId} has used its monthly budget; the email waits until the budget reopens`
+  );
+}
+
+async function runTurns(
+  client: OpenClawRunAgentDeps["client"],
+  workflow: WorkflowForDispatch,
+  email: DispatchableEmail,
+  ledgerId: string,
+  model: string,
+  timeoutMs: number
+): Promise<RunAgentResult> {
+  const sessionKey = inboxSessionKey(workflow.agentId, ledgerId);
+  const options: ChatOptions = {
+    sessionKey,
+    agentId: workflow.agentId,
+    extraSystemPrompt: REPORT_CONTRACT,
+  };
+  // Split on the FIRST '/' only: provider before, model after — model ids can
+  // themselves contain '/' (same convention as the WS router, #324).
+  const slashIdx = model.indexOf("/");
+  if (slashIdx > 0 && slashIdx < model.length - 1) {
+    options.provider = model.slice(0, slashIdx);
+    options.model = model.slice(slashIdx + 1);
+  }
+
+  const first = await collectTurn(client, taskMessage(workflow, email), options, {
+    sessionKey,
+    timeoutMs,
+  });
+  let runId = first.runId;
+  let parsed = parseInboxReport(first.text);
+
+  if (!parsed.ok) {
+    // One correction turn in the SAME session — the model keeps its context
+    // and only has to restate the result in the required shape.
+    const second = await collectTurn(client, correctionMessage(parsed.error), options, {
       sessionKey,
       timeoutMs,
     });
-    let runId = first.runId;
-    let parsed = parseInboxReport(first.text);
-
+    runId = second.runId ?? runId;
+    parsed = parseInboxReport(second.text);
     if (!parsed.ok) {
-      // One correction turn in the SAME session — the model keeps its context
-      // and only has to restate the result in the required shape.
-      const second = await collectTurn(deps.client, correctionMessage(parsed.error), options, {
-        sessionKey,
-        timeoutMs,
-      });
-      runId = second.runId ?? runId;
-      parsed = parseInboxReport(second.text);
-      if (!parsed.ok) {
-        throw new Error(`run did not produce a valid report: ${parsed.error}`);
-      }
+      throw new Error(`run did not produce a valid report: ${parsed.error}`);
     }
+  }
 
-    return {
-      status: parsed.report.status,
-      title: parsed.report.title,
-      content: parsed.report.content,
-      outcome: parsed.report.outcome,
-      runId,
-    };
+  return {
+    status: parsed.report.status,
+    title: parsed.report.title,
+    content: parsed.report.content,
+    outcome: parsed.report.outcome,
+    runId,
   };
 }
 

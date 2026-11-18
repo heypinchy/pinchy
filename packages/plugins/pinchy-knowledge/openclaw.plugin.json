@@ -1,0 +1,27 @@
+{
+  "id": "pinchy-knowledge",
+  "name": "Pinchy Knowledge",
+  "description": "Retrieves knowledge-base passages for agents via Pinchy's internal hybrid-search API (credential-proxy pattern — no retrieval logic lives in the plugin itself).",
+  "contracts": {
+    "tools": ["knowledge_search"]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "apiBaseUrl": {
+        "type": "string"
+      },
+      "gatewayToken": {
+        "type": "string"
+      },
+      "agents": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object"
+        }
+      }
+    },
+    "required": ["apiBaseUrl", "gatewayToken", "agents"]
+  }
+}

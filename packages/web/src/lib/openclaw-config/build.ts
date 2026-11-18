@@ -1,8 +1,12 @@
-import { readFileSync, writeFileSync } from "fs";
-import { dirname } from "path";
+import { sweepRejectedPayloadsOnce, writeRejectedPayload } from "./rejected-payload";
 import { isDeepStrictEqual } from "util";
-import { writeSecretsFile, secretRef, type SecretsBundle } from "@/lib/openclaw-secrets";
-import { PROVIDERS, type ProviderName, resolveProviderBaseUrl } from "@/lib/providers";
+import {
+  writeSecretsFile,
+  secretRef,
+  secretsFileExists,
+  type SecretsBundle,
+} from "@/lib/openclaw-secrets";
+import { PROVIDERS, resolveProviderBaseUrl } from "@/lib/providers";
 import { getDefaultModel, fetchOllamaLocalModelsFromUrl } from "@/lib/provider-models";
 import { eq, ne } from "drizzle-orm";
 import { db } from "@/db";
@@ -11,37 +15,91 @@ import {
   agentConnectionPermissions,
   integrationConnections,
   channelLinks,
+  users,
 } from "@/db/schema";
 import { getSetting, getSettingsByPrefix } from "@/lib/settings";
-import {
-  computeAllowedTools,
-  getEmailToolsForOperations,
-  EMAIL_OPERATION_DISPLAY_ORDER,
-} from "@/lib/tool-registry";
+import { getInstancePolicy, isPausedPersonalAgent } from "@/lib/instance-policy";
+import { computeAllowedTools, EMAIL_OPERATION_DISPLAY_ORDER } from "@/lib/tool-registry";
 import type { AgentPluginConfig } from "@/db/schema";
-import { TOOL_CAPABLE_OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_COST } from "@/lib/ollama-cloud-models";
-import { getModelCatalogForProvider } from "@/lib/openclaw-builtin-models";
+import { grantedDataPaths } from "@/lib/agent-granted-paths";
+import {
+  TOOL_CAPABLE_OLLAMA_CLOUD_MODELS,
+  OLLAMA_CLOUD_COST,
+  type OllamaCloudModel,
+} from "@/lib/ollama-cloud-models";
+import { applyEffectiveContextCeiling } from "./effective-context";
+import {
+  getModelCatalogForProvider,
+  type OpenClawModelDefinition,
+} from "@/lib/openclaw-builtin-models";
+import { resolveCustomProviderModels } from "@/lib/openai-compatible-discovery";
+import {
+  REFUSED_BASE_URL,
+  refusedBaseUrlsForEmission,
+  refusedProviderModels,
+} from "@/lib/openai-compatible-stored-url";
 import {
   getOpenClawWorkspacePath,
   getAgentBootstrapSizes,
   writeWorkspaceSkill,
-  writeToolsFile,
+  writeMailboxContext,
+  ensureWorkspace,
   listWorkspaceSkillIds,
   removeWorkspaceSkill,
 } from "@/lib/workspace";
 import { getSkillBody, isKnownSkill } from "@/lib/skills";
 import { mcpSkillId, buildMcpSkillBody } from "@/lib/skills/mcp-skill";
 import { resolveBootstrapCaps } from "./bootstrap-caps";
-import { CONFIG_PATH } from "./paths";
+import {
+  CONFIG_PATH,
+  LLAMA_CPP_PROVIDER_ID,
+  LLAMA_SERVER_ARGS,
+  LLAMA_SERVER_COMMAND,
+  LLAMA_SERVER_PORT,
+  MEMORY_EMBEDDING_MODEL_PATH,
+  OPENCLAW_MEDIA_TTL_HOURS,
+  REQUIRED_BUNDLED_PLUGINS,
+} from "./paths";
 import { configsAreEquivalentUpToOpenClawMetadata } from "./normalize";
-import { readExistingConfig, pushConfigInBackground } from "./write";
+import {
+  readConfigContent,
+  readExistingConfig,
+  pushConfigInBackground,
+  writeConfigAtomic,
+  type PushConfigOptions,
+} from "./write";
+import {
+  sizeGuardBaseline,
+  expectsSizeDropRefusal,
+  keepsAProvider,
+  deletesAProvider,
+} from "./size-drop";
+import {
+  fileOnlyDeliveryPending,
+  getPendingConfigPushCount,
+  nextConfigPushGeneration,
+  nextRegenerateSequence,
+  noteFullRegenerateDelivered,
+  noteRegenerateCall,
+  recordWrittenSecrets,
+  takeRegenerateRunIsFollowUpOnly,
+} from "./push-state";
+import {
+  keylessBridge,
+  rekeyedBridge,
+  rekeyedProviders,
+  unresolvedSecretRefs,
+  withRemovedKeyPlaceholders,
+} from "./keyless-bridge";
+import { readSideBaselineBytes, UnderReadSideLineError } from "./last-good-bound";
+import { reloadSecretsInBackground } from "./secrets-reload";
+import { serializeRegenerates } from "./regenerate-queue";
 import {
   buildSecretsBundle,
   collectPluginSecrets,
   collectProviderSecrets,
   readGatewayTokenFromConfig,
 } from "./secrets-bundle";
-import { writeAgentAuthProfiles, type AuthProfilesProvider } from "./agent-auth-profiles";
 // Docker host aliases live in @/lib/openclaw-local-url so they can be shared
 // with `validateProviderUrl`'s save-time allowlist check (#296).
 import { DOCKER_HOST_ALIASES } from "@/lib/openclaw-local-url";
@@ -53,12 +111,35 @@ import {
   BUILTIN_PROVIDER_API,
 } from "./provider-defaults";
 import { resolveDefaultVisionModelChain } from "./default-media-models";
-import { deepMerge } from "./deep-merge";
+import { resolveChatModelFallbackChain } from "./chat-model-fallback";
+import { buildAgentsBlock, preserveTalkBlock } from "./agent-roster";
 import { buildGatewayBlock } from "./gateway";
-import { EMAIL_CONNECTION_TYPES } from "@/lib/integrations/oauth-providers";
+import { aggregateEmailPermissionsByAgent, buildEmailAgentConfigs } from "./email-agent-config";
+import { personalAgentsByOwner, telegramDirectTarget } from "@/lib/telegram-routing";
 import { isMcpEnabled } from "@/lib/feature-flags";
 import { buildNativeMcp, type NativeMcpConnectionInput } from "./native-mcp";
 import type { McpIntegrationData, McpTool } from "@/lib/integrations/types";
+
+/**
+ * Plugins that register a conversation hook, and so get
+ * `hooks.allowConversationAccess` on their entry. Pinchy's plugins load from
+ * ~/.openclaw/extensions, which OpenClaw treats as non-bundled: it drops a
+ * conversation hook from such a plugin at registration unless the entry opts
+ * in, with nothing but a warn diagnostic — the plugin's tools keep working, the
+ * hook never runs. The opt-in hands the hook prompts and history, so it is
+ * given to these and no others; conversation-hook-access.test.ts keeps the
+ * list equal to what the plugins actually register.
+ *
+ * - pinchy-audit: before_agent_run, the cost-budget gate. Reads only the agent
+ *   and channel and sends Pinchy nothing of the conversation.
+ * - pinchy-files: before_prompt_build, the `## Memory` block.
+ * - pinchy-knowledge: before_prompt_build, the question-language note (#1299).
+ */
+export const CONVERSATION_HOOK_PLUGINS: readonly string[] = [
+  "pinchy-audit",
+  "pinchy-files",
+  "pinchy-knowledge",
+];
 
 /**
  * Public docs URL configuration for the bundled `pinchy-docs` plugin.
@@ -73,19 +154,47 @@ import type { McpIntegrationData, McpTool } from "@/lib/integrations/types";
  * Keep this as the single source of truth — tests import these constants
  * rather than the literal so a domain move only touches one line.
  */
+
 export const DOCS_PUBLIC_BASE_URL_SETTING_KEY = "docs_public_base_url";
 export const DEFAULT_DOCS_PUBLIC_BASE_URL = "https://docs.heypinchy.com";
 
+export { MEMORY_EMBEDDING_MODEL_PATH } from "./paths";
+
 /**
- * Absolute path (inside the OpenClaw container) to the bundled EmbeddingGemma
- * GGUF used by memory-core's `local` embedding provider. Baked into the openclaw
- * image at build time so memory search works offline with no API key — see
- * Dockerfile.openclaw. Overridable via `MEMORY_EMBEDDING_MODEL_PATH` for
- * air-gapped forks that ship a different local model.
+ * `models.providers.llama-cpp`: the llama-server memory-core's `local`
+ * embeddings go through. Until OpenClaw 2026.9 the llama.cpp provider embedded
+ * in-process (node-llama-cpp); 2026.9 retired that runtime, and the provider
+ * now starts a llama-server child process on demand from `localService`
+ * (stopping it again after `idleStopMs` idle) and embeds over its
+ * OpenAI-compatible API. Without this block every embed fails with "Local
+ * embeddings need the managed llama.cpp server config" and memory_search finds
+ * nothing.
+ *
+ * The shape is the one the provider's own `openclaw configure` writes for an
+ * embedding-only install (buildLlamaCppProviderConfig, plan "embedding-only"),
+ * with two differences: the command is the binary the openclaw image bakes in
+ * rather than one the setup downloads, and there is no `apiKey` — the
+ * provider supplies synthetic auth for a managed server itself. Before
+ * starting the server the provider writes the preset that `--models-preset`
+ * names, with the model from `memory.search.local.modelPath`. No chat models:
+ * this server only embeds.
  */
-export const MEMORY_EMBEDDING_MODEL_PATH =
-  process.env.MEMORY_EMBEDDING_MODEL_PATH?.trim() ||
-  "/opt/embedding-models/embeddinggemma-300m-qat-Q8_0.gguf";
+function buildManagedLlamaCppProvider(): Record<string, unknown> {
+  const root = `http://127.0.0.1:${LLAMA_SERVER_PORT}`;
+  return {
+    baseUrl: `${root}/v1`,
+    api: "openai-completions",
+    models: [],
+    localService: {
+      command: LLAMA_SERVER_COMMAND,
+      // Includes the batch sizing — see LLAMA_SERVER_EMBEDDING_BATCH_TOKENS.
+      args: [...LLAMA_SERVER_ARGS],
+      healthUrl: `${root}/health`,
+      readyTimeoutMs: 30_000,
+      idleStopMs: 600_000,
+    },
+  };
+}
 
 /**
  * The base URL OpenClaw uses to call back into Pinchy: every `pinchy-*` plugin
@@ -162,7 +271,81 @@ const OLLAMA_LOCAL_DEFAULT_CONTEXT_WINDOW = 32_768;
  */
 const OLLAMA_LOCAL_MAX_TOKENS_CAP = 8_192;
 
-export async function regenerateOpenClawConfig() {
+/**
+ * Loads every non-pending agent-connection permission joined with its
+ * integration connection, WITHOUT fanning the connection row out per
+ * permission row.
+ *
+ * The naive query (`.select().from(agentConnectionPermissions)
+ * .innerJoin(integrationConnections, ...)`) returns all columns of BOTH
+ * tables — including the potentially large `integrationConnections.data`
+ * jsonb blob (e.g. a cached Odoo model catalog) — ONE ROW PER PERMISSION.
+ * On staging, one Odoo connection carried an 837 kB `data` blob and 426
+ * permission rows pointed at it: the join transferred and materialized
+ * ~426 * 837 kB ~= 348 MB in the resulting array on every config
+ * regeneration, OOM-crashing the boot under a 1 GB container memory limit.
+ *
+ * This loads permissions and (active) connections as two separate queries
+ * and reconstructs the joined shape in memory, so each connection — and its
+ * blob — is fetched exactly once and shared BY REFERENCE across every
+ * permission row that references it.
+ *
+ * Preserves the original inner-join semantics: a permission row is included
+ * only if its connection exists and is not `"pending"`.
+ */
+export async function loadAgentConnectionPermissions(dbClient: typeof db): Promise<
+  Array<{
+    agent_connection_permissions: typeof agentConnectionPermissions.$inferSelect;
+    integration_connections: typeof integrationConnections.$inferSelect;
+  }>
+> {
+  const permRows = await dbClient.select().from(agentConnectionPermissions);
+  const activeConns = await dbClient
+    .select()
+    .from(integrationConnections)
+    .where(ne(integrationConnections.status, "pending"));
+  const connById = new Map(activeConns.map((c) => [c.id, c]));
+  return permRows.flatMap((perm) => {
+    const conn = connById.get(perm.connectionId);
+    return conn ? [{ agent_connection_permissions: perm, integration_connections: conn }] : [];
+  });
+}
+
+/**
+ * Options for {@link regenerateOpenClawConfig}. `shrinkFollowUp` marks the one
+ * follow-up regenerate a stranded provider deletion queues (see write.ts,
+ * MAX_SHRINK_STEPS): its own push queues none, so the hand-off cannot recurse.
+ */
+export interface RegenerateOptions {
+  shrinkFollowUp?: boolean;
+}
+
+const runSerializedRegenerate = serializeRegenerates(() =>
+  regenerateOpenClawConfigOnce({ shrinkFollowUp: takeRegenerateRunIsFollowUpOnly() })
+);
+
+/**
+ * Rebuild openclaw.json + secrets.json from the DB and push them to OpenClaw.
+ *
+ * Serialized (see regenerate-queue.ts): at most one regenerate runs at a time,
+ * and a call made while one runs resolves only after a regenerate that started
+ * AFTER the call has completed — so the state a caller changed before calling
+ * is what that caller's await has applied, and an older run can never write
+ * after a newer one. It rejects with the error of the run the caller waited for.
+ *
+ * Calls made during one run share the next one, so a run counts as a shrink
+ * follow-up only when every call it serves is one (noteRegenerateCall): a real
+ * change coalesced with a follow-up keeps its own right to a follow-up.
+ */
+export function regenerateOpenClawConfig(options: RegenerateOptions = {}): Promise<void> {
+  noteRegenerateCall({ shrinkFollowUp: options.shrinkFollowUp === true });
+  return runSerializedRegenerate();
+}
+
+async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise<void> {
+  // Claimed before any state is read: orders this regenerate against others by
+  // what it can have seen, not by when its push lands (see cancelShrinkResume).
+  const regenerateSeq = nextRegenerateSequence();
   // `readExistingConfig` distinguishes two recoverable failure modes:
   //   - ENOENT / parse error → returns {} (cold start; we build the first config from scratch).
   //   - Persistent EACCES → throws (file exists but unreadable; race with OC's
@@ -246,140 +429,128 @@ export async function regenerateOpenClawConfig() {
   // cases that legitimately need tombstones (e.g. id-stability bookkeeping).
   const liveAgents = allAgents.filter((a) => !a.deletedAt);
 
+  // Bring every live agent's workspace up to the current layout before any of
+  // it is measured (getAgentBootstrapSizes) or granted (the pinchy-files
+  // write_paths below). ensureWorkspace only runs at agent-create time, so a
+  // path added to the layout later exists for new agents and for no existing
+  // one — which is how MEMORY.md and memory/ came to be granted to every
+  // write-capable agent while existing on no agent's disk. It is idempotent,
+  // and this runs on boot and on every agent/settings mutation, so it is the
+  // retrofit point for anything the layout gains from here on.
+  //
+  // Note this restores missing SOUL.md / AGENTS.md placeholders too, not just
+  // directories: ensureWorkspace writes them when absent, which until now only
+  // happened at create time and from here on happens on every regeneration.
+  //
+  // Failures are per-agent and non-fatal. workspaces/ is a separate Docker
+  // volume with its own lifecycle (see the layout note in workspace.ts), so it
+  // can be unwritable while /openclaw-config is fine. Letting that throw would
+  // trade one agent's missing directory for every agent's config — including
+  // the gateway token. The agent keeps the grant it had before; the warning is
+  // what says why its memory writes fail.
+  for (const agent of liveAgents) {
+    try {
+      ensureWorkspace(agent.id);
+    } catch (err) {
+      console.warn(
+        `[openclaw-config] Could not materialize workspace for agent ${agent.id}: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
+  }
+
   // Integration permissions joined with their connections, shared by the
   // Odoo and email config sections below. Queried BEFORE the agents list is
-  // built because the email aggregation writes each email agent's TOOLS.md
-  // bootstrap file, and the agents-list map sizes the per-agent bootstrap
-  // caps from the files on disk (getAgentBootstrapSizes) — TOOLS.md must be
+  // built because the email aggregation writes each email agent's mailbox
+  // context into IDENTITY.md, and the agents-list map sizes the per-agent
+  // bootstrap caps from the files on disk (getAgentBootstrapSizes) — it must be
   // on disk before that measurement, or its size would only be reflected one
   // regeneration behind.
   // Only include active connections — pending ones have no usable credentials.
-  const allPermissions = await db
-    .select()
-    .from(agentConnectionPermissions)
-    .innerJoin(
-      integrationConnections,
-      eq(agentConnectionPermissions.connectionId, integrationConnections.id)
-    )
-    .where(ne(integrationConnections.status, "pending"));
+  // See loadAgentConnectionPermissions for why this is two queries + an
+  // in-memory reconstruction rather than a single `.innerJoin()` (#OOM
+  // fan-out fix, v0.9.0 release verification).
+  const allPermissions = await loadAgentConnectionPermissions(db);
 
-  // Aggregate email permissions per agent. LATENT FIRST-WINS BEHAVIOR: the
-  // pinchy-email plugin config supports exactly ONE connectionId per agent
-  // (additionalProperties: false in its manifest) and the UI offers a single
-  // Select, so `connectionId`/`connection` stick to the FIRST email-type
-  // connection seen while `ops` merge across ALL of them. `connectionIds`
-  // exists purely to detect and warn about the multi-connection case.
-  const EMAIL_PROVIDER_TYPES = new Set<string>(EMAIL_CONNECTION_TYPES);
-  const emailPermsByAgent = new Map<
-    string,
-    {
-      connectionId: string;
-      connection: typeof integrationConnections.$inferSelect;
-      connectionIds: Set<string>;
-      ops: Map<string, string[]>;
-    }
-  >();
+  // Aggregate email permissions per agent, then derive the per-agent
+  // pinchy-email plugin config (emitted into plugins.entries further down).
+  // See email-agent-config.ts for the LATENT FIRST-WINS BEHAVIOR rationale
+  // and why email config carries no decrypted credentials.
+  const emailPermsByAgent = aggregateEmailPermissionsByAgent(allPermissions);
+  const emailAgentConfigs = buildEmailAgentConfigs(emailPermsByAgent);
 
-  for (const row of allPermissions) {
-    const perm = row.agent_connection_permissions;
-    const conn = row.integration_connections;
-
-    if (!EMAIL_PROVIDER_TYPES.has(conn.type)) continue;
-
-    if (!emailPermsByAgent.has(perm.agentId)) {
-      emailPermsByAgent.set(perm.agentId, {
-        connectionId: perm.connectionId,
-        connection: conn,
-        connectionIds: new Set(),
-        ops: new Map(),
-      });
-    }
-    const agentPerms = emailPermsByAgent.get(perm.agentId)!;
-    agentPerms.connectionIds.add(perm.connectionId);
-
-    if (!agentPerms.ops.has(perm.model)) {
-      agentPerms.ops.set(perm.model, []);
-    }
-    agentPerms.ops.get(perm.model)!.push(perm.operation);
-  }
-
-  // Per-agent pinchy-email plugin config (emitted into plugins.entries further
-  // down). Unlike Odoo, email config does NOT include decrypted credentials —
-  // only connectionId + permissions. The plugin fetches credentials at runtime
-  // via the internal API (API-callback pattern).
-  const emailAgentConfigs: Record<
-    string,
-    { connectionId: string; permissions: Record<string, string[]>; tools: string[] }
-  > = {};
-  for (const [agentId, data] of emailPermsByAgent) {
-    const permissions: Record<string, string[]> = {};
-    for (const [model, ops] of data.ops) {
-      permissions[model] = ops;
-    }
-    // Derive tool names from granted email operations. OpenClaw uses this
-    // array to know which plugin-registered tool factories to call for this
-    // agent — without it, no factory is called and no tools are available.
-    // Delegated to tool-registry's getEmailToolsForOperations — the same
-    // ops→tools mapping the permission UI uses, where "read" includes
-    // email_search (matching the plugin's own gate: email_search checks the
-    // "read" permission). A hand-rolled mapping here previously required a
-    // separate "search" operation the UI never writes, silently stripping
-    // email_search from every UI-configured agent.
-    const emailOps = data.ops.get("email") ?? [];
-    const tools = getEmailToolsForOperations(emailOps);
-    emailAgentConfigs[agentId] = {
-      connectionId: data.connectionId,
-      permissions,
-      tools,
-    };
-  }
-
-  // Materialize each agent's TOOLS.md mailbox context from the SAME
-  // aggregation that feeds the pinchy-email plugin config above, so the
-  // bootstrap context can never disagree with what the runtime serves.
-  // Agents without email connections get their TOOLS.md actively removed so
-  // no stale mailbox identity survives a permission revocation.
+  // Materialize each agent's mailbox context (IDENTITY.md, see
+  // writeMailboxContext) from the SAME aggregation that feeds the
+  // pinchy-email plugin config above, so the bootstrap context can never
+  // disagree with what the runtime serves. Agents without email connections
+  // get the section actively removed so no stale mailbox identity survives a
+  // permission revocation.
   // The shared display order also dedupes ops merged across permission rows.
+  //
+  // Per-agent and non-fatal, exactly like the ensureWorkspace loop above and
+  // for the same reason — same volume, same cross-uid failure mode. This one
+  // was not guarded, and #1095 is what that costs: a single EACCES on one
+  // agent's root-owned TOOLS.md (where the context lived then) aborted this function BEFORE it pushed
+  // openclaw.json, so the symptom was not a stale bootstrap file but every
+  // agent save failing and pinchy-email missing from the runtime entirely.
+  // Trading one agent's mailbox context for every agent's config is never the
+  // right trade. The reclaim path in writeMailboxContext should stop the EACCES
+  // happening at all; this is what keeps its failure proportionate if it does.
   for (const agent of liveAgents) {
-    const emailData = emailPermsByAgent.get(agent.id);
-    if (!emailData) {
-      writeToolsFile(agent.id, []);
-      continue;
-    }
-    if (emailData.connectionIds.size > 1) {
-      // Surface the silent first-wins pick (see the aggregation note above)
-      // so operators notice when an agent carries more than one email
-      // connection in the DB — the UI prevents this today, but the data
-      // model does not.
+    try {
+      const emailData = emailPermsByAgent.get(agent.id);
+      if (!emailData) {
+        writeMailboxContext(agent.id, []);
+        continue;
+      }
+      if (emailData.connectionIds.size > 1) {
+        // Surface the silent first-wins pick (see the aggregation note above)
+        // so operators notice when an agent carries more than one email
+        // connection in the DB — the UI prevents this today, but the data
+        // model does not.
+        console.warn(
+          `[openclaw-config] Agent ${agent.name} (${agent.id}) has ${String(emailData.connectionIds.size)} email connections; pinchy-email serves only the first one (${emailData.connectionId}), and IDENTITY.md lists exactly that connection.`
+        );
+      }
+      const conn = emailData.connection;
+      const connData =
+        conn.data && typeof conn.data === "object" ? (conn.data as { emailAddress?: string }) : {};
+      const grantedOps = emailData.ops.get("email") ?? [];
+      writeMailboxContext(agent.id, [
+        {
+          address: connData.emailAddress || conn.name,
+          label: conn.name,
+          operations: EMAIL_OPERATION_DISPLAY_ORDER.filter((op) => grantedOps.includes(op)),
+        },
+      ]);
+    } catch (err) {
       console.warn(
-        `[openclaw-config] Agent ${agent.name} (${agent.id}) has ${String(emailData.connectionIds.size)} email connections; pinchy-email serves only the first one (${emailData.connectionId}), and TOOLS.md lists exactly that connection.`
+        `[openclaw-config] Could not write the mailbox context for agent ${agent.name} (${agent.id}): ${
+          err instanceof Error ? err.message : String(err)
+        }. The agent keeps its previous mailbox context; every other agent's config is unaffected.`
       );
     }
-    const conn = emailData.connection;
-    const connData =
-      conn.data && typeof conn.data === "object" ? (conn.data as { emailAddress?: string }) : {};
-    const grantedOps = emailData.ops.get("email") ?? [];
-    writeToolsFile(agent.id, [
-      {
-        address: connData.emailAddress || conn.name,
-        label: conn.name,
-        operations: EMAIL_OPERATION_DISPLAY_ORDER.filter((op) => grantedOps.includes(op)),
-      },
-    ]);
   }
 
   // Pattern A from CLAUDE.md "Secrets Handling": secret pair for each LLM
   // provider with a configured apiKey. Helper returns a fresh mutable map;
   // ollama-cloud is spliced into providerSecrets at the model-providers call site.
-  const { providers: providerSecrets } = await collectProviderSecrets();
+  // `customProviders` is this regenerate's ONE read of the OpenAI-compatible
+  // table: every use below (default-model guard, models.providers emission,
+  // live discovery) takes slug, base URL, models and key from these rows, so
+  // a save committing mid-regenerate can never pair one save's address with
+  // another save's key.
+  const { providers: providerSecrets, customProviders } = await collectProviderSecrets();
 
   // Keep agents.defaults minimal. OpenClaw enriches agents.defaults with
   // heartbeat, models, contextPruning, compaction at runtime; if Pinchy were to
   // OVERWRITE those, a cold-start race (Pinchy writes before OpenClaw enriches →
   // OpenClaw enriches → diff → hot-reload → polling dies, openclaw#47458) could
   // recur. We avoid that by (a) only writing the few fields below and (b) the
-  // `deepMerge(existingAgents, …)` at the config-assembly step, which preserves
-  // every OpenClaw-enriched sibling on each regenerate.
+  // deep-merge over `existingAgents` in buildAgentsBlock (agent-roster.ts) at
+  // the config-assembly step, which preserves every OpenClaw-enriched sibling
+  // on each regenerate.
   const pinchyDefaults: Record<string, unknown> = {
     // Disable OpenClaw's native pre-compaction memory flush. The flush hard-codes
     // the built-in `read`/`write` tools (OpenClaw's MEMORY_FLUSH_ALLOWED_TOOL_NAMES),
@@ -389,7 +560,7 @@ export async function regenerateOpenClawConfig() {
     // returns NO_REPLY, and consumes the user's inbound turn — on production it
     // silently dropped a Telegram receipt image. Pinchy already owns memory
     // persistence through the audited, path-scoped `pinchy_write` (the agent
-    // journals to memory/ on its own; see memory-prompt.ts), so the native flush
+    // journals to memory/ on its own; see pinchy-files/memory-prompt.ts), so the native flush
     // is a redundant, ungoverned duplicate.
     //
     // OpenClaw reads this flag ONLY from agents.defaults.compaction.memoryFlush —
@@ -399,34 +570,34 @@ export async function regenerateOpenClawConfig() {
     // but OpenClaw's reload classifier (config-reload-plan) matches the changed path
     // `agents.defaults.compaction.*` to the broad `agents` rule → kind "none" → noop,
     // NOT a gateway restart, so there is no #47458-style polling-death cascade;
-    // (2) on every later regenerate, the `deepMerge(existingAgents, …)` below
+    // (2) on every later regenerate, the deep-merge in buildAgentsBlock below
     // preserves whatever compaction siblings OpenClaw stamped, so the config stays
     // byte-identical → zero changed paths → no reload at all. The field is also
     // schema-valid (OpenClaw's zod schema declares memoryFlush.enabled as boolean).
     compaction: { memoryFlush: { enabled: false } },
-    // Pin memory-core's embedding provider to the bundled local GGUF model
-    // (the llama-cpp provider + EmbeddingGemma-300m, baked into the openclaw
-    // image — see Dockerfile.openclaw and REQUIRED_BUNDLED_PLUGINS below).
-    // memory-core defaults to the `openai` embedding provider, for which Pinchy
-    // provisions no key (only ollama-cloud) — so in production every index sync
-    // failed ("No API key found for provider openai"), leaving 0 chunks and a
-    // `disabled` memory_search. ollama-cloud and Anthropic expose NO embedding
-    // models, so a local, key-less, offline model is the only provider that
-    // works for every Pinchy deployment. EmbeddingGemma is multilingual (100+
-    // languages, #1 MTEB-multilingual <500M), which matters for non-English
-    // memory. Switching the provider changes the index identity; memory-core
-    // rebuilds the index automatically on next sync. Set in agents.defaults
-    // (deep-merged, preserving OpenClaw-enriched siblings — same reload-safe
-    // pattern as compaction above); memory-core reads it from
-    // agents.*.memorySearch.
-    memorySearch: {
-      provider: "local",
-      local: { modelPath: MEMORY_EMBEDDING_MODEL_PATH },
-    },
   };
-  const defaultProvider = (await getSetting("default_provider")) as ProviderName | null;
-  if (defaultProvider && PROVIDERS[defaultProvider]) {
+  // The default-model guard recognises a custom slug from the same read.
+  const defaultProvider = await getSetting("default_provider");
+  // Emit the default model when `default_provider` names either a built-in OR a
+  // known custom OpenAI-compatible slug (#894). `getDefaultModel` is slug-aware
+  // (it namespaces `<slug>/<firstModel>` for a custom instance), but the guard
+  // must be too — a bare `PROVIDERS[defaultProvider]` would skip custom slugs
+  // AND is a prototype-injection sink (a slug like `constructor` walks the
+  // prototype chain). `Object.hasOwn` + `.some()` are both prototype-safe.
+  const isBuiltInDefault = defaultProvider !== null && Object.hasOwn(PROVIDERS, defaultProvider);
+  // A saved base URL the SSRF guard now refuses is neither emitted below nor
+  // the default here — one check, shared by both decisions.
+  const refusedCustomProviders = await refusedBaseUrlsForEmission(customProviders);
+  const isCustomDefault =
+    defaultProvider !== null &&
+    !refusedCustomProviders.has(defaultProvider) &&
+    customProviders.some((p) => p.slug === defaultProvider);
+  if (defaultProvider && (isBuiltInDefault || isCustomDefault)) {
     pinchyDefaults.model = { primary: await getDefaultModel(defaultProvider) };
+  } else if (customProviders.some((p) => p.slug === defaultProvider)) {
+    // A refused default: `undefined` (not omission) so the deep-merge in
+    // buildAgentsBlock drops the default an earlier regenerate wrote for it.
+    pinchyDefaults.model = undefined;
   }
 
   // Vision-model chain for the built-in `pdf` and `image` tools. Both use the
@@ -455,12 +626,33 @@ export async function regenerateOpenClawConfig() {
   // Build agents list with OpenClaw-side workspace paths, tools.allow, and plugin configs
   const pluginConfigs: Record<string, Record<string, Record<string, unknown>>> = {};
   let contextPluginAgents: Record<string, { tools: string[]; userId: string }> | undefined;
+  // Presence-only per-agent gating for pinchy-knowledge's knowledge_search
+  // tool (no per-agent parameters — the route derives an agent's KB scope
+  // from its existing pinchy-files allowed_paths), same shape as pinchy-docs'
+  // agents map.
+  let knowledgePluginAgents: Record<string, Record<string, never>> | undefined;
 
-  const agentsList = liveAgents.map((agent) => {
+  // Same-provider fallback chain for each agent's chat model (#881). A retired
+  // primary (Ollama 410) otherwise 410s forever with next=none because the
+  // model is written verbatim with no fallback and regeneration writes the same
+  // dead model back. Resolved ONCE per agent up front (the resolver is async;
+  // the map below is sync), keyed by agent id. Emitted as { primary, fallbacks }
+  // only when a usable fallback exists — otherwise the bare string is kept.
+  const chatModelFallbacks = new Map<string, string[]>(
+    await Promise.all(
+      liveAgents.map(
+        async (agent) =>
+          [agent.id, await resolveChatModelFallbackChain(agent.model)] as [string, string[]]
+      )
+    )
+  );
+
+  const agentEntries: Record<string, Record<string, unknown>> = {};
+  for (const agent of liveAgents) {
+    const fallbacks = chatModelFallbacks.get(agent.id) ?? [];
     const agentEntry: Record<string, unknown> = {
-      id: agent.id,
       name: agent.name,
-      model: agent.model,
+      model: fallbacks.length > 0 ? { primary: agent.model, fallbacks } : agent.model,
       workspace: getOpenClawWorkspacePath(agent.id),
       // Disable heartbeat by default: it fires LLM calls in the background
       // and racks up tokens even for idle agents. Set per-agent (NOT in
@@ -491,7 +683,9 @@ export async function regenerateOpenClawConfig() {
 
     // Fail-closed tool policy: emit an explicit allowlist (`tools.allow`) of
     // exactly the Pinchy plugin tools plus the intentionally-allowed read-only
-    // built-ins (memory, pdf, image, session_status — see computeAllowedTools).
+    // built-ins: `session_status` for every agent, and `memory_search` /
+    // `memory_get` for an agent holding `pinchy_memory` (see
+    // computeAllowedTools — `pdf` and `image` are deliberately NOT among them).
     // With no `tools.profile` set, OpenClaw treats `allow` as an absolute
     // allowlist (full ∩ allow), so every other built-in is denied by default,
     // including ones added in future OpenClaw versions: cron, gateway, message,
@@ -507,30 +701,46 @@ export async function regenerateOpenClawConfig() {
     // host-filesystem access (CISO-review note, PR #316).
     const allowedTools = (agent.allowedTools as string[]) || [];
     agentEntry.tools = {
-      allow: computeAllowedTools(),
+      allow: computeAllowedTools(allowedTools),
       fs: { workspaceOnly: true },
     };
 
     // pinchy-files: always inject workspace uploads + workbench; merge with
     // admin-configured KB paths. `uploads/` is the user's zone (chat
     // attachments); `workbench/` is the agent's writable zone for pinchy_write.
-    // Both are read+write so an agent can revisit deliverables it produced
-    // earlier (#418).
-    const adminFilesConfig = (agent.pluginConfig as AgentPluginConfig)?.["pinchy-files"];
-    const adminPaths: string[] = adminFilesConfig?.allowed_paths ?? [];
+    // Both are READABLE for every agent, so an agent can revisit what the user
+    // gave it and what it produced earlier (#418). Only workbench/ is writable,
+    // and only on the grant — see the write_paths block below.
+    // Only entries under /data: a row written before v0.9.0 confined the
+    // column can still name the workspaces root or `/` (#1272).
+    const adminPaths = grantedDataPaths(agent.pluginConfig as AgentPluginConfig | null);
     const workspaceUploads = `${getOpenClawWorkspacePath(agent.id)}/uploads`;
     const workspaceWorkbench = `${getOpenClawWorkspacePath(agent.id)}/workbench`;
     const allowedPaths = [...adminPaths, workspaceUploads, workspaceWorkbench];
 
     if (!pluginConfigs["pinchy-files"]) pluginConfigs["pinchy-files"] = {};
 
+    // Write access is granted by ZONE, and the two zones are independent grants.
+    // `pinchy_write` is the agent's own drawer; `pinchy_memory` is its memory.
+    // Neither implies the other — memory used to ride on pinchy_write, which
+    // made an agent's recall a side effect of a checkbox about files and left
+    // every template-created agent with memory tools and no memory (#755).
     const agentFilesConfig: Record<string, unknown> = { allowed_paths: allowedPaths };
+    const writePaths: string[] = [];
+
     if (allowedTools.includes("pinchy_write")) {
+      // workbench/ ONLY. uploads/ is the user's zone — it holds what they
+      // attached in chat — and it stays readable but never writable. It was
+      // writable for backward-compat with custom AGENTS.md that told agents to
+      // write there; that made `pinchy_write` with overwrite:true the one path
+      // in the system that could replace a file the user uploaded, while
+      // pinchy_generate_file and pinchy-email both deliberately refuse to.
+      writePaths.push(workspaceWorkbench);
+    }
+
+    if (allowedTools.includes("pinchy_memory")) {
       // Persistent agent memory (OpenClaw-managed): MEMORY.md holds curated
-      // long-term knowledge, memory/ holds daily logs. A write-capable agent
-      // gets them so it can actually persist what the user tells it to
-      // remember — without a write path it sees memory_search but can never
-      // write, which led agents to hallucinate saved memories (#368).
+      // long-term knowledge, memory/ holds daily logs.
       //
       // MEMORY.md is granted as a FILE, not the workspace root: the
       // trailing-slash boundary in pinchy-files validate.ts makes the entry
@@ -543,16 +753,20 @@ export async function regenerateOpenClawConfig() {
       // Both lists: write_paths ⊆ allowed_paths is enforced build-time
       // (validate-built-config.ts) and runtime (pinchy-files validate.ts).
       agentFilesConfig.allowed_paths = [...allowedPaths, workspaceMemoryFile, workspaceMemoryDir];
+      writePaths.push(workspaceMemoryFile, workspaceMemoryDir);
+      // The grant itself, for pinchy-files' before_prompt_build hook: it puts
+      // the `## Memory` block into every turn of this agent, whichever channel
+      // started it (pinchy-files/memory-prompt.ts). write_paths cannot stand in
+      // for it — a file-writing agent has them and no memory.
+      agentFilesConfig.memory = true;
+    }
 
-      // uploads/ stays writable for backward-compat with existing custom
-      // AGENTS.md that told the agent to write there. New guidance points
-      // agents at workbench/.
-      agentFilesConfig.write_paths = [
-        workspaceUploads,
-        workspaceWorkbench,
-        workspaceMemoryFile,
-        workspaceMemoryDir,
-      ];
+    // Emit the KEY only when there is something in it. pinchy-files registers
+    // `pinchy_write` off write_paths being present and non-empty, so an empty
+    // array would hand a no-grant agent a write tool that can reach nothing —
+    // a tool it would then describe to the user as available.
+    if (writePaths.length > 0) {
+      agentFilesConfig.write_paths = writePaths;
     }
     pluginConfigs["pinchy-files"][agent.id] = agentFilesConfig;
 
@@ -566,6 +780,16 @@ export async function regenerateOpenClawConfig() {
         tools: contextTools.map((t: string) => t.replace("pinchy_", "")),
         userId: agent.ownerId,
       };
+    }
+
+    // Collect plugin config for agents granted knowledge_search. Presence in
+    // the map is the only signal the plugin needs (see PluginConfig doc
+    // comment in pinchy-knowledge/index.ts) — the value carries no fields.
+    if (allowedTools.includes("knowledge_search")) {
+      if (!knowledgePluginAgents) {
+        knowledgePluginAgents = {};
+      }
+      knowledgePluginAgents[agent.id] = {};
     }
 
     // Skills (master issue #543). The allowlist is ALWAYS emitted — even
@@ -592,8 +816,8 @@ export async function regenerateOpenClawConfig() {
     }
     agentEntry.skills = skills;
 
-    return agentEntry;
-  });
+    agentEntries[agent.id] = agentEntry;
+  }
 
   // Materialize SKILL.md files into each agent's workspace AFTER the entry
   // map. Two reasons to do it in a second pass rather than inside .map():
@@ -635,8 +859,24 @@ export async function regenerateOpenClawConfig() {
   const existingDiscovery = (existing.discovery as Record<string, unknown>) || {};
   const existingMdns = (existingDiscovery.mdns as Record<string, unknown>) || {};
   const existingUpdate = (existing.update as Record<string, unknown>) || {};
-  const existingCanvasHost = (existing.canvasHost as Record<string, unknown>) || {};
-  const existingMedia = (existing.media as Record<string, unknown>) || {};
+  const existingAttachments = (existing.attachments as Record<string, unknown>) || {};
+  const existingMemory = (existing.memory as Record<string, unknown>) || {};
+  const existingMemorySearch = (existingMemory.search as Record<string, unknown>) || {};
+  const existingHooks = (existing.hooks as Record<string, unknown>) || {};
+  const { load: rawHooksInternalLoad, ...existingHooksInternal } =
+    (existingHooks.internal as Record<string, unknown>) || {};
+  const existingHooksInternalLoad = (rawHooksInternalLoad as Record<string, unknown>) || {};
+  // Pinchy ≤ v0.10 pointed OpenClaw at /opt/pinchy-hooks for its #369 memory
+  // filter; the image no longer ships that dir, so the entry goes too.
+  const { extraDirs: rawHooksExtraDirs, ...existingHooksInternalLoadRest } =
+    existingHooksInternalLoad;
+  const existingHooksExtraDirs = (Array.isArray(rawHooksExtraDirs) ? rawHooksExtraDirs : []).filter(
+    (dir) => dir !== "/opt/pinchy-hooks"
+  ) as string[];
+  const hooksInternalLoad = {
+    ...existingHooksInternalLoadRest,
+    ...(existingHooksExtraDirs.length > 0 ? { extraDirs: existingHooksExtraDirs } : {}),
+  };
 
   // #508: identityLinks is no longer Pinchy-owned. Purge any stale value left by
   // a pre-per-task version so UPGRADES actually un-unify Telegram. We only
@@ -664,26 +904,49 @@ export async function regenerateOpenClawConfig() {
     // Pinchy controls the OpenClaw version via the Docker image tag and
     // ignores the notice; the network call is wasted I/O at startup.
     update: { ...existingUpdate, checkOnStart: false },
-    // OpenClaw's "canvas" artifact host. Pinchy doesn't render OpenClaw
-    // canvases anywhere in its UI; per schema: "Keep disabled when canvas
-    // workflows are inactive to reduce exposed local services."
-    canvasHost: { ...existingCanvasHost, enabled: false },
     // Inbound channel media (Telegram photos/documents/etc.) is mirrored
     // into the agent workspace within milliseconds of arrival by the
     // pinchy-transcript plugin's mirrorMedia (reported via POST
     // /api/internal/channel-messages), so the original copy OpenClaw stores
-    // under ~/.openclaw/media is disposable
-    // shortly after capture. OpenClaw only runs its own media-cleanup
-    // sweep when `media.ttlHours` is present in config — verified against
-    // OpenClaw 2026.6.11's server.impl, which reads
-    // `cfgAtStart.media?.ttlHours` and otherwise sets `mediaCleanup: null`
-    // (no maintenance loop at all, unbounded disk growth). 48h is a
-    // generous safety margin over the millisecond-scale mirror, covering
-    // mirror outages/retries. Pinchy owns this value deterministically
-    // (same pattern as canvasHost.enabled above) — any admin- or
-    // OpenClaw-tuned ttlHours must not survive a regenerate — but other
-    // sibling fields OpenClaw may enrich under `media` are preserved.
-    media: { ...existingMedia, ttlHours: 48 },
+    // under ~/.openclaw/media is disposable shortly after capture. OpenClaw
+    // only sweeps that store by age when `attachments.ttlHours` is set —
+    // OpenClaw 2026.9.2's server maintenance reads
+    // `getRuntimeConfig().attachments?.ttlHours` and otherwise only prunes
+    // outbound media (unbounded disk growth for inbound). 48h is a generous
+    // safety margin over the millisecond-scale mirror, covering mirror
+    // outages/retries. Pinchy owns the value deterministically — any admin-
+    // or OpenClaw-tuned ttlHours must not survive a regenerate — but other
+    // sibling fields OpenClaw may enrich under `attachments` are preserved.
+    // (Until OpenClaw 2026.7 the key was root `media.ttlHours`; 2026.8 moved
+    // it and its loader rejects the old key. A root key not assembled here
+    // never reaches the file, so a `media` an earlier Pinchy wrote goes on the
+    // first regenerate.)
+    attachments: { ...existingAttachments, ttlHours: OPENCLAW_MEDIA_TTL_HOURS },
+    // Pin memory-core's embedding provider to the bundled local GGUF model
+    // (the llama-cpp provider + EmbeddingGemma-300m, baked into the openclaw
+    // image — see Dockerfile.openclaw and REQUIRED_BUNDLED_PLUGINS below).
+    // memory-core defaults to the `openai` embedding provider, for which Pinchy
+    // provisions no key (only ollama-cloud) — so in production every index sync
+    // failed ("No API key found for provider openai"), leaving 0 chunks and a
+    // `disabled` memory_search. ollama-cloud and Anthropic expose NO embedding
+    // models, so a local, key-less, offline model is the only provider that
+    // works for every Pinchy deployment. EmbeddingGemma is multilingual (100+
+    // languages, #1 MTEB-multilingual <500M), which matters for non-English
+    // memory. Switching the provider changes the index identity; memory-core
+    // rebuilds the index automatically on next sync. Siblings OpenClaw keeps
+    // under `memory` / `memory.search` are preserved. (Until OpenClaw 2026.7
+    // this lived at `agents.defaults.memorySearch`.)
+    memory: {
+      ...existingMemory,
+      search: {
+        ...existingMemorySearch,
+        provider: "local",
+        local: {
+          ...((existingMemorySearch.local as Record<string, unknown> | undefined) ?? {}),
+          modelPath: MEMORY_EMBEDDING_MODEL_PATH,
+        },
+      },
+    },
     secrets: {
       providers: {
         pinchy: {
@@ -701,10 +964,7 @@ export async function regenerateOpenClawConfig() {
         },
       },
     },
-    agents: deepMerge(existingAgents, {
-      defaults: pinchyDefaults,
-      list: agentsList,
-    }),
+    agents: buildAgentsBlock(existingAgents, pinchyDefaults, agentEntries),
     // Disable OpenClaw's default daily session reset (4:00 AM gateway-local
     // time). Pinchy's chat UI loads history via the deterministic session key
     // `agent:<agentId>:direct:<userId>` (see client-router.ts:81 —
@@ -736,6 +996,36 @@ export async function regenerateOpenClawConfig() {
       ...existingSessionPurged,
       reset: { mode: "idle" as const, idleMinutes: 525600 },
     },
+    // OpenClaw's internal hooks stay on: every install a Pinchy ≤ v0.10 wrote
+    // has run the bundled ones (session-memory, boot-md, command-logger, …)
+    // with this forced on, so turning it off now would silently change them.
+    // Sibling fields (entries, other load.* keys) are preserved via the spreads.
+    //
+    // Pinchy used to add /opt/pinchy-hooks here for its own MEMORY.md group
+    // filter (#369). OpenClaw keeps MEMORY.md out of group and channel
+    // sessions natively since openclaw/openclaw#108881, so the hook and its
+    // dir are gone (openclaw-config-hooks.test.ts pins the native behaviour).
+    hooks: {
+      ...existingHooks,
+      internal: {
+        ...existingHooksInternal,
+        enabled: true,
+        ...(Object.keys(hooksInternalLoad).length > 0 ? { load: hooksInternalLoad } : {}),
+      },
+    },
+    // OpenClaw 2026.8.1 made Skill Workshop's autonomous self-learning `auto`
+    // by default: after a substantial turn a background model run drafts a
+    // skill and applies it without approval. Pinchy agents run an explicit,
+    // admin-chosen skill list, and a skill the runtime writes for itself is a
+    // change no admin approved and the audit trail never sees. Forced off on
+    // every regenerate, like `hooks.internal.enabled` above.
+    skills: { workshop: { autonomous: { mode: "off" as const } } },
+    // Every Pinchy agent holds `session_status`, and OpenClaw lets session
+    // tools reach any session on the Gateway by default ("all", with
+    // cross-agent access on). That would let an agent read another agent's
+    // sessions, or another user's session of the same shared agent. "self"
+    // keeps each session to itself.
+    tools: { sessions: { visibility: "self" as const } },
   };
 
   // Preserve OpenClaw-enriched top-level fields that Pinchy doesn't manage
@@ -744,6 +1034,9 @@ export async function regenerateOpenClawConfig() {
       config[key] = existing[key];
     }
   }
+  // `talk` is OpenClaw's too, but it can name an agent — see preserveTalkBlock.
+  const talk = preserveTalkBlock(existing.talk, new Set(Object.keys(agentEntries)));
+  if (talk) config.talk = talk;
 
   const entries: Record<string, unknown> = {};
 
@@ -831,8 +1124,22 @@ export async function regenerateOpenClawConfig() {
     };
   }
 
+  // Only include pinchy-knowledge when agents use it — same
+  // include-only-when-used rationale as pinchy-context above.
+  if (knowledgePluginAgents) {
+    entries["pinchy-knowledge"] = {
+      enabled: true,
+      config: {
+        apiBaseUrl: internalApiBaseUrl(),
+        gatewayToken: gatewayTokenString,
+        agents: knowledgePluginAgents,
+      },
+    };
+  }
+
   // Always include pinchy-audit and keep it enabled. It logs tool usage from
-  // OpenClaw hooks so built-in and custom tools are captured at source.
+  // OpenClaw hooks so built-in and custom tools are captured at source, and its
+  // before_agent_run gate enforces blocking cost budgets on every channel.
   entries["pinchy-audit"] = {
     enabled: true,
     config: {
@@ -853,11 +1160,26 @@ export async function regenerateOpenClawConfig() {
     },
   };
 
+  // Always include pinchy-approvals and keep it enabled. Its before_tool_call
+  // gate must see every tool call to enforce the per-agent confirmation policy
+  // (#124 Tier 2). The policy decision is made server-side per call.
+  entries["pinchy-approvals"] = {
+    enabled: true,
+    config: {
+      apiBaseUrl: internalApiBaseUrl(),
+      gatewayToken: gatewayTokenString,
+    },
+  };
+
   // Note: pinchy-files is always included (workspace uploads) — per-agent paths are built above.
+
+  for (const id of CONVERSATION_HOOK_PLUGINS) {
+    if (entries[id]) entries[id] = { ...entries[id], hooks: { allowConversationAccess: true } };
+  }
 
   // Collect Odoo integration configs for agents with integration permissions.
   // Uses `allPermissions` queried above (before the agents-list map — see the
-  // TOOLS.md ordering note there).
+  // mailbox-context ordering note there).
   const odooAgentConfigs: Record<string, Record<string, unknown>> = {};
   const integrationSecrets: SecretsBundle["integrations"] = {};
   const permsByAgent = new Map<
@@ -950,44 +1272,47 @@ export async function regenerateOpenClawConfig() {
     .from(integrationConnections)
     .where(eq(integrationConnections.type, "web-search"));
 
-  if (webSearchConnections.length > 0) {
-    const webConn = webSearchConnections[0];
+  // The plugin loads whenever an agent holds a web tool, provider or not
+  // (#1297). pinchy_web_fetch needs no key at all; pinchy_web_search answers
+  // "not configured" until an admin adds one, so the agent can say why
+  // instead of claiming it has no web tools. Gating the whole entry on the
+  // connection left web-template agents with neither tool.
+  const webConn = webSearchConnections[0];
+  const webAgentConfigs: Record<string, Record<string, unknown>> = {};
 
-    const webAgentConfigs: Record<string, Record<string, unknown>> = {};
+  for (const agent of liveAgents) {
+    const allowedTools = (agent.allowedTools as string[]) || [];
+    const hasWebSearch = allowedTools.includes("pinchy_web_search");
+    const hasWebFetch = allowedTools.includes("pinchy_web_fetch");
 
-    for (const agent of liveAgents) {
-      const allowedTools = (agent.allowedTools as string[]) || [];
-      const hasWebSearch = allowedTools.includes("pinchy_web_search");
-      const hasWebFetch = allowedTools.includes("pinchy_web_fetch");
+    if (hasWebSearch || hasWebFetch) {
+      const webConfig = (agent.pluginConfig as AgentPluginConfig)?.["pinchy-web"] ?? {};
+      const tools: string[] = [];
+      if (hasWebSearch) tools.push("pinchy_web_search");
+      if (hasWebFetch) tools.push("pinchy_web_fetch");
 
-      if (hasWebSearch || hasWebFetch) {
-        const webConfig = (agent.pluginConfig as AgentPluginConfig)?.["pinchy-web"] ?? {};
-        const tools: string[] = [];
-        if (hasWebSearch) tools.push("pinchy_web_search");
-        if (hasWebFetch) tools.push("pinchy_web_fetch");
-
-        webAgentConfigs[agent.id] = { tools, ...webConfig };
-      }
-    }
-
-    if (Object.keys(webAgentConfigs).length > 0) {
-      // No braveApiKey in plugin config. The plugin fetches it on demand
-      // from the credentials API — same pattern as pinchy-odoo / pinchy-email.
-      // See #209 for the bug class motivated this migration.
-      entries["pinchy-web"] = {
-        enabled: true,
-        config: {
-          apiBaseUrl: internalApiBaseUrl(),
-          gatewayToken: gatewayTokenString,
-          connectionId: webConn.id,
-          agents: webAgentConfigs,
-        },
-      };
+      webAgentConfigs[agent.id] = { tools, ...webConfig };
     }
   }
 
+  if (Object.keys(webAgentConfigs).length > 0) {
+    // No braveApiKey in plugin config. The plugin fetches it on demand
+    // from the credentials API — same pattern as pinchy-odoo / pinchy-email.
+    // See #209 for the bug class motivated this migration. Without a
+    // connection there is no key to fetch, so connectionId is left out.
+    entries["pinchy-web"] = {
+      enabled: true,
+      config: {
+        apiBaseUrl: internalApiBaseUrl(),
+        gatewayToken: gatewayTokenString,
+        ...(webConn ? { connectionId: webConn.id } : {}),
+        agents: webAgentConfigs,
+      },
+    };
+  }
+
   // Emit the pinchy-email plugin entry from the per-agent email configs
-  // aggregated above (before the agents-list map — see the TOOLS.md ordering
+  // aggregated above (before the agents-list map — see the mailbox-context ordering
   // note there).
   if (Object.keys(emailAgentConfigs).length > 0) {
     entries["pinchy-email"] = {
@@ -1088,13 +1413,13 @@ export async function regenerateOpenClawConfig() {
       });
       config.mcp = { servers: native.servers };
 
-      // Merge the per-agent MCP tool allowlist into agents.list[].tools.allow,
-      // APPENDED after computeAllowedTools()'s fail-closed base — never
-      // replacing it. agentsList is the SAME array referenced by
-      // config.agents.list above (deepMerge assigns arrays by reference), so
-      // mutating the entries here is reflected in the emitted config.
-      for (const agentEntry of agentsList as Array<Record<string, unknown>>) {
-        const allow = native.toolAllowByAgent[agentEntry.id as string];
+      // Merge the per-agent MCP tool allowlist into
+      // agents.entries.<id>.tools.allow, APPENDED after computeAllowedTools()'s
+      // fail-closed base — never replacing it. buildAgentsBlock assigns
+      // `agentEntries` to config.agents.entries by reference, so mutating the
+      // entries here is reflected in the emitted config.
+      for (const [agentId, agentEntry] of Object.entries(agentEntries)) {
+        const allow = native.toolAllowByAgent[agentId];
         if (!allow || allow.length === 0) continue;
         const tools = (agentEntry.tools as Record<string, unknown>) ?? {};
         const existingAllow = (tools.allow as string[] | undefined) ?? [];
@@ -1135,11 +1460,11 @@ export async function regenerateOpenClawConfig() {
       // that throws on an unknown id) — these ids are never in KNOWN_SKILLS
       // by design (D2: derived from connections, not authored source), so
       // running them through that validation would throw on every agent
-      // with an MCP grant. agentsList is the same array referenced by
-      // config.agents.list (see the tools.allow append above for the same
+      // with an MCP grant. `agentEntries` is the same object referenced by
+      // config.agents.entries (see the tools.allow append above for the same
       // by-reference-mutation rationale).
-      for (const agentEntry of agentsList as Array<Record<string, unknown>>) {
-        const ids = liveMcpSkillIdsByAgent.get(agentEntry.id as string);
+      for (const [agentId, agentEntry] of Object.entries(agentEntries)) {
+        const ids = liveMcpSkillIdsByAgent.get(agentId);
         if (!ids || ids.size === 0) continue;
         const existingSkills = (agentEntry.skills as string[] | undefined) ?? [];
         agentEntry.skills = [...existingSkills, ...ids];
@@ -1184,15 +1509,19 @@ export async function regenerateOpenClawConfig() {
   // Build the allow list. Two requirements:
   //   1. Include every plugin we have entries for (pinchy-*) and every
   //      OpenClaw-managed plugin (e.g. "telegram") already in the list.
-  //   2. Preserve the existing positional order. OpenClaw treats
-  //      `plugins.allow` as restart-required: a reorder triggers a full
-  //      gateway restart even when the SET of plugins is unchanged. The
-  //      previous implementation rebuilt allow as
-  //      `[...existing-non-pinchy, ...our-pinchy-in-insertion-order]`,
+  //   2. Preserve the existing positional order. OpenClaw diffs arrays by
+  //      position, so a reorder is a `plugins.allow` change even when the
+  //      SET of plugins is unchanged. In 2026.9 that is no gateway restart
+  //      (`plugins` hot-reloads), but it still reloads every plugin, and a
+  //      plugin reload stops the running channels first: each reorder
+  //      bounces the Telegram bots. (Through 2026.7.1 the bundled canvas
+  //      plugin made `plugins.allow` restart-class, and a reorder was a full
+  //      gateway restart — #237.) The previous implementation rebuilt allow
+  //      as `[...existing-non-pinchy, ...our-pinchy-in-insertion-order]`,
   //      which reshuffles the array whenever OpenClaw appended one of its
   //      managed plugins after Pinchy's first write (e.g. `telegram` after
   //      `connectBot`). The next regenerate then moved telegram to position 0
-  //      and re-ordered pinchy-* entries — same set, restart cascade. See #237.
+  //      and re-ordered pinchy-* entries — same set, needless reload.
   // We must NOT include Pinchy plugins without entries — OpenClaw validates
   // their config schema and rejects missing required fields like "agents".
   const existingAllow = ((existing.plugins as Record<string, unknown>)?.allow as string[]) || [];
@@ -1209,11 +1538,12 @@ export async function regenerateOpenClawConfig() {
   // We deliberately do NOT also stamp `plugins.entries.<id>.enabled = false`.
   // OpenClaw enriches `plugins.entries.*` at runtime (sibling fields like
   // hooks/subagent state); writing our own value over the existing entry
-  // would either drop those enrichments (-> next regenerate diffs `plugins`
-  // -> full SIGUSR1 gateway restart, caught by agent-create-no-restart.
-  // spec.ts:207) or write a new entry that wasn't there before (-> first
-  // regenerate diffs `plugins` -> restart). The allowlist alone is the
-  // correct mechanism here.
+  // would either drop those enrichments or write a new entry that wasn't
+  // there before, and either way the next regenerate diffs `plugins`. Through
+  // 2026.7.1 that was a full SIGUSR1 gateway restart (caught by
+  // agent-create-no-restart.spec.ts:207); in 2026.9 it is a plugin reload,
+  // which still stops and restarts every running channel. The allowlist
+  // alone is the correct mechanism here.
   //
   // Why each is safe to disable:
   //   - acpx: Agent Client Protocol bridge for desktop chat clients
@@ -1251,11 +1581,10 @@ export async function regenerateOpenClawConfig() {
   //     (`pdfModel` below) is dropped together in a follow-up.
   //   - llama-cpp: the external llama.cpp provider plugin (manifest id
   //     `llama-cpp`) that registers memory-core's `local` embedding provider —
-  //     the key-less, offline GGUF backend we pin in agents.defaults.memorySearch
-  //     above. Installed + bundled in Dockerfile.openclaw; without it in
+  //     the key-less, offline GGUF backend we pin in memory.search above. Installed + bundled in Dockerfile.openclaw; without it in
   //     plugins.allow the `local` provider never loads and memory_search resolves
   //     to nothing (the same silent-recall failure, one layer down).
-  const REQUIRED_BUNDLED_PLUGINS = ["document-extract", "llama-cpp"] as const;
+  // (REQUIRED_BUNDLED_PLUGINS lives in paths.ts: the boot seed writes it too.)
 
   const DISABLED_OPENCLAW_PLUGINS = new Set(["acpx", "bonjour", "device-pair", "phone-control"]);
   const isWanted = (p: string) =>
@@ -1284,22 +1613,62 @@ export async function regenerateOpenClawConfig() {
   // ollama-cloud) and the telegram channel by writing
   // `plugins.entries.<id> = { enabled: true }` into openclaw.json on startup.
   // Without this preservation the next regenerate strips those entries,
-  // OpenClaw treats it as a config diff and triggers a full gateway restart
-  // (15-30 s downtime, "Agent runtime is not available" banner — #193).
+  // OpenClaw treats it as a config diff: through 2026.7.1 a full gateway
+  // restart (15-30 s downtime, "Agent runtime is not available" banner —
+  // #193), in 2026.9 a plugin reload that bounces every running channel.
   // Same root cause as the channels.telegram.enabled fix above; this covers
   // the plugins.entries.* surface.
   const existingEntries =
     ((existing.plugins as Record<string, unknown>)?.entries as Record<string, unknown>) || {};
   // Preserve all existing non-pinchy entries — including ones for plugins
   // we've filtered out of `plugins.allow` (acpx/bonjour/...). Stripping
-  // them would diff `plugins` and OpenClaw classifies that as restart-
-  // required (caught by agent-create-no-restart.spec.ts:207). The allow
+  // them would diff `plugins`, which reloads every plugin and bounces the
+  // running channels (a full restart through 2026.7.1, caught by
+  // agent-create-no-restart.spec.ts:207). The allow
   // whitelist alone keeps them from loading, so leftover entries are inert.
   for (const [pluginId, entry] of Object.entries(existingEntries)) {
     if (!isPinchyPlugin(pluginId) && !(pluginId in entries)) {
       entries[pluginId] = entry;
     }
   }
+
+  // OpenClaw 2026.8.1 turned memory-core's "grounded dreaming" on by default: a
+  // nightly cron that ingests interactive session transcripts and rewrites
+  // MEMORY.md with the agent's default model. In Pinchy that is a second,
+  // ungoverned writer of agent memory (`pinchy_memory` is the governed one), it
+  // reads the conversations of every user of a shared agent, and it spends the
+  // model budget outside any chat turn. Forced off; whatever else OpenClaw keeps
+  // in the entry (enabled, other dreaming settings) is preserved.
+  const memoryCoreEntry = (entries["memory-core"] as Record<string, unknown> | undefined) ?? {};
+  const memoryCoreConfig = (memoryCoreEntry.config as Record<string, unknown> | undefined) ?? {};
+  entries["memory-core"] = {
+    ...memoryCoreEntry,
+    config: {
+      ...memoryCoreConfig,
+      dreaming: {
+        ...((memoryCoreConfig.dreaming as Record<string, unknown> | undefined) ?? {}),
+        enabled: false,
+      },
+    },
+  };
+
+  // The canvas host (an HTTP server for agent-rendered canvases) stays off:
+  // Pinchy renders nothing through it and it would only open another listener
+  // in the container. Until OpenClaw 2026.7 this was root `canvasHost.enabled`;
+  // 2026.8 moved it into the bundled `canvas` plugin, which is enabled by
+  // default, and its loader rejects the old root key.
+  const canvasEntry = (entries.canvas as Record<string, unknown> | undefined) ?? {};
+  const canvasConfig = (canvasEntry.config as Record<string, unknown> | undefined) ?? {};
+  entries.canvas = {
+    ...canvasEntry,
+    config: {
+      ...canvasConfig,
+      host: {
+        ...((canvasConfig.host as Record<string, unknown> | undefined) ?? {}),
+        enabled: false,
+      },
+    },
+  };
 
   if (allowedPlugins.length > 0 || Object.keys(entries).length > 0) {
     config.plugins = { allow: allowedPlugins, entries };
@@ -1312,6 +1681,15 @@ export async function regenerateOpenClawConfig() {
   const ollamaLocalUrl = await getSetting(PROVIDERS["ollama-local"].settingsKey);
 
   const modelProviders: Record<string, unknown> = {};
+
+  // OpenClaw's emitted models.providers.* entries carry no `vision` field — the
+  // vision signal rides in `input` (["text", "image"]). Our catalog type keeps
+  // `vision` for compile-time safety, so strip it at emission. Shared by the
+  // built-in and OpenAI-compatible blocks (ollama-cloud stays separate: its
+  // source is a different type and derives `input` from `vision`).
+  const stripVision = (models: OpenClawModelDefinition[]) =>
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    models.map(({ vision: _v, ...rest }) => rest);
 
   // OC 5.x changed models.providers.* to require `baseUrl` for ALL built-in
   // providers (breaking change from 4.x where it was optional). Without
@@ -1352,10 +1730,7 @@ export async function regenerateOpenClawConfig() {
         apiKey: secretRef(`/providers/${providerName}/apiKey`),
         api: BUILTIN_PROVIDER_API[providerName],
         baseUrl,
-        models: getModelCatalogForProvider(providerName).map(
-          // eslint-disable-next-line @typescript-eslint/no-unused-vars
-          ({ vision: _v, ...ocFields }) => ocFields
-        ),
+        models: stripVision(getModelCatalogForProvider(providerName)),
       };
     }
   }
@@ -1385,10 +1760,16 @@ export async function regenerateOpenClawConfig() {
       // ModelDefinitionConfig. Cost is zero because Ollama Cloud bills by
       // subscription plan, not per token — a fabricated rate would mislead
       // users reading the Usage dashboard.
-      models: TOOL_CAPABLE_OLLAMA_CLOUD_MODELS.map((m) => ({
+      models: TOOL_CAPABLE_OLLAMA_CLOUD_MODELS.map((m: OllamaCloudModel) => ({
         id: m.id,
         name: m.id,
         contextWindow: m.contextWindow,
+        // Researched per-model quality knee, emitted only where the catalog
+        // sets one (none today: deepseek-v4-pro/flash carried 131072 until Ollama
+        // stopped serving them, 2026-11-16). The global operational ceiling is
+        // NOT applied here — applyEffectiveContextCeiling() clamps the whole
+        // emitted tree below, so every provider is covered by one rule.
+        ...(m.contextTokens !== undefined ? { contextTokens: m.contextTokens } : {}),
         maxTokens: m.maxTokens,
         reasoning: m.reasoning,
         input: m.vision ? ["text", "image"] : ["text"],
@@ -1458,16 +1839,80 @@ export async function regenerateOpenClawConfig() {
     modelProviders["ollama"] = providerConfig;
   }
 
-  if (Object.keys(modelProviders).length > 0) {
-    (config as Record<string, unknown>).models = { providers: modelProviders };
+  // Generic "OpenAI-compatible" providers (#894). Each admin-configured
+  // instance emits one models.providers entry keyed by its slug. The baseUrl is
+  // verbatim (the user entered the full base incl. /v1), the apiKey is a
+  // SecretRef resolved from secrets.json (raw key stays in the bundle, never the
+  // config tree), and the models mirror the built-in / ollama-cloud mapping:
+  // strip `vision` (the vision signal rides in `input`) and opt into
+  // `compat.supportsUsageInStreaming` so usage tracking works against the
+  // configured non-OpenAI endpoint (see the ollama-cloud block above).
+  //
+  // #894 backend redesign: the emitted model list is resolved LIVE via
+  // `resolveCustomProviderModels` (short-TTL cache + snapshot fallback — same
+  // helper the model dropdown uses in provider-models.ts), not read off
+  // `p.models` directly — with `p.models` as the fallback snapshot.
+  //
+  // Everything here comes from one row of `customProviders` (see above): the
+  // base URL, the key discovery authenticates with, and the key's slot, which
+  // is versioned (`<slug>@<keyVersion>`, see versionedSecretName). A new key is
+  // a new pointer, so the config that moves `baseUrl` is the only one that
+  // resolves the key entered for it — the two can never go live apart, and
+  // discovery never sends one save's key to another save's address.
+  //
+  // A saved base URL the SSRF guard now refuses keeps its entry and the model
+  // list the file already holds (so the file keeps its size — see
+  // openai-compatible-stored-url.ts) but points at REFUSED_BASE_URL, carries
+  // no key, and is never fetched.
+  for (const p of customProviders) {
+    const refused = refusedCustomProviders.has(p.slug);
+    const models = refused
+      ? refusedProviderModels(existing, p)
+      : await resolveCustomProviderModels({
+          slug: p.slug,
+          baseUrl: p.baseUrl,
+          apiKey: p.apiKey,
+          keyVersion: p.keyVersion,
+          models: p.models,
+        });
+    modelProviders[p.slug] = {
+      baseUrl: refused ? REFUSED_BASE_URL : p.baseUrl,
+      api: "openai-completions",
+      ...(refused ? {} : { apiKey: secretRef(`/providers/${p.secretSlot}/apiKey`) }),
+      models: stripVision(models).map((m) => ({
+        ...m,
+        compat: { supportsUsageInStreaming: true },
+      })),
+    };
   }
+
+  // The llama-server memory-core's `local` embeddings run through — see
+  // buildManagedLlamaCppProvider. Always present, so memory search works on
+  // every install whatever chat providers it has.
+  modelProviders[LLAMA_CPP_PROVIDER_ID] = buildManagedLlamaCppProvider();
+
+  // Single choke point for the compaction ceiling: every model emitted above —
+  // built-in catalogs, ollama-cloud, locally discovered Ollama models, and
+  // OpenAI-compatible instances alike — gets an effective context budget no
+  // higher than MAX_EFFECTIVE_CONTEXT_TOKENS, so OpenClaw's shouldCompact()
+  // always has a reachable trigger. See effective-context.ts for why this is
+  // enforced once over the finished tree instead of per provider block.
+  //
+  // The clamp is INLINED into the assignment rather than called as a statement
+  // above it, so a provider block added later in this function cannot slip past
+  // it unnoticed — the ordering is enforced by construction, not by memory.
+  (config as Record<string, unknown>).models = {
+    providers: applyEffectiveContextCeiling(modelProviders),
+  };
 
   // Build Telegram channel config from DB settings using OpenClaw's multi-account format.
   // Each agent with a bot token gets its own account. Bindings route via accountId.
   //
-  // NOTE: allowFrom is NOT written here. It's managed via per-account allow-from
-  // store files (credentials/telegram-<accountId>-allowFrom.json) to avoid
-  // triggering the broken channel restart (openclaw/openclaw#47458).
+  // NOTE: allowFrom is NOT written here. Since 2026.9 OpenClaw keeps each
+  // account's allow list in its state database, and telegram-allow-store.ts
+  // writes it there over the gateway. In openclaw.json it would be a
+  // `channels` diff on every link and unlink, which bounces the Telegram
+  // channel (and before the plugin loads, restarts the gateway).
   const accounts: Record<string, { botToken: string }> = {};
   interface TelegramBinding {
     agentId: string;
@@ -1478,6 +1923,9 @@ export async function regenerateOpenClawConfig() {
 
   // Single batched query instead of one getSetting per liveAgent (#261).
   const botTokenByKey = await getSettingsByPrefix("telegram_bot_token:");
+  // Same batching for the conflict-disabled marker — one getSetting per
+  // liveAgent otherwise.
+  const conflictDisabledByKey = await getSettingsByPrefix("telegram_conflict_disabled:");
   for (const agent of liveAgents) {
     const botToken = botTokenByKey.get(`telegram_bot_token:${agent.id}`);
     // #477 layer 2: an account auto-disabled after a sustained getUpdates-409
@@ -1485,7 +1933,7 @@ export async function regenerateOpenClawConfig() {
     // create, etc.) — not just at the moment of the targeted disable write.
     // The bot token is deliberately left in settings (so [Reconnect] can
     // re-enable it later); this guard is what makes the disable durable.
-    const conflictDisabled = await getSetting(`telegram_conflict_disabled:${agent.id}`);
+    const conflictDisabled = conflictDisabledByKey.get(`telegram_conflict_disabled:${agent.id}`);
     if (botToken && !conflictDisabled) {
       accounts[agent.id] = { botToken };
       if (agent.isPersonal) {
@@ -1508,20 +1956,57 @@ export async function regenerateOpenClawConfig() {
     if (personalBotsAccountIds.length > 0) {
       const telegramLinks = links.filter((l) => l.channel === "telegram");
       // Map userId → their personal agent ID (hoisted outside loop)
-      const personalAgentsByOwner = new Map(
-        liveAgents.filter((a) => a.isPersonal).map((a) => [a.ownerId, a.id])
-      );
+      const personalAgents = personalAgentsByOwner(liveAgents);
+
+      // Members may be barred from personal agents (Settings → Organization →
+      // Member access). Then a member gets no binding at all: their own agent
+      // is paused, and the bot's is its owner's private one. The allow store
+      // leaves them out as well (telegram-allow-store).
+      // Roles are read only when the switch is off.
+      const policy = await getInstancePolicy();
+      const roleByUser = policy.memberPersonalAgents
+        ? null
+        : new Map(
+            (await db.select({ id: users.id, role: users.role }).from(users)).map((u) => [
+              u.id,
+              u.role,
+            ])
+          );
 
       for (const { accountId } of personalBotsAccountIds) {
+        // The bot's account-wide owner is its own agent. OpenClaw 2026.9 has
+        // no default agent once a fleet holds more than one: an account its
+        // bindings leave unowned makes the router throw, and the Telegram
+        // channel resolves the account's route without a peer as it starts —
+        // so the bot exited on start and never answered anyone. OpenClaw
+        // ranks peer bindings above this one, so each linked user below still
+        // reaches their own agent. Who may write to the bot at all is decided
+        // by the allow store, not here: a member barred from personal agents
+        // is left out of it, as the comment above says.
+        bindings.push({ agentId: accountId, match: { channel: "telegram", accountId } });
         for (const link of telegramLinks) {
-          // Route to user's own personal agent, or fall back to the bot owner's agent
-          const targetAgentId = personalAgentsByOwner.get(link.userId) || accountId;
+          if (
+            roleByUser &&
+            isPausedPersonalAgent({ isPersonal: true }, roleByUser.get(link.userId), policy)
+          ) {
+            continue;
+          }
+          // The allow store lets this user in only once OpenClaw routes them
+          // to this same agent, so both ask telegramDirectTarget. No target
+          // means no personal agent of their own: no binding, and the allow
+          // store leaves them off the bot.
+          const target = telegramDirectTarget(
+            { id: accountId, isPersonal: true },
+            link.userId,
+            personalAgents
+          );
+          if (target === null) continue;
           bindings.push({
-            agentId: targetAgentId,
+            agentId: target,
             match: {
               channel: "telegram",
               accountId,
-              peer: { kind: "dm", id: link.channelUserId },
+              peer: { kind: "direct", id: link.channelUserId },
             },
           });
         }
@@ -1553,11 +2038,16 @@ export async function regenerateOpenClawConfig() {
     // presence depends on OpenClaw's auto-enable side-effect having run
     // first, and any regenerate before that side-effect fires would strip
     // it and trigger the ping-pong.
-    // OC 2026.5.12's BASE_RELOAD_RULES does not list `channels` — the
-    // fallback for unmatched prefixes is restart-class. Any structural
-    // diff in the emitted `channels` block (including spurious key-order
-    // shifts from spread-then-override and OC-side enrichment ping-pongs)
-    // triggers `[reload] config change requires gateway restart (channels)`.
+    // OpenClaw's base reload rules do not list `channels.telegram`. Until the
+    // Telegram plugin is loaded (before the first bot), the unmatched-prefix
+    // fallback makes any diff there a gateway restart: `[reload] config
+    // change requires gateway restart (channels)`. Once it is loaded, the
+    // plugin's own rule turns the diff into a restart of the whole Telegram
+    // channel — every bot, since it declares no account-scoped restart. So
+    // any structural diff in the emitted `channels` block (including
+    // spurious key-order shifts from spread-then-override and OC-side
+    // enrichment ping-pongs) costs either a gateway restart or a bounce of
+    // every bot.
     // Build the telegram channel sub-config the same way as before, then
     // skip the write entirely when the new payload is deep-equal to what's
     // already on disk. The downstream equivalence guard
@@ -1598,9 +2088,9 @@ export async function regenerateOpenClawConfig() {
       // may have enriched at the top of `channels` (e.g. `defaults` for
       // botLoopProtection / heartbeat-visibility, `modelByChannel`, other
       // channels' configs). Without this spread, writing `{telegram: ...}`
-      // alone would strip the OC-enriched siblings and the resulting
-      // channels diff still classifies as restart-class (channels has no
-      // entry in BASE_RELOAD_RULES; fallback is restart).
+      // alone would strip the OC-enriched siblings. In 2026.9 `defaults` and
+      // `modelByChannel` themselves reload as no-ops, but another channel's
+      // block is that channel's restart (see the comment above).
       config.channels = { ...existingChannels, telegram: desiredTelegram };
     } else if (Object.keys(existingChannels).length > 0) {
       // No telegram-level change either — pass channels through byte-for-
@@ -1658,8 +2148,6 @@ export async function regenerateOpenClawConfig() {
     );
   }
 
-  writeSecretsFile(secretsBundle);
-
   // Only write if content actually changed — prevents unnecessary OpenClaw restarts.
   // Format must match what OpenClaw's writeConfigFile produces (trimEnd + "\n")
   // so the SHA256 hashes line up. OpenClaw's reload subsystem dedupes
@@ -1669,109 +2157,325 @@ export async function regenerateOpenClawConfig() {
   // hashes diverge and chokidar fires a redundant reload that diffs against
   // a stale `currentCompareConfig` — see #193 / openclaw#75534.
   const newContent = JSON.stringify(config, null, 2).trimEnd() + "\n";
+  // The file as it is NOW, not as this regenerate read it at the start: a push
+  // may have landed in between.
+  // Unreadable (OpenClaw's root:0600 restart write, before the chmod loop
+  // reopens it) is not "missing": the size guard, the key-less bridge and the
+  // shrink expectation below all judge against this file, and secrets.json
+  // must not lose a key a file we could not read may still name. So a
+  // persistent EACCES skips the regenerate, writing neither file — like the
+  // first read above.
+  let onDiskContent: string | undefined;
   try {
-    const existing = readFileSync(CONFIG_PATH, "utf-8");
-    if (existing === newContent) return;
-    // Workaround for openclaw#75534: OpenClaw stamps `meta.lastTouchedAt`
-    // on every write it performs (config.apply RPC, internal restart
-    // bookkeeping). Pinchy preserves `meta` from existing, so back-to-back
-    // regenerates with no DB changes still differ on this single field.
-    // Without this normalize-compare, sending the byte-different config
-    // via config.apply triggers OpenClaw's diff-against-runtime-resolved-
-    // snapshot to flag env.* paths as changed (env templates "${VAR}" vs
-    // resolved "sk-..."), which falls through `BASE_RELOAD_RULES` to the
-    // default full-restart trigger. Result: every settings save costs
-    // 15-30 s of "Agent runtime is not available" downtime (#193).
-    // Removable when we bump OpenClaw past the upstream fix; tracked in #215.
-    if (configsAreEquivalentUpToOpenClawMetadata(existing, newContent)) return;
-
-    // Defense-in-depth size-drop guard (#311). OpenClaw's `config.apply` RPC
-    // already rejects writes that shrink the on-disk config by more than 50%
-    // (`size-drop:OLD->NEW` error), but Pinchy's `writeConfigAtomic` runs
-    // BEFORE `pushConfigInBackground`, so a corrupted regenerate lands on
-    // disk and OC's inotify watcher diffs it before the RPC ever runs —
-    // triggering a full gateway restart cascade. The trigger pattern: a
-    // regenerate runs through a window where DB-derived state isn't fully
-    // loaded (telegram_bot_token race in CI flake) and produces a payload
-    // missing `channels.telegram` + `bindings`, ~50% smaller than the
-    // healthy on-disk file. Mirroring OC's threshold on the Pinchy side
-    // keeps the bad payload off disk so the cascade never starts; the next
-    // regenerate (from the same or a follow-up request) writes correct
-    // content. The bad payload is saved alongside the config for postmortem
-    // — silent skip would hide the underlying race forever.
-    if (existing.length > 0 && newContent.length < existing.length * 0.5) {
+    onDiskContent = readConfigContent();
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code !== "EACCES") throw err;
+    console.error(
+      "[openclaw-config] regenerate skipped: openclaw.json became unreadable " +
+        "(EACCES) before the write. See #314. No write performed."
+    );
+    return;
+  }
+  let onDiskConfig: Record<string, unknown> | undefined;
+  try {
+    onDiskConfig =
+      onDiskContent === undefined
+        ? undefined
+        : (JSON.parse(onDiskContent) as Record<string, unknown>);
+  } catch {
+    // Unparseable: nothing OpenClaw could run either, so nothing it names.
+  }
+  // Workaround for openclaw#75534: OpenClaw stamps `meta.lastTouchedAt` on
+  // every write it performs (config.apply RPC, internal restart bookkeeping).
+  // Pinchy preserves `meta` from existing, so back-to-back regenerates with no
+  // DB changes still differ on this single field. Without this normalize-
+  // compare, sending the byte-different config via config.apply triggers
+  // OpenClaw's diff-against-runtime-resolved-snapshot to flag env.* paths as
+  // changed (env templates "${VAR}" vs resolved "sk-..."), which falls through
+  // `BASE_RELOAD_RULES` to the default full-restart trigger. Result: every
+  // settings save costs 15-30 s of "Agent runtime is not available" downtime
+  // (#193). Removable when we bump OpenClaw past the upstream fix; tracked in #215.
+  //
+  // The file stands for OpenClaw's runtime only while every push reached that
+  // runtime. After a push fell back to writing the file (noteFileOnlyDelivery),
+  // a running OpenClaw may never have loaded it, so the target goes to
+  // pushConfigInBackground, which delivers it over config.apply (its no-op
+  // guard stands down too: config.get reads the same file).
+  const unchanged =
+    onDiskContent !== undefined &&
+    !fileOnlyDeliveryPending() &&
+    (onDiskContent === newContent ||
+      configsAreEquivalentUpToOpenClawMetadata(onDiskContent, newContent));
+  // Set below when the guard lets a deletion through that OpenClaw will refuse.
+  let expectsProviderShrink = false;
+  // The one follow-up regenerate a stranded provider deletion queues (see
+  // MAX_SHRINK_STEPS in write.ts) — none from that follow-up itself, so the
+  // hand-off cannot recurse.
+  const resumeStrandedShrink = options.shrinkFollowUp
+    ? undefined
+    : () => {
+        regenerateOpenClawConfig({ shrinkFollowUp: true }).catch((err: unknown) => {
+          console.error(
+            "[openclaw-config] follow-up regenerate for a stranded provider deletion failed:",
+            err instanceof Error ? err.message : String(err)
+          );
+        });
+      };
+  const deletesProvider = onDiskConfig !== undefined && deletesAProvider(onDiskConfig, config);
+  // A deletion, or a re-keyed provider still waiting in openclaw.json for its
+  // new entry (rekeyedProviders): a targeted writer's copy of the file that
+  // supersedes this regenerate's push carries the stub back, so the push queues
+  // a follow-up then (handsOverProvider in write.ts).
+  const handsOverProvider =
+    deletesProvider ||
+    (onDiskConfig !== undefined &&
+      rekeyedProviders(onDiskConfig, config, secretsBundle).length > 0);
+  // How a write of openclaw.json below goes to OpenClaw when it falls under
+  // the read-side line (writeFileOrApply): carrying this regenerate's change
+  // like its own push, and resuming it once it has landed.
+  const deferredWrite: PushConfigOptions = {
+    regenerateSeq,
+    handsOverProvider,
+    resumeStrandedShrink,
+    onChangeApplied: () => {
+      regenerateOpenClawConfig().catch((err: unknown) => {
+        console.error(
+          "[openclaw-config] regenerate after a config.apply that stood in for a file write failed:",
+          err instanceof Error ? err.message : String(err)
+        );
+      });
+    },
+  };
+  // Set below when the #311 guard refuses the payload: nothing is pushed.
+  let refused = false;
+  // The key-less bridge, and the re-keyed one that follows secrets.json.
+  let bridge: Record<string, unknown> | null = null;
+  let rekeyed: Record<string, unknown> | null = null;
+  // Dumps older versions left (0644, plaintext tokens) are cleaned on the first
+  // regenerate after boot, not only when a new refusal happens to write one.
+  sweepRejectedPayloadsOnce(CONFIG_PATH);
+  if (onDiskContent !== undefined && !unchanged) {
+    // Defense-in-depth size-drop guard (#311). A regenerate that runs through a
+    // window where DB-derived state isn't fully loaded (telegram_bot_token race
+    // in CI flake) produces a payload missing `channels.telegram` + `bindings`,
+    // ~50% smaller than the healthy on-disk file. Mirroring OpenClaw's own 50%
+    // threshold (its config writer refuses `size-drop:OLD->NEW`) keeps such a
+    // payload off disk and out of the push; the next regenerate writes correct
+    // content. The bad payload is saved alongside the config for postmortem —
+    // silent skip would hide the underlying race forever (#314).
+    //
+    // Measured against the existing file MINUS the bytes of every provider and
+    // every agent the payload deleted, as long as a provider survives (see
+    // size-drop.ts). A deleted agent takes its roster entry, plugin config,
+    // Telegram account and bindings with it.
+    // Deleting a 40-model OpenAI-compatible provider removes most of the file
+    // on purpose; judged against the raw size, it was refused here, every later
+    // regenerate was refused the same way, and OpenClaw kept serving the
+    // deleted provider. Everything else is still judged in full: an empty
+    // provider read, a kept provider whose discovered model list shrank (a
+    // half-answered discovery), a kept provider whose catalogue collapsed to
+    // `[]` (Ollama unreachable — this voids every deletion discount, agents'
+    // included), and any shrink beyond those two deletions: outside
+    // `models.providers`, or of an agent the payload still lists (a kept
+    // agent's lost Telegram account or bindings is the #311 race itself).
+    // Delivering a deletion past OpenClaw's own check is
+    // pushConfigInBackground's job (stepwise config.apply).
+    const sizeBaseline = sizeGuardBaseline(onDiskContent, config);
+    refused = onDiskContent.length > 0 && newContent.length < sizeBaseline * 0.5;
+    if (refused) {
       const ts = new Date().toISOString().replace(/[:.]/g, "-");
-      const rejectedPath = `${CONFIG_PATH}.regenerate-rejected.${ts}`;
-      try {
-        // eslint-disable-next-line security/detect-non-literal-fs-filename -- path is CONFIG_PATH + ISO timestamp, no user input
-        writeFileSync(rejectedPath, newContent, { encoding: "utf-8", mode: 0o644 });
-      } catch {
-        // Best-effort; the warn below carries the salient bytes either way.
-      }
+      // Tokens redacted, 0600, newest few kept (see rejected-payload.ts).
+      const rejectedPath = writeRejectedPayload(CONFIG_PATH, newContent, ts);
       console.error(
         `[openclaw-config] regenerate produced a suspiciously small config ` +
-          `(${newContent.length} bytes, was ${existing.length}). ` +
+          `(${newContent.length} bytes, was ${onDiskContent.length}` +
+          `${sizeBaseline !== onDiskContent.length ? `; ${sizeBaseline} after discounting deleted providers and agents` : ""}). ` +
           `Refusing the write to keep OpenClaw's existing state intact. ` +
           `Likely a DB-state-loading race; see #311. ` +
           `Rejected payload saved to ${rejectedPath}.`
       );
-      return;
+      // The refused payload is never written or pushed, but secrets.json still
+      // is, below — the file OpenClaw keeps running, and restarts on, needs
+      // it. The keys come from settings and provider rows, not from the
+      // discovery that most often trips this guard (Ollama unreachable at boot
+      // answers `[]`), and the secrets volume is a tmpfs: after a host reboot
+      // it is empty, and skipping the write would leave OpenClaw nothing to
+      // resolve `/providers/anthropic/apiKey` against — "required secrets are
+      // unavailable". OpenClaw only starts once Pinchy is healthy, and while
+      // it is down nothing regenerates on its own (no first connect, no
+      // self-heal): only an admin's next change or Pinchy's next restart, and
+      // with Ollama still down that is refused the same way. A key rotation
+      // saved meanwhile reaches OpenClaw the same way.
+      //
+      // When the file still names a key the bundle lacks — a deletion or a
+      // re-key not yet handed over — the key-less bridge below goes first,
+      // exactly as for a payload that passes. It is built from the on-disk
+      // file and the bundle; of the refused payload it takes only each kept
+      // provider's address, never its models: it keeps every model of every
+      // provider (an empty Ollama catalogue stays out of it) and only drops
+      // key references and the addresses on file, so it stays far above half
+      // the file this guard protects. A re-keyed provider then
+      // takes its entry from the payload, as below: one provider's saved
+      // state, whose models fall back to the snapshot stored with it, never
+      // to `[]` (resolveCustomProviderModels). When a re-key is what this
+      // guard refused — the new address serves far fewer models, a kept
+      // provider's shrink — that entry keeps the file's models as well
+      // (rekeyedBridge), so the write stays above OpenClaw's read-side check;
+      // the shorter list itself is refused here on every regenerate, as any
+      // kept provider's shrink is.
+      //
+      // Except for a payload with no provider at all: Pinchy refuses to delete
+      // the last provider, so that is an empty provider read, and a bridge
+      // built from it would strip every key from a working OpenClaw. Then
+      // neither file is written — secrets.json would drop keys the file
+      // still names. Unless secrets.json is gone (keepOnDiskConfigResolvable).
+      const dropped = onDiskConfig ? unresolvedSecretRefs(onDiskConfig, secretsBundle) : [];
+      if (onDiskConfig && dropped.length > 0 && !keepsAProvider(config)) {
+        console.error(
+          `[openclaw-config] secrets.json not written either: the payload has no provider, ` +
+            `and it would drop ${dropped.join(", ")}, which openclaw.json still names.`
+        );
+        keepOnDiskConfigResolvable(onDiskConfig, secretsBundle);
+        return;
+      }
+    } else {
+      // Past this guard only because deleted providers or agents were
+      // discounted, and still under half the file: OpenClaw will refuse it as a size drop. The
+      // push must know before OpenClaw says so — its rate limit can keep the
+      // refusal from ever arriving, and the file-write fallback must not run
+      // for this payload (see MAX_SHRINK_STEPS in write.ts).
+      // Compared the way OpenClaw compares — UTF-8 bytes, not `length` (UTF-16
+      // units; a CJK model name is one unit and three bytes) — and with
+      // headroom, because missing a refusal costs a file write past OpenClaw's
+      // guard while expecting one that never comes costs nothing
+      // (expectsSizeDropRefusal).
+      expectsProviderShrink =
+        sizeBaseline < onDiskContent.length && expectsSizeDropRefusal(onDiskContent, newContent);
     }
-  } catch {
-    // File doesn't exist yet — write it
+
+    // openclaw.json stops naming a key BEFORE secrets.json loses it. A deleted
+    // provider's key is not in this bundle, and neither is a re-keyed
+    // OpenAI-compatible provider's previous slot (`<slug>@<version>`), but
+    // OpenClaw's file names them until the push delivers the change — minutes
+    // for a large deletion, or never for an install that hit this before it
+    // was fixed — and OpenClaw cannot restart on, or accept a targeted
+    // writer's copy of, a file whose SecretRefs do not resolve. So the file
+    // first becomes the key-less bridge: itself, with every such provider a
+    // stub that keeps its models, which resolves against the old secrets.json
+    // and the new one alike. A provider the target keeps — re-keyed, not
+    // deleted — then takes the target's entry, once secrets.json holds its new
+    // slot (see keyless-bridge.ts) — and so does one the file already holds
+    // as a stub, from a bridge some earlier write left there with no re-keyed
+    // entry after it (rekeyedProviders): which provider takes the target's
+    // entry is read off the file, never off what this regenerate wrote.
+    // Decided from the file and the bundle alone; Pinchy cannot read
+    // secrets.json in production.
+    //
+    // A bridge under OpenClaw's read-side line — judged against a bound that
+    // can be stale-high (last-good-bound.ts) — goes over config.apply instead
+    // (writeFileOrApply), and openclaw.json still names the key, so
+    // secrets.json keeps it until the regenerate that runs once the bridge has
+    // landed. Unless secrets.json is gone (keepOnDiskConfigResolvable).
+    bridge = onDiskConfig ? keylessBridge(onDiskConfig, secretsBundle, config) : null;
+    if (bridge && onDiskConfig) {
+      const dangling = unresolvedSecretRefs(bridge, secretsBundle);
+      if (dangling.length > 0) {
+        console.error(
+          `[openclaw-config] openclaw.json names SecretRef(s) outside models.providers that the new secrets lack (${dangling.join(", ")}); ` +
+            `Pinchy emits none there, so the key-less bridge cannot cover them.`
+        );
+      }
+      if (!writeFileOrApply(bridge, deferredWrite)) {
+        keepOnDiskConfigResolvable(onDiskConfig, secretsBundle);
+        return;
+      }
+      console.log(
+        `[openclaw-config] openclaw.json no longer names the removed key(s) ${unresolvedSecretRefs(onDiskConfig, secretsBundle).join(", ")} (key-less bridge written before secrets.json)`
+      );
+    }
+    rekeyed = onDiskConfig
+      ? rekeyedBridge(
+          bridge ?? onDiskConfig,
+          onDiskConfig,
+          config,
+          secretsBundle,
+          readSideBaselineBytes(onDiskContent)
+        )
+      : null;
   }
 
-  // Write per-agent auth-profiles.json for agents that use API-key-based
-  // providers. Required by OpenClaw ≥ 4.15: each agent directory must
-  // contain agents/<id>/agent/auth-profiles.json. We scope each agent to
-  // only the provider that matches its own model prefix — writing a profile
-  // for a provider the agent doesn't use causes hasAnyAuthProfileStoreSource
-  // to return TRUE, which enables strict auth mode and blocks unrelated
-  // providers (e.g. ollama-local falls through to an anthropic key check and
-  // fails when no anthropic profile exists).
+  // Written even when the config is unchanged or refused (all but an empty
+  // provider read, above) — tmpfs is wiped on container restart, and
+  // secrets.json must be present for OpenClaw to resolve SecretRef pointers. A
+  // removal is safe to write here: the bridge above already took every
+  // reference to it out of openclaw.json.
   //
-  // Mapping: model prefix (first "/" segment) → AuthProfilesProvider.
-  // "ollama" (local) is intentionally absent: URL-based, no API key needed.
-  // If an agent would get 0 profiles, writeAgentAuthProfiles removes any
-  // existing file to prevent spurious strict-mode activation.
-  const MODEL_PREFIX_TO_AUTH_PROFILE: Partial<Record<string, AuthProfilesProvider>> = {
-    anthropic: "anthropic",
-    openai: "openai",
-    google: "gemini",
-    "ollama-cloud": "ollama-cloud",
-    // "ollama" intentionally absent — local Ollama is URL-based, no API key
-  };
-  if (process.env.PINCHY_E2E_OLLAMA_LOCAL_API_KEY === "1") {
-    MODEL_PREFIX_TO_AUTH_PROFILE.ollama = "ollama-local";
+  // No `secrets.reload` when a bridge was written: OpenClaw re-resolves every
+  // SecretRef when it hot-reloads the bridge, against this file. A reload
+  // would instead re-resolve the config OpenClaw is still running, which names
+  // the key this write removes — it fails, and tells the operator to restart.
+  writeSecretsAndReload(secretsBundle, { reload: !bridge });
+  // Under the read-side line, the re-keyed entry goes over config.apply too;
+  // the file keeps the key-less stub, which resolves against this
+  // secrets.json, and whichever regenerate runs next writes the entry again
+  // should that push not land (rekeyedProviders).
+  if (rekeyed) {
+    if (!writeFileOrApply(rekeyed, deferredWrite)) return;
+    console.log(
+      "[openclaw-config] openclaw.json points re-keyed provider(s) at their new key slot (written after secrets.json)"
+    );
   }
-  // Providers that actually have credentials configured right now.
-  const PROVIDER_KEY_TO_AUTH_PROFILE: Partial<Record<string, AuthProfilesProvider>> = {
-    anthropic: "anthropic",
-    openai: "openai",
-    google: "gemini",
-    "ollama-cloud": "ollama-cloud",
-    "ollama-local": "ollama-local",
-  };
-  const configuredAuthProviders = new Set<AuthProfilesProvider>(
-    Object.keys(providerSecrets)
-      .map((k) => PROVIDER_KEY_TO_AUTH_PROFILE[k])
-      .filter((p): p is AuthProfilesProvider => p !== undefined)
-  );
+  if (refused) {
+    // Nothing of this regenerate is pushed. When it took a key out of
+    // secrets.json (it wrote a bridge), a push still in flight — a
+    // regenerate's, or a targeted writer's copy of the pre-bridge file, parked
+    // in a rate-limit wait — can name that key: OpenClaw refuses it on every
+    // retry. A passing regenerate supersedes such a push with its own; a
+    // refused one does it here, and the superseded change reaches OpenClaw
+    // with the next regenerate that passes the guard. A refusal that removed
+    // no key (Ollama unreachable, a half-answered discovery: the common case)
+    // supersedes nothing, as before this guard learned to write secrets.json:
+    // what is in flight (a Telegram disconnect, a permission revocation) must
+    // still land. A push naming a key removed earlier is caught by its own
+    // file fallback (namesRemovedKey in write.ts), and OpenClaw refuses it.
+    if (bridge) nextConfigPushGeneration();
+    return;
+  }
+  if (unchanged) {
+    // Nothing to push — so no push settles a change owed to OpenClaw's next
+    // connect, or cancels a stranded deletion's follow-up, the way one that
+    // reaches its target does. Without this, a debt whose change arrived some
+    // other way stayed owed — a deletion's push that gave up only after a
+    // newer regenerate had landed the same change — and every later reconnect
+    // regenerated until Pinchy restarted.
+    //
+    // This regenerate settles it itself: openclaw.json already holds its
+    // target, and the file is what OpenClaw runs or will run. A running
+    // OpenClaw wrote it (config.apply persists what it applies); a stopped one
+    // starts on it. A push's file fallback is the exception — a running
+    // OpenClaw may never reload it — which is why this branch is only reached
+    // while no file-only delivery is pending (noteFileOnlyDelivery).
+    // Pinchy writes nothing under OpenClaw's read-side line
+    // (last-good-bound.ts), and should OpenClaw's startup restore `.bak` all
+    // the same, that rewrites the file, so it still holds what OpenClaw runs.
+    // A deletion in the file was applied by OpenClaw: Pinchy never file-writes
+    // one (MAX_SHRINK_STEPS in write.ts).
+    //
+    // Only with no push in flight, for the reason a push settles only as the
+    // newest one: a push in flight may still land other content (a targeted
+    // writer's copy of an older file), and settles or records for itself.
+    if (getPendingConfigPushCount() === 0) noteFullRegenerateDelivered(regenerateSeq);
+    return;
+  }
 
-  const configRoot = dirname(CONFIG_PATH);
-  for (const agent of liveAgents) {
-    const modelPrefix = agent.model?.split("/")[0] ?? "";
-    const agentProfileProvider = MODEL_PREFIX_TO_AUTH_PROFILE[modelPrefix];
-    const agentProviders: AuthProfilesProvider[] =
-      agentProfileProvider && configuredAuthProviders.has(agentProfileProvider)
-        ? [agentProfileProvider]
-        : [];
-    await writeAgentAuthProfiles({
-      configRoot,
-      agentId: agent.id,
-      providers: agentProviders,
-    });
-  }
+  // No per-agent auth-profiles.json any more. OpenClaw 2026.9 keeps auth
+  // profiles in its SQLite store and treats that file as an unmigrated legacy
+  // credential source: beside an empty store it fails every model call for the
+  // agent with AuthProfileMigrationRequiredError ("run openclaw doctor --fix").
+  // The provider key reaches each agent through the SecretRef on its
+  // `models.providers.<p>.apiKey` entry above, which OpenClaw resolves when no
+  // auth profile exists. start-openclaw.sh removes the files earlier Pinchy
+  // versions wrote, before the gateway starts and reads them.
 
   // Push config to OpenClaw. When a WS client is available, config.apply
   // is used for immediate runtime propagation and persists the file itself
@@ -1781,5 +2485,103 @@ export async function regenerateOpenClawConfig() {
   // Fire-and-forget: the caller must not block on this — config.apply
   // can take 10–30 s when a gateway restart is needed, which broke
   // interactive save flows (Odoo "Save & Restart", UI waits for 200 OK).
-  pushConfigInBackground(newContent);
+  pushConfigInBackground(newContent, {
+    fullRegenerate: true,
+    regenerateSeq,
+    expectsProviderShrink,
+    handsOverProvider,
+    resumeStrandedShrink,
+  });
+}
+
+/**
+ * Write `config` as openclaw.json — or, when writeConfigAtomic refuses it under
+ * OpenClaw's read-side line (last-good-bound.ts), send it over config.apply
+ * with `push` instead, and return false. The caller then writes nothing more:
+ * what would have followed the file follows in the regenerate
+ * `push.onChangeApplied` runs once it has landed.
+ *
+ * Every write of openclaw.json in this file goes through here (pinned by
+ * last-good-bound.test.ts). The bound only ever errs high, and it goes stale
+ * whenever OpenClaw promotes a file Pinchy wrote with no config.apply landing
+ * since — a push's file fallback it started on. A refusal that escaped the
+ * regenerate aborted it before any push, the same way on every later one, and
+ * no config change reached OpenClaw again. A landed config.apply clears the
+ * bound (OpenClaw is running, and promotes its own write), so the regenerate
+ * that follows it writes the file. With OpenClaw unreachable, the push owes
+ * the change to its next connect, like any file write it gives up on.
+ */
+function writeFileOrApply(config: Record<string, unknown>, push: PushConfigOptions): boolean {
+  const content = JSON.stringify(config, null, 2).trimEnd() + "\n";
+  try {
+    writeConfigAtomic(content);
+    return true;
+  } catch (err) {
+    if (!(err instanceof UnderReadSideLineError)) throw err;
+    console.error(
+      `[openclaw-config] NOT writing openclaw.json: ${String(err.nextBytes)} bytes is under half of ` +
+        `${String(err.baselineBytes)}, the largest file OpenClaw may still hold as last-known-good. ` +
+        `Sending it over config.apply instead; the regenerate carries on once it has landed.`
+    );
+    pushConfigInBackground(content, push);
+    return false;
+  }
+}
+
+/**
+ * For a regenerate that writes no secrets.json because openclaw.json still
+ * names a key `bundle` lacks — a bridge waiting for config.apply, or an empty
+ * provider read the #311 guard refused. Then secrets.json is normally the one
+ * written while the file named that key, and still holds it. When it is gone,
+ * write one the file resolves against in full: `bundle`, plus an inert
+ * placeholder for each missing key (withRemovedKeyPlaceholders).
+ *
+ * A host reboot empties the secrets tmpfs, and OpenClaw starts only once
+ * Pinchy is healthy, so the boot regenerate runs with no OpenClaw — and
+ * OpenClaw starts only on a file whose every SecretRef resolves, the kept
+ * providers' included. Without a secrets.json it never came up, so nothing
+ * that waits for its connect — the bridge over config.apply, the regenerate
+ * that reads the providers again — ever ran. The placeholder is not a
+ * recovered key: Pinchy has none, the database dropped it. It leaves with the
+ * next regenerate that writes secrets.json: the one that follows the bridge
+ * once OpenClaw has taken it, or the first connect's.
+ *
+ * No `secrets.reload`: OpenClaw is not running on this file yet.
+ */
+function keepOnDiskConfigResolvable(
+  onDiskConfig: Record<string, unknown>,
+  bundle: SecretsBundle
+): void {
+  if (secretsFileExists()) return;
+  console.warn(
+    `[openclaw-config] secrets.json is missing (host reboot?) while openclaw.json still names ` +
+      `${unresolvedSecretRefs(onDiskConfig, bundle).join(", ")}: writing it with an inert placeholder ` +
+      `for those, so OpenClaw can start and take the change over config.apply`
+  );
+  writeSecretsAndReload(withRemovedKeyPlaceholders(onDiskConfig, bundle), { reload: false });
+}
+
+/**
+ * Write secrets.json, and ask the running OpenClaw to re-read it when a value
+ * it already resolved was added or rotated in place.
+ *
+ * A secrets-only change is invisible to EVERY config guard: `openclaw.json`
+ * carries a SecretRef, not the value, so a rotated provider key leaves the
+ * emitted config byte-identical, the equivalence check says "unchanged", and
+ * the running OpenClaw keeps serving the credential it resolved at process
+ * start — 401 on every agent until someone restarts the container (#943).
+ * `secrets.reload` is the RPC that closes that gap, and it is fired BEFORE the
+ * unchanged return for exactly that reason. It costs no `config.apply`
+ * rate-limit slot, so the no-op guard keeps doing the job it exists for.
+ *
+ * The flag is "a value was added or rotated", NOT "the file changed", and an
+ * OpenAI-compatible provider's versioned slot never sets it: a re-key changes
+ * the SecretRef in openclaw.json and travels with that config. See
+ * writeSecretsFile.
+ */
+function writeSecretsAndReload(bundle: SecretsBundle, { reload = true } = {}): void {
+  const runtimeIsStale = writeSecretsFile(bundle);
+  // What the push's file fallback judges a payload's SecretRefs against.
+  recordWrittenSecrets(bundle);
+  if (runtimeIsStale && reload) reloadSecretsInBackground();
 }

@@ -14,33 +14,126 @@ import { SERVER_WS_MAX_PAYLOAD_BYTES } from "@/lib/limits";
  * a 5 MB JSON frame, and asserts the server delivers the message instead of
  * closing with code 1009 ("Message too big").
  */
+
 /**
- * Open a WebSocket to the local test server, retrying the CONNECT phase on
- * transient handshake failures (bounded, fresh socket per attempt).
+ * Bound for ONE connect attempt — the fix for this file's load-induced flake.
  *
- * Why: under full-suite load (many vitest forks + local Docker stacks) a
- * single-shot localhost TCP/WS handshake can fail with `socket hang up`
- * (ECONNRESET during the HTTP upgrade) — pure environmental noise that has
- * nothing to do with this file's contract, which is the server's `maxPayload`
- * behaviour AFTER a connection exists. Retrying only the connect phase removes
- * that noise without weakening the contract: every assertion still runs
- * against a real connection, and a maxPayload regression fails exactly as
- * before.
+ * The flake reported it as "Test timed out", which reads as "5 MB is slow under
+ * load". It is not. Measured end-to-end (connect plus the full 5 MB round trip):
+ * 22 ms in isolation, 52–94 ms under 2.5× CPU oversubscription, and 28–61 ms
+ * inside a full `pnpm test` run at load average 25 — that last one with ~0 ms
+ * event-loop lag. Contention moves this test by a factor of 4. A timeout needs
+ * a factor of 200, so what ends it is a stall, not a slowdown.
+ *
+ * `ws` sets no handshake timeout by default, and that is where a stall used to
+ * become unbounded: a stalled upgrade — the loaded-loopback sibling of the
+ * `socket hang up` the retry loop below was written for — emits neither `open`
+ * nor `error`, so the loop could never retry the one failure shape it exists
+ * for, and the wait was bounded only by the suite's testTimeout. Verified
+ * against a server that accepts TCP and never answers the upgrade: still
+ * hanging after 20 s without this option, "Opening handshake has timed out"
+ * after 6.3 s with it.
+ *
+ * 2 s is ~75× the observed handshake (4–27 ms, isolated and under 2.5× CPU
+ * oversubscription), so a merely slow handshake is still awaited to completion.
+ * Only a stall is cut short and retried.
+ *
+ * The worst case this can cost — 3 attempts × 2 s plus the 100/200 ms backoff
+ * BETWEEN them = 6.3 s, measured against the black-hole server — has to stay
+ * comfortably inside vitest.config.ts's `testTimeout` (20 s). A retry budget
+ * that cannot finish inside the deadline is not bounded at all: the run reports
+ * a timeout and hides the error that names the cause.
  */
-async function connectWithRetry(port: number, attempts = 3): Promise<WebSocket> {
+const HANDSHAKE_TIMEOUT_MS = 2_000;
+
+const CONNECT_ATTEMPTS = 3;
+
+/**
+ * Drop a socket we are not going to use. The `error` listener is what keeps a
+ * terminate on an already-broken socket from surfacing as an unhandled 'error'
+ * event, which vitest reports against whichever test happens to be running.
+ */
+function discardSocket(ws: WebSocket): void {
+  ws.on("error", () => {});
+  ws.terminate();
+}
+
+/**
+ * Open a WebSocket to the local test server and return BOTH ends, retrying the
+ * CONNECT phase on transient handshake failures (bounded, fresh socket per
+ * attempt).
+ *
+ * Why retry: under full-suite load (many vitest forks + local Docker stacks) a
+ * single-shot localhost TCP/WS handshake can fail with `socket hang up`
+ * (ECONNRESET during the HTTP upgrade) or stall outright — environmental noise
+ * that has nothing to do with this file's contract, which is the server's
+ * `maxPayload` behaviour AFTER a connection exists. Retrying only the connect
+ * phase removes that noise without weakening the contract: every assertion
+ * still runs against a real connection, and a maxPayload regression fails
+ * exactly as before.
+ *
+ * Why it hands back the server-side socket too: an attempt that fails after the
+ * server already accepted leaves a socket behind, and that socket emits `close`
+ * when we discard it. A test listening to `wss` at large cannot tell that
+ * `close` apart from the live connection being dropped — it would fail with
+ * "server closed before message" on a connection that is perfectly healthy.
+ * Returning the socket that belongs to the connection we keep lets each test
+ * listen to that one only.
+ *
+ * Why each attempt tags itself with a subprotocol: dropping the listener on
+ * failure is not enough to keep attempts apart. It stops THIS attempt's
+ * listener from eating the NEXT attempt's connection, but not the reverse — a
+ * server that completes the upgrade late (the stall resolving after we gave up)
+ * emits `connection` while attempt i+1 is already listening, and that attempt
+ * would await a dead socket while sending over a live one. `ws` echoes the
+ * first offered protocol back on `ws.protocol` with no handleProtocols
+ * configuration, so matching on it identifies the socket that belongs to this
+ * attempt, and a stale one is discarded rather than handed on.
+ */
+async function connectPair(
+  wss: WebSocketServer,
+  port: number,
+  attempts = CONNECT_ATTEMPTS
+): Promise<{ client: WebSocket; server: WebSocket }> {
   let lastError: unknown;
   for (let i = 0; i < attempts; i++) {
-    const client = new WebSocket(`ws://127.0.0.1:${port}`);
+    // Claim this attempt's server-side socket before the client exists, and
+    // identify it by the attempt's own subprotocol so neither a late socket
+    // from an earlier attempt nor this attempt's socket arriving after we gave
+    // up can be mistaken for the connection we return.
+    const attemptId = `connect-attempt-${i}`;
+    let onConnection!: (ws: WebSocket) => void;
+    const serverSocket = new Promise<WebSocket>((resolve) => {
+      onConnection = (ws) => {
+        if (ws.protocol === attemptId) return resolve(ws);
+        discardSocket(ws);
+        wss.once("connection", onConnection);
+      };
+      wss.once("connection", onConnection);
+    });
+    const client = new WebSocket(`ws://127.0.0.1:${port}`, [attemptId], {
+      handshakeTimeout: HANDSHAKE_TIMEOUT_MS,
+    });
     try {
       await new Promise<void>((resolve, reject) => {
         client.once("open", () => resolve());
         client.once("error", reject);
       });
-      return client;
+      // The server emits "connection" when it writes the 101 response, i.e.
+      // before the client can see "open" — this await is already settled.
+      return { client, server: await serverSocket };
     } catch (err) {
       lastError = err;
       client.terminate();
-      await new Promise((r) => setTimeout(r, 100 * (i + 1)));
+      // Drop this attempt's listener so it cannot consume the next attempt's
+      // connection, and discard the socket if the server did accept one.
+      wss.off("connection", onConnection);
+      void serverSocket.then(discardSocket);
+      // No backoff after the final attempt — it would only delay the throw,
+      // and the budget the constant above states has to be the real one.
+      if (i < attempts - 1) {
+        await new Promise((r) => setTimeout(r, 100 * (i + 1)));
+      }
     }
   }
   throw lastError;
@@ -71,16 +164,18 @@ describe("WebSocket server frame limit (regression guard)", () => {
   });
 
   it("accepts a 5 MB JSON frame (representative of a high-res image attachment)", async () => {
-    const received = new Promise<string>((resolve, reject) => {
-      wss.on("connection", (ws) => {
-        ws.on("message", (data) => resolve(data.toString()));
-        ws.on("close", (code, reason) =>
-          reject(new Error(`server closed before message: code=${code} reason=${reason}`))
-        );
-      });
-    });
+    const { client, server } = await connectPair(wss, port);
 
-    const client = await connectWithRetry(port);
+    const received = new Promise<string>((resolve, reject) => {
+      server.on("message", (data) => resolve(data.toString()));
+      server.on("close", (code, reason) =>
+        reject(new Error(`server closed before message: code=${code} reason=${reason}`))
+      );
+      // A maxPayload regression makes the receiver emit "error" besides
+      // closing with 1009. Without a listener that is an unhandled 'error'
+      // event, and the run reports a timeout instead of naming the cause.
+      server.on("error", (err) => reject(err));
+    });
 
     // 5 MB of base64-ish content, wrapped in a JSON message so it mirrors what
     // the real router parses.
@@ -102,19 +197,17 @@ describe("WebSocket server frame limit (regression guard)", () => {
     // the limit must be rejected with 1009 ("Message too big"), which is what
     // the client-side handler in use-ws-runtime.ts uses to surface "Image too
     // large".
-    let messageReceived = false;
-    wss.on("connection", (ws) => {
-      ws.on("message", () => {
-        messageReceived = true;
-      });
-      // The `ws` library emits an "error" event with WS_ERR_UNSUPPORTED_MESSAGE_LENGTH
-      // when an oversized frame arrives. Without a listener Node treats it as
-      // unhandled and Vitest fails the test even though the close code is what
-      // we're asserting on. Swallow it — the close code is the contract.
-      ws.on("error", () => {});
-    });
+    const { client, server } = await connectPair(wss, port);
 
-    const client = await connectWithRetry(port);
+    let messageReceived = false;
+    server.on("message", () => {
+      messageReceived = true;
+    });
+    // The `ws` library emits an "error" event with WS_ERR_UNSUPPORTED_MESSAGE_LENGTH
+    // when an oversized frame arrives. Without a listener Node treats it as
+    // unhandled and Vitest fails the test even though the close code is what
+    // we're asserting on. Swallow it — the close code is the contract.
+    server.on("error", () => {});
 
     const closeEvent = new Promise<{ code: number }>((resolve) => {
       client.once("close", (code) => resolve({ code }));

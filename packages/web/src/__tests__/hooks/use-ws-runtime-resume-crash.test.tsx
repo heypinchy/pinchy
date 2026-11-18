@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Hook-layer regression guard for the streaming-resume crashes (#470).
  * Reloading the tab mid-stream lands on the `activeRun` resume path:

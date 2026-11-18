@@ -6,6 +6,7 @@ import { OpenClawClient } from "openclaw-node";
 import { ClientRouter } from "./src/server/client-router";
 import { SessionCache } from "./src/server/session-cache";
 import { validateWsSession } from "./src/server/ws-auth";
+import { isWsUpgradeAllowed, readWsUpgradeCheckInput } from "./src/server/ws-upgrade-gate";
 import { restartState } from "./src/server/restart-state";
 import { openClawConnectionState } from "./src/server/openclaw-connection-state";
 import { applyKeepAliveTuning } from "./src/server/http-keepalive";
@@ -13,6 +14,7 @@ import { setOpenClawClient } from "./src/server/openclaw-client";
 import { once } from "./src/lib/once";
 import { getActiveRunsSingleton } from "./src/server/active-runs-singleton";
 import { getSessionPokeBridgeSingleton } from "./src/server/session-poke-bridge-singleton";
+import { getUserSocketRegistry } from "./src/server/user-sockets";
 import { startRunWatchdog, DEFAULT_FIRST_CHUNK_TIMEOUT_MS } from "./src/server/run-watchdog";
 import {
   ChannelHealthMonitor,
@@ -23,14 +25,13 @@ import {
 } from "./src/server/channel-health-watchdog";
 import { setChannelHealthMonitor } from "./src/server/channel-health-singleton";
 import { createConflictRestartHandler } from "./src/server/channel-conflict-restart";
-import { appendAuditLog, safeProviderError } from "./src/lib/audit";
+import { appendAuditLog } from "./src/lib/audit";
 import { recordAuditFailure } from "./src/lib/audit-deferred";
 import { db, closeDb } from "./src/db";
 import { agents, auditLog } from "./src/db/schema";
 import { eq, and, desc } from "drizzle-orm";
-import { getSetting, setSetting } from "./src/lib/settings";
-import { updateTelegramChannelConfig } from "./src/lib/openclaw-config";
-import { clearAllowStoreForAccount } from "./src/lib/telegram-allow-store";
+import { getSetting } from "./src/lib/settings";
+import { autoDisableConflictedTelegramAccount } from "./src/server/telegram-auto-disable";
 import { WsRateLimiter } from "./src/server/ws-rate-limit";
 import { setupOpenClawDisconnectHandler } from "./src/server/openclaw-disconnect-handler";
 import {
@@ -42,6 +43,7 @@ import {
   setupOpenClawStatusBroadcaster,
   createColdStartStatusBroadcaster,
 } from "./src/server/openclaw-status-broadcaster";
+import { attachPluginApprovalBridge } from "./src/server/plugin-approval-bridge";
 import { logCapture } from "./src/lib/log-capture";
 import { startUsagePoller, stopUsagePoller } from "./src/lib/usage-poller";
 import { registerShutdownHandlers } from "./src/lib/shutdown";
@@ -49,9 +51,25 @@ import { buildShutdownSteps } from "./src/server/shutdown-steps";
 import { seedSessionCache } from "./src/server/session-cache-seeder";
 import { readGatewayToken } from "./src/lib/gateway-token-reader";
 import { regenerateOpenClawConfig } from "./src/lib/openclaw-config";
+import { regenerateOnConnect } from "./src/server/openclaw-connect-regenerate";
+import { syncTelegramAllowStoresOnConnect } from "./src/server/telegram-allow-store-on-connect";
+import { openClawClientOptions } from "./src/server/openclaw-client-options";
 import { SERVER_WS_MAX_PAYLOAD_BYTES } from "./src/lib/limits";
-import { evaluateDbPasswordPolicy } from "./src/lib/secret-source";
+import {
+  describeAuditKeyFilePersist,
+  describeIgnoredSecretEnv,
+  evaluateAuditSecretRotation,
+  evaluateDbPasswordPolicy,
+} from "./src/lib/secret-source";
+import {
+  getPreviousSecret,
+  isSecretEnvIgnored,
+  persistEnvSecretToKeyFile,
+} from "./src/lib/encryption";
 import { exitOnStartupFailure } from "./src/server/startup-failure";
+import { getTrustedProxies, stampClientIp, TRUSTED_PROXIES_ENV_VAR } from "./src/server/client-ip";
+import { answerAppHeartbeat, startWsHeartbeat } from "./src/server/ws-heartbeat";
+import { refuseUpgrade } from "./src/server/ws-reject";
 
 logCapture.install();
 
@@ -95,41 +113,82 @@ if (dbPasswordPolicy.action === "warn") {
   console.warn(dbPasswordPolicy.message);
 }
 
+// A key variable that is set but not 64 hex characters is ignored in favour of
+// the key file. Say so: the operator set it to be the key, and without this
+// line nothing tells them it isn't. Before the steps below, which only act on
+// a variable that is in effect.
+for (const [envVar, name] of [
+  ["ENCRYPTION_KEY", "encryption_key"],
+  ["AUDIT_HMAC_SECRET", "audit_hmac_secret"],
+] as const) {
+  const ignoredEnvLog = describeIgnoredSecretEnv({ envVar, ignored: isSecretEnvIgnored(name) });
+  if (ignoredEnvLog.action === "warn") {
+    console.warn(ignoredEnvLog.message);
+  }
+}
+
+// The earlier key Pinchy verifies against is always the key file. When
+// AUDIT_HMAC_SECRET is set and no key file exists yet, write the variable's
+// value there, so a later change of the variable keeps this key as the earlier
+// one. Never overwrites, never throws: a failed write is a warning, not a
+// reason to stay down. Runs before the notice below, which reads the same file.
+const auditKeyFileLog = describeAuditKeyFilePersist(persistEnvSecretToKeyFile("audit_hmac_secret"));
+if (auditKeyFileLog.action === "info") {
+  console.log(auditKeyFileLog.message);
+} else if (auditKeyFileLog.action === "warn") {
+  console.warn(auditKeyFileLog.message);
+}
+
+// An operator who pins AUDIT_HMAC_SECRET over the generated key changes what
+// the audit log is signed with. That is supported and handled, but nothing
+// else announces it: the admin-triggered verify may be months away, and the
+// periodic sweep only catches pre-rotation rows that were still above its
+// checkpoint. Say it here, on every boot, while the operator is watching.
+const auditSecretPolicy = evaluateAuditSecretRotation({
+  hasSupersededSecret: getPreviousSecret("audit_hmac_secret") !== null,
+});
+if (auditSecretPolicy.action === "warn") {
+  console.warn(auditSecretPolicy.message);
+}
+
+// Which X-Forwarded-For hops belong to our own infrastructure. Read once at
+// startup — the value cannot change without a container restart, and parsing
+// it per request would re-validate the same list on every hit.
+const { trusted: trustedProxies, invalid: invalidTrustedProxies } = getTrustedProxies();
+if (invalidTrustedProxies.length > 0) {
+  // Silence here would be the worst outcome: the operator who added their
+  // inner proxy believes the hop is trusted, and every request would resolve
+  // to that proxy's address instead of the client's.
+  console.warn(
+    `⚠ ${TRUSTED_PROXIES_ENV_VAR} contains ${invalidTrustedProxies.length} entr` +
+      `${invalidTrustedProxies.length === 1 ? "y" : "ies"} that are neither an IP address ` +
+      `nor a CIDR range and were ignored: ${invalidTrustedProxies.join(", ")}`
+  );
+}
+
 const startup = app.prepare().then(async () => {
   // Import request-handling modules before the server starts — these don't
   // depend on bootInits having run (domain cache starts empty and fills lazily).
-  const { isHostAllowed } = await import("./src/server/host-check");
+  const { applyDomainLockGate, logHostBlocked } = await import("./src/server/host-check");
+  const { applyCsrfGate, logCsrfBlocked } = await import("./src/server/csrf-check");
   const { getCachedDomain } = await import("./src/lib/domain-cache");
-  const { applyCsrfGate } = await import("./src/server/csrf-check");
 
   const server = createServer(async (req, res) => {
-    const { pathname } = parse(req.url!, true);
-    const host = (req.headers["x-forwarded-host"] as string) || req.headers.host;
-    if (!isHostAllowed(host, pathname)) {
-      const accept = req.headers.accept || "";
-      if (accept.includes("text/html")) {
-        const domain = getCachedDomain();
-        res.writeHead(403, { "Content-Type": "text/html; charset=utf-8" });
-        res.end(`<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Access Denied — Pinchy</title>
-<style>body{font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#0a0a0a;color:#e5e5e5}
-.card{max-width:420px;padding:2rem;text-align:center}.icon{font-size:2rem;margin-bottom:1rem}h1{font-size:1.25rem;margin:0 0 .75rem}
-p{color:#a3a3a3;font-size:.875rem;line-height:1.5;margin:0 0 1rem}a{color:#f59e0b;text-decoration:none}a:hover{text-decoration:underline}</style></head>
-<body><div class="card"><div class="icon">🔒</div><h1>Access Denied</h1>
-<p>This Pinchy instance is locked to a specific domain. You're accessing it from an address that isn't allowed.</p>
-${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
-</div></body></html>`);
-      } else {
-        res.writeHead(403, { "Content-Type": "application/json" });
-        res.end(
-          JSON.stringify({ error: "Forbidden: request host does not match the configured domain" })
-        );
-      }
-      return;
-    }
+    // Who is this request from? Answered once, here, and stamped onto the
+    // request so the gates' audit rows and Better Auth's sign-in throttle all
+    // read the same address instead of three different half-answers (#825).
+    // Must run before anything else touches the headers: the stamp also
+    // discards a client-supplied copy of the internal header, which would
+    // otherwise be a throttle bypass.
+    const client = stampClientIp(req.headers, {
+      trustedProxies,
+      socketAddress: req.socket?.remoteAddress,
+    });
 
-    if (await applyCsrfGate(req, res)) return;
+    // Destination first (is this the locked domain?), then source (did the
+    // request come from it?). Both gates return true when they answered.
+    if (await applyDomainLockGate(req, res, client)) return;
+    if (await applyCsrfGate(req, res, client)) return;
 
     handle(req, res, parse(req.url!, true));
   });
@@ -153,6 +212,9 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
   // across all ClientRouter instances (one per ws) and the watchdog.
   const activeRuns = getActiveRunsSingleton();
   const pokeBridge = getSessionPokeBridgeSingleton();
+  // Open browser sockets per user, shared with the API routes through
+  // globalThis — deactivating an account closes its open chats (user-sockets.ts).
+  const userSockets = getUserSocketRegistry();
 
   const wss = new WebSocketServer({
     noServer: true,
@@ -173,6 +235,10 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
     },
   });
 
+  // Cuts off sockets whose peer vanished without a close frame, so they stop
+  // holding a per-user connection slot (#1422). Stops itself when `wss` closes.
+  startWsHeartbeat(wss);
+
   function broadcastToClients(message: Record<string, unknown>) {
     const payload = JSON.stringify(message);
     for (const [clientWs] of sessionMap) {
@@ -186,11 +252,63 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
   server.on("upgrade", async (request, socket, head) => {
     const { pathname } = parse(request.url!, true);
     if (pathname === "/api/ws") {
+      // An upgrade never passes through the createServer handler, so it does
+      // its own resolution. Stamped rather than merely resolved, for the same
+      // reason it is stamped there: the stamp is what DISCARDS a client-supplied
+      // copy of the internal header, and `request.headers` outlives this block —
+      // `readWsUpgradeCheckInput`, `validateWsSession` and every `wss`
+      // connection handler are handed the same object.
+      const client = stampClientIp(request.headers, {
+        trustedProxies,
+        socketAddress: request.socket?.remoteAddress,
+      });
+
       // Rate limit by IP before doing any auth work. The limiter's onReject
       // hook (configured above) takes care of warn-level logging.
-      const ip = request.socket.remoteAddress ?? "unknown";
+      //
+      // Behind a proxy `socket.remoteAddress` is the proxy, so keying on it
+      // gave every user on the instance ONE 60-upgrades-per-minute bucket —
+      // a single reconnect-looping tab could lock everyone else out of chat
+      // (#825).
+      const ip = client.address ?? "unknown";
       if (!wsRateLimiter.allowUpgrade(ip)) {
-        socket.write("HTTP/1.1 429 Too Many Requests\r\n\r\n");
+        refuseUpgrade(socket);
+        return;
+      }
+
+      // The upgrade path is a second, separate entry point from the
+      // createServer request handler above — applyDomainLockGate and
+      // applyCsrfGate never see a WebSocket upgrade. isWsUpgradeAllowed
+      // reapplies the same domain-lock host check (destination) plus an
+      // Origin check (source, WS's CORS-equivalent — handshakes aren't
+      // subject to CORS/SOP the way fetch is). See ws-upgrade-gate.ts.
+      const upgradeCheckInput = readWsUpgradeCheckInput(request, pathname);
+      const upgradeCheck = isWsUpgradeAllowed(upgradeCheckInput);
+      if (!upgradeCheck.allowed) {
+        if (upgradeCheck.reason === "domain-lock") {
+          // Not awaited: mirrors applyDomainLockGate — the 403 must not wait
+          // on a DB write, and logHostBlocked swallows its own failures.
+          void logHostBlocked({
+            method: (request.method ?? "GET").toUpperCase(),
+            pathname,
+            host: upgradeCheckInput.host,
+            lockedDomain: getCachedDomain(),
+            remoteAddress: request.socket?.remoteAddress,
+            client,
+          });
+        } else {
+          // Mirrors applyCsrfGate, which awaits its own audit write.
+          await logCsrfBlocked({
+            reason: upgradeCheck.reason,
+            method: (request.method ?? "GET").toUpperCase(),
+            pathname,
+            origin: upgradeCheckInput.origin,
+            referer: undefined,
+            remoteAddress: request.socket?.remoteAddress,
+            client,
+          });
+        }
+        socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
         socket.destroy();
         return;
       }
@@ -205,14 +323,17 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
       // Limit concurrent connections per user
       const { userId, userRole } = sessionInfo;
       if (!wsRateLimiter.allowConnection(userId)) {
-        socket.write("HTTP/1.1 429 Too Many Requests\r\n\r\n");
-        socket.destroy();
+        refuseUpgrade(socket);
         return;
       }
 
       wss.handleUpgrade(request, socket, head, (ws) => {
         wsRateLimiter.trackConnection(userId);
         sessionMap.set(ws, { userId, userRole });
+        // So DELETE /api/users/:id can close this chat when it deactivates the
+        // account: the session check above runs once, at the upgrade. A user
+        // deactivated in the moment since gets the socket closed right here.
+        userSockets.register(userId, ws);
         wss.emit("connection", ws, request);
       });
     }
@@ -243,6 +364,9 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
     clientWs.on("message", (data) => {
       try {
         const parsed = JSON.parse(data.toString());
+        // Before the router check: the client's liveness probe must be
+        // answered even while OpenClaw is not configured.
+        if (answerAppHeartbeat(clientWs, parsed)) return;
         if (!router) {
           clientWs.send(JSON.stringify({ type: "error", message: "OpenClaw not configured" }));
           return;
@@ -347,12 +471,33 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
   const { startChatErrorGc, stopChatErrorGc } = await import("./src/server/chat-error-gc");
   startChatErrorGc();
 
+  // Flip overdue pending tool-call confirmations to `expired` (with their
+  // audit rows) and reap settled ones past retention, on the same cadence.
+  const { startApprovalSweep, stopApprovalSweep } = await import("./src/server/approval-sweep");
+  startApprovalSweep();
+
   // Periodically re-verify the audit-log hash chain from the last checkpoint
   // forward, so a break introduced via direct DB access (bypassing the
   // no_update/no_delete/no_truncate triggers) is caught automatically instead
   // of only surfacing when someone opens the admin "verify" page.
   const { startAuditVerifyJob, stopAuditVerifyJob } = await import("./src/server/audit-verify-job");
   startAuditVerifyJob();
+
+  // Run queued knowledge-base reindexes in the background. A real corpus is
+  // hours of CPU-only embedding, which can't happen inside the admin's HTTP
+  // request. The post-boot kick also requeues any job left `running` by a
+  // crashed predecessor — this process is the only worker, so nothing else
+  // could still hold one.
+  const { startKbIndexWorker, stopKbIndexWorker } = await import("./src/server/kb-index-worker");
+  startKbIndexWorker();
+
+  // Queue a reindex of every knowledge-base agent once a night (default 02:00,
+  // org timezone), so documents dropped into the mounted folders during the
+  // day are searchable the next morning without an admin asking. It only
+  // queues; the worker above runs the jobs. See kb-index-scheduler.ts.
+  const { startKbIndexScheduler, stopKbIndexScheduler } =
+    await import("./src/server/kb-index-scheduler");
+  startKbIndexScheduler();
 
   // Graceful shutdown: stop the upload GC + usage poller intervals, close the
   // memory-audit watcher, disconnect from OpenClaw, drain browser WebSockets,
@@ -372,7 +517,10 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
     buildShutdownSteps({
       stopUploadGc: () => stopUploadGc(),
       stopChatErrorGc: () => stopChatErrorGc(),
+      stopApprovalSweep: () => stopApprovalSweep(),
       stopAuditVerifyJob: () => stopAuditVerifyJob(),
+      stopKbIndexScheduler: () => stopKbIndexScheduler(),
+      stopKbIndexWorker: () => stopKbIndexWorker(),
       stopUsagePoller: () => stopUsagePoller(),
       stopMemoryAuditWatcher: () =>
         stopMemoryAuditWatcher ? stopMemoryAuditWatcher() : Promise.resolve(),
@@ -413,17 +561,13 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
         "[pinchy] Gateway token not available — setup wizard required before OpenClaw connects"
       );
     }
-    openclawClient = new OpenClawClient({
-      url: OPENCLAW_WS_URL,
-      token: gatewayToken ?? "",
-      clientId: "gateway-client",
-      clientVersion: "0.1.0",
-      scopes: ["operator.admin"],
-      deviceIdentityPath: process.env.DEVICE_IDENTITY_PATH || "/app/secrets/device-identity.json",
-      autoReconnect: true,
-      reconnectIntervalMs: 1000,
-      maxReconnectAttempts: Infinity,
-    });
+    openclawClient = new OpenClawClient(
+      openClawClientOptions({
+        url: OPENCLAW_WS_URL,
+        token: gatewayToken ?? "",
+        deviceIdentityPath: process.env.DEVICE_IDENTITY_PATH || "/app/secrets/device-identity.json",
+      })
+    );
 
     setOpenClawClient(openclawClient);
     // #7: one shared disconnect signal for every ClientRouter (one listener on
@@ -454,8 +598,7 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
       },
       broadcastNoFirstChunk: (run) => {
         // B-1: a run the backend accepted but never streamed within the
-        // first-chunk timeout. Send a RETRYABLE error frame (no `runTimedOut`
-        // flag — that's the terminal 15-min path). The client auto-classifies
+        // first-chunk timeout. Send a RETRYABLE error frame. The client auto-classifies
         // a `providerError` frame with no prior chunk as `send_failure`, so the
         // user gets an inline "retry" affordance instead of an endless spinner.
         const payload = JSON.stringify({
@@ -582,54 +725,46 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
             return null;
           }
         },
-        // #477 layer 2: disable the account so it survives a restart (build.ts
-        // skips it on regen), stop the poller promptly via the same
-        // config.apply/reload path connect/disconnect already use, and clear
-        // its allow-store. Non-request context — try/catch + recordAuditFailure
-        // per AGENTS.md, not a bare .catch(console.error).
-        autoDisableConflictedAccount: async (channel, accountId, lastError) => {
-          // Defensive: skip if already disabled (e.g. a race with a manual
-          // disconnect, or the monitor somehow re-entering for the same episode).
-          const already = await getSetting(`telegram_conflict_disabled:${accountId}`);
-          if (already) return;
-
-          await setSetting(
-            `telegram_conflict_disabled:${accountId}`,
-            JSON.stringify({
-              reason: "polling_conflict",
-              lastError: safeProviderError(lastError),
-              disabledAt: new Date().toISOString(),
-            })
-          );
-          updateTelegramChannelConfig(accountId, null);
-          clearAllowStoreForAccount(accountId);
-
-          const name = await resolveAccountName(channel, accountId);
-          const entry = {
-            actorType: "system" as const,
-            actorId: "channel-watchdog",
-            eventType: "channel.auto_disabled" as const,
-            resource: `agent:${accountId}`,
-            outcome: "success" as const,
-            detail: {
-              channel,
-              account: { id: accountId, name },
-              reason: "polling_conflict",
-              lastError: safeProviderError(lastError),
-            },
-          };
-          try {
-            await appendAuditLog(entry);
-          } catch (err) {
-            recordAuditFailure(err, entry);
-          }
-        },
+        // #477 layer 2: see autoDisableConflictedTelegramAccount.
+        autoDisableConflictedAccount: (channel, accountId, lastError) =>
+          autoDisableConflictedTelegramAccount(channel, accountId, lastError, resolveAccountName),
       },
       Number(process.env.CHANNEL_HEALTH_INTERVAL_MS) || CHANNEL_HEALTH_INTERVAL_MS
     );
     registerShutdownHandlers([
       () => {
         stopChannelHealth();
+        return Promise.resolve();
+      },
+    ]);
+
+    // Inbox Agent (#139): drive the reconciliation sweep on its own cadence.
+    // The sweep re-lists each email workflow's recent mail and dispatches
+    // whatever the ledger has not seen — the correctness path that makes the
+    // feature autonomous. It runs agents, so it belongs here (inside the
+    // gateway block) rather than beside the periodic jobs started above.
+    //
+    // Starting it before the handshake is safe by construction: while the
+    // gateway is disconnected the readiness gate defers every run rather than
+    // failing mail nobody examined (see createAgentReadinessGate). That is also
+    // why this is NOT hung off the `connected` event — that fires again on every
+    // reconnect, and a second startInboxSweep would leak another interval.
+    //
+    // Lazy import for the same reason as the jobs above: these modules pull in
+    // `@/db`, which must not be evaluated before bootInits() has completed.
+    const { startInboxSweep, stopInboxSweep } = await import("./src/server/inbox-sweep");
+    const { buildSweepDeps } = await import("./src/server/inbox-sweep-deps");
+    const { runReconciliationSweep } = await import("./src/lib/email-workflows/sweep");
+    const sweepDeps = buildSweepDeps(ocForWatchdog);
+    startInboxSweep(() => runReconciliationSweep(sweepDeps), {
+      // E2E only (same convention as CHANNEL_HEALTH_INTERVAL_MS): the 15-minute
+      // production cadence is far longer than any test can wait for.
+      intervalMs: Number(process.env.INBOX_SWEEP_INTERVAL_MS) || undefined,
+      startupDelayMs: Number(process.env.INBOX_SWEEP_STARTUP_DELAY_MS) || undefined,
+    });
+    registerShutdownHandlers([
+      () => {
+        stopInboxSweep();
         return Promise.resolve();
       },
     ]);
@@ -665,19 +800,15 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
         } catch {
           // Non-critical — approval loop has a safety timeout
         }
-
-        // Push full config via config.apply on the FIRST connection only. This
-        // seeds OC's currentCompareConfig with the complete Pinchy payload so
-        // subsequent config.apply calls show only field-level diffs — not a
-        // massive diff against the baked-in startup config that triggers
-        // gateway/discovery/update/canvasHost restart rules (openclaw#75534,
-        // PR #279). Scoped to firstConnect to prevent a cascade: if this push
-        // triggers an OC restart (large diff on fresh install), the reconnect
-        // (firstConnect=false) won't fire again, terminating the loop.
-        regenerateOpenClawConfig().catch((err) => {
-          console.warn("[server] on-connected regenerateOpenClawConfig failed:", err);
-        });
       }
+
+      // Full config push via config.apply — see regenerateOnConnect for when
+      // a connect owes one.
+      regenerateOnConnect({ firstConnect }, regenerateOpenClawConfig);
+
+      // Telegram allow lists live in OpenClaw's store; writes skipped while it
+      // was away land now (see syncTelegramAllowStoresOnConnect).
+      void syncTelegramAllowStoresOnConnect();
 
       // Start global usage poller. Idempotent — a reconnect won't spawn a
       // second poller. The poller handles sessions.list() failures gracefully.
@@ -693,6 +824,13 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
 
     setupOpenClawDisconnectHandler(openclawClient, sessionMap);
     statusBroadcaster = setupOpenClawStatusBroadcaster(openclawClient, sessionMap);
+
+    // Hear the approvals OpenClaw creates when pinchy-approvals suspends a
+    // gated call, so the user's decision can resume the actual run (#1132).
+    // Attached to the client itself rather than inside the "connected" handler:
+    // the listener is on the local emitter, survives reconnects, and attaching
+    // it per-connect would stack a duplicate on every reconnect.
+    attachPluginApprovalBridge(openclawClient);
 
     openclawClient.on("disconnected", () => {
       openClawConnectionState.connected = false;

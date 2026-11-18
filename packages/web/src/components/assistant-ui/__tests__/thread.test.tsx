@@ -1,9 +1,11 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+// @vitest-environment jsdom
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import React from "react";
 import "@testing-library/jest-dom";
 import { sendingOpacityClass } from "@/components/assistant-ui/thread";
 import type { MessageState } from "@assistant-ui/react";
+import { holdResults } from "@/test-helpers/hold-results";
 
 // Mutable AuiIf state — lets individual tests flip thread.isRunning so we can
 // exercise the Send/Cancel mutual-exclusion path covered by issue #207.
@@ -229,6 +231,7 @@ vi.mock("@/components/chat", async () => {
     AgentAvatarContext: React.createContext<string | null>(null),
     AgentIdContext: React.createContext<string | null>(null),
     AgentNameContext: React.createContext<string | null>(null),
+    CanEditAgentContext: React.createContext<boolean>(false),
     ChatIdContext: React.createContext<string | null>(null),
     AgentModelContext: React.createContext<string | null>(null),
     RetryResendContext: React.createContext<(messageId: string) => void>(() => {}),
@@ -238,6 +241,7 @@ vi.mock("@/components/chat", async () => {
     RemovePendingUploadContext: React.createContext<(localId: string) => void>(() => {}),
     RetryPendingUploadContext: React.createContext<(localId: string) => void>(() => {}),
     AddPendingUploadContext: React.createContext<(file: File) => void>(() => {}),
+    FileSourceContext: React.createContext<"uploads" | "artifacts">("uploads"),
   };
 });
 
@@ -434,15 +438,49 @@ describe("ThreadWelcome", () => {
     expect(screen.getByText(/just a moment/i)).toBeInTheDocument();
   });
 
-  it("renders the reload prompt when unavailable/exhausted", async () => {
-    await renderWith({ kind: "unavailable", reason: "exhausted" });
-    expect(screen.getByText(/please reload/i)).toBeInTheDocument();
+  it.each([
+    ["offline", /you're offline/i],
+    ["rejected", /waiting for a free connection/i],
+    ["upstreamDown", /waiting for the agent/i],
+    ["unreachable", /still trying to reach pinchy/i],
+  ])("renders its own message when unavailable/%s, never a reload demand", async (reason, text) => {
+    await renderWith({ kind: "unavailable", reason });
+    expect(screen.getByText(text)).toBeInTheDocument();
+    expect(screen.queryByText(/please reload/i)).not.toBeInTheDocument();
   });
 
   it("renders the image-too-large prompt when payloadRejected", async () => {
     await renderWith({ kind: "payloadRejected" });
     expect(screen.getByText(/image too large/i)).toBeInTheDocument();
     expect(screen.queryByTestId("loading-spinner")).not.toBeInTheDocument();
+  });
+});
+
+describe("Thread first-index notice (#1280)", () => {
+  it("tells whoever opens the chat that the agent's documents are still being read", async () => {
+    const { apiGet } = await import("@/lib/api-client");
+    vi.mocked(apiGet).mockImplementation(async (url: string) =>
+      url.endsWith("/knowledge/first-index")
+        ? { state: "indexing", processed: 120, total: 505 }
+        : {}
+    );
+    const { AgentIdContext } = await import("@/components/chat");
+    const { Thread } = await import("@/components/assistant-ui/thread");
+
+    // The notice sits in the footer beside the composer, which renders even
+    // while the messages are held back — so the message list (and the mock
+    // state it would need) stays out of this test.
+    render(
+      <AgentIdContext.Provider value="agent-1">
+        <Thread isReconcilingMessages />
+      </AgentIdContext.Provider>
+    );
+
+    expect(await screen.findByRole("status")).toHaveTextContent("120 of 505");
+    expect(apiGet).toHaveBeenCalledWith(
+      "/api/agents/agent-1/knowledge/first-index",
+      expect.anything()
+    );
   });
 });
 
@@ -549,18 +587,102 @@ describe("AssistantMessage retryable error bubble", () => {
       id: "msg-err-nose",
     });
 
+    // The gate is re-checked at click time (#1013), so this needs a real agent
+    // in context and a server that answers "no tool ran". Without the provider
+    // the component takes its no-agent shortcut and the test would pass while
+    // proving nothing about the read-only case.
+    const { apiGet } = await import("@/lib/api-client");
+    const gate = holdResults();
+    vi.mocked(apiGet).mockImplementation(() => gate.resolveWith({ sideEffects: false }));
+
     const mockRetryContinue = vi.fn();
-    const { RetryContinueContext } = await import("@/components/chat");
+    const { RetryContinueContext, AgentIdContext } = await import("@/components/chat");
     const { AssistantMessage } = await import("@/components/assistant-ui/thread");
     render(
-      <RetryContinueContext.Provider value={mockRetryContinue}>
-        <AssistantMessage />
-      </RetryContinueContext.Provider>
+      <AgentIdContext.Provider value="agent-1">
+        <RetryContinueContext.Provider value={mockRetryContinue}>
+          <AssistantMessage />
+        </RetryContinueContext.Provider>
+      </AgentIdContext.Provider>
     );
 
     fireEvent.click(screen.getByRole("button", { name: /^retry$/i }));
+    // The retry fires inside the gate's handler, before React has committed
+    // what that handler set — so wait until the gate's answer is fully applied.
+    await gate.release();
     expect(mockRetryContinue).toHaveBeenCalledTimes(1);
+    expect(apiGet).toHaveBeenCalledWith("/api/agents/agent-1/retry-gate");
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
+  it("gates the live Retry when the frame said no but the server knows better (#1013)", async () => {
+    // The failure that made this a bug: OpenClaw fires `after_tool_call`
+    // without awaiting it, so the frame's flag was derived before the audit row
+    // landed. The bubble says "no tool ran" and the run had already booked.
+    const { useMessage } = await import("@assistant-ui/react");
+    stubUseMessage(useMessage, {
+      metadata: {
+        custom: {
+          error: { providerError: "rate limit", agentName: "Penny", sideEffects: false },
+          retryable: true,
+        },
+      },
+      isLast: true,
+      id: "msg-err-race",
+    });
+
+    const { apiGet } = await import("@/lib/api-client");
+    vi.mocked(apiGet).mockResolvedValue({ sideEffects: true });
+
+    const mockRetryContinue = vi.fn();
+    const { RetryContinueContext, AgentIdContext } = await import("@/components/chat");
+    const { AssistantMessage } = await import("@/components/assistant-ui/thread");
+    render(
+      <AgentIdContext.Provider value="agent-1">
+        <RetryContinueContext.Provider value={mockRetryContinue}>
+          <AssistantMessage />
+        </RetryContinueContext.Provider>
+      </AgentIdContext.Provider>
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /^retry$/i }));
+
+    expect(await screen.findByRole("alertdialog")).toHaveTextContent(/duplicate/i);
+    expect(mockRetryContinue).not.toHaveBeenCalled();
+  });
+
+  it("warns rather than retrying when the gate check fails (#1013)", async () => {
+    // Fail closed: an unreachable gate is not evidence the run was read-only.
+    const { useMessage } = await import("@assistant-ui/react");
+    stubUseMessage(useMessage, {
+      metadata: {
+        custom: {
+          error: { providerError: "rate limit", agentName: "Penny", sideEffects: false },
+          retryable: true,
+        },
+      },
+      isLast: true,
+      id: "msg-err-gate-down",
+    });
+
+    const { apiGet } = await import("@/lib/api-client");
+    vi.mocked(apiGet).mockRejectedValue(new Error("offline"));
+
+    const mockRetryContinue = vi.fn();
+    const { RetryContinueContext, AgentIdContext } = await import("@/components/chat");
+    const { AssistantMessage } = await import("@/components/assistant-ui/thread");
+    render(
+      <AgentIdContext.Provider value="agent-1">
+        <RetryContinueContext.Provider value={mockRetryContinue}>
+          <AssistantMessage />
+        </RetryContinueContext.Provider>
+      </AgentIdContext.Provider>
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /^retry$/i }));
+
+    expect(await screen.findByRole("alertdialog")).toBeInTheDocument();
+    expect(mockRetryContinue).not.toHaveBeenCalled();
   });
 
   it("disables Retry button and sets tooltip when ChatStatusContext is unavailable", async () => {
@@ -823,6 +945,59 @@ describe("Composer no longer gates attachments client-side", () => {
     );
 
     expect(screen.queryByRole("region", { name: /can't be sent/i })).not.toBeInTheDocument();
+  });
+});
+
+// Autofocus is a desktop convenience and a mobile annoyance: on a touch device
+// it forces the on-screen keyboard open the moment a chat is opened, before the
+// user has decided to type — which is what made the composer disappear behind
+// the keyboard in #955, share attachment and all. Gate it on a pointing device.
+describe("Composer autofocus is pointer-gated (#955)", () => {
+  const realMatchMedia = window.matchMedia;
+
+  // Matches the EXACT query, not a substring: `(any-pointer: fine)` contains
+  // `pointer: fine`, and that one is a different gate — it matches a phone with
+  // a stylus, i.e. precisely the device this is supposed to spare. A loose
+  // stub would let that swap through green.
+  function stubPointer(fine: boolean) {
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: query === "(pointer: fine)" ? fine : false,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })) as unknown as typeof window.matchMedia;
+  }
+
+  afterEach(() => {
+    window.matchMedia = realMatchMedia;
+  });
+
+  async function renderComposer() {
+    const { ChatStatusContext } = await import("@/components/chat");
+    const { Composer } = await import("@/components/assistant-ui/thread");
+    return render(
+      <ChatStatusContext.Provider value={{ kind: "ready" }}>
+        <Composer />
+      </ChatStatusContext.Provider>
+    );
+  }
+
+  it("focuses the input on a device with a fine pointer", async () => {
+    stubPointer(true);
+    await renderComposer();
+
+    expect(screen.getByRole("textbox")).toHaveFocus();
+  });
+
+  it("leaves the input unfocused on a touch device, so the keyboard stays closed", async () => {
+    stubPointer(false);
+    await renderComposer();
+
+    expect(screen.getByRole("textbox")).not.toHaveFocus();
   });
 });
 

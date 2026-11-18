@@ -1,7 +1,7 @@
-import { defineCollection } from 'astro:content';
-import { docsLoader } from '@astrojs/starlight/loaders';
-import { docsSchema } from '@astrojs/starlight/schema';
-import { githubReleasesLoader } from 'astro-loader-github-releases';
+import { defineCollection } from "astro:content";
+import { docsLoader } from "@astrojs/starlight/loaders";
+import { docsSchema } from "@astrojs/starlight/schema";
+import { githubReleasesLoader } from "astro-loader-github-releases";
 
 export const collections = {
   docs: defineCollection({
@@ -14,8 +14,8 @@ export const collections = {
   // rate limit); unauthenticated build requests are fine at our build cadence.
   releases: defineCollection({
     loader: githubReleasesLoader({
-      repos: ['heypinchy/pinchy'],
-      entryReturnType: 'byRelease',
+      repos: ["heypinchy/pinchy"],
+      entryReturnType: "byRelease",
     }),
   }),
 };

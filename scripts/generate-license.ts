@@ -50,7 +50,7 @@ async function generateLicense() {
   const keyPath = values["private-key-file"];
   if (!keyPath && !process.env.PINCHY_LICENSE_PRIVATE_KEY) {
     console.error(
-      "Error: provide --private-key-file or set PINCHY_LICENSE_PRIVATE_KEY env var"
+      "Error: provide --private-key-file or set PINCHY_LICENSE_PRIVATE_KEY env var",
     );
     process.exit(1);
   }
@@ -68,7 +68,7 @@ async function generateLicense() {
     privateKey = await jose.importPKCS8(privateKeyPem, "ES256");
   } catch {
     console.error(
-      "Error: could not parse private key. Ensure it is a valid PKCS8 PEM for ES256."
+      "Error: could not parse private key. Ensure it is a valid PKCS8 PEM for ES256.",
     );
     process.exit(1);
   }
@@ -88,7 +88,9 @@ async function generateLicense() {
   console.error(`\nLicense generated:`);
   console.error(`  Org:     ${org}`);
   console.error(`  Type:    ${type}`);
-  console.error(`  Expires: ${expDate.toISOString().split("T")[0]} (${numDays} days)`);
+  console.error(
+    `  Expires: ${expDate.toISOString().split("T")[0]} (${numDays} days)`,
+  );
   console.error(`\nToken:`);
 
   console.log(jwt);

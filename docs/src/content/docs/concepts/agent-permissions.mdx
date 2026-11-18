@@ -25,17 +25,27 @@ Safe tools provide **sandboxed access** to approved directories and the agent's 
 
 Every agent can always list and read files from its own workspace — any text-based file you upload in a chat is immediately accessible. This includes Markdown, CSV, JSON, source code, and more, in addition to PDF text extraction and image analysis.
 
-| Tool               | Always on? | What it does                                                                                                  |
-| ------------------ | ---------- | ------------------------------------------------------------------------------------------------------------- |
-| **Read workspace** | ✓ always   | List and read any file in the agent's workspace (both `uploads/` and `workbench/`), including PDFs and images |
+| Tool               | Tool ID                    | Always on? | What it does                                                                                                  |
+| ------------------ | -------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------- |
+| **Read workspace** | `pinchy_ls`, `pinchy_read` | ✓ always   | List and read any file in the agent's workspace (both `uploads/` and `workbench/`), including PDFs and images |
 
 The workspace has two subdirectories: `uploads/` holds files the user attached in chat, and `workbench/` is the agent's own writable area for notes, exports, and drafts. See [Agent Workspaces](/concepts/workspaces/) for the full three-zone model.
 
 The **Knowledge Base** section below the tools lets you select which directories under `/data/` this agent can also read. These are admin-curated directories mounted into the container — separate from the agent's own workspace. Every access request is validated at runtime against the configured paths.
 
+### Knowledge search
+
+| Tool                 | Tool ID            | What it does                                                                                                                                                              |
+| -------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Search documents** | `knowledge_search` | Search the indexed knowledge base and return passages with a citable source path and position — see [Create a Knowledge Base agent](/guides/create-knowledge-base-agent/) |
+
+`knowledge_search` is the one tool the Permissions tab does **not** toggle. It reaches an agent through the **Knowledge Base template**, which grants it at creation time — so if you want an agent that searches documents, create it from that template rather than adding the capability to an existing Custom Agent.
+
+It is also the one tool whose reach is set entirely by something else: it searches exactly the directories the agent is granted under the Knowledge Base section above, and nothing outside them. Two agents with the same tool see different corpora.
+
 ### Web Search Tools
 
-Web search tools give the agent access to live web information via the Brave Search API. These require a Brave Search API key configured in Settings → Integrations.
+Web search tools give the agent access to live web information. **Search the web** goes through the Brave Search API and needs a Brave Search API key configured in Settings → Integrations. **Fetch web pages** needs no key. Without one, the Permissions tab only offers the Web Search section to agents that already hold a web tool, so agents get it through a web template such as the [Market & News Monitor](/guides/create-market-monitor-agent/). An agent granted search without a key gets a "web search is not configured" answer from the tool, which it passes on, and search starts working once an admin adds the key.
 
 | Tool                | What it does                                                          |
 | ------------------- | --------------------------------------------------------------------- |
@@ -52,9 +62,10 @@ If an agent has **Fetch web pages** enabled alongside access to sensitive data (
 
 Powerful tools let the agent **change state outside the conversation** — write files to disk, mutate records in connected systems, send email. Only enable them if you understand the consequences.
 
-| Tool            | Tool ID        | What it does                                                                                                                                                                          |
-| --------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Write files** | `pinchy_write` | Save files into the agent's own `workbench/` directory (and the user-facing `uploads/`, kept writable for compatibility). Agents must explicitly request overwrite on existing files. |
+| Tool             | Tool ID                                                 | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ---------------- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Memory**       | `pinchy_memory`                                         | Let the agent write and re-read its own memory — `MEMORY.md` for durable knowledge, `memory/` for daily notes. Without this grant the agent has no memory at all, and the recall tools are not offered to it. See [Understanding Agent Memory](/explanation/agent-memory/).                                                                                                                                                                                                                                                                                                                  |
+| **Create files** | `pinchy_write`, `pinchy_generate_file`, `pinchy_delete` | Save files into the agent's own `workbench/` directory, and remove ones it no longer needs. Never `uploads/` — that is the user's zone, readable but not writable. `pinchy_generate_file` renders tabular data the agent already holds into a CSV, XLSX, or PDF in the workbench and, in the web chat, hands it to you as a download — see [Generating files](/guides/file-uploads/#generating-files). Agents must explicitly request overwrite on existing files. `pinchy_delete` reaches only what the agent may write, one file at a time, never a directory — and deletion is permanent. |
 
 Powerful integration tools (Odoo write/delete, email draft/send) are covered in their own sections below.
 
@@ -78,7 +89,7 @@ For the full list of tabs in Agent Settings and who sees which, see [Agent Setti
 
 ### Configuring directory access
 
-The **Allowed Directories** picker appears in the Knowledge Base section of the Permissions tab. Select which directories under `/data/` this agent should be able to read — these are in addition to the agent's own workspace files.
+The **Allowed Directories** picker appears in the Knowledge Base section of the Permissions tab. Select which directories under `/data/` this agent should be able to read — these are in addition to the agent's own workspace files. A directory can be a mount or any folder inside one; granting a folder grants everything below it (see [Granting a subfolder](/guides/mount-data-directories/#granting-a-subfolder)).
 
 For example, if you mounted your HR policies at `/data/hr-policies`, select that directory to let the agent read those documents — and nothing else.
 
@@ -88,7 +99,9 @@ See the [Mount Data Directories](/guides/mount-data-directories/) guide for inst
 
 Pinchy controls what tools an agent can use. OpenClaw's native tools (shell, file system, raw web, the built-in browser) are not exposed directly — Pinchy replaces them with its own sandboxed and integration tools. This gives Pinchy full control over what each agent can do.
 
-Under the hood, Pinchy emits a **fail-closed allow-list** into each agent's OpenClaw config. The `computeAllowedTools()` function returns exactly the Pinchy plugin tools plus a small set of read-only built-ins (memory search and retrieval, PDF and image reading, session status), and Pinchy writes that set into the agent's `tools.allow` array — with no tool profile set, so OpenClaw treats it as an absolute allow-list. Every other built-in is therefore denied by default, **including tools added in future OpenClaw versions**: shell execution, raw file access, the native web and browser tools, scheduling (`cron`), gateway control, cross-session spawning, outbound messaging, and the media generators.
+Under the hood, Pinchy emits a **fail-closed allow-list** into each agent's OpenClaw config. The `computeAllowedTools()` function returns exactly the Pinchy plugin tools plus a small set of read-only built-ins (session status, and memory search and retrieval for agents granted the Memory tool), and Pinchy writes that set into the agent's `tools.allow` array — with no tool profile set, so OpenClaw treats it as an absolute allow-list. Every other built-in is therefore denied by default, **including tools added in future OpenClaw versions**: shell execution, raw file access, the native web and browser tools, scheduling (`cron`), gateway control, cross-session spawning, outbound messaging, and the media generators. OpenClaw's built-in PDF and image readers are denied too — agents read documents and images with the Pinchy tool `pinchy_read` instead, which handles scanned pages and resolves its own vision model.
+
+OpenClaw 2026.9 added built-ins that are on by default and have no switch of their own — questions that block a turn until someone answers, a shared credential store, and skills an agent writes for itself. The allow-list keeps them out like any other built-in, and a test runs Pinchy's config through OpenClaw's own tool policy on every OpenClaw upgrade to prove it. The one session built-in an agent does keep, session status, sees only the session it runs in (`tools.sessions.visibility: "self"`): never another agent's sessions, and never another user's conversation with the same shared agent.
 
 This is the same fail-closed principle as the per-agent allow-list above, applied one layer down at the runtime boundary: rather than chasing a deny-list that must be revisited on every OpenClaw upgrade, Pinchy lists only what it trusts and denies the rest by default. It runs automatically whenever the OpenClaw config is regenerated — admins never interact with it directly. Per-agent tool gating still happens inside each Pinchy plugin, which only registers the tools an agent is permitted to use; the allow-list is the outer boundary that keeps everything else out.
 
@@ -114,11 +127,18 @@ When you connect Odoo and grant an agent access to it, Pinchy automatically enab
 | **Validate picking**      | `odoo_validate_picking`    | Validate a stock transfer (`button_validate`); hands off if Odoo needs a backorder decision                    | Read & Write          |
 | **Mark MO done**          | `odoo_mark_mo_done`        | Mark a manufacturing order done (`button_mark_done`); hands off if Odoo needs a backorder/consumption decision | Read & Write          |
 | **Set approval decision** | `odoo_set_approval`        | Approve/refuse an expense report, purchase order, leave request, or approval request via its blessed method    | Read & Write          |
+| **Reconcile payment**     | `odoo_reconcile`           | Match a posted bill/invoice against a bank transaction or payment, and verify the result on the document       | Read & Write          |
 | **Update records**        | `odoo_write`               | Modify existing records                                                                                        | Read & Write          |
 | **Attach file**           | `odoo_attach_file`         | Attach an uploaded file to an existing record as `ir.attachment`                                               | Read & Write          |
-| **Delete records**        | `odoo_delete`              | Delete records                                                                                                 | Full                  |
+| **Delete records**        | `odoo_delete`              | Delete records the agent has read — it takes the references `odoo_read` returns, never raw record IDs          | Full                  |
 
 For example, setting an agent to "Read-only" enables the five read-shaped tools. "Read & Write" adds create, the three activity tools (schedule / complete / reschedule), the governed action tools (confirm order, apply inventory, validate picking, mark MO done, set approval), write, and attach-file. "Full" adds delete.
+
+:::caution[Delete only reaches records the agent looked up]
+Deleting is the one thing in Odoo we cannot undo for you, so `odoo_delete` does not accept record IDs. It takes the opaque reference (`_pinchy_ref`) that `odoo_read` and `odoo_create` hand back — which an agent can only hold for a record it actually retrieved, on this connection, of this model. A number the model invented on its own is refused before it reaches Odoo, and so is a reference belonging to a different model than the one being deleted.
+
+The audit entry names what went: the model, how many records, and their IDs with display names — read from Odoo in the moment before the delete, because afterwards nothing can look them up again. A bulk delete lists the first 20 and says how many more it stands for, so the row stays inside the audit size budget without ever implying it listed everything.
+:::
 
 :::note[Cross-company write protection]
 For multi-company Odoo databases, the `pinchy-odoo` plugin refuses to write a record whose embedded `_pinchy_ref` company tag disagrees with the company implied by the relation chain (top-level field only). This prevents a class of silent cross-company mistakes — for example, applying a Company A fiscal position to a partner that lives under Company B. See [Connect Odoo → Multi-company databases](/guides/connect-odoo/#multi-company-databases) for the full story.
@@ -165,12 +185,18 @@ Unlike Odoo and email, MCP tools aren't gated inside a Pinchy plugin — see [Ho
 
 ## Agent templates and default permissions
 
-When you create an agent, you pick a template. Each template comes with different default tool permissions. Every new agent also starts with **Write files** (`pinchy_write`) enabled by default — reading the workspace is always on, and the create flow adds write so the agent can save notes and exports out of the box. You can toggle it off later in the Permissions tab.
+When you create an agent, you pick a template. Every template except **Custom Agent** starts with **Memory** and **Create files** enabled, then adds the tools its role needs. A template is a decision about what that kind of agent is for, so it may be generous; **Custom Agent** is the absence of that decision and starts with nothing at all.
 
-| Template           | Default tools   | Use case                                           |
-| ------------------ | --------------- | -------------------------------------------------- |
-| **Knowledge Base** | **Write files** | Answer questions from selected documents           |
-| **Custom Agent**   | **Write files** | Start from scratch, configure permissions manually |
+| Template family                                                                                    | Default tools on top of Memory + Create files        | Use case                                                 |
+| -------------------------------------------------------------------------------------------------- | ---------------------------------------------------- | -------------------------------------------------------- |
+| **Knowledge Base**                                                                                 | `knowledge_search`                                   | Answer questions from selected documents, with citations |
+| **Document agents** (Contract Analyzer, Resume Screener, Proposal Comparator, …)                   | none                                                 | Read and reason over files you attach in chat            |
+| **Email agents** ([Email, Sales, Support Assistant](/guides/connect-email/#email-agent-templates)) | the email tools an assistant needs                   | Triage, read, and draft mail                             |
+| **Odoo agents** ([two dozen roles](/guides/connect-odoo/#agent-templates))                         | the Odoo tools that role needs, read-only or writing | Work in a connected Odoo, scoped to one job              |
+| **[Market & News Monitor](/guides/create-market-monitor-agent/)**                                  | `pinchy_web_search`, `pinchy_web_fetch`              | Research a topic on the web and report back              |
+| **Custom Agent**                                                                                   | **nothing** — not even Memory or Create files        | Start from scratch, configure permissions manually       |
+
+A template is a starting point, not a ceiling: everything except `knowledge_search` can be turned on or off afterwards in the Permissions tab.
 
 After creating an agent, you can change its permissions at any time via the Permissions tab.
 
@@ -182,7 +208,7 @@ Pinchy does not rely on any single layer for security. Five layers work together
 2. **Allow-list enforcement** — only tools an admin explicitly enables are available to the agent
 3. **Runtime tool allow-list** — Pinchy emits an absolute `tools.allow` to OpenClaw, so built-ins Pinchy never surfaces (shell, raw file access, `cron`, gateway control, the native browser, …) are unreachable even if a plugin or future OpenClaw version would otherwise expose them
 4. **Plugin path validation** — the `pinchy-files` plugin checks every requested path against the agent's allowed directories
-5. **Symlink resolution** — paths are resolved to their real location before validation, preventing symlink-based escapes
+5. **Symlink resolution** — paths are resolved to their real location before validation, preventing symlink-based escapes. The file is then opened without following any link and checked to be the file at that location, so a link swapped in after the check is refused rather than followed
 
 If any one layer fails, the others still prevent unauthorized access.
 
@@ -190,9 +216,11 @@ If any one layer fails, the others still prevent unauthorized access.
 
 Not every user can see every agent. Pinchy enforces access rules:
 
-- **Admins** can access all agents — personal and shared
-- **Users** can access shared agents (created by anyone) and their own personal agent
-- Users **cannot** see or access other users' personal agents
+- **Admins** can access every shared agent, of any visibility, plus their own personal agent
+- **Users** can access shared agents their visibility admits them to, plus their own personal agent — unless an admin has turned members' personal agents off under [Member access](/guides/cost-governance/#member-access). Then the owner's own requests for it answer `403` with `code: "personal_agent_disabled"`: it's their agent, so "not found" would be false
+- **Nobody** can see or access another user's personal agent — admins included. It is absent from the sidebar, and its ID answers "not found" on every `/api/agents/:id/` endpoint, the admin-only management ones included: reindexing an agent's knowledge base, setting its integration permissions, connecting a Telegram bot to it
+
+That holds on every surface, [automations](/concepts/agent-settings/#automations-tab) included: an admin manages those on shared agents, not on a colleague's private Smithers. Admin power over agents is power over the agents your organization shares, not over the assistant each person talks to.
 
 Only admins can view and modify the Permissions tab. Regular users can chat with agents they have access to, but cannot change what tools those agents use.
 
@@ -202,7 +230,7 @@ All permission changes are logged in the [audit trail](/concepts/audit-trail/). 
 
 ## The `/data/` convention
 
-All agent-accessible files live under `/data/` inside the Pinchy container. This is mounted as a Docker volume, and you can bind-mount host directories into subdirectories of `/data/`.
+All agent-accessible files live under `/data/`, at the same path in both Pinchy containers. A named Docker volume is mounted there, and you can bind-mount host directories into subdirectories of `/data/` from a `docker-compose.override.yml`.
 
 For example, if you mount your company's HR policies at `/data/hr-policies`, an agent configured to access that directory can read those documents — and nothing else.
 

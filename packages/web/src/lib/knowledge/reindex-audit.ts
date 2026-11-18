@@ -1,0 +1,150 @@
+/**
+ * Builds (but never sends) `knowledge.reindex` audit entries.
+ *
+ * Shared by the two halves of an async reindex — the route that takes the
+ * request and the worker that runs it hours later — so both halves cannot drift
+ * into describing the same run differently. Callers pass the result straight to
+ * deferAuditLog/appendAuditLog; the eslint pinchy/require-audit-log rule scans a
+ * handler's source text for a literal call, so the send stays inline at each
+ * call site rather than hiding behind a second indirection.
+ */
+import type { KbIndexJobTrigger } from "@/db/enums";
+import type { AuditLogEntry, EntityRef } from "@/lib/audit";
+
+import type { IngestResult } from "./types";
+
+/** The audit actorId the index worker signs its completion rows with (house pattern: actorType "system" + the job's name, cf. upload-gc). */
+export const KB_INDEX_WORKER_ACTOR = "kb-index-worker";
+
+/** The audit actorId — and the job's `requestedBy` — for a run the nightly schedule asked for. */
+export const KB_INDEX_SCHEDULER_ACTOR = "kb-index-scheduler";
+
+export interface ReindexAuditArgs {
+  /** "user" for the admin's request, "system" for the worker's outcome row. */
+  actorType: "user" | "system";
+  /** The admin's id on a request row; KB_INDEX_WORKER_ACTOR on an outcome row — the requesting admin is reachable from the request row via jobId. */
+  actorId: string;
+  agent: EntityRef;
+  outcome: "success" | "failure";
+  pathCount: number;
+  /** Correlates the request row with the outcome row. Omitted where no job exists: nothing granted, or rejected before enqueue. */
+  jobId?: string;
+  /**
+   * Who decided this run should happen: an admin (`manual`) or the nightly
+   * schedule (`scheduled`). Required, so no call site can leave the question
+   * open — `actorId` answers it only by spelling convention.
+   */
+  trigger: KbIndexJobTrigger;
+  /** The nightly sweep the run belongs to, so one night's rows correlate from one query. Scheduled runs only. */
+  sweepId?: string;
+  /** The run's findings. Omitted on a request row — it has counted nothing yet, and zeros would report an empty corpus for every reindex ever started. */
+  counts?: IngestResult;
+  /** Scrubbed failure summary. Failure rows only. */
+  reason?: string;
+  /**
+   * What this run sent to a vision model, when it sent anything.
+   *
+   * Index-time OCR is the one part of indexing that transmits document CONTENT
+   * to a third party — every other step is local — so the trail has to record
+   * it. Counts and the model, never paths: see the note on `pathCount` below,
+   * which does not weaken because this payload would be more interesting.
+   * Absent when the run OCR'd nothing, so a missing field reads as "nothing
+   * was sent", not "we did not look".
+   */
+  ocr?: { model: string; documents: number; pages: number; skippedPages: number };
+  /**
+   * How many granted folders the run had to leave out: missing, unreadable,
+   * or (nightly runs) empty while the index still held their documents. A
+   * count, never the folders — see `pathCount`. Absent when every folder was
+   * read.
+   */
+  unavailableFolders?: number;
+  /**
+   * How many files the run refused to read because their path no longer led
+   * to a regular file inside the folder — the file swapped for a symbolic link
+   * or for something that is not a file, or reached through a folder swapped
+   * for a link (verified-source.ts `SourceRefusal`). A file merely saved again
+   * since it was listed is read, not counted here. They are ALSO in
+   * `failed`; counted apart because someone with write access to a mounted
+   * folder pointing the index at a file they may not see is a security event,
+   * not a corrupt PDF. A count, never the files — see `pathCount`. Absent
+   * when nothing was refused.
+   */
+  refusedFiles?: number;
+}
+
+type ReindexDetail = Extract<AuditLogEntry, { eventType: "knowledge.reindex" }>["detail"];
+
+/**
+ * The detail, unchanged — typed so that every key it is built with must be
+ * declared on the audit type in `audit.ts`. The optional fields below are
+ * conditional spreads, and a spread escapes TypeScript's excess-property
+ * check: a key written that way reached the signed row without a declaration
+ * once. Through this, an undeclared key is a compile error.
+ */
+export function reindexDetail<T extends ReindexDetail>(
+  detail: T & Record<Exclude<keyof T, keyof ReindexDetail>, never>
+): ReindexDetail {
+  return detail;
+}
+
+export function reindexAuditEntry(args: ReindexAuditArgs): AuditLogEntry {
+  return {
+    actorType: args.actorType,
+    actorId: args.actorId,
+    eventType: "knowledge.reindex",
+    resource: `agent:${args.agent.id}`,
+    outcome: args.outcome,
+    detail: reindexDetail({
+      agent: args.agent,
+      pathCount: args.pathCount,
+      ...(args.jobId !== undefined ? { jobId: args.jobId } : {}),
+      trigger: args.trigger,
+      ...(args.sweepId !== undefined ? { sweepId: args.sweepId } : {}),
+      // Copied field by field rather than spread from `counts`: a spread would
+      // put whatever IngestResult grows into onto an HMAC-signed row, and the
+      // obvious next counter to want is a list of the paths that failed —
+      // precisely the filesystem paths this detail must never carry (AGENTS.md
+      // PII rule; see `pathCount`). Adding a counter here stays a decision.
+      ...(args.counts !== undefined
+        ? {
+            indexed: args.counts.indexed,
+            skipped: args.counts.skipped,
+            removed: args.counts.removed,
+            unsearchable: args.counts.unsearchable,
+            failed: args.counts.failed,
+            archived: args.counts.archived,
+            // A count, never the list behind it (kb_unsupported_files): a
+            // share can hold 100k such files, and their paths are exactly
+            // what this row must not carry. Absent when the run never got as
+            // far as discovery.
+            ...(args.counts.unsupported !== undefined
+              ? { unsupported: args.counts.unsupported }
+              : {}),
+            // Not documents at all (#1410) — counted apart so the row says
+            // how many files an admin actually has to look at.
+            ...(args.counts.ignored !== undefined ? { ignored: args.counts.ignored } : {}),
+          }
+        : {}),
+      // Field by field for the same reason as `counts` above: the worker's
+      // tally also carries the token counters the usage row records, and a
+      // spread would sign them onto this row too — undocumented, and
+      // unremovable once written.
+      ...(args.ocr !== undefined
+        ? {
+            ocr: {
+              model: args.ocr.model,
+              documents: args.ocr.documents,
+              pages: args.ocr.pages,
+              skippedPages: args.ocr.skippedPages,
+            },
+          }
+        : {}),
+      ...(args.unavailableFolders !== undefined
+        ? { unavailableFolders: args.unavailableFolders }
+        : {}),
+      ...(args.refusedFiles !== undefined ? { refusedFiles: args.refusedFiles } : {}),
+      ...(args.reason !== undefined ? { reason: args.reason } : {}),
+    }),
+  };
+}

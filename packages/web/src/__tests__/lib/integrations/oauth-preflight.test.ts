@@ -1,9 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { validateMicrosoftTenant } from "@/lib/integrations/oauth-preflight";
+import { resetInsecureMockWarningsForTest } from "@/lib/integrations/insecure-mock-base-url";
 
 describe("validateMicrosoftTenant", () => {
   const originalFetch = global.fetch;
   const originalBaseUrl = process.env.MICROSOFT_OAUTH_BASE_URL;
+  const originalFlag = process.env.PINCHY_INSECURE_MAIL_MOCK;
 
   beforeEach(() => {
     global.fetch = vi.fn();
@@ -16,6 +18,12 @@ describe("validateMicrosoftTenant", () => {
     } else {
       process.env.MICROSOFT_OAUTH_BASE_URL = originalBaseUrl;
     }
+    if (originalFlag === undefined) {
+      delete process.env.PINCHY_INSECURE_MAIL_MOCK;
+    } else {
+      process.env.PINCHY_INSECURE_MAIL_MOCK = originalFlag;
+    }
+    resetInsecureMockWarningsForTest();
     vi.restoreAllMocks();
   });
 
@@ -51,14 +59,30 @@ describe("validateMicrosoftTenant", () => {
     expect(result).toEqual({ ok: "unknown" });
   });
 
-  it("reads process.env.MICROSOFT_OAUTH_BASE_URL when set, using it as the fetch host", async () => {
+  it("reads process.env.MICROSOFT_OAUTH_BASE_URL when set together with the insecure flag", async () => {
     process.env.MICROSOFT_OAUTH_BASE_URL = "http://graph-mock:9005";
+    process.env.PINCHY_INSECURE_MAIL_MOCK = "1";
     vi.mocked(global.fetch).mockResolvedValueOnce({ ok: true, status: 200 } as Response);
 
     await validateMicrosoftTenant("my-tenant");
 
     expect(global.fetch).toHaveBeenCalledWith(
       "http://graph-mock:9005/my-tenant/v2.0/.well-known/openid-configuration",
+      { signal: expect.any(AbortSignal) }
+    );
+  });
+
+  it("ignores MICROSOFT_OAUTH_BASE_URL when the insecure flag is absent", async () => {
+    process.env.MICROSOFT_OAUTH_BASE_URL = "http://graph-mock:9005";
+    // No PINCHY_INSECURE_MAIL_MOCK: a stray override must not point the tenant
+    // probe — which leaks the configured tenant id — at an arbitrary host.
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.mocked(global.fetch).mockResolvedValueOnce({ ok: true, status: 200 } as Response);
+
+    await validateMicrosoftTenant("my-tenant");
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      "https://login.microsoftonline.com/my-tenant/v2.0/.well-known/openid-configuration",
       { signal: expect.any(AbortSignal) }
     );
   });

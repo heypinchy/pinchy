@@ -1,0 +1,139 @@
+import { NextResponse } from "next/server";
+import { and, eq } from "drizzle-orm";
+import { withAuth } from "@/lib/api-auth";
+import { parseRequestBody } from "@/lib/api-validation";
+import { decisionSchema } from "@/lib/schemas/approvals";
+import { resolveDecision, awaitApprovalLink } from "@/lib/approvals/service";
+import { resolvePluginApproval } from "@/server/resolve-plugin-approval";
+import { scrubEmails, type AuditLogEntry } from "@/lib/audit";
+import { deferAuditLog } from "@/lib/audit-deferred";
+import { db } from "@/db";
+import { agents, toolApproval, users } from "@/db/schema";
+import { isPersonalAgentPausedFor, PERSONAL_AGENT_DISABLED } from "@/lib/agent-access";
+
+type RouteContext = { params: Promise<{ id: string }> };
+
+/** What to tell the user when their decision did not reach the parked run.
+ * Worded for approve and deny alike: in both cases the agent was not told. */
+const NOT_DELIVERED: Record<"nothing-waiting" | "refused" | "unreachable", string> = {
+  "nothing-waiting":
+    "The agent is no longer waiting for this decision. Ask it to try the action again.",
+  refused: "OpenClaw would not accept this decision, so the agent has not been told.",
+  unreachable: "Pinchy could not reach OpenClaw, so the agent has not been told.",
+};
+
+/**
+ * The acting user approves or denies their own pending confirmation (Tier 2
+ * self-confirm — enforced by `selfConfirmOnly`).
+ *
+ * Two things have to happen, in this order. The row is flipped first, so a
+ * failure between them leaves a decision on record and a tool that did NOT run
+ * — the safe direction. Then the decision is handed to the call OpenClaw parked
+ * for it: `pinchy-approvals` answers with `requireApproval`, which suspends the
+ * call inside OpenClaw's hook, and only `plugin.approval.resolve` ends that
+ * wait. Flipping the row alone leaves the run parked until its 600 s cap.
+ */
+export const POST = withAuth<RouteContext>(async (request, { params }, session) => {
+  const { id } = await params;
+
+  const parsed = await parseRequestBody(decisionSchema, request);
+  if ("error" in parsed) return parsed.error;
+  const { decision, reason } = parsed.data;
+
+  // An approval resumes the parked run. On the caller's own personal agent
+  // while members may not use one, that is a run on an agent the admin
+  // switched off — refused, like every other door. A denial goes through:
+  // stopping is never what the policy is against. Scoped to the caller's own
+  // request, so a stranger's id still gets resolveDecision's answer.
+  if (decision === "approve") {
+    const [pending] = await db
+      .select({ isPersonal: agents.isPersonal })
+      .from(toolApproval)
+      .innerJoin(agents, eq(agents.id, toolApproval.agentId))
+      .where(and(eq(toolApproval.id, id), eq(toolApproval.requesterId, session.user.id!)))
+      .limit(1);
+    if (pending && (await isPersonalAgentPausedFor(pending, session.user.role))) {
+      return NextResponse.json(PERSONAL_AGENT_DISABLED, { status: 403 });
+    }
+  }
+
+  const res = await resolveDecision({
+    id,
+    approverId: session.user.id!,
+    decision,
+    reason,
+    selfConfirmOnly: true,
+  });
+  if (!res.ok) {
+    const status = res.reason === "not_found" ? 404 : res.reason === "forbidden" ? 403 : 409;
+    return NextResponse.json({ error: res.reason }, { status });
+  }
+  const req = res.request;
+
+  const [agent] = await db
+    .select({ name: agents.name })
+    .from(agents)
+    .where(eq(agents.id, req.agentId))
+    .limit(1);
+  const [requester] = await db
+    .select({ name: users.name })
+    .from(users)
+    .where(eq(users.id, req.requesterId))
+    .limit(1);
+
+  // A decision made in a confirmation's first moments arrives before the
+  // broadcast that names the parked call: `approval.requested` is written from
+  // inside gate-check, so the card is actionable a full `plugin.approval.request`
+  // round trip before Pinchy learns OpenClaw's id. Reading the row once and
+  // reporting "nothing is waiting" there tells the user their approval did not
+  // take when the run is in fact still parked.
+  const approvalId = req.openclawApprovalId ?? (await awaitApprovalLink(req.id));
+
+  const resumed = await resolvePluginApproval({ approvalId, decision });
+
+  const entry: AuditLogEntry = {
+    actorType: "user",
+    actorId: session.user.id!,
+    eventType: decision === "approve" ? "approval.granted" : "approval.denied",
+    resource: `approval:${id}`,
+    detail: {
+      request: { id },
+      agent: { id: req.agentId, name: agent?.name ?? null },
+      // Names only, never a users.id: `detail` is immutable, so an id here is
+      // out of reach of crypto-erasure (#824). The approver is this row's actor.
+      requester: { name: requester?.name ?? null },
+      approver: { name: session.user.name ?? null },
+      toolName: req.toolName,
+      argsDigest: req.argsDigest,
+      // Free text the person typed: an address in it would be just as
+      // permanent as an id.
+      ...(reason ? { reason: scrubEmails(reason) } : {}),
+      // A decision the parked run never received changed nothing the user can
+      // see, so the row has to say which of the two happened.
+      resumed: resumed.delivered,
+      ...(resumed.delivered
+        ? {}
+        : {
+            resumeReason: resumed.reason,
+            ...(resumed.detail ? { resumeDetail: resumed.detail } : {}),
+          }),
+    },
+    outcome: resumed.delivered ? "success" : "failure",
+  };
+  // Deferred, not awaited: the decision above is already persisted and not
+  // rollbackable, so a 500 here would only mislead (a retry then 409s with
+  // not_pending). deferAuditLog records a write failure as a structured
+  // signal instead (AGENTS.md §"Audit logging rules").
+  deferAuditLog(entry);
+
+  // 200 even when the resume failed: the decision itself IS persisted, so a
+  // retry would only 409 `not_pending`. `resumed: false` is what the UI turns
+  // into a warning — reporting a bare `ok` here is exactly the false success
+  // this route exists to avoid.
+  return NextResponse.json({
+    ok: true,
+    status: req.status,
+    resumed: resumed.delivered,
+    ...(resumed.delivered ? {} : { resumeError: NOT_DELIVERED[resumed.reason] }),
+  });
+});

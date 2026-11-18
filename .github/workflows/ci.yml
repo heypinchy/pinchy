@@ -1,28 +1,33 @@
 name: CI
 
+# NOTE: deliberately NO `paths-ignore:` here. This workflow hosts main's
+# required status checks, and a workflow that never starts never reports a
+# status — so a docs-only PR would sit forever on "Expected — Waiting for status
+# to be reported", unmergeable with nothing actually broken. The same path
+# filter now lives at the JOB level: the `changes` job below works out whether
+# real code changed, and every expensive job is gated on it. The required checks
+# themselves are never gated, so they always report.
 on:
   push:
-    branches: [main]
-    paths-ignore:
-      - "docs/**"
-      - "**/*.md"
-      - ".github/ISSUE_TEMPLATE/**"
-      - "PERSONALITY.md"
-      - "sample-data/**"
-      - "screenshots/**"
+    branches: [main, "release/**"]
   pull_request:
-    branches: [main]
-    paths-ignore:
-      - "docs/**"
-      - "**/*.md"
-      - ".github/ISSUE_TEMPLATE/**"
-      - "PERSONALITY.md"
-      - "sample-data/**"
-      - "screenshots/**"
+    branches: [main, "release/**"]
+  # Merge queue. GitHub tests each queued PR on a `gh-readonly-queue/main/...`
+  # merge ref (main + the PR, and speculatively + the entries ahead of it), so
+  # the required checks run against the exact post-merge state. This is what lets
+  # us drop "Require branches to be up to date" from branch protection: the queue
+  # provides the same freshness guarantee without every PR author hand-rebasing
+  # and burning a full CI run each time. Without this trigger the workflow never
+  # starts for a queued PR and the required checks never report — the queue would
+  # hang forever. The `changes` job below deliberately answers code=false for
+  # merge_group, so only the required checks (which are ungated) run on the merge
+  # ref; the heavy Docker/E2E matrix already ran on the PR and, being non-required,
+  # would not gate the queue anyway — it still runs post-merge on the main push.
+  merge_group:
   # Manual trigger: lets a maintainer re-run the full CI (incl. osv-scan) on a
-  # ref on demand. Needed because docs-only / *.md changes are paths-ignored
-  # above, so a docs-lockfile security bump (osv-scan reads docs/pnpm-lock.yaml)
-  # cannot otherwise produce a fresh green run on main to clear a stale red one.
+  # ref on demand — e.g. to clear a stale red main after a docs-lockfile
+  # security bump (osv-scan reads docs/pnpm-lock.yaml), which the `changes`
+  # gate classifies as docs-only.
   workflow_dispatch:
 
 # Cancel in-progress runs on the same PR/branch when a new commit is pushed.
@@ -32,19 +37,114 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  build-image:
-    name: Build Pinchy + OpenClaw images
+  # Replaces the workflow-level `paths-ignore` this file used to carry (see the
+  # note above `on:`). Every expensive job gates on `code`; the required checks
+  # (quality, vitest-integration, e2e) deliberately do NOT, so they report on
+  # every PR instead of relying on GitHub's "a skipped job counts as success"
+  # behaviour for the one thing protecting main.
+  #
+  # Decision logic + the drift guards keeping this wiring honest live in
+  # scripts/lib/ci-path-filter.mjs and its test (run by `pnpm test:scripts`).
+  changes:
+    name: Detect changed paths
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Enough history for a merge-base against the target branch. The
+          # filter falls back to "run everything" if a base can't be resolved,
+          # so a too-shallow clone costs CI minutes, never coverage.
+          fetch-depth: 0
+
+      - id: filter
+        # Every github.* value reaches the script through env, never through
+        # `${{ }}` interpolation into the shell — event_name is a closed enum and
+        # harmless, but a half-interpolated script invites the next edit to add a
+        # branch name or PR title, which are attacker-controlled.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT_NAME" = "merge_group" ]; then
+            # In the merge queue, only the required checks (quality,
+            # vitest-integration, e2e) need to run on the merge ref — they are
+            # ungated and run regardless of this output. The heavy Docker/E2E
+            # matrix is gated on code, and we skip it here on purpose: it already
+            # ran on the PR, and being non-required it would not gate the queue
+            # anyway, so re-running it (×5 with speculative entries) would only
+            # burn minutes and slow the queue. It still runs post-merge on the
+            # main push. Hence code=false — "the gated matrix need not run".
+            echo "Merge queue — required checks only, skipping the gated matrix."
+            echo "code=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            BASE="origin/$BASE_REF"
+          elif [ "$EVENT_NAME" = "push" ]; then
+            BASE="$BEFORE"
+          else
+            # workflow_dispatch: an explicit manual run always means "run it all".
+            echo "Manual run — full matrix."
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # An unresolvable base (first push to a branch, force push, grafted
+          # history) yields an empty diff, which the filter reads as "unknown"
+          # and answers with the full matrix.
+          if ! git rev-parse --verify --quiet "$BASE^{commit}" >/dev/null; then
+            echo "Base '$BASE' not resolvable — full matrix."
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git diff --name-only "$BASE...HEAD" | node scripts/detect-code-changes.mjs
+
+  # The two images are built by a MATRIX (one runner each), not as two steps of
+  # one job. They are genuinely independent — both start `FROM
+  # mirror.gcr.io/library/node:22-slim` and neither `COPY --from`s the other —
+  # and building them serially put their two ~10 min builds end-to-end on the
+  # critical path of all 11 downstream Docker/E2E jobs (measured: 20m06 on a
+  # cold cache, run 29559529435). Two runners build them in true parallel, which
+  # halves that. `docker buildx bake` in a single job would NOT: both targets
+  # would then contend for one runner's cores.
+  #
+  # This job deliberately has no `outputs`. A matrix job cannot express
+  # per-entry outputs, and it doesn't need to: the image tags are a pure
+  # function of github.sha, so the `build-image` fan-in below recomputes them.
+  build-images:
+    name: Build ${{ matrix.name }} image
+    needs: changes
+    runs-on: ubuntu-latest
+    # Max observed 20m (pinchy image, 8 green main runs). Image builds are
+    # dominated by registry and buildx-cache variance rather than by work
+    # done, so this one gets absolute headroom rather than a tight ratio.
+    timeout-minutes: 45
     permissions:
       contents: read
       packages: write
     # Skip on fork PRs: GITHUB_TOKEN is read-only for forks and cannot push
     # to GHCR. Non-PR pushes (main) and same-repo PRs always run.
     # Downstream jobs fall back to per-job local build when this is skipped.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork != true
-    outputs:
-      pinchy-image: ${{ steps.tags.outputs.pinchy }}
-      openclaw-image: ${{ steps.tags.outputs.openclaw }}
+    if: >-
+      needs.changes.outputs.code == 'true' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork != true)
+    strategy:
+      # Report both failures, not just the first: a broken Dockerfile.pinchy
+      # shouldn't hide an independent break in Dockerfile.openclaw.
+      fail-fast: false
+      matrix:
+        include:
+          - name: Pinchy
+            file: Dockerfile.pinchy
+            tag: ghcr.io/heypinchy/pinchy-ci
+            scope: pinchy
+          - name: OpenClaw
+            file: Dockerfile.openclaw
+            tag: ghcr.io/heypinchy/pinchy-openclaw-ci
+            scope: openclaw
     steps:
       - uses: actions/checkout@v7
 
@@ -56,54 +156,221 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Build & push ${{ matrix.name }} image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.file }}
+          push: true
+          tags: ${{ matrix.tag }}:sha-${{ github.sha }}
+          # Read main's cache; write it only FROM main. The previous per-branch
+          # `scope=<img>-${{ github.ref_name }}` wrote a full mode=max layer set
+          # per branch, and type=gha shares ONE 10 GB per-repo budget — so two
+          # images × every active branch evicted each other constantly. That is
+          # the measured 3× spread: 6m27 warm vs 20m06 cold on the same
+          # Dockerfiles. Two stable scopes stay far under the cap, so a PR now
+          # reliably starts warm from main.
+          #
+          # The trade, stated honestly: a PR's 2nd push no longer reuses its own
+          # 1st push's layers. For the common PR that only touches app source
+          # that is free — the changed layers would rebuild anyway — and it even
+          # saves the ~30-60 s cache EXPORT on every PR build. It is NOT free for
+          # a PR that touches a lockfile or an early Dockerfile layer: such a PR
+          # re-pays the full dependency install on EVERY push, where before only
+          # the first push paid it. That is the price of not having the two
+          # images evict each other, which cost every PR 3× (6m27 warm vs 20m06
+          # cold). If it starts to hurt, the fix is `type=registry` on GHCR (no
+          # 10 GB cap), NOT per-branch gha scopes.
+          cache-from: type=gha,scope=${{ matrix.scope }}-main
+          cache-to: ${{ github.ref_name == 'main' && format('type=gha,mode=max,scope={0}-main', matrix.scope) || '' }}
+
+  # Fan-in. Exists so the 11 downstream jobs keep depending on ONE job with the
+  # exact contract they already encode — `needs.build-image.result` plus
+  # `.outputs.{pinchy,openclaw}-image` — instead of every one of them growing a
+  # two-job `needs:` and a doubled result check. Its `if:` mirrors build-images'
+  # verbatim, which is what preserves the three downstream states:
+  #
+  #   built      → both matrix entries succeeded → this succeeds → jobs pull.
+  #   skipped    → fork PR / docs-only → condition false → this is `skipped`
+  #                → jobs take their local-build fallback, as before.
+  #   failed     → `always()` still runs this, the guard step below fails it
+  #                → downstream `if:` is false → jobs are skipped, as before.
+  #
+  # Without the `!cancelled()` escape hatch a failed build would leave this
+  # `skipped`, and every downstream job would silently local-build a Dockerfile
+  # CI just proved broken.
+  #
+  # `!cancelled()`, NOT `always()`: `always()` also runs when the RUN was
+  # cancelled, and `cancel-in-progress` (above) cancels every superseded PR
+  # push. This job would then run against a cancelled `build-images`, its guard
+  # would read 'cancelled' != 'success', and a merely-superseded run would report
+  # a red "Build Pinchy + OpenClaw images" with an error annotation — routine red
+  # noise on every rapid second push. `!cancelled()` only inspects THIS run's
+  # cancellation, so the failure case above still runs the guard.
+  build-image:
+    name: Build Pinchy + OpenClaw images
+    needs: [changes, build-images]
+    if: >-
+      !cancelled() &&
+      needs.changes.outputs.code == 'true' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork != true)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      pinchy-image: ${{ steps.tags.outputs.pinchy }}
+      openclaw-image: ${{ steps.tags.outputs.openclaw }}
+    steps:
+      # A matrix `result` is aggregated: 'success' only when EVERY entry
+      # succeeded. Anything else must fail this job, not be waved through.
+      - name: Fail if either image build failed
+        if: needs.build-images.result != 'success'
+        run: |
+          echo "::error::image build did not succeed (build-images result: ${{ needs.build-images.result }})"
+          exit 1
+
+      # Recomputed, not passed through — a matrix job cannot express per-entry
+      # outputs. That leaves two copies of the same expression, so
+      # scripts/lib/ci-image-tags.test.mjs (`pnpm test:scripts`) pins them
+      # together: without it, a tag edited on one side only would have every
+      # downstream job pull an image nobody pushed.
       - id: tags
         run: |
           echo "pinchy=ghcr.io/heypinchy/pinchy-ci:sha-${{ github.sha }}" >> $GITHUB_OUTPUT
           echo "openclaw=ghcr.io/heypinchy/pinchy-openclaw-ci:sha-${{ github.sha }}" >> $GITHUB_OUTPUT
 
-      - name: Build & push Pinchy image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: Dockerfile.pinchy
-          push: true
-          tags: ${{ steps.tags.outputs.pinchy }}
-          cache-from: |
-            type=gha,scope=pinchy-${{ github.ref_name }}
-            type=gha,scope=pinchy-main
-          cache-to: type=gha,mode=max,scope=pinchy-${{ github.ref_name }}
-
-      - name: Build & push OpenClaw image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: Dockerfile.openclaw
-          push: true
-          tags: ${{ steps.tags.outputs.openclaw }}
-          cache-from: |
-            type=gha,scope=openclaw-${{ github.ref_name }}
-            type=gha,scope=openclaw-main
-          cache-to: type=gha,mode=max,scope=openclaw-${{ github.ref_name }}
-
   quality:
     name: Lint, Test & Build
     runs-on: ubuntu-latest
+    timeout-minutes: 35
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The released-upgrade-section guard
+          # (scripts/lib/upgrading-released-sections.test.mjs, run by
+          # `pnpm test:scripts`) compares every frozen section of upgrading.mdx
+          # against `git show v<tag>:…`. Without the tags it can compare nothing
+          # and skips every section with a ::warning:: — green, guarding nothing.
+          # Depth 1 stays: a tag fetched shallow still carries its own tree,
+          # which is all `git show <tag>:<path>` reads.
+          fetch-tags: true
 
       - uses: ./.github/actions/setup-pnpm
 
       - name: Lint
         run: pnpm --filter @pinchy/web lint
 
-      - name: Format check (web)
-        run: pnpm --filter @pinchy/web format:check
+      # Whole-tree, from the repo root — NOT a glob list, and NOT scoped to one
+      # package. Both of those are how `scripts/`, `config/` and every plugin sat
+      # outside the format gate unnoticed: the check said "Format check" and only
+      # ever read packages/web. A path this job cannot see is a path no one
+      # formats. `quality` is ungated (it is required), so this runs on every PR,
+      # including docs-only ones — which is why the old dedicated
+      # `docs-format.yml` workflow is gone rather than duplicated here.
+      # See agent-rules/tooling.md § "One Format Gate, Whole-Tree, From The Root".
+      - name: Format check (repo)
+        run: pnpm format:check
 
-      # Docs & workflow formatting is checked by the dedicated `docs-format.yml`
-      # workflow, which (unlike this one) is NOT paths-ignored for docs, so it
-      # runs on the docs PRs it guards instead of only firing as collateral
-      # here on unrelated code changes.
+      # The one thing in this repo that CI could not read: its own workflow
+      # files. Two bugs shipped straight through that gap.
+      #
+      # PR #1063 landed a ci.yml GitHub could not parse. Nothing failed —
+      # the required checks reported "Expected — Waiting for status" instead,
+      # which is the unmergeable-with-nothing-broken shape agent-rules/ci.md
+      # already documents twice (§ "CI Path Filtering Is Job-Level" and § "Never Put
+      # A Required Check In A Matrix"), arriving here from a third direction.
+      #
+      # And release.yml / pre-release.yml both passed `config-inline:` to
+      # docker/setup-buildx-action, an input renamed to
+      # `buildkitd-config-inline` back in v3. An unknown `with:` key is
+      # handed to the action as an INPUT_* env var it never reads, so the
+      # buildkit registry-mirror config was dead from those workflows' first
+      # commit until 2026-08-05 — a green step whose only trace was one
+      # `##[warning]Unexpected input(s)` line buried in the step log.
+      #
+      # Neither is a YAML error nor a shell error. Both are *schema* errors,
+      # and actionlint is the only checker here that reads the schema.
+      #
+      # It lives in `quality` because `quality` is ungated (it is required),
+      # so this runs on every PR. A gated job would skip on a docs-only PR —
+      # and `.github/**` is not docs, so that is precisely a PR that can
+      # break a workflow. Same argument as the docs checks below.
+      #
+      # Pinned by version AND sha256 on purpose: this fetches an executable
+      # into a job holding a GHCR-write token, so an unpinned download would
+      # be a supply-chain hole. Bump the two together; a stale checksum fails
+      # loudly at the verify step rather than silently skipping the lint.
+      # Nothing proposes that bump — dependabot's github-actions ecosystem
+      # reads `uses:`, not a curl'd tarball — so it is a manual bump, and the
+      # coverage step below is what tells you when one is overdue.
+      #
+      # `--retry` because this gates every merge: a transient GitHub Releases
+      # blip must not turn a REQUIRED check red with nothing broken.
+      #
+      # BOTH external-linter integrations are off (`-shellcheck=`,
+      # `-pyflakes=`), and that is a design decision rather than a deferred
+      # cleanup — do not "finish the job" by switching either on without also
+      # pinning the tool. actionlint is pinned above, so it can only change
+      # its verdict when somebody edits this file. shellcheck and pyflakes are
+      # NOT: actionlint shells out to whatever the `ubuntu-latest` image
+      # happens to ship, so a runner-image bump that adds one rule turns main
+      # red with no commit behind it. agent-rules/docs.md makes exactly this call for
+      # the docs-freshness sweep ("a check that can go red between two
+      # identical commits does not belong in front of a merge button"), and it
+      # applies with more force here, because this check gates every merge.
+      # (`-pyflakes` is inert today — no workflow uses `shell: python` — which
+      # is precisely why it would have stayed on its default unnoticed.)
+      #
+      # The cost is real and worth naming: 15 shellcheck findings in `run:`
+      # blocks go unreported, most of them deliberate word-splitting, one of
+      # them a malformed `disable=` directive that silently suppresses
+      # nothing (ci.yml's Squawk step). `actionlint` with no flags, run
+      # locally, still reports all of them — that is the intended place for
+      # them. What this gate owns is workflow *schema*, which nothing else
+      # in this repo reads at all.
+      - name: Lint GitHub Actions workflows (actionlint)
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          # No --retry-delay: it disables curl's exponential backoff, which is
+          # what made the GGUF download give up after 25 s against an HF 429
+          # (Dockerfile.openclaw carries the long version, including what the
+          # flag does NOT do). Lower stakes here — a 2 MB asset from GitHub
+          # releases — but the same wrong flag. --retry-max-time caps when a
+          # retry may still start, not the total.
+          curl -sSfL --retry 5 --retry-all-errors --retry-max-time 120 \
+            -o actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  actionlint.tar.gz" | sha256sum --check --strict
+          tar -xzf actionlint.tar.gz actionlint
+          cd "$GITHUB_WORKSPACE"
+          "$RUNNER_TEMP/actionlint" -color -shellcheck= -pyflakes=
+
+      # The step above only validates a `with:` key for action versions
+      # actionlint has a bundled schema for. For anything else it reports
+      # NOTHING — and silence is indistinguishable from clean. Measured with
+      # the pinned 1.7.12:
+      #
+      #   docker/setup-buildx-action@v4 + `config-inline:` -> exit 1, named
+      #   docker/setup-buildx-action@v5 + `config-inline:` -> exit 0, silent
+      #
+      # `config-inline` is the exact bug the step above was added for, so its
+      # protection would expire at the next major bump of the very action it
+      # protects — and dependabot proposes those weekly, grouped under
+      # `patterns: ["*"]`. A major bump is also when an input gets renamed.
+      # There is no flag for it: actionlint cannot be told to error on an
+      # action it does not know. So coverage gets measured instead of assumed,
+      # and an unchecked action must be accepted with a written reason.
+      #
+      # ACTIONLINT_BIN points at the binary verified above rather than at
+      # PATH, so this reports on the version CI actually runs.
+      - name: Check actionlint input coverage
+        env:
+          ACTIONLINT_BIN: ${{ runner.temp }}/actionlint
+        run: node scripts/check-actionlint-coverage.mjs
 
       - name: Typecheck plugins
         # The pinchy-* plugins run via tsx with no ahead-of-time type checking
@@ -140,8 +407,42 @@ jobs:
       - name: Docs lint (no indented tables)
         run: cd docs && pnpm install --frozen-lockfile && pnpm check:tables
 
+      - name: Docs script tests
+        # The two dist/ checkers below are only as good as their own logic, and
+        # a checker rewritten to find nothing passes against a healthy dist/.
+        # These unit tests are what would notice — and they ran nowhere but on a
+        # developer's laptop until #1007. They read their own fixtures, so they
+        # need no build; keeping them ahead of it fails fast.
+        run: cd docs && pnpm test
+
       - name: Docs build
         run: cd docs && pnpm build
+
+      - name: Docs anchor check (built output)
+        # The only thing checking in-page anchors inside docs/ (#769). It reads
+        # docs/dist/, so it MUST follow the build step. It lives here, in the
+        # ungated `quality` job, rather than in a job of its own: a docs check
+        # gated on `changes` would skip on exactly the docs-only PRs it guards —
+        # see agent-rules/ci.md § "CI Path Filtering Is Job-Level, Never Workflow-Level".
+        run: cd docs && pnpm check:anchors
+
+      - name: Docs rendered-table check (built output)
+        # Also reads docs/dist/, same ordering rule. Catches the class of bug
+        # where a page builds and links fine but ships markdown as text.
+        run: cd docs && pnpm check:rendered
+
+      - name: Docs llms.txt check (built output)
+        # llms.txt / llms-full.txt are what AI crawlers read, and the build
+        # generates them from the source pages (#1080). This asserts the
+        # generated index and the built site still describe the same set of
+        # pages — in both directions. Reads docs/dist/, so same ordering rule.
+        run: cd docs && pnpm check:llms
+
+      - name: Docs Mermaid diagram check (built output)
+        # A ```mermaid block must ship as a diagram, not as its own source in a
+        # code block — which is what the astro 7 upgrade first produced, with
+        # every other check green (#851). Reads docs/dist/, same ordering rule.
+        run: cd docs && pnpm check:diagrams
 
       - name: Squawk migration lint (changed files only)
         if: github.event_name == 'pull_request'
@@ -176,7 +477,7 @@ jobs:
           # Fail if the PR removes test cases on net — deleted test files or
           # removed it()/test() blocks — without an explicit, tracked override.
           # Closes the gap left by no-untracked-skips (which only catches
-          # .skip/.todo). See AGENTS.md § "No Untracked Test Removal".
+          # .skip/.todo). See agent-rules/testing.md § "No Untracked Test Removal".
           #
           # Fetch base + deepen HEAD so a merge-base resolves (correct PR-diff
           # semantics). The guard falls back to a tip-to-tip diff if it can't,
@@ -186,6 +487,23 @@ jobs:
           git fetch --no-tags --deepen=200 origin || true
           git fetch --no-tags --depth=200 origin "$PR_HEAD_SHA" || true
           node scripts/check-test-deletions.mjs --base "origin/${{ github.base_ref }}"
+
+      - name: Docs required for a user-visible change
+        if: github.event_name == 'pull_request'
+        env:
+          DOCS_NOT_NEEDED: ${{ contains(github.event.pull_request.labels.*.name, 'docs-not-needed') }}
+        run: |
+          # Fail if the PR moves a user-visible surface (an API route, the tool
+          # registry, an agent template, the audit event catalogue, the settings
+          # navigation, a plugin's declared tools) without touching docs/.
+          # The docs-coverage guard catches a drifted LIST; this catches prose
+          # that quietly became untrue. See agent-rules/docs.md § "A User-Visible Change
+          # Needs A Docs Change".
+          #
+          # The fetches above already deepened base and HEAD for the
+          # test-deletion guard, and this guard has the same merge-base
+          # fallback, so no extra fetching is needed here.
+          node scripts/check-docs-required.mjs --base "origin/${{ github.base_ref }}"
 
       - name: Drizzle snapshot integrity
         # Catches the PR #334 class of bug: a committed migration .sql whose
@@ -210,7 +528,19 @@ jobs:
         run: pnpm test
 
       - name: Test (root scripts)
-        run: pnpm test:scripts
+        env:
+          # The `allow-upgrade-note-edit` PR label is the visible override for a
+          # genuine correction to an already-released upgrade-notes section.
+          ALLOW_UPGRADE_NOTE_EDIT: ${{ contains(github.event.pull_request.labels.*.name, 'allow-upgrade-note-edit') }}
+          # …and the trailer is the other route. actions/checkout leaves HEAD as
+          # a shallow merge commit whose feature-side parent is a graft, so the
+          # trailer is only reachable through the PR head sha's own history.
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ -n "$PR_HEAD_SHA" ]; then
+            git fetch --no-tags --depth=200 origin "$PR_HEAD_SHA" || true
+          fi
+          pnpm test:scripts
 
       - name: Test (plugins)
         # The plugin test FILES already run inside `pnpm test` via the
@@ -239,7 +569,10 @@ jobs:
 
   license-keypair:
     name: Verify License Keypair
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 
@@ -250,26 +583,49 @@ jobs:
       - name: Verify private key matches public key
         env:
           PINCHY_LICENSE_PRIVATE_KEY: ${{ secrets.PINCHY_LICENSE_PRIVATE_KEY }}
+          # "true" on a fork PR, "false" on a same-repo PR, empty on push and
+          # merge_group. Only the first case legitimately has no secrets.
+          FORK_PR: ${{ github.event.pull_request.head.repo.fork }}
         run: |
+          # A fork PR carries no secrets by design, so "cannot verify here" must
+          # not read as a red check on every outside contribution. Anywhere else
+          # the secret is supposed to be present, and its absence means this
+          # check has been silently switched off — which is the one outcome a
+          # security check may never report as green. Skip on a fork, fail
+          # otherwise.
+          if [ -z "$PINCHY_LICENSE_PRIVATE_KEY" ]; then
+            if [ "$FORK_PR" = "true" ]; then
+              echo "::notice::Fork PR carries no secrets — keypair verification cannot run here."
+              exit 0
+            fi
+            echo "::error::PINCHY_LICENSE_PRIVATE_KEY is unset on a run that should have it (event=${GITHUB_EVENT_NAME}). The keypair check cannot verify anything; restore the repository secret rather than letting this pass."
+            exit 1
+          fi
           npm install jose
           node -e "
             const jose = require('jose');
             const fs = require('fs');
-            const src = fs.readFileSync('packages/web/src/lib/enterprise.ts', 'utf8');
-            const pubMatch = src.match(/-----BEGIN PUBLIC KEY-----[\s\S]+?-----END PUBLIC KEY-----/);
-            if (!pubMatch) { console.error('❌ Public key not found in enterprise.ts'); process.exit(1); }
+            const src = fs.readFileSync('packages/web/src/lib/license-keys.ts', 'utf8');
+            // Anchor on the PRODUCTION const: the file also carries the
+            // development public key, and a first-match regex would happily
+            // verify against the wrong one if the declarations were reordered.
+            const idx = src.indexOf('PRODUCTION_PUBLIC_KEY');
+            if (idx === -1) { console.error('❌ PRODUCTION_PUBLIC_KEY not found in license-keys.ts'); process.exit(1); }
+            const pubMatch = src.slice(idx).match(/-----BEGIN PUBLIC KEY-----[\s\S]+?-----END PUBLIC KEY-----/);
+            if (!pubMatch) { console.error('❌ Public key PEM not found after PRODUCTION_PUBLIC_KEY in license-keys.ts'); process.exit(1); }
             (async () => {
               const priv = await jose.importPKCS8(process.env.PINCHY_LICENSE_PRIVATE_KEY, 'ES256');
               const pub = await jose.importSPKI(pubMatch[0], 'ES256');
               const jwt = await new jose.SignJWT({test: true}).setProtectedHeader({alg: 'ES256'}).sign(priv);
               await jose.jwtVerify(jwt, pub);
-              console.log('✅ Keypair verified: private key matches public key in enterprise.ts');
+              console.log('✅ Keypair verified: private key matches PRODUCTION_PUBLIC_KEY in license-keys.ts');
             })();
           "
 
   vitest-integration:
     name: Vitest Integration Tests (real DB)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     # Real-DB unit-style tests (#229). Distinct from `e2e` (full Playwright
     # browser stack) and `integration` (OpenClaw + fake Ollama via
@@ -278,10 +634,13 @@ jobs:
     services:
       postgres:
         # Pulled from mirror.gcr.io to bypass docker.io's rate limit (same
-        # pattern as the e2e job above). Pinned to 17 so the test DB matches
-        # docker-compose.yml's `db` service — drift would risk masking
-        # version-specific bugs (parser, planner, locking).
-        image: mirror.gcr.io/library/postgres:17
+        # pattern as the e2e job above). Pinned to the same
+        # pgvector/pgvector:pg17-trixie tag as docker-compose.yml's `db`
+        # service (see its comment for why `-trixie` specifically); drift
+        # would risk masking version-specific bugs (parser, planner,
+        # locking) or, since 0049_enable_pgvector.sql, failing outright on
+        # `CREATE EXTENSION vector`.
+        image: mirror.gcr.io/pgvector/pgvector:pg17-trixie
         env:
           POSTGRES_DB: pinchy
           POSTGRES_USER: pinchy
@@ -307,6 +666,11 @@ jobs:
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
+    # ≥2× the slowest green run: up to 16.8 min on 2026-11-05 before the
+    # accessibility sweep (e2e/23-accessibility.spec.ts) joined; its first
+    # green run with the sweep took 9.6 min (run 42106485600). Room for the
+    # slow end of that spread plus the sweep, doubled.
+    timeout-minutes: 40
 
     services:
       postgres:
@@ -317,10 +681,13 @@ jobs:
         # avoid docker.io is to point the image reference at the mirror
         # directly. mirror.gcr.io is anonymous, so no credentials are needed.
         #
-        # Version pinned to 17 to match docker-compose.yml's `db` service.
-        # Drift between CI's test DB and production's DB risks masking
-        # version-specific bugs (different parser, planner, locking).
-        image: mirror.gcr.io/library/postgres:17
+        # Pinned to the same pgvector/pgvector:pg17-trixie tag as
+        # docker-compose.yml's `db` service (see its comment for why
+        # `-trixie` specifically). Drift between CI's test DB and
+        # production's DB risks masking version-specific bugs (different
+        # parser, planner, locking) or failing outright on the
+        # `CREATE EXTENSION vector` migration (0049_enable_pgvector.sql).
+        image: mirror.gcr.io/pgvector/pgvector:pg17-trixie
         env:
           POSTGRES_DB: pinchy
           POSTGRES_USER: pinchy
@@ -345,15 +712,52 @@ jobs:
         env:
           CI: true
 
+      # Unlike the suite-specific E2E jobs below (odoo-e2e, web-e2e, etc.),
+      # this job runs Playwright's own `webServer` (`node --import tsx
+      # server.ts`) directly against the bare `postgres` service container
+      # above — there is no docker-compose stack, no separate pinchy/openclaw
+      # containers, and no mock service. The docker-compose-oriented
+      # `capture-e2e-diagnostics` composite action has nothing to capture
+      # here, so upload Playwright's own `test-results/` (traces from
+      # `trace: retain-on-failure` and screenshots from
+      # `screenshot: only-on-failure` in playwright.config.ts) directly
+      # instead of forcing it through that action.
+      - name: Upload Playwright diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          # Include run_attempt so a re-run uploads a fresh artifact instead
+          # of colliding with the previous attempt's bundle (same convention
+          # as capture-e2e-diagnostics's artifact-name).
+          name: e2e-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: packages/web/test-results/
+          # `warn`, not the composite action's `ignore`. There, e2e-artifacts/
+          # is always created, so `ignore` only ever suppresses a missing
+          # test-results/. Here test-results/ is the ONLY path: if globalSetup
+          # or the webServer dies before a single test runs, `ignore` makes the
+          # step succeed and upload nothing, with no line in the log saying so
+          # — a maintainer then hunts for an artifact that was never there.
+          # `warn` turns that absence into a stated fact and still doesn't fail
+          # the step (the job is already red; the artifact is not the verdict).
+          if-no-files-found: warn
+          retention-days: 14
+
   docker-smoke:
     name: Docker smoke test
-    needs: build-image
-    # Run even when build-image is skipped (fork PRs) or on push events
+    needs: [changes, build-image]
+    # Run even when build-image is skipped: on fork PRs that's by design and we
+    # fall back to a local build below. But build-image is ALSO skipped on a
+    # docs-only PR — where we must not build anything at all — so the changes
+    # gate has to be explicit rather than inferred from build-image's result.
     if: >-
       always() &&
+      needs.changes.outputs.code == 'true' &&
       (needs.build-image.result == 'success' ||
        needs.build-image.result == 'skipped')
     runs-on: ubuntu-latest
+    # 2x the slowest green run (11m52 on #1293, including ~70s for
+    # reclaim-docker-disk), plus room for the fork path's two local builds.
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: read
@@ -368,13 +772,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -434,6 +840,20 @@ jobs:
             -v "$PWD/config/verify-memory-search.sh:/verify-memory-search.sh:ro" \
             --entrypoint bash \
             ghcr.io/heypinchy/pinchy-openclaw:latest /verify-memory-search.sh
+
+      - uses: ./.github/actions/setup-pnpm
+
+      - name: Office converter boundary canary (no network, no secrets)
+        # LibreOffice opens files anyone with write access to a mounted share
+        # can plant. The office-converter service is what takes its network
+        # and its secrets away; this drives the image under test through the
+        # service exactly as docker-compose.yml declares it, with every profile
+        # and preflight hardening switched OFF, and asserts a host listener
+        # hears nothing — next to a CONTROL run on a bridge network that does
+        # fetch. Needs only the image, not the stack.
+        run: pnpm -C packages/web exec vitest run src/__tests__/lib/knowledge/office-convert.sidecar.canary.test.ts
+        env:
+          KB_SIDECAR_CANARY_VERSION: latest
 
       - name: Start production stack
         run: docker compose up -d
@@ -575,6 +995,71 @@ jobs:
           docker compose exec -T openclaw ls -la /root/.openclaw/openclaw.json
           exit 1
 
+      - name: Verify the per-agent directory ownership repair (#934)
+        run: |
+          # agents/<id>/agent is shared: OpenClaw (root) derives models.json there,
+          # creating the directory at mode 0700 and re-asserting that mode on every
+          # write. Up to OpenClaw 2026.7 Pinchy (uid 999) wrote auth-profiles.json
+          # into it, and a root-owned directory made that write fail with EACCES,
+          # so regenerateOpenClawConfig never pushed openclaw.json and every
+          # dispatch died with `Unknown model: …` (setup-wizard E2E, CI run
+          # 30554860337). OpenClaw 2026.9 retired that file and Pinchy no longer
+          # writes there; start-openclaw.sh's fix_config_permissions tick keeps
+          # repairing the ownership until that is confirmed on a released install,
+          # and this step keeps the repair honest while it exists.
+          #
+          # This reproduces the condition rather than waiting for it. Observing
+          # the live directories is not a check: the smoke wizard configures no
+          # provider, so OpenClaw has no catalog to derive — the first version
+          # of this step found nothing to probe on every run and warned instead
+          # of verifying. So create exactly
+          # what OpenClaw creates (root-owned, mode 0700) and assert the tick
+          # hands it back.
+          # Use the REAL Smithers id, never an invented one: OpenClaw's
+          # listGatewayAgentIds unions the on-disk agents/ directory names into
+          # agents.list, so a made-up probe id would surface as a phantom agent
+          # in the runtime we are smoke-testing.
+          AGENT_ID=$(docker compose exec -T db psql -U pinchy -d pinchy -tAc \
+            'SELECT id FROM agents ORDER BY created_at LIMIT 1' | tr -d '\r\n')
+          if [ -z "$AGENT_ID" ]; then
+            echo "::error::no agent row found — the setup wizard step above should have created Smithers"
+            exit 1
+          fi
+
+          # The fixture is root-owned BY CONSTRUCTION: root runs chmod 700 and an
+          # explicit chown, both under `set -e`, so a fixture that didn't take
+          # fails the exec. A post-hoc `stat` from a second exec cannot be the
+          # guard — the repair is a 50 ms tick and a docker exec round-trip is
+          # slower, so it reports uid 999 and fails on the fix working (first run
+          # of this step did exactly that). The uid is logged for diagnostics;
+          # either value is expected, and the write below is the assertion.
+          OWNER=$(docker compose exec -T openclaw sh -c "
+            set -e
+            mkdir -p /root/.openclaw/agents/$AGENT_ID/agent
+            chmod 700 /root/.openclaw/agents/$AGENT_ID/agent
+            chown root:root /root/.openclaw/agents/$AGENT_ID/agent
+            stat -c '%u' /root/.openclaw/agents/$AGENT_ID/agent
+          " | tr -d '\r\n')
+          echo "fixture created root-owned 0700; uid observed right after chown: $OWNER (999 = the tick already won)"
+
+          # 20 s: the repair is a 50 ms tick, so this only has to ride out a
+          # gateway restart that has the loop paused.
+          OK=0
+          for i in $(seq 1 20); do
+            if OUT=$(docker compose exec -T --user pinchy pinchy sh -c \
+              "touch /openclaw-config/agents/$AGENT_ID/agent/.write-probe && rm -f /openclaw-config/agents/$AGENT_ID/agent/.write-probe" 2>&1); then
+              echo "Pinchy can write a root-created agent directory (attempt $i)"
+              OK=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$OK" != 1 ]; then
+            echo "::error::Pinchy (uid 999) cannot write /openclaw-config/agents/<id>/agent — the #934 ownership repair did not run: $OUT"
+            docker compose exec -T openclaw sh -c 'ls -lan /root/.openclaw/agents; ls -lan /root/.openclaw/agents/*/' || true
+          fi
+          [ "$OK" = 1 ]
+
       - name: Verify clean startup (production)
         run: |
           LOGS=$(docker compose logs 2>&1)
@@ -591,6 +1076,40 @@ jobs:
             echo "::warning::Pinchy logged $ERROR_COUNT OpenClaw connection errors (expected at most 1)"
           fi
           echo "Clean startup verified (restarts=$RESTART_COUNT, connection_errors=$ERROR_COUNT)"
+
+      - name: Verify Office conversion goes through the sidecar, and only the sidecar
+        run: |
+          # The canary above proves the converter service has no network. This
+          # proves the shipped stack actually USES it: the web container stages
+          # a document in the shared spool and the sidecar converts it. Then,
+          # with the sidecar stopped, the same conversion must come back
+          # `infrastructure` — if the web container quietly converted on its
+          # own, LibreOffice would be back next to the secrets and nothing else
+          # would notice. Run as the pinchy user, like the web process: the
+          # converter (its own uid, pinchy's group) writes into the batch
+          # through the modes that user's batches carry.
+          wait_converter() {
+            for i in $(seq 1 30); do
+              [ "$(docker compose ps office-converter --format '{{.Health}}')" = "healthy" ] && return 0
+              sleep 2
+            done
+            echo "::error::office-converter did not become healthy"
+            docker compose ps
+            docker compose logs office-converter
+            return 1
+          }
+          check() {
+            docker compose exec -T --user pinchy pinchy \
+              node --import tsx scripts/check-office-converter.ts --expect "$1"
+          }
+          wait_converter
+          check converted || { docker compose logs office-converter; exit 1; }
+          docker compose stop office-converter
+          # The stopped converter leaves its socket, so the web side waits
+          # ~20 s for a restart before it books the batch.
+          check infrastructure
+          docker compose start office-converter
+          wait_converter
 
       - name: Verify plugins load + deps survive a pinchy-only restart (PR #275 regression)
         run: |
@@ -729,6 +1248,15 @@ jobs:
         if: always()
         run: docker compose down -v
 
+      # The dev stack rebuilds both images from scratch (~16G); the production
+      # ones above are not inputs to that build and must not share the disk
+      # with it. AWS-hosted runners ran out of space here. On a fork PR
+      # the prod images were built here and their cache stays, so the dev
+      # OpenClaw build reuses it and only the dev Pinchy build adds new data.
+      - uses: ./.github/actions/reclaim-docker-disk
+        with:
+          min-free-gb: ${{ needs.build-image.result == 'skipped' && '12' || '22' }}
+
       - name: Start dev stack
         run: docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build -d
         env:
@@ -814,9 +1342,14 @@ jobs:
 
   end-user-install:
     name: End-user install simulation
-    needs: build-image
+    timeout-minutes: 15
+    needs: [changes, build-image]
+    # See docker-smoke: build-image is skipped both on fork PRs (fall back to a
+    # local build) and on docs-only PRs (build nothing) — only the changes gate
+    # tells those two apart.
     if: >-
       always() &&
+      needs.changes.outputs.code == 'true' &&
       (needs.build-image.result == 'success' ||
        needs.build-image.result == 'skipped')
     permissions:
@@ -827,13 +1360,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -922,8 +1457,8 @@ jobs:
         run: |
           RUNNING=$(docker compose ps --format json | jq -rs '[.[] | select(.State == "running")] | length')
           echo "Running services: $RUNNING"
-          if [ "$RUNNING" -ne 3 ]; then
-            echo "::error::Expected 3 running services (pinchy, openclaw, db), got $RUNNING"
+          if [ "$RUNNING" -ne 4 ]; then
+            echo "::error::Expected 4 running services (pinchy, office-converter, openclaw, db), got $RUNNING"
             docker compose ps
             exit 1
           fi
@@ -960,9 +1495,16 @@ jobs:
 
   end-user-upgrade:
     name: End-user upgrade simulation
-    needs: build-image
+    # ~4 min before the OpenClaw state step; that step adds ~4-5 min (two
+    # gateway boots on the old image's state, one doctor import, one restart).
+    timeout-minutes: 25
+    needs: [changes, build-image]
+    # See docker-smoke: build-image is skipped both on fork PRs (fall back to a
+    # local build) and on docs-only PRs (build nothing) — only the changes gate
+    # tells those two apart.
     if: >-
       always() &&
+      needs.changes.outputs.code == 'true' &&
       (needs.build-image.result == 'success' ||
        needs.build-image.result == 'skipped')
     permissions:
@@ -973,13 +1515,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -1192,6 +1736,24 @@ jobs:
             exit 1
           fi
 
+      # The steps above prove Pinchy comes up; they never had an agent or a
+      # chat, and Pinchy's /api/health stays green while the OpenClaw container
+      # crash-loops. That is how v0.11.0-rc shipped a gateway that refused to
+      # start on state written by OpenClaw 2026.7 until `doctor --fix` ran.
+      # This step writes real state with the previous release's OpenClaw image
+      # (two agents, one chat each), boots this build's image on it, and checks
+      # the gateway starts, both chats read back (one agent deleted from the
+      # config in between) and openclaw.json is untouched.
+      - name: OpenClaw state from the previous release starts and stays readable
+        if: steps.prev.outputs.skip == 'false' && steps.pull-prev.outputs.skip == 'false'
+        env:
+          PREV_TAG: ${{ steps.prev.outputs.tag }}
+        run: |
+          SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-12)
+          scripts/openclaw-state-upgrade/run.sh \
+            "ghcr.io/heypinchy/pinchy-openclaw:${PREV_TAG}" \
+            "ghcr.io/heypinchy/pinchy-openclaw:test-${SHORT_SHA}"
+
       - name: Tear down
         if: always() && steps.prev.outputs.skip == 'false' && steps.pull-prev.outputs.skip == 'false'
         working-directory: ${{ steps.install-dir.outputs.path }}
@@ -1200,9 +1762,13 @@ jobs:
   odoo-e2e:
     name: Odoo E2E Tests
     runs-on: ubuntu-latest
-    needs: build-image
+    timeout-minutes: 25
+    needs: [changes, build-image]
+    # See docker-smoke on why the changes gate is explicit rather than inferred
+    # from build-image being skipped.
     if: >-
       always() &&
+      needs.changes.outputs.code == 'true' &&
       (needs.build-image.result == 'success' ||
        needs.build-image.result == 'skipped')
     permissions:
@@ -1227,13 +1793,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -1332,9 +1900,13 @@ jobs:
   web-e2e:
     name: Web Search E2E Tests
     runs-on: ubuntu-latest
-    needs: build-image
+    timeout-minutes: 20
+    needs: [changes, build-image]
+    # See docker-smoke on why the changes gate is explicit rather than inferred
+    # from build-image being skipped.
     if: >-
       always() &&
+      needs.changes.outputs.code == 'true' &&
       (needs.build-image.result == 'success' ||
        needs.build-image.result == 'skipped')
     permissions:
@@ -1348,13 +1920,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -1455,9 +2029,13 @@ jobs:
     # email-microsoft.spec.ts against gmail-mock + graph-mock.
     name: Email E2E Tests
     runs-on: ubuntu-latest
-    needs: build-image
+    timeout-minutes: 20
+    needs: [changes, build-image]
+    # See docker-smoke on why the changes gate is explicit rather than inferred
+    # from build-image being skipped.
     if: >-
       always() &&
+      needs.changes.outputs.code == 'true' &&
       (needs.build-image.result == 'success' ||
        needs.build-image.result == 'skipped')
     permissions:
@@ -1471,13 +2049,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -1578,13 +2158,18 @@ jobs:
         run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.email-test.yml down -v
 
   imap-e2e:
-    # Runs the whole e2e/email testDir: email-imap.spec.ts against a real
-    # GreenMail server (SMTP+IMAP) fronted by the imap-mock control sidecar.
+    # Runs email-imap.spec.ts (the pinchy-email plugin's IMAP/SMTP tools) and
+    # inbox-sweep.spec.ts (the Inbox Agent's sweep dispatching unprompted)
+    # against a real GreenMail server fronted by the imap-mock control sidecar.
     name: IMAP E2E Tests
     runs-on: ubuntu-latest
-    needs: build-image
+    timeout-minutes: 20
+    needs: [changes, build-image]
+    # See docker-smoke on why the changes gate is explicit rather than inferred
+    # from build-image being skipped.
     if: >-
       always() &&
+      needs.changes.outputs.code == 'true' &&
       (needs.build-image.result == 'success' ||
        needs.build-image.result == 'skipped')
     permissions:
@@ -1598,13 +2183,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -1706,9 +2293,13 @@ jobs:
   mcp-e2e:
     name: MCP E2E Tests
     runs-on: ubuntu-latest
-    needs: build-image
+    timeout-minutes: 20
+    needs: [changes, build-image]
+    # See docker-smoke on why the changes gate is explicit rather than inferred
+    # from build-image being skipped.
     if: >-
       always() &&
+      needs.changes.outputs.code == 'true' &&
       (needs.build-image.result == 'success' ||
        needs.build-image.result == 'skipped')
     permissions:
@@ -1722,13 +2313,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -1824,17 +2417,47 @@ jobs:
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.mcp-test.yml down -v
 
+  # Sharded across two runners: at 8m22 of test time this was the longest job in
+  # the matrix, and the matrix tail IS the run's wall-clock. The cost is real but
+  # bounded — each shard pays the ~4m30 fixed overhead (image pull, stack boot)
+  # again — so only the two longest suites are worth splitting. Don't shard the
+  # cheaper ones: below roughly 6 min of test time a second stack costs more than
+  # it saves.
+  #
+  # Sharding is across JOBS, one Docker stack each, and NOT via Playwright
+  # workers. `playwright.setup-wizard.config.ts` pins `workers: 1` on purpose:
+  # every spec calls `resetStack()`, which truncates the DB and restarts
+  # containers. Two specs sharing a stack would wipe each other's state
+  # mid-flight. Per-shard stacks keep that invariant intact.
+  #
+  # Safe to shard because this job is NOT a required check. Never do this to
+  # quality / vitest-integration / e2e (see REQUIRED_JOBS in
+  # scripts/lib/ci-path-filter.mjs): a matrix renames the check, branch
+  # protection would wait forever on a name that no longer reports, and main
+  # would be unmergeable.
   setup-wizard-e2e:
-    name: Setup Wizard E2E Tests
+    name: Setup Wizard E2E Tests (${{ matrix.shard }}/2)
     runs-on: ubuntu-latest
-    needs: build-image
+    # Max observed 19m on shard 2 — the slowest job in the suite.
+    timeout-minutes: 40
+    needs: [changes, build-image]
+    # See docker-smoke on why the changes gate is explicit rather than inferred
+    # from build-image being skipped.
     if: >-
       always() &&
+      needs.changes.outputs.code == 'true' &&
       (needs.build-image.result == 'success' ||
        needs.build-image.result == 'skipped')
     permissions:
       contents: read
       packages: read
+
+    strategy:
+      # A failure in shard 1 says nothing about shard 2 — they run disjoint
+      # specs. Cancelling the other half would just hide the second failure.
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
 
     env:
       PINCHY_VERSION: latest
@@ -1844,13 +2467,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -1929,8 +2554,11 @@ jobs:
 
       - uses: ./.github/actions/setup-playwright
 
+      # Playwright shards by SPEC FILE, and this suite is one provider per file
+      # (anthropic, google, ollama-cloud, ollama-local, openai) — so the 5 files
+      # split 3/2 with no test left behind and no file split across shards.
       - name: Run Setup Wizard E2E tests
-        run: pnpm -C packages/web test:e2e:setup-wizard
+        run: pnpm -C packages/web test:e2e:setup-wizard --shard=${{ matrix.shard }}/2
         env:
           CI: true
           ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
@@ -1941,7 +2569,10 @@ jobs:
         with:
           compose-files: ${{ env.COMPOSE_FILES }}
           mock-service: "llm-providers-mock"
-          artifact-name: "setup-wizard-e2e"
+          # Shard-scoped: upload-artifact rejects a duplicate name within a run,
+          # so a bare "setup-wizard-e2e" from both shards would turn a real test
+          # failure into a confusing upload error — and lose the diagnostics.
+          artifact-name: "setup-wizard-e2e-shard-${{ matrix.shard }}"
 
       - name: Tear down
         if: always()
@@ -1950,9 +2581,13 @@ jobs:
   telegram-e2e:
     name: Telegram E2E Tests
     runs-on: ubuntu-latest
-    needs: build-image
+    timeout-minutes: 30
+    needs: [changes, build-image]
+    # See docker-smoke on why the changes gate is explicit rather than inferred
+    # from build-image being skipped.
     if: >-
       always() &&
+      needs.changes.outputs.code == 'true' &&
       (needs.build-image.result == 'success' ||
        needs.build-image.result == 'skipped')
     permissions:
@@ -1963,8 +2598,8 @@ jobs:
     # docker-compose.e2e.yml using the production Dockerfile.pinchy
     # (uid 999 demotion via entrypoint.sh), matching what end users
     # actually run. Catches uid/permission mismatches between Pinchy
-    # (uid 999) and OpenClaw (root) — see e.g. PR #195's regression for
-    # the telegram-pairing.json mode 0600 case.
+    # (uid 999) and OpenClaw (root), e.g. a bootstrap file OpenClaw creates
+    # as root that Pinchy must rewrite (#1095).
     #
     # ${PINCHY_VERSION:?} on docker-compose.yml's `image:` line is
     # satisfied by any non-empty string; the build directive in
@@ -1976,13 +2611,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -2122,14 +2759,38 @@ jobs:
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml down -v
 
+  # Sharded for the same reason as setup-wizard-e2e (see the rationale there):
+  # 8m17 of test time made this the second-longest tail in the matrix. Also not a
+  # required check, so the matrix rename is safe.
+  #
+  # The split is UNEVEN — 25 tests / 11 files against 15 / 7, measured, not
+  # halved. Playwright assigns a whole file to the shard holding its first test,
+  # and agent-chat.spec.ts's 7 tests start just before the index-20 boundary, so
+  # they all land in shard 1. Expect roughly 5 min, not 4. Balancing it means
+  # reordering files, which is not worth coupling spec names to shard maths.
+  #
+  # Per-shard stacks are a bonus here rather than a constraint: today the whole
+  # suite shares ONE OpenClaw session, which is why triggers like SLOW_STREAM
+  # need word lists no other spec can produce (see fake-ollama-server.ts). Two
+  # stacks mean two sessions and strictly less cross-spec interference, never
+  # more.
   integration:
-    name: Integration Tests (OpenClaw + Fake Ollama)
+    name: Integration Tests (OpenClaw + Fake Ollama) (${{ matrix.shard }}/2)
     runs-on: ubuntu-latest
-    needs: build-image
+    timeout-minutes: 30
+    needs: [changes, build-image]
+    # See docker-smoke on why the changes gate is explicit rather than inferred
+    # from build-image being skipped.
     if: >-
       always() &&
+      needs.changes.outputs.code == 'true' &&
       (needs.build-image.result == 'success' ||
        needs.build-image.result == 'skipped')
+    strategy:
+      # Disjoint specs — a failure in one shard says nothing about the other.
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     permissions:
       contents: read
       packages: read
@@ -2147,13 +2808,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -2229,7 +2892,7 @@ jobs:
       - uses: ./.github/actions/setup-playwright
 
       - name: Run integration tests
-        run: pnpm -C packages/web test:integration
+        run: pnpm -C packages/web test:integration --shard=${{ matrix.shard }}/2
         env:
           CI: true
 
@@ -2275,7 +2938,8 @@ jobs:
           # Integration suite runs fake-Ollama on the host, not as a compose
           # service — no mock to capture, the globalTeardown-captured
           # /tmp/openclaw-integration.log is already shown above.
-          artifact-name: "integration"
+          # Shard-scoped: upload-artifact rejects duplicate names within a run.
+          artifact-name: "integration-shard-${{ matrix.shard }}"
 
       - name: Tear down
         if: always()
@@ -2293,9 +2957,13 @@ jobs:
     # (stochastic + paid); see #669 for the on-demand/scheduled follow-ups.
     name: Eval Harness Self-Test
     runs-on: ubuntu-latest
-    needs: build-image
+    timeout-minutes: 20
+    needs: [changes, build-image]
+    # See docker-smoke on why the changes gate is explicit rather than inferred
+    # from build-image being skipped.
     if: >-
       always() &&
+      needs.changes.outputs.code == 'true' &&
       (needs.build-image.result == 'success' ||
        needs.build-image.result == 'skipped')
     permissions:
@@ -2311,13 +2979,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -2419,9 +3089,84 @@ jobs:
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.eval.yml down -v
 
+  # The LibreOffice suites (`pnpm test:libreoffice`): the conversion adapter
+  # against a real binary, and the canaries proving an Office file on a share
+  # cannot make the converter fetch or draw a local file into the PDF. They
+  # need a real `soffice`, which no runner has — before this job they skipped
+  # in CI and had never run there at all. So they run INSIDE the Pinchy image
+  # this pipeline built, i.e. against the LibreOffice that ships (Debian's),
+  # with `--network none` (the canaries' listener is on loopback) and
+  # KB_REQUIRE_SOFFICE=1, so a missing binary fails instead of skipping.
+  # A 24 MiB tmpfs (KB_SMALL_VOLUME) is a staging volume too small for the
+  # scratch LibreOffice unpacks a large package into while loading it: a test
+  # cannot shrink a filesystem, and that case needs a real one.
+  #
+  # The runtime image carries production dependencies only, so vitest comes
+  # from the runner: dependencies are installed there and the checkout is
+  # mounted. Not a required check, and gated like every other non-required job
+  # (scripts/lib/ci-path-filter.mjs); scripts/lib/libreoffice-suite.test.mjs
+  # pins this wiring.
+  libreoffice:
+    name: LibreOffice conversion canaries
+    needs: [changes, build-image]
+    # See docker-smoke on why the changes gate is explicit rather than inferred
+    # from build-image being skipped.
+    if: >-
+      always() &&
+      needs.changes.outputs.code == 'true' &&
+      (needs.build-image.result == 'success' ||
+       needs.build-image.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-pnpm
+
+      - name: Log in to GHCR (skip on fork PRs)
+        if: needs.build-image.result == 'success'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull pre-built CI images (skip on fork PRs)
+        if: needs.build-image.result == 'success'
+        uses: ./.github/actions/pull-ci-images
+        with:
+          pinchy-image: ${{ needs.build-image.outputs.pinchy-image }}
+          openclaw-image: ${{ needs.build-image.outputs.openclaw-image }}
+
+      - name: Name the pulled image
+        if: needs.build-image.result == 'success'
+        env:
+          PINCHY_IMAGE: ${{ needs.build-image.outputs.pinchy-image }}
+        run: docker tag "$PINCHY_IMAGE" pinchy-libreoffice
+
+      - name: Build the Pinchy image locally (fork PR fallback)
+        if: needs.build-image.result == 'skipped'
+        run: docker build -t pinchy-libreoffice -f Dockerfile.pinchy .
+
+      - name: pnpm test:libreoffice inside the image
+        run: |
+          docker run --rm --network none \
+            -e CI=true -e KB_REQUIRE_SOFFICE=1 \
+            --tmpfs /kb-small-volume:size=24m -e KB_SMALL_VOLUME=/kb-small-volume \
+            -v "$GITHUB_WORKSPACE:/repo" -w /repo \
+            --entrypoint sh pinchy-libreoffice \
+            -c 'soffice --version && pnpm test:libreoffice'
+
   ollama-integration:
     name: Ollama integration tests
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v7
@@ -2429,12 +3174,22 @@ jobs:
       - uses: ./.github/actions/setup-pnpm
 
       - name: Install Ollama
-        # Retry the whole install: ollama's installer downloads a binary from a
-        # CDN that intermittently returns a transient 504, which then feeds a
-        # partial body into zstd/tar and fails the step — not a real error.
+        # Retry the whole install: ollama.com and the CDN behind its installer
+        # intermittently return a transient 504 — not a real error.
+        #
+        # Download to a file, never `curl … | sh`: without pipefail a failed
+        # download feeds sh an empty script, sh exits 0, and the loop declares
+        # success (run 42473085435). `command -v` then checks the installer
+        # really left a binary behind, so a half-finished install retries too
+        # instead of failing in the next step under the wrong name.
         run: |
+          installer="$RUNNER_TEMP/ollama-install.sh"
           for attempt in 1 2 3; do
-            if curl -fsSL https://ollama.com/install.sh | sh; then exit 0; fi
+            if curl -fsSL -o "$installer" https://ollama.com/install.sh \
+              && sh "$installer" \
+              && command -v ollama >/dev/null; then
+              exit 0
+            fi
             echo "Ollama install attempt ${attempt} failed; retrying in 10s..."
             sleep 10
           done
@@ -2465,9 +3220,14 @@ jobs:
         env:
           OLLAMA_URL: http://localhost:11434
 
+  # Deliberately NOT gated on `changes`: this job checks `**/*.md` / `**/*.mdx`,
+  # i.e. exactly the files a "docs-only" PR consists of. Gating it would skip the
+  # link check on precisely the PRs that edit links. It is cheap (checkout + one
+  # lychee run), so it runs on every PR.
   links:
     name: Check links
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v7
@@ -2490,17 +3250,32 @@ jobs:
           # only /stargazers 404s). It's a decorative stars-badge click-through,
           # not documentation, so its false-positive 404 must not red-light every
           # PR — the badge IMAGE (img.shields.io/github/stars) is checked normally.
+          # `--exclude-path docs` stays: in the source .mdx a link like
+          # `/guides/setup/#configure-openclaw` is a route into the GENERATED
+          # site, not a file on disk, so lychee can only produce noise there.
+          # Internal docs links and their #anchors are checked instead against
+          # the BUILT site by the `quality` job's `pnpm check:anchors` step
+          # (#769; see agent-rules/docs.md § "In-Page Anchors Are Checked By The Docs
+          # Build"). External links out of docs/ remain unchecked.
           args: "--no-progress --max-retries 3 --retry-wait-time 5 --accept '200..=299,429,500..=599' '**/*.md' '**/*.mdx' --exclude-path node_modules --exclude-path .git --exclude-path docs --exclude 'localhost' --exclude 'github\\.com/heypinchy/website' --exclude 'github\\.com/heypinchy/pinchy/stargazers' --exclude 'linkedin\\.com' --exclude 'sonner\\.emilkowal\\.dev' --exclude 'squawkhq\\.com' --exclude 'contributor-covenant\\.org' --exclude 'star-history\\.com'"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # Vulnerability scan via osv-scanner — replaces the old `pnpm audit` step
-  # that broke when npm retired the /security/audits/quick endpoint (returns
-  # 410 unconditionally). osv-scanner reads pnpm-lock.yaml directly and
-  # queries the OSV database, so we don't need an npm install and don't
-  # depend on npm's legacy audit API.
+  # Vulnerability scan via osv-scanner — replaced the old `pnpm audit` step
+  # when npm retired the /security/audits/quick endpoint (410 unconditionally).
+  # osv-scanner reads pnpm-lock.yaml directly and queries the OSV database, so
+  # it needs no npm install. pnpm 10's audit works again; it runs alongside in
+  # `prod-audit` below, because the two read different acceptance files.
+  # No `timeout-minutes` here, deliberately: a job that calls a reusable
+  # workflow accepts only name/uses/with/secrets/needs/if/permissions, and
+  # GitHub rejects the whole FILE — no job runs, no required check reports —
+  # if it carries one. The timeout has to live on the called workflow's own
+  # jobs, which for a third-party workflow is not ours to set. See
+  # scripts/lib/workflow-timeouts.mjs, which enforces both halves of this.
   vuln-scan:
     name: Security audit
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     uses: "google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.3.8"
     with:
       scan-args: |-
@@ -2512,9 +3287,38 @@ jobs:
       security-events: write
       contents: read
 
+  # The release gate's own audit, run where a PR can see it (#993). osv-scanner
+  # reads osv-scanner.toml; `pnpm audit` reads only pnpm.auditConfig in
+  # package.json. An acceptance written to the first alone keeps vuln-scan green
+  # and fails `pnpm release` on the day of the cut — which is how v0.9.0 was
+  # blocked. The command must stay byte-identical to scripts/release.mjs's;
+  # scripts/lib/audit-ignore-parity.test.mjs reads both and fails if they
+  # drift. Not a required check: a freshly published advisory turns it red
+  # with no commit behind it, and that should inform a PR, not block it.
+  prod-audit:
+    name: Release audit (pnpm audit --prod)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      # `pnpm audit` reads the lockfile and asks the registry; it needs no
+      # node_modules.
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          install: "false"
+
+      - name: Audit production dependencies (high/critical)
+        run: pnpm audit --audit-level=high --prod
+
   repo-hygiene:
     name: Repo hygiene
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v7

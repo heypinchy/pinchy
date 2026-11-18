@@ -69,6 +69,21 @@ export interface PromotedRef {
 }
 
 /**
+ * The durable workspace path an attached upload ends up at, derived from the
+ * reserved filename alone.
+ *
+ * Exported because a second caller needs it: re-materializing a retried
+ * message's attachments (#1195) has to rebuild the ref for a row that was
+ * promoted on an earlier attempt, and nothing persists the promoted path.
+ * Deriving it there independently would be a drift hazard of exactly the kind
+ * a shared helper removes — so `promoteStagedToAttached` computes its return
+ * value through this function too, and the two cannot disagree.
+ */
+export function attachedRelativePath(filename: string): string {
+  return `${UPLOADS_SUBDIR}/${sanitizeFilename(filename)}`;
+}
+
+/**
  * Atomically moves a staged file to its durable `uploads/` path.
  *
  * The destination slot was reserved at stage time by `persistStagedUpload`
@@ -103,7 +118,7 @@ export async function promoteStagedToAttached(params: PromoteParams): Promise<Pr
   const stagingDir = join(workspaceRoot, ".staging", uploadId);
   await rm(stagingDir, { recursive: true, force: true });
 
-  return { relativePath: `${UPLOADS_SUBDIR}/${filename}` };
+  return { relativePath: attachedRelativePath(filename) };
 }
 
 export interface PersistStagedUploadParams {

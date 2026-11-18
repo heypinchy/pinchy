@@ -1,8 +1,10 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { AgentSettingsPageContent as AgentSettingsPage } from "@/components/agent-settings-page-content";
+import { jsonResponse } from "@/test-helpers/fetch";
 
 // Capture onChange callbacks from tab components
 let capturedOnChangeGeneral: ((v: unknown, isDirty: boolean) => void) | undefined;
@@ -65,7 +67,7 @@ vi.mock("@/lib/auth-client", () => ({
 }));
 
 vi.mock("sonner", () => ({
-  toast: { success: vi.fn(), error: vi.fn() },
+  toast: { success: vi.fn(), error: vi.fn(), dismiss: vi.fn() },
 }));
 
 const agentData = {
@@ -84,21 +86,21 @@ function mockFetchResponses() {
   return vi.spyOn(global, "fetch").mockImplementation(async (url) => {
     const urlStr = typeof url === "string" ? url : url.toString();
     if (urlStr.includes("/api/agents/agent-1/files/SOUL.md")) {
-      return { ok: true, json: async () => ({ content: "# Soul" }) } as Response;
+      return jsonResponse({ content: "# Soul" });
     }
     if (urlStr.includes("/api/agents/agent-1/files/AGENTS.md")) {
-      return { ok: true, json: async () => ({ content: "# Agents" }) } as Response;
+      return jsonResponse({ content: "# Agents" });
     }
     if (urlStr.includes("/api/agents/agent-1") && !urlStr.includes("/files/")) {
-      return { ok: true, json: async () => agentData } as Response;
+      return jsonResponse(agentData);
     }
     if (urlStr.includes("/api/providers/models")) {
-      return { ok: true, json: async () => ({ providers: [] }) } as Response;
+      return jsonResponse({ providers: [] });
     }
     if (urlStr.includes("/api/data-directories")) {
-      return { ok: true, json: async () => ({ directories: [] }) } as Response;
+      return jsonResponse({ directories: [] });
     }
-    return { ok: true, json: async () => ({}) } as Response;
+    return jsonResponse({});
   });
 }
 
@@ -323,7 +325,7 @@ describe("AgentSettingsPage", () => {
     // Simulate permissions tab dirty with empty integrations (no connections configured)
     act(() => {
       _capturedOnChangePermissions?.(
-        { allowedTools: [], allowedPaths: [], integrations: [] },
+        { allowedTools: [], allowedPaths: [], integrations: [], integrationsLoaded: true },
         true
       );
     });
@@ -453,7 +455,7 @@ describe("AgentSettingsPage", () => {
           patchStartedBeforePutResolved = true;
         }
       }
-      return { ok: true, json: async () => ({}) } as Response;
+      return jsonResponse({});
     });
 
     await userEvent.click(screen.getByRole("button", { name: /save & restart/i }));
@@ -513,6 +515,145 @@ describe("AgentSettingsPage", () => {
       await waitFor(() => screen.getByText("Agent Settings"));
 
       expect(capturedMcpEnabled).toBe(true);
+    });
+  });
+
+  // The six loads run from an effect that awaits nothing. Before it caught, a
+  // network failure rendered "Agent not found." for an agent that exists, and
+  // a failed SOUL.md or AGENTS.md load opened its editor empty — whose Save
+  // replaced the real file.
+  describe("load failure", () => {
+    function failLoad(failing: string, response: () => Promise<Response>) {
+      const inner = fetchSpy.getMockImplementation()!;
+      fetchSpy.mockImplementation(async (url, init) =>
+        String(url) === failing ? response() : inner(url, init)
+      );
+    }
+
+    it.each([
+      ["the agent", "/api/agents/agent-1"],
+      ["SOUL.md", "/api/agents/agent-1/files/SOUL.md"],
+      ["AGENTS.md", "/api/agents/agent-1/files/AGENTS.md"],
+      ["the models", "/api/providers/models"],
+    ])("says the settings could not be loaded when %s fails to load", async (_label, failing) => {
+      failLoad(failing, () => Promise.reject(new TypeError("Failed to fetch")));
+      render(<AgentSettingsPage />);
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(/couldn't load/i);
+      expect(screen.queryByText("Agent not found.")).not.toBeInTheDocument();
+      expect(screen.queryByText("Agent Settings")).not.toBeInTheDocument();
+    });
+
+    it("surfaces a 500 the same way", async () => {
+      failLoad("/api/agents/agent-1/files/SOUL.md", async () => jsonResponse({}, { status: 500 }));
+      render(<AgentSettingsPage />);
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(/couldn't load/i);
+      expect(screen.queryByText("Agent Settings")).not.toBeInTheDocument();
+    });
+
+    it("still says the agent was not found for a 404", async () => {
+      failLoad("/api/agents/agent-1", async () =>
+        jsonResponse({ error: "Agent not found" }, { status: 404 })
+      );
+      render(<AgentSettingsPage />);
+
+      expect(await screen.findByText("Agent not found.")).toBeInTheDocument();
+    });
+
+    // The integrations list is admin-only: a member's own personal agent gets
+    // a 403 for it, which is "no integrations", not a failed page.
+    it("renders the settings when the integrations list answers 403", async () => {
+      failLoad("/api/integrations", async () =>
+        jsonResponse({ error: "Forbidden" }, { status: 403 })
+      );
+      render(<AgentSettingsPage />);
+
+      expect(await screen.findByText("Agent Settings")).toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
+    // Any other integrations failure leaves the list unknown: the permissions
+    // tab says so and keeps the saved grants, but the rest of the page loads.
+    it("renders the settings when the integrations list fails", async () => {
+      failLoad("/api/integrations", async () => jsonResponse({}, { status: 500 }));
+      render(<AgentSettingsPage />);
+
+      expect(await screen.findByText("Agent Settings")).toBeInTheDocument();
+      expect(screen.queryByText(/couldn't load this agent's settings/i)).not.toBeInTheDocument();
+    });
+
+    // A refusal the route explains (personal agents switched off: 403) is not
+    // fixed by reloading; the page says what the route said.
+    it("shows the route's own reason when it refuses the agent", async () => {
+      failLoad("/api/agents/agent-1", async () =>
+        jsonResponse({ error: "Personal agents are turned off on this instance." }, { status: 403 })
+      );
+      render(<AgentSettingsPage />);
+
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent("Personal agents are turned off on this instance.");
+      expect(alert).not.toHaveTextContent(/reload the page/i);
+    });
+
+    // An expired session is fixed by reloading: that is what sends it to login.
+    it("still says to reload when the session has expired", async () => {
+      failLoad("/api/agents/agent-1", async () =>
+        jsonResponse({ error: "Unauthorized" }, { status: 401 })
+      );
+      render(<AgentSettingsPage />);
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(/reload the page/i);
+    });
+
+    // The reload after a save passes no signal: its failure must leave the
+    // saved page in place and say so in a toast, not replace it with an alert.
+    it("keeps the page and toasts when the reload after a save fails", async () => {
+      const { toast } = await import("sonner");
+      render(<AgentSettingsPage />);
+      await screen.findByText("Agent Settings");
+
+      const inner = fetchSpy.getMockImplementation()!;
+      fetchSpy.mockImplementation(async (url, init) =>
+        String(url) === "/api/agents/agent-1" && init?.method === "GET"
+          ? Promise.reject(new TypeError("Failed to fetch"))
+          : inner(url, init)
+      );
+      act(() => {
+        capturedOnChangeGeneral?.(
+          {
+            name: "New Name",
+            tagline: "",
+            model: "anthropic/claude-sonnet-4-6",
+            starterPrompts: [],
+          },
+          true
+        );
+      });
+      await userEvent.click(await screen.findByRole("button", { name: /save & restart/i }));
+      await screen.findByText(/apply changes and restart/i);
+      const confirmButtons = screen.getAllByRole("button", { name: /save & restart/i });
+      await userEvent.click(confirmButtons[confirmButtons.length - 1]);
+
+      await waitFor(() =>
+        expect(toast.error).toHaveBeenCalledWith("Failed to reload agent settings")
+      );
+      expect(screen.getByText("Agent Settings")).toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
+    it("cancels its loads when it unmounts mid-flight", async () => {
+      const signals: (AbortSignal | undefined)[] = [];
+      fetchSpy.mockImplementation(async (_url, init) => {
+        signals.push(init?.signal ?? undefined);
+        return new Promise<Response>(() => {});
+      });
+      const { unmount } = render(<AgentSettingsPage />);
+
+      await waitFor(() => expect(signals).toHaveLength(6));
+      unmount();
+
+      expect(signals.every((signal) => signal?.aborted)).toBe(true);
     });
   });
 });

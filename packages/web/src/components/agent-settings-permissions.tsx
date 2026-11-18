@@ -4,6 +4,9 @@ import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { DirectoryPicker } from "@/components/directory-picker";
+import { CircleAlert } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { directoryKey, isSameDirectory, sameDirectorySet } from "@/lib/directory-path";
 import {
   getToolsByCategory,
   getOdooToolsForAccessLevel,
@@ -16,9 +19,15 @@ import {
   McpPermissionSection,
   type McpIntegrationValue,
 } from "@/components/mcp-permission-section";
+import { WebSearchNotSetUpNotice } from "@/components/web-search-not-set-up-notice";
+import { KnowledgeReindexSection } from "@/components/knowledge-reindex-section";
+import { ApprovalConfirmationSection } from "@/components/approval-confirmation-section";
+import { getConfirmMap, type ConfirmMap } from "@/lib/approvals/policy";
 import type { Connection as OdooConnection } from "@/hooks/use-odoo-permissions";
 import type { AgentPluginConfig } from "@/db/schema";
 import { EMAIL_CONNECTION_TYPES } from "@/lib/integrations/oauth-providers";
+import { grantedDataPaths } from "@/lib/agent-granted-paths";
+import { useGrantedFolders } from "@/hooks/use-granted-folders";
 
 export interface PermissionsValues {
   allowedTools: string[];
@@ -28,6 +37,48 @@ export interface PermissionsValues {
     permissions: Array<{ model: string; operation: string }>;
   }>;
   webSearchConfig?: AgentPluginConfig["pinchy-web"];
+  confirm: ConfirmMap;
+  /**
+   * False while an Odoo or email section on the page has not reported its
+   * grants (still loading, or its load failed). `integrations` then holds only
+   * the sections that did load, so it is not the agent's whole grant set: a
+   * save must not treat an empty list as "remove every integration" (#1216).
+   */
+  integrationsLoaded: boolean;
+}
+
+type IntegrationGrant = {
+  connectionId: string;
+  permissions: Array<{ model: string; operation: string }>;
+};
+
+const NO_MCP_GRANTS: McpIntegrationValue[] = [];
+
+/**
+ * Key-by-key, because a confirm map is written from two places (the tool
+ * section and the Odoo matrix) and neither controls insertion order — so
+ * comparing serialized JSON would report a form as dirty for having reordered.
+ */
+function sameConfirmMap(a: ConfirmMap, b: ConfirmMap): boolean {
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every((k) => a[k] === b[k]);
+}
+
+/**
+ * Drop entries for tools the agent may no longer call. A stale key is not
+ * merely untidy: revoke a tool, grant it again later, and a confirmation
+ * setting nobody can see on the page would come back with it.
+ *
+ * Resource keys (`odoo_delete:account.move`) are matched on their tool half,
+ * so removing a MODEL from the matrix leaves its exception in place — which is
+ * deliberate. Models come and go from that grid while the agent's tools stay,
+ * and an exception that survives a model being re-added is the kinder answer.
+ */
+function pruneConfirmMap(confirm: ConfirmMap, allowedTools: string[]): ConfirmMap {
+  const allowed = new Set(allowedTools);
+  return Object.fromEntries(
+    Object.entries(confirm).filter(([key]) => allowed.has(key.split(":")[0]))
+  );
 }
 
 interface Connection {
@@ -40,6 +91,18 @@ interface Connection {
 
 const EMAIL_CONNECTION_TYPE_SET = new Set<string>(EMAIL_CONNECTION_TYPES);
 
+/** A primitive stand-in for the saved tools with a prefix, stable across refetches. */
+function savedToolsKey(allowedTools: string[], prefix: string): string {
+  return allowedTools
+    .filter((id) => id.startsWith(prefix))
+    .sort()
+    .join(",");
+}
+
+function splitToolsKey(key: string): string[] {
+  return key === "" ? [] : key.split(",");
+}
+
 interface AgentSettingsPermissionsProps {
   agent: {
     id: string;
@@ -47,7 +110,13 @@ interface AgentSettingsPermissionsProps {
     pluginConfig: AgentPluginConfig | null;
   };
   directories: Array<{ path: string; name: string }>;
-  connections: Connection[];
+  /**
+   * `null` when the page could not load the connection list. Then it is not
+   * known which integration sections belong here, so the agent's saved
+   * integration tools stay as they are and the draft reports
+   * `integrationsLoaded: false`.
+   */
+  connections: Connection[] | null;
   isAdmin: boolean;
   /**
    * Server-gated MCP feature flag (PINCHY_MCP_ENABLED), threaded down as a
@@ -71,8 +140,18 @@ export function AgentSettingsPermissions({
   // KB tools: non-integration safe tools (pinchy_ls / pinchy_read are now implicit — not shown)
   const kbTools = getToolsByCategory("safe").filter((t) => !t.integration);
 
-  // Powerful tools shown in the KB section: non-integration powerful tools (e.g. pinchy_write)
-  const powerfulKbTools = getToolsByCategory("powerful").filter((t) => !t.integration);
+  // Memory is its own zone and its own section — it is not a knowledge-base
+  // concern and never was. It sat under that heading only because this
+  // component dumped every non-integration powerful tool there, which is also
+  // how the master switch for an agent's memory came to read "Write files"
+  // (#755).
+  const memoryTools = getToolsByCategory("powerful").filter((t) => t.id === "pinchy_memory");
+
+  // Workspace-write tools shown in their own section: non-integration powerful
+  // tools that are not memory.
+  const workspaceTools = getToolsByCategory("powerful").filter(
+    (t) => !t.integration && t.id !== "pinchy_memory"
+  );
 
   // Web tools = powerful tools with web-search integration
   const webTools = getToolsByCategory("powerful").filter((t) => t.integration === "web-search");
@@ -83,18 +162,16 @@ export function AgentSettingsPermissions({
   );
 
   const [allowedKbTools, setAllowedKbTools] = useState<string[]>(initialKbTools);
-  const [allowedPaths, setAllowedPaths] = useState<string[]>(
-    agent.pluginConfig?.["pinchy-files"]?.allowed_paths ?? []
+  const [allowedPaths, setAllowedPaths] = useState<string[]>(grantedDataPaths(agent.pluginConfig));
+  // `undefined` until the section reports: unknown is not the same as "no
+  // access" (null), and only the section's own load can tell them apart.
+  const [odooIntegration, setOdooIntegration] = useState<IntegrationGrant | null | undefined>(
+    undefined
   );
-  const [odooIntegration, setOdooIntegration] = useState<{
-    connectionId: string;
-    permissions: Array<{ model: string; operation: string }>;
-  } | null>(null);
   const [odooIsDirty, setOdooIsDirty] = useState(false);
-  const [emailIntegration, setEmailIntegration] = useState<{
-    connectionId: string;
-    permissions: Array<{ model: string; operation: string }>;
-  } | null>(null);
+  const [emailIntegration, setEmailIntegration] = useState<IntegrationGrant | null | undefined>(
+    undefined
+  );
   const [emailIsDirty, setEmailIsDirty] = useState(false);
   // MCP supports several simultaneous connections (unlike Odoo/Email's
   // single-connection dropdown), so its section reports a whole ARRAY of
@@ -102,15 +179,25 @@ export function AgentSettingsPermissions({
   // mcp-permission-section.tsx for why an entry can carry an empty
   // `permissions` array (explicit revoke-to-zero for one connection while
   // others are untouched).
-  const [mcpIntegrations, setMcpIntegrations] = useState<McpIntegrationValue[]>([]);
+  // `undefined` until the section reports, like Odoo/Email above: a save
+  // before then must not read "no MCP grants" and clear them (#1216).
+  const [mcpIntegrations, setMcpIntegrations] = useState<McpIntegrationValue[] | undefined>(
+    undefined
+  );
   const [mcpIsDirty, setMcpIsDirty] = useState(false);
   const [webSearchConfig, setWebSearchConfig] = useState<AgentPluginConfig["pinchy-web"]>(
     agent.pluginConfig?.["pinchy-web"] ?? {}
   );
+  // Normalized through getConfirmMap, which reads a pre-#1133 `confirmTools`
+  // list when the agent has not been saved since the upgrade. Without that the
+  // form would open showing no confirmations on an agent that has them, and
+  // saving would then persist that as the truth.
+  const [confirm, setConfirm] = useState<ConfirmMap>(() => getConfirmMap(agent.pluginConfig));
 
   const initialKbToolsRef = useRef(initialKbTools);
-  const initialAllowedPaths = useRef(agent.pluginConfig?.["pinchy-files"]?.allowed_paths ?? []);
+  const initialAllowedPaths = useRef(grantedDataPaths(agent.pluginConfig));
   const initialWebSearchConfig = useRef(agent.pluginConfig?.["pinchy-web"] ?? {});
+  const initialConfirm = useRef<ConfirmMap>(getConfirmMap(agent.pluginConfig));
 
   // Re-sync the "initial" snapshot when the agent prop changes (the parent
   // refetches the agent after a successful save, so the prop now reflects the
@@ -123,22 +210,31 @@ export function AgentSettingsPermissions({
     initialKbToolsRef.current = agent.allowedTools.filter(
       (id) => !id.startsWith("odoo_") && !id.startsWith("email_")
     );
-    initialAllowedPaths.current = agent.pluginConfig?.["pinchy-files"]?.allowed_paths ?? [];
+    initialAllowedPaths.current = grantedDataPaths(agent.pluginConfig);
     initialWebSearchConfig.current = agent.pluginConfig?.["pinchy-web"] ?? {};
+    initialConfirm.current = getConfirmMap(agent.pluginConfig);
   }, [agent.allowedTools, agent.pluginConfig]);
 
   const hasWebToolChecked = webTools.some((tool) => allowedKbTools.includes(tool.id));
+  // Read from the saved agent, not the form state: unchecking the last web
+  // tool must not make the section vanish under the cursor before saving.
+  const hasSavedWebTool = webTools.some((tool) => agent.allowedTools.includes(tool.id));
 
-  // Check if the agent has sensitive data access (any allowed paths or odoo/email tools)
-  const hasSensitiveDataAccess =
-    allowedPaths.length > 0 || odooIntegration !== null || emailIntegration !== null;
-
-  const showSecurityWarning = hasWebToolChecked && hasSensitiveDataAccess;
+  // A reindex operates on the SAVED grants (the route reads pluginConfig), so
+  // the reindex section is gated on the persisted paths — never on the picker's
+  // unsaved selection, which the server cannot see yet. The parent refetches
+  // the agent after a save, so this recomputes to the new truth on its own.
+  const savedAllowedPaths = grantedDataPaths(agent.pluginConfig);
+  const hasUnsavedPathChanges = !sameDirectorySet(allowedPaths, savedAllowedPaths);
+  const savedPathsKey = savedAllowedPaths.map(directoryKey).sort().join("|");
+  // Which saved grants still name a folder that exists (#1363). Admin-only,
+  // like the route it reads.
+  const grantedFolders = useGrantedFolders(agent.id, savedPathsKey, isAdmin);
 
   // Partition active (non-pending) connections by integration type
   const { odooConnections, emailConnections, webSearchConnections, mcpConnections } =
     useMemo(() => {
-      const active = connections.filter((c) => c.status !== "pending");
+      const active = (connections ?? []).filter((c) => c.status !== "pending");
       return {
         odooConnections: active.filter((c) => c.type === "odoo") as OdooConnection[],
         emailConnections: active.filter((c) => EMAIL_CONNECTION_TYPE_SET.has(c.type)),
@@ -159,21 +255,50 @@ export function AgentSettingsPermissions({
   const hasWebSearchApiKey = webSearchConnections.length > 0;
   const showMcp = mcpEnabled && mcpConnections.length > 0;
 
+  // A section that is not on the page has nothing to load: its answer is "no
+  // access", as before. A section on the page that has not reported yet keeps
+  // the agent's saved tools for that integration, so a save made meanwhile
+  // (or after its load failed) leaves those grants exactly as they were.
+  // Without a connection list nobody knows which sections belong here, so
+  // both count as not reported.
+  const connectionsLoaded = connections !== null;
+  const odooGrant = !connectionsLoaded ? undefined : showOdoo ? odooIntegration : null;
+  const emailGrant = !connectionsLoaded ? undefined : showEmail ? emailIntegration : null;
+  // A hidden MCP section has nothing to report; a shown one counts as
+  // unreported until its own load answers.
+  // NO_MCP_GRANTS is a module constant: a fresh `[]` per render would re-fire
+  // the report effect below and re-emit a stale dirty flag after a save.
+  const mcpGrants = !connectionsLoaded ? undefined : showMcp ? mcpIntegrations : NO_MCP_GRANTS;
+  // The saved tools stand in only while their section is unreported, and are
+  // keyed by content rather than by the agent object: the page refetches the
+  // agent after every save, before the sections reload, and a fresh array then
+  // would re-emit the form with a section's stale pre-save dirty flag — the
+  // Save bar coming back after a save that went through.
+  const odooFallbackKey = odooGrant === undefined ? savedToolsKey(agent.allowedTools, "odoo_") : "";
+  const emailFallbackKey =
+    emailGrant === undefined ? savedToolsKey(agent.allowedTools, "email_") : "";
+  const odooFallback = useMemo(() => splitToolsKey(odooFallbackKey), [odooFallbackKey]);
+  const emailFallback = useMemo(() => splitToolsKey(emailFallbackKey), [emailFallbackKey]);
+
+  // Check if the agent has sensitive data access (any allowed paths or odoo/email tools)
+  const hasSensitiveDataAccess =
+    allowedPaths.length > 0 ||
+    (odooGrant === undefined ? odooFallback.length > 0 : odooGrant !== null) ||
+    (emailGrant === undefined ? emailFallback.length > 0 : emailGrant !== null);
+
+  const showSecurityWarning = hasWebToolChecked && hasSensitiveDataAccess;
+
   // Compute the combined allowedTools array (KB tools + web tools + odoo tools + email tools)
   const computeAllowedTools = useCallback(
     (
       currentKbTools: string[],
-      odoo: {
-        connectionId: string;
-        permissions: Array<{ model: string; operation: string }>;
-      } | null,
-      email: {
-        connectionId: string;
-        permissions: Array<{ model: string; operation: string }>;
-      } | null
+      odoo: IntegrationGrant | null | undefined,
+      email: IntegrationGrant | null | undefined
     ): string[] => {
       let odooToolIds: string[] = [];
-      if (odoo && odoo.permissions.length > 0) {
+      if (odoo === undefined) {
+        odooToolIds = odooFallback;
+      } else if (odoo && odoo.permissions.length > 0) {
         const ops = new Set(odoo.permissions.map((p) => p.operation));
         const hasRead = ops.has("read");
         const hasCreate = ops.has("create");
@@ -196,58 +321,62 @@ export function AgentSettingsPermissions({
       }
 
       let emailToolIds: string[] = [];
-      if (email && email.permissions.length > 0) {
+      if (email === undefined) {
+        emailToolIds = emailFallback;
+      } else if (email && email.permissions.length > 0) {
         emailToolIds = getEmailToolsForOperations(email.permissions.map((p) => p.operation));
       }
 
       return [...currentKbTools, ...odooToolIds, ...emailToolIds];
     },
-    []
+    [odooFallback, emailFallback]
   );
 
   // Notify parent after every state change (and on mount)
   useEffect(() => {
-    const allAllowedTools = computeAllowedTools(allowedKbTools, odooIntegration, emailIntegration);
+    const allAllowedTools = computeAllowedTools(allowedKbTools, odooGrant, emailGrant);
     const kbDirty =
       JSON.stringify([...allowedKbTools].sort()) !==
         JSON.stringify([...initialKbToolsRef.current].sort()) ||
-      JSON.stringify([...allowedPaths].sort()) !==
-        JSON.stringify([...initialAllowedPaths.current].sort());
+      !sameDirectorySet(allowedPaths, initialAllowedPaths.current);
     const webConfigDirty =
       JSON.stringify(webSearchConfig) !== JSON.stringify(initialWebSearchConfig.current);
-    const isDirty = kbDirty || odooIsDirty || emailIsDirty || webConfigDirty || mcpIsDirty;
+    const confirmDirty = !sameConfirmMap(confirm, initialConfirm.current);
+    const isDirty =
+      kbDirty || odooIsDirty || emailIsDirty || webConfigDirty || confirmDirty || mcpIsDirty;
     // Collect all active integrations
-    const integrations: Array<{
-      connectionId: string;
-      permissions: Array<{ model: string; operation: string }>;
-    }> = [];
-    if (odooIntegration) integrations.push(odooIntegration);
-    if (emailIntegration) integrations.push(emailIntegration);
+    const integrations: IntegrationGrant[] = [];
+    if (odooGrant) integrations.push(odooGrant);
+    if (emailGrant) integrations.push(emailGrant);
     // MCP tools are NOT part of allowedTools (they don't map to static tool
     // IDs the way odoo_*/email_* do) — build.ts derives tools.allow directly
     // from agent_connection_permissions where model="mcp" (T6). This section
     // only needs to contribute its permission rows to the generic
     // integrations array so the existing save flow PUTs them.
-    integrations.push(...mcpIntegrations);
+    if (mcpGrants) integrations.push(...mcpGrants);
     onChange(
       {
         allowedTools: allAllowedTools,
         allowedPaths,
         integrations,
+        integrationsLoaded:
+          odooGrant !== undefined && emailGrant !== undefined && mcpGrants !== undefined,
         webSearchConfig,
+        confirm: pruneConfirmMap(confirm, allAllowedTools),
       },
       isDirty
     );
   }, [
     allowedKbTools,
     allowedPaths,
-    odooIntegration,
+    odooGrant,
     odooIsDirty,
-    emailIntegration,
+    emailGrant,
     emailIsDirty,
-    mcpIntegrations,
+    mcpGrants,
     mcpIsDirty,
     webSearchConfig,
+    confirm,
     onChange,
     computeAllowedTools,
   ]);
@@ -293,65 +422,96 @@ export function AgentSettingsPermissions({
     setWebSearchConfig(config);
   }
 
+  const renderToolCheckbox = (tool: { id: string; label: string; description: string }) => (
+    <div key={tool.id} className="flex items-center space-x-3">
+      <Checkbox
+        id={`tool-${tool.id}`}
+        checked={allowedKbTools.includes(tool.id)}
+        onCheckedChange={() => handleToolToggle(tool.id)}
+        aria-label={tool.label}
+      />
+      <Label htmlFor={`tool-${tool.id}`} className="cursor-pointer">
+        <span className="font-medium">{tool.label}</span>
+        <span className="text-sm text-muted-foreground ml-2">{tool.description}</span>
+      </Label>
+    </div>
+  );
+
   return (
     <div className="space-y-8">
-      {/* Knowledge Base section */}
+      {/* Memory section */}
       <section className="space-y-4">
+        <h3 className="text-lg font-semibold">Memory</h3>
+        {memoryTools.map(renderToolCheckbox)}
+      </section>
+
+      {/* Workspace section — the agent's own drawer */}
+      {workspaceTools.length > 0 && (
+        <section className="space-y-4">
+          <h3 className="text-lg font-semibold">Workspace</h3>
+          {workspaceTools.map(renderToolCheckbox)}
+        </section>
+      )}
+
+      {/* Knowledge Base section: what the agent may read, then how healthy
+          the index over it is (#1305). */}
+      <section className="space-y-6">
         <h3 className="text-lg font-semibold">Knowledge Base</h3>
 
-        {/* Directory picker — always shown when directories are available */}
-        {directories.length > 0 && (
-          <div className="space-y-2">
+        <div className="space-y-3">
+          <div className="space-y-1">
             <h4 className="text-sm font-medium">Allowed Directories</h4>
-            <DirectoryPicker
-              directories={directories}
-              selected={allowedPaths}
-              onChange={handlePathsChange}
-            />
+            <p className="text-sm text-muted-foreground">
+              Agents can read these directories and every folder inside them. They can never write
+              to them.
+            </p>
           </div>
+          <DirectoryPicker
+            directories={directories}
+            selected={allowedPaths}
+            onChange={handlePathsChange}
+            label="Allowed Directories"
+            browseSubfolders={isAdmin}
+            grantedFolders={grantedFolders}
+          />
+          {/* Beside the checkboxes that made the change, not in the index
+              block below: it is a fact about this form, and only an admin has
+              a Reindex button for it to apply to. */}
+          {hasUnsavedPathChanges && (
+            <UnsavedDirectoriesNotice
+              directories={directories}
+              saved={savedAllowedPaths}
+              selected={allowedPaths}
+              isAdmin={isAdmin}
+            />
+          )}
+        </div>
+
+        {/* Admin-only reindex trigger + progress. The async worker/queue is
+            server-side (#714); this is the surface to start a run and watch it.
+            Gated on isAdmin because the route is admin-only (withAdmin). */}
+        {isAdmin && (
+          <KnowledgeReindexSection
+            agentId={agent.id}
+            allowedPathCount={savedAllowedPaths.length}
+            hasUnsavedPathChanges={hasUnsavedPathChanges}
+            savedPathsKey={savedPathsKey}
+          />
         )}
 
         {/* Explicit KB tool toggles (safe, non-integration) — empty after pinchy_ls/pinchy_read became implicit */}
-        {kbTools.length > 0 && (
-          <div className="space-y-3">
-            {kbTools.map((tool) => (
-              <div key={tool.id} className="flex items-center space-x-3">
-                <Checkbox
-                  id={`tool-${tool.id}`}
-                  checked={allowedKbTools.includes(tool.id)}
-                  onCheckedChange={() => handleToolToggle(tool.id)}
-                  aria-label={tool.label}
-                />
-                <Label htmlFor={`tool-${tool.id}`} className="cursor-pointer">
-                  <span className="font-medium">{tool.label}</span>
-                  <span className="text-sm text-muted-foreground ml-2">{tool.description}</span>
-                </Label>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Powerful non-integration tools (e.g. pinchy_write) */}
-        {powerfulKbTools.map((tool) => (
-          <div key={tool.id} className="flex items-center space-x-3">
-            <Checkbox
-              id={`tool-${tool.id}`}
-              checked={allowedKbTools.includes(tool.id)}
-              onCheckedChange={() => handleToolToggle(tool.id)}
-              aria-label={tool.label}
-            />
-            <Label htmlFor={`tool-${tool.id}`} className="cursor-pointer">
-              <span className="font-medium">{tool.label}</span>
-              <span className="text-sm text-muted-foreground ml-2">{tool.description}</span>
-            </Label>
-          </div>
-        ))}
+        {kbTools.length > 0 && <div className="space-y-3">{kbTools.map(renderToolCheckbox)}</div>}
       </section>
 
-      {/* Web Search section — only when at least one active Web Search connection exists */}
-      {hasWebSearchApiKey && (
+      {/* Web Search section — when a Web Search connection exists, or when the
+          agent already holds a web tool without one (#1297: a web template
+          grants both tools regardless; hiding them would make the grant
+          invisible and impossible to revoke). */}
+      {(hasWebSearchApiKey || hasSavedWebTool) && (
         <section className="space-y-4">
           <h3 className="text-lg font-semibold">Web Search</h3>
+          {/* Without a connection list, "no key" is a guess from an empty array. */}
+          {connectionsLoaded && !hasWebSearchApiKey && <WebSearchNotSetUpNotice />}
           <div className="space-y-3">
             {webTools.map((tool) => (
               <div key={tool.id} className="flex items-center space-x-3">
@@ -379,6 +539,17 @@ export function AgentSettingsPermissions({
         </section>
       )}
 
+      {!connectionsLoaded && (
+        <Alert>
+          <CircleAlert aria-hidden="true" />
+          <AlertDescription>
+            We couldn&apos;t load your integrations, so Odoo and email access can&apos;t be edited
+            right now. Whatever this agent has there stays as it is when you save. Refresh the page
+            to try again.
+          </AlertDescription>
+        </Alert>
+      )}
+
       {/* Odoo section — only when at least one active Odoo connection exists */}
       {showOdoo && (
         <section className="space-y-4">
@@ -387,6 +558,8 @@ export function AgentSettingsPermissions({
             agentId={agent.id}
             connections={odooConnections}
             onChange={handleOdooChange}
+            confirm={confirm}
+            onConfirmChange={setConfirm}
           />
         </section>
       )}
@@ -415,6 +588,19 @@ export function AgentSettingsPermissions({
         </section>
       )}
 
+      {/* Require confirmation — admin marks which tools pause for the acting
+          user to confirm before the agent runs them (#124 Tier 2). */}
+      {isAdmin && (
+        <section className="space-y-4">
+          <h3 className="text-lg font-semibold">Require confirmation before</h3>
+          <ApprovalConfirmationSection
+            allowedTools={computeAllowedTools(allowedKbTools, odooGrant, emailGrant)}
+            confirm={confirm}
+            onChange={setConfirm}
+          />
+        </section>
+      )}
+
       {/* Admin-only discoverability link */}
       {isAdmin && (
         <p className="text-sm text-muted-foreground">
@@ -425,6 +611,74 @@ export function AgentSettingsPermissions({
           in Settings.
         </p>
       )}
+    </div>
+  );
+}
+
+const listFormat = new Intl.ListFormat("en", { style: "long", type: "conjunction" });
+
+/**
+ * What saving the directory change will do, in terms of the agent — named
+ * folders, not "grants". The earlier "a reindex uses the saved grants" was not
+ * understood by the product owner (#1305). What it rests on:
+ * - search reads the SAVED folders on every query, so a save takes effect at
+ *   once in both directions;
+ * - the index is shared and nothing is purged, so an untick only takes the
+ *   folder out of this agent's answers;
+ * - a newly ticked folder is searchable as far as it's already indexed (by
+ *   any agent); the rest is added by the next run.
+ */
+function UnsavedDirectoriesNotice({
+  directories,
+  saved,
+  selected,
+  isAdmin,
+}: {
+  directories: Array<{ path: string; name: string }>;
+  saved: string[];
+  selected: string[];
+  isAdmin: boolean;
+}) {
+  const nameOf = (path: string) =>
+    directories.find((d) => isSameDirectory(d.path, path))?.name ??
+    path.replace(/\/+$/, "").split("/").pop() ??
+    path;
+  const notIn = (list: string[]) => (path: string) => !list.some((p) => isSameDirectory(p, path));
+  const added = selected.filter(notIn(saved)).map(nameOf);
+  // A saved subfolder that a newly ticked parent folds in is gone from the
+  // list but not from what the agent reads (#1269), so it is no removal.
+  const stillCovered = (path: string) =>
+    selected.some((p) => directoryKey(path).startsWith(directoryKey(p) + "/"));
+  const removed = saved
+    .filter(notIn(selected))
+    .filter((path) => !stillCovered(path))
+    .map(nameOf);
+
+  const changes = [
+    added.length > 0 ? `starts reading ${listFormat.format(added)}` : null,
+    removed.length > 0 ? `stops reading ${listFormat.format(removed)}` : null,
+  ].filter(Boolean);
+
+  const sentences = [
+    "Not saved yet.",
+    changes.length > 0 ? `Once you save, the agent ${changes.join(", and it ")}.` : null,
+    added.length > 0 && isAdmin
+      ? "Documents there that aren't indexed yet are added by the next reindex."
+      : null,
+    removed.length > 0
+      ? "Documents from folders you untick stay in the index, but no longer show up in this agent's answers."
+      : null,
+  ].filter(Boolean);
+
+  return (
+    // role="status", not Alert's role="alert": a form hint that appears as you
+    // tick a box shouldn't interrupt whatever the screen reader is saying.
+    <div
+      role="status"
+      className="flex items-start gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-100"
+    >
+      <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+      <p>{sentences.join(" ")}</p>
     </div>
   );
 }

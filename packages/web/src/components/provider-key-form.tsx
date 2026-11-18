@@ -1,20 +1,44 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Form, FormControl, FormField, FormItem, FormLabel } from "@/components/ui/form";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Lock, ChevronDown, ExternalLink, CircleCheck, CircleX, Globe } from "lucide-react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import {
+  Lock,
+  ChevronDown,
+  ExternalLink,
+  CircleCheck,
+  CircleX,
+  Globe,
+  Plus,
+  Server,
+  Check,
+  Star,
+  AlertTriangle,
+} from "lucide-react";
+import { ProviderLogo } from "@/components/provider-logo";
 import { useRestart } from "@/components/restart-provider";
 import { ReportIssueLink } from "@/components/report-issue-link";
 import { docsUrl } from "@/components/docs-link";
+import {
+  OpenAiCompatibleProviderForm,
+  type ProviderListItem,
+} from "@/components/openai-compatible-provider-form";
 import type { ProviderName } from "@/lib/providers";
+import { apiGet, apiPost, apiPatch, apiDelete, ApiError, errorMessage } from "@/lib/api-client";
+import type { SetupProviderInput, DeleteProviderInput } from "@/lib/schemas/providers";
+import type { DeleteOpenAiCompatibleInput } from "@/lib/schemas/openai-compatible-provider";
+import type { SetDefaultProviderInput } from "@/lib/schemas/provider-default";
+import type { DeletionPreviewResponse } from "@/lib/schemas/provider-deletion";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -172,12 +196,166 @@ function renderStepWithLink(label: string, link: { text: string; url: string }) 
 }
 
 // Providers whose default models are always vision-capable
+/**
+ * `/api/setup/provider` answers a `docs` link alongside its 400. Validate the
+ * shape defensively — a route returning partial/malformed metadata must not
+ * break the inline error, and the href must be a real http(s) URL so a
+ * compromised or buggy route can never coax the client into rendering a
+ * `javascript:` anchor. An empty label would render an icon-only click target,
+ * which is worse than no link — treat it as "no docs".
+ */
+function readErrorDocs(body: unknown): { href: string; label: string } | null {
+  const docs = (body as { docs?: { href?: unknown; label?: unknown } } | null)?.docs;
+  if (
+    docs &&
+    typeof docs.href === "string" &&
+    /^https?:\/\//i.test(docs.href) &&
+    typeof docs.label === "string" &&
+    docs.label.length > 0
+  ) {
+    return { href: docs.href, label: docs.label };
+  }
+  return null;
+}
+
+/**
+ * The `refusedReason` a `PATCH /api/settings/providers/default` 400 carries
+ * when the target's saved base URL is now refused, or `null` for any other
+ * failure.
+ */
+function refusedReasonFrom(err: unknown): string | null {
+  if (!(err instanceof ApiError) || err.status !== 400) return null;
+  const reason = (err.body as { refusedReason?: unknown } | null)?.refusedReason;
+  return typeof reason === "string" && reason.length > 0 ? reason : null;
+}
+
 const VISION_CAPABLE_PROVIDERS: ReadonlySet<ProviderName> = new Set([
   "anthropic",
   "openai",
   "google",
   "ollama-cloud",
 ]);
+
+type TileState = "default" | "configured" | "none";
+
+/** default first, then configured, then unconfigured — the tile grid's sort order. */
+function tileRank(state: TileState): number {
+  return state === "default" ? 0 : state === "configured" ? 1 : 2;
+}
+
+/**
+ * The status marker in a tile's TOP-RIGHT corner: a filled star for the default
+ * provider, a quiet check for a configured-but-not-default one, nothing
+ * otherwise. Absolutely positioned so it never affects the tile's layout — the
+ * glyph + name stay vertically centered and every tile is the same height (an
+ * earlier reserved BOTTOM row left indicator-less tiles looking top-heavy).
+ *
+ * "Default" (not "Active") is the single term for "new agents use this by
+ * default", matching the "Set as default" action and the GitHub/Stripe/Msty
+ * convention. Decorative (`aria-hidden`) so the button's accessible name stays
+ * the provider name; a `<title>` gives a hover tooltip, and tests use the testids.
+ */
+function CornerIndicator({ state }: { state: TileState }) {
+  if (state === "default") {
+    return (
+      <span
+        data-testid="tile-default"
+        aria-hidden="true"
+        title="Default"
+        className="absolute right-2 top-2"
+      >
+        <Star className="size-3.5 fill-muted-foreground text-muted-foreground" />
+      </span>
+    );
+  }
+  if (state === "configured") {
+    return (
+      <span
+        data-testid="tile-configured"
+        aria-hidden="true"
+        title="Configured"
+        className="absolute right-2 top-2"
+      >
+        <Check className="size-3.5 text-muted-foreground" />
+      </span>
+    );
+  }
+  return null;
+}
+
+/** `anthropic/claude-sonnet-4-6` → `claude-sonnet-4-6`, for display only. */
+function bareModelId(model: string): string {
+  const slash = model.indexOf("/");
+  return slash === -1 ? model : model.slice(slash + 1);
+}
+
+/**
+ * What removing a provider does to the agents pinned to it (#949).
+ *
+ * The preflight (`/api/settings/providers/deletion-preview`) determines the
+ * target, so this only renders it — the ordering policy stays server-side.
+ * Three states, deliberately:
+ *
+ * - preview not (yet) available — still loading, or the request failed: fall
+ *   back to the old, vague-but-true sentence rather than guessing a target.
+ * - no affected agents: say nothing at all. "0 agents will be moved" is noise
+ *   in a confirmation dialog.
+ * - affected agents: name the count, the target provider and its model. The
+ *   move is reversible per agent, which is why the dialog states the outcome
+ *   instead of offering a picker.
+ *
+ * And one state that overrides them: the DELETE would refuse (the last
+ * configured provider, or the last usable one because every other provider's
+ * base URL is refused). Then the dialog says why, in the DELETE's own words,
+ * and the caller keeps Remove disabled — see {@link removalRefusal}.
+ */
+function RemovalConsequence({ preview }: { preview: DeletionPreviewResponse | null }) {
+  if (!preview) {
+    return <> Any agents using its models will be switched to another configured provider.</>;
+  }
+  const refusal = removalRefusal(preview);
+  if (refusal) {
+    return <span className="mt-2 block text-destructive">{refusal}</span>;
+  }
+  const count = preview.affectedAgents.length;
+  if (count === 0 || !preview.targetModel) return null;
+  return (
+    <>
+      {" "}
+      {count} {count === 1 ? "agent" : "agents"} using its models will be moved to{" "}
+      {preview.targetProviderLabel} ({bareModelId(preview.targetModel)}). You can change each
+      agent&apos;s model afterwards.
+    </>
+  );
+}
+
+/** Why the DELETE would refuse this removal, or `null` (also for no preview yet). */
+function removalRefusal(preview: DeletionPreviewResponse | null): string | null {
+  return typeof preview?.refusal === "string" && preview.refusal ? preview.refusal : null;
+}
+
+/**
+ * Success toast copy that closes the loop for anyone who clicked through the
+ * dialog without reading it. The count comes from the DELETE response (what
+ * actually happened), the target label from the preview (what was promised) —
+ * the preflight and the DELETE agree by construction, see provider-deletion.ts.
+ */
+function removalSummary(
+  // Optional on purpose — the guard below already handles a response that
+  // omitted the count, and the typed client now surfaces that possibility
+  // instead of hiding it behind an untyped `res.json()`.
+  providerLabel: string,
+  migratedAgents: number | undefined,
+  targetLabel: string | null
+): string {
+  const removed = `${providerLabel} removed.`;
+  // `!migratedAgents` also covers a response that omitted the count — better a
+  // plain confirmation than "undefined agents moved".
+  if (!migratedAgents || !targetLabel) return removed;
+  return `${removed} ${migratedAgents} ${
+    migratedAgents === 1 ? "agent" : "agents"
+  } moved to ${targetLabel}.`;
+}
 
 interface ProviderKeyFormProps {
   onSuccess: (provider?: ProviderName) => void;
@@ -186,10 +364,37 @@ interface ProviderKeyFormProps {
   defaultProvider?: string | null;
   onDirtyChange?: (isDirty: boolean) => void;
   /**
-   * Called after a successful save. Receives the provider name and whether
-   * the provider's default models include vision capability.
+   * Called after a successful save. Receives the provider name, whether the
+   * provider's default models include vision capability, and — when the save
+   * actually regenerated OpenClaw's config — the id of the agent whose arrival
+   * in OC's runtime the caller may want to wait for (#1150). Absent when
+   * nothing was pushed, i.e. when there is no reload to wait for.
    */
-  onSaved?: (provider: ProviderName, hasVision: boolean) => void;
+  onSaved?: (provider: ProviderName, hasVision: boolean, agentId?: string) => void;
+  /**
+   * Setup wizard only (#894): offer a "Custom provider" action below the
+   * built-in tiles that swaps in the multi-field custom provider form. Off by
+   * default so the settings page — which manages custom providers via
+   * `manageCustomProviders` below — doesn't show it twice.
+   */
+  showOpenAiCompatibleOption?: boolean;
+  /**
+   * Called after a custom OpenAI-compatible provider is saved from the wizard.
+   * The custom POST sets `default_provider` itself, so the wizard can advance
+   * straight to the app with a usable default.
+   */
+  onOpenAiCompatibleSaved?: () => void;
+  /**
+   * Settings page only (#894 redesign): renders ONE unified provider grid —
+   * the 5 built-in tiles PLUS one tile per configured custom OpenAI-compatible
+   * provider PLUS a dashed "Add custom provider" tile — instead of the
+   * built-ins-only grid the setup wizard shows. Also renders an explicit
+   * "Set as default" action on every configured tile's panel (built-in or
+   * custom) and the delete affordance for custom providers. Fetches the
+   * custom-provider list itself via `GET .../openai-compatible`. Off by
+   * default so the wizard's grid — which mustn't change — is unaffected.
+   */
+  manageCustomProviders?: boolean;
 }
 
 export function ProviderKeyForm({
@@ -199,8 +404,28 @@ export function ProviderKeyForm({
   defaultProvider,
   onDirtyChange,
   onSaved,
+  showOpenAiCompatibleOption = false,
+  onOpenAiCompatibleSaved,
+  manageCustomProviders = false,
 }: ProviderKeyFormProps) {
   const [provider, setProvider] = useState<ProviderName | null>(null);
+  // Custom "OpenAI-compatible" is not a built-in `ProviderName`, so it can't
+  // live in `provider`; a separate flag drives whether the ADD form shows
+  // (used by both the wizard's dashed "Custom" tile and settings' "Add custom
+  // provider" tile).
+  const [customSelected, setCustomSelected] = useState(false);
+  // Settings-only (#894): the existing custom provider tile currently
+  // selected, if any — drives the edit-mode panel below the grid.
+  const [customProviders, setCustomProviders] = useState<ProviderListItem[]>([]);
+  const [selectedCustomProvider, setSelectedCustomProvider] = useState<ProviderListItem | null>(
+    null
+  );
+  const [settingDefault, setSettingDefault] = useState(false);
+  const [deletingCustom, setDeletingCustom] = useState(false);
+  // #949 — what the pending removal would do, fetched when a removal dialog
+  // opens. Null while loading and after a failed preflight, which renders the
+  // generic consequence sentence instead of an invented target.
+  const [deletionPreview, setDeletionPreview] = useState<DeletionPreviewResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
   const [removing, setRemoving] = useState(false);
@@ -223,6 +448,118 @@ export function ProviderKeyForm({
   useEffect(() => {
     onDirtyChange?.(!!provider && apiKeyValue.trim().length > 0);
   }, [provider, apiKeyValue, onDirtyChange]);
+
+  // Settings-only: fetch the custom provider list for the unified grid. Not
+  // fetched in the wizard (manageCustomProviders is false there).
+  const fetchCustomProviders = useCallback(async () => {
+    if (!manageCustomProviders) return;
+    try {
+      const rows = await apiGet<ProviderListItem[]>("/api/settings/providers/openai-compatible");
+      setCustomProviders(rows);
+    } catch {
+      // Non-blocking: the grid just shows the built-ins + Add tile on a read
+      // failure, same as the old OpenAiCompatibleProvidersSection's empty state.
+    }
+  }, [manageCustomProviders]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.resolve().then(() => {
+      if (!cancelled) void fetchCustomProviders();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchCustomProviders]);
+
+  // #949 — load (or clear) the removal preflight as a confirmation dialog opens
+  // or closes. Read-only, and deliberately non-blocking: on failure the dialog
+  // keeps the generic sentence rather than blocking a removal on a preview.
+  //
+  // Every open/close bumps the request id, and only the newest request may
+  // commit. A response that outlived its dialog belongs to a provider the admin
+  // has since left, and showing it would state one provider's consequence in
+  // another provider's dialog — the same confidently-wrong outcome this whole
+  // preflight exists to prevent, arriving over the network rather than through
+  // a second copy of the ordering policy.
+  const previewRequestId = useRef(0);
+  const handleRemovalDialogOpenChange = useCallback((open: boolean, nameOrSlug: string) => {
+    const requestId = ++previewRequestId.current;
+    setDeletionPreview(null);
+    if (!open) return;
+    void (async () => {
+      try {
+        const data = await apiGet<DeletionPreviewResponse>(
+          `/api/settings/providers/deletion-preview?provider=${encodeURIComponent(nameOrSlug)}`
+        );
+        if (previewRequestId.current !== requestId) return;
+        // Only a well-formed preview may replace the generic sentence — a
+        // partial body must not make the dialog state a wrong consequence.
+        if (Array.isArray(data?.affectedAgents)) setDeletionPreview(data);
+      } catch {
+        // Keep the generic consequence sentence.
+      }
+    })();
+  }, []);
+
+  // Settings-only: flip `default_provider` to a built-in name or a custom
+  // slug. Shared by both the built-in panel's and the custom panel's
+  // "Set as default" button.
+  async function handleSetDefault(target: string) {
+    setSettingDefault(true);
+    try {
+      const body: SetDefaultProviderInput = { provider: target };
+      await apiPatch<{ success: true; defaultProvider: string; warning?: string }>(
+        "/api/settings/providers/default",
+        body
+      );
+      toast.success("Default provider updated.");
+      onSuccess();
+    } catch (e) {
+      // The server refuses a custom provider whose saved base URL is now
+      // refused (the list was loaded before it was). That is the same
+      // permanent state the "Not in use" notice describes, so show it there
+      // — inline and persistent — rather than as a toast.
+      const refusedReason = refusedReasonFrom(e);
+      if (refusedReason !== null) {
+        const markRefused = (row: ProviderListItem) =>
+          row.slug === target ? { ...row, refusedReason } : row;
+        setSelectedCustomProvider((current) => (current ? markRefused(current) : current));
+        setCustomProviders((rows) => rows.map(markRefused));
+        return;
+      }
+      toast.error(errorMessage(e, "Could not set the default provider."));
+    } finally {
+      setSettingDefault(false);
+    }
+  }
+
+  // Settings-only: remove a custom provider, reusing the AlertDialog delete
+  // flow that used to live in `OpenAiCompatibleProvidersSection`.
+  async function handleDeleteCustomProvider(target: ProviderListItem) {
+    setDeletingCustom(true);
+    try {
+      const body: DeleteOpenAiCompatibleInput = { id: target.id };
+      const result = await apiDelete<
+        { ok: true; migratedAgents: number },
+        DeleteOpenAiCompatibleInput
+      >("/api/settings/providers/openai-compatible", body);
+      toast.success(
+        removalSummary(
+          target.displayName,
+          result.migratedAgents,
+          deletionPreview?.targetProviderLabel ?? null
+        )
+      );
+      setSelectedCustomProvider(null);
+      void fetchCustomProviders();
+      onSuccess();
+    } catch (e) {
+      toast.error(errorMessage(e, "Could not remove the provider."));
+    } finally {
+      setDeletingCustom(false);
+    }
+  }
 
   const isConfigured = provider ? configuredProviders?.[provider]?.configured === true : false;
   const isUrlProvider = provider ? PROVIDERS[provider].authType === "url" : false;
@@ -247,59 +584,73 @@ export function ProviderKeyForm({
         ? { provider, url: values.apiKey }
         : { provider, apiKey: values.apiKey };
 
-      const res = await fetch("/api/setup/provider", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const data = await apiPost<{ warning?: string; agentId?: string }, SetupProviderInput>(
+        "/api/setup/provider",
+        body
+      );
 
-      if (!res.ok) {
-        // Session expired — redirect to login
-        if (res.status === 401) {
-          window.location.href = "/login";
-          return;
-        }
-        let message = "Setup failed";
-        let docs: { href: string; label: string } | null = null;
-        try {
-          const data = await res.json();
-          if (data.error) message = data.error;
-          // Validate the docs shape defensively — a route that returns
-          // partial/malformed metadata shouldn't break the inline error, and
-          // the href must be a real http(s) URL so a compromised/buggy route
-          // can never coax the client into rendering a `javascript:` anchor.
-          // An empty label would render an icon-only click target, which is
-          // worse than no link — treat it as "no docs".
-          if (
-            data.docs &&
-            typeof data.docs.href === "string" &&
-            /^https?:\/\//i.test(data.docs.href) &&
-            typeof data.docs.label === "string" &&
-            data.docs.label.length > 0
-          ) {
-            docs = { href: data.docs.href, label: data.docs.label };
-          }
-        } catch {
-          // response body was not JSON; use default message
-        }
-        setErrorDocs(docs);
-        throw new Error(message);
-      }
+      // #880 — the route persists the key even when applying it to the OC
+      // runtime fails, and returns a non-blocking `warning` instead of a 500.
+      // Surface it as a warning toast so the save still reads as successful.
+      const warning =
+        typeof data?.warning === "string" && data.warning.length > 0 ? data.warning : undefined;
 
       setValidationStatus("success");
       form.reset();
-      toast.success(isUrlProvider ? "URL saved" : "API key saved");
+      if (warning) {
+        toast.warning(warning);
+      } else {
+        toast.success(isUrlProvider ? "URL saved" : "API key saved");
+      }
       triggerRestart();
-      onSaved?.(provider, VISION_CAPABLE_PROVIDERS.has(provider));
+      onSaved?.(
+        provider,
+        VISION_CAPABLE_PROVIDERS.has(provider),
+        typeof data?.agentId === "string" ? data.agentId : undefined
+      );
       onSuccess(provider);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Setup failed";
+      // Session expired — redirect to login rather than showing an inline error.
+      if (err instanceof ApiError && err.status === 401) {
+        window.location.href = "/login";
+        return;
+      }
+      setErrorDocs(err instanceof ApiError ? readErrorDocs(err.body) : null);
+      // Not `err.message`: this catch now also sees a network TypeError, whose
+      // message ("Failed to fetch") is an internal string, not error copy.
       setValidationStatus("error");
-      setError(message);
+      setError(errorMessage(err, "Setup failed"));
     } finally {
       setLoading(false);
     }
   }
+
+  // Unified, sorted tile list for the grid: the 5 built-ins, plus (in settings
+  // mode) one tile per custom provider, ordered default → configured →
+  // unconfigured. Sorting is stable, so built-ins stay ahead of customs within a
+  // rank, and the wizard (every state "none") keeps PROVIDERS order untouched.
+  const builtinTiles = (
+    Object.entries(PROVIDERS) as [ProviderName, (typeof PROVIDERS)[ProviderName]][]
+  ).map(([key, config]) => ({
+    kind: "builtin" as const,
+    key,
+    config,
+    state: (defaultProvider === key
+      ? "default"
+      : configuredProviders?.[key]?.configured
+        ? "configured"
+        : "none") as TileState,
+  }));
+  const customTiles = manageCustomProviders
+    ? customProviders.map((row) => ({
+        kind: "custom" as const,
+        row,
+        state: (defaultProvider === row.slug ? "default" : "configured") as TileState,
+      }))
+    : [];
+  const sortedTiles = [...builtinTiles, ...customTiles].sort(
+    (a, b) => tileRank(a.state) - tileRank(b.state)
+  );
 
   return (
     <Form {...form}>
@@ -307,34 +658,237 @@ export function ProviderKeyForm({
         <div className="space-y-2">
           <Label>Provider</Label>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-            {(Object.entries(PROVIDERS) as [ProviderName, (typeof PROVIDERS)[ProviderName]][]).map(
-              ([key, config]) => (
-                <div key={key} className="flex flex-col items-center gap-1">
-                  <Button
-                    type="button"
-                    variant={provider === key ? "default" : "outline"}
-                    className="w-full"
-                    onClick={() => {
-                      setProvider(key);
-                      form.reset();
-                      setGuideOpen(false);
-                      setValidationStatus("idle");
-                      setError("");
-                      setErrorDocs(null);
-                    }}
+            {sortedTiles.map((tile) =>
+              tile.kind === "builtin" ? (
+                <button
+                  key={`builtin-${tile.key}`}
+                  type="button"
+                  onClick={() => {
+                    setProvider(tile.key);
+                    setCustomSelected(false);
+                    setSelectedCustomProvider(null);
+                    form.reset();
+                    setGuideOpen(false);
+                    setValidationStatus("idle");
+                    setError("");
+                    setErrorDocs(null);
+                  }}
+                  className={cn(
+                    "relative flex w-full flex-col items-center justify-center gap-1.5 rounded-md border p-3 text-sm transition-colors",
+                    provider === tile.key
+                      ? "border-2 border-primary bg-primary/5 font-medium"
+                      : "border-border hover:bg-accent"
+                  )}
+                >
+                  <CornerIndicator state={tile.state} />
+                  <span
+                    aria-hidden="true"
+                    className="flex size-6 items-center justify-center rounded-md bg-muted text-xs font-medium text-muted-foreground"
                   >
-                    {config.name}
-                  </Button>
-                  {configuredProviders?.[key]?.configured && (
-                    <span className="text-xs text-muted-foreground">
-                      {defaultProvider === key ? "Active" : "Configured"}
+                    <ProviderLogo provider={tile.key} />
+                  </span>
+                  <span>{tile.config.name}</span>
+                </button>
+              ) : (
+                <button
+                  key={`custom-${tile.row.id}`}
+                  type="button"
+                  onClick={() => {
+                    setSelectedCustomProvider(tile.row);
+                    setProvider(null);
+                    setCustomSelected(false);
+                    form.reset();
+                    setGuideOpen(false);
+                    setValidationStatus("idle");
+                    setError("");
+                    setErrorDocs(null);
+                  }}
+                  className={cn(
+                    "relative flex w-full flex-col items-center justify-center gap-1.5 rounded-md border p-3 text-sm transition-colors",
+                    selectedCustomProvider?.id === tile.row.id
+                      ? "border-2 border-primary bg-primary/5 font-medium"
+                      : "border-border hover:bg-accent"
+                  )}
+                >
+                  <CornerIndicator state={tile.state} />
+                  <span
+                    aria-hidden="true"
+                    className="flex size-6 items-center justify-center rounded-md bg-muted text-xs font-medium text-muted-foreground"
+                  >
+                    <Server className="size-3.5" />
+                  </span>
+                  <span className="truncate max-w-full">{tile.row.displayName}</span>
+                  {tile.row.refusedReason && (
+                    <span className="flex items-center gap-1 text-xs font-medium text-amber-700 dark:text-amber-400">
+                      <AlertTriangle aria-hidden="true" className="size-3" />
+                      Not in use
                     </span>
                   )}
-                </div>
+                </button>
               )
             )}
+            {manageCustomProviders && (
+              <button
+                type="button"
+                aria-label="Add custom provider"
+                onClick={() => {
+                  setCustomSelected(true);
+                  setProvider(null);
+                  setSelectedCustomProvider(null);
+                  form.reset();
+                  setGuideOpen(false);
+                  setValidationStatus("idle");
+                  setError("");
+                  setErrorDocs(null);
+                }}
+                className={cn(
+                  "flex flex-col items-center justify-center gap-1.5 rounded-md border border-dashed p-3 text-sm transition-colors",
+                  customSelected
+                    ? "border-2 border-primary bg-primary/5 font-medium text-foreground"
+                    : "border-border text-muted-foreground hover:bg-accent"
+                )}
+              >
+                <span aria-hidden="true" className="flex size-6 items-center justify-center">
+                  <Plus className="size-4" />
+                </span>
+                <span>Add custom provider</span>
+              </button>
+            )}
+            {showOpenAiCompatibleOption && (
+              <button
+                type="button"
+                aria-label="Custom provider"
+                onClick={() => {
+                  setCustomSelected(true);
+                  setProvider(null);
+                  form.reset();
+                  setGuideOpen(false);
+                  setValidationStatus("idle");
+                  setError("");
+                  setErrorDocs(null);
+                }}
+                className={cn(
+                  "flex flex-col items-center justify-center gap-1.5 rounded-md border border-dashed p-3 text-sm transition-colors",
+                  customSelected
+                    ? "border-2 border-primary bg-primary/5 font-medium text-foreground"
+                    : "border-border text-muted-foreground hover:bg-accent"
+                )}
+              >
+                <span aria-hidden="true" className="flex size-6 items-center justify-center">
+                  <Plus className="size-4" />
+                </span>
+                <span>Custom</span>
+              </button>
+            )}
           </div>
+          {showOpenAiCompatibleOption && (
+            <p className="text-xs text-muted-foreground">
+              Custom connects any OpenAI-compatible endpoint — sovereign EU clouds, self-hosted
+              vLLM, or a gateway.
+            </p>
+          )}
         </div>
+
+        {customSelected && (
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Connect any OpenAI-compatible endpoint — sovereign EU providers, self-hosted vLLM or
+              LiteLLM, or a gateway in front of your own models.
+            </p>
+            <OpenAiCompatibleProviderForm
+              provider={null}
+              onSaved={() => {
+                if (manageCustomProviders) {
+                  setCustomSelected(false);
+                  void fetchCustomProviders();
+                  onSuccess();
+                } else {
+                  onOpenAiCompatibleSaved?.();
+                }
+              }}
+              onCancel={() => setCustomSelected(false)}
+            />
+          </div>
+        )}
+
+        {manageCustomProviders && selectedCustomProvider && (
+          <div className="space-y-4">
+            {/* Persistent, not a toast: the provider stays unusable in the runtime
+                config until the URL changes, so the notice stays as long. */}
+            {selectedCustomProvider.refusedReason && (
+              <Alert>
+                <AlertTriangle className="text-amber-600 dark:text-amber-400" />
+                <AlertTitle>Not in use</AlertTitle>
+                <AlertDescription>
+                  <p>
+                    Its base URL is now refused. {selectedCustomProvider.refusedReason} Change the
+                    URL to use it again.
+                  </p>
+                </AlertDescription>
+              </Alert>
+            )}
+            <OpenAiCompatibleProviderForm
+              key={selectedCustomProvider.id}
+              provider={selectedCustomProvider}
+              onSaved={() => {
+                setSelectedCustomProvider(null);
+                void fetchCustomProviders();
+                onSuccess();
+              }}
+              onCancel={() => setSelectedCustomProvider(null)}
+            />
+            {/* A refused provider can't be the default (the server says no
+                too), so there is nothing to offer while the notice is up. */}
+            {defaultProvider !== selectedCustomProvider.slug &&
+              !selectedCustomProvider.refusedReason && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full"
+                  disabled={settingDefault}
+                  onClick={() => handleSetDefault(selectedCustomProvider.slug)}
+                >
+                  <Star className="size-4 fill-muted-foreground text-muted-foreground" />
+                  {settingDefault ? "Setting as default..." : "Set as default"}
+                </Button>
+              )}
+            <AlertDialog
+              onOpenChange={(open) =>
+                handleRemovalDialogOpenChange(open, selectedCustomProvider.slug)
+              }
+            >
+              <AlertDialogTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="w-full text-destructive hover:text-destructive"
+                  disabled={deletingCustom}
+                >
+                  {deletingCustom ? "Removing..." : "Remove provider"}
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Remove provider?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    Removes {selectedCustomProvider.displayName}.
+                    <RemovalConsequence preview={deletionPreview} />
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel disabled={deletingCustom}>Cancel</AlertDialogCancel>
+                  <AlertDialogAction
+                    variant="destructive"
+                    disabled={deletingCustom || removalRefusal(deletionPreview) !== null}
+                    onClick={() => handleDeleteCustomProvider(selectedCustomProvider)}
+                  >
+                    {deletingCustom ? "Removing..." : "Remove"}
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </div>
+        )}
 
         {provider && (
           <>
@@ -419,7 +973,7 @@ export function ProviderKeyForm({
                       <li key={step.label}>
                         {step.link ? renderStepWithLink(step.label, step.link) : step.label}
                         {step.optional && (
-                          <span className="text-xs text-muted-foreground/60"> (optional)</span>
+                          <span className="text-xs text-muted-foreground"> (optional)</span>
                         )}
                       </li>
                     ))}
@@ -446,8 +1000,21 @@ export function ProviderKeyForm({
               </p>
             )}
 
+            {manageCustomProviders && isConfigured && defaultProvider !== provider && (
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                disabled={settingDefault}
+                onClick={() => handleSetDefault(provider!)}
+              >
+                <Star className="size-4 fill-muted-foreground text-muted-foreground" />
+                {settingDefault ? "Setting as default..." : "Set as default"}
+              </Button>
+            )}
+
             {configuredProviders && isConfigured && (
-              <AlertDialog>
+              <AlertDialog onOpenChange={(open) => handleRemovalDialogOpenChange(open, provider)}>
                 <AlertDialogTrigger asChild>
                   <Button
                     type="button"
@@ -464,27 +1031,29 @@ export function ProviderKeyForm({
                       {isUrlProvider ? "Remove URL?" : "Remove API key?"}
                     </AlertDialogTitle>
                     <AlertDialogDescription>
-                      This will remove your {provider ? PROVIDERS[provider].name : ""}{" "}
-                      {isUrlProvider ? "URL" : "API key"}. If this is the active provider, agents
-                      will be switched to another configured provider.
+                      Removes your {PROVIDERS[provider].name} {isUrlProvider ? "URL" : "API key"}.
+                      <RemovalConsequence preview={deletionPreview} />
                     </AlertDialogDescription>
                   </AlertDialogHeader>
                   <AlertDialogFooter>
                     <AlertDialogCancel>Cancel</AlertDialogCancel>
                     <AlertDialogAction
                       variant="destructive"
+                      disabled={removalRefusal(deletionPreview) !== null}
                       onClick={async () => {
                         setRemoving(true);
                         try {
-                          const res = await fetch("/api/settings/providers", {
-                            method: "DELETE",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ provider }),
-                          });
-                          if (!res.ok) {
-                            const data = await res.json();
-                            throw new Error(data.error || "Failed to remove key");
-                          }
+                          const data = await apiDelete<
+                            { migratedAgents?: number },
+                            DeleteProviderInput
+                          >("/api/settings/providers", { provider });
+                          toast.success(
+                            removalSummary(
+                              PROVIDERS[provider].name,
+                              data.migratedAgents,
+                              deletionPreview?.targetProviderLabel ?? null
+                            )
+                          );
                           triggerRestart();
                           onSuccess(provider!);
                         } catch (err) {

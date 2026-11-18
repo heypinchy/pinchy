@@ -153,12 +153,19 @@ describe("validateLicense", () => {
     expect(status.active).toBe(false);
   });
 
-  it("calculates daysRemaining correctly", async () => {
+  it("counts a 7-day key issued now as 7 days, not 6 (#1278)", async () => {
+    // Rounding down showed "6 days remaining" on a trial issued seconds ago.
     const { validateLicense } = await import("@/lib/license");
     const token = await createTestToken({}, "7d");
     const status = await validateLicense(token, testPublicKeyPem);
-    expect(status.daysRemaining).toBeGreaterThanOrEqual(6);
-    expect(status.daysRemaining).toBeLessThanOrEqual(7);
+    expect(status.daysRemaining).toBe(7);
+  });
+
+  it("counts a partial last day as a day — 0 only once the key has expired", async () => {
+    const { validateLicense } = await import("@/lib/license");
+    const token = await createTestToken({}, "1h");
+    const status = await validateLicense(token, testPublicKeyPem);
+    expect(status.daysRemaining).toBe(1);
   });
 
   it("returns type from token claims", async () => {
@@ -260,5 +267,98 @@ describe("validateLicense", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// The revocation half of #1083. `testPrivateKey` stands in for the production
+// key here: the rule under test is "this key signed it, and the subject is the
+// development one" — which is precisely the shape of the token that shipped in
+// this repository's history and cannot be un-published.
+describe("the development subject", () => {
+  // `createTestToken` pins `sub` to "test-org" via .setSubject(), which wins
+  // over a `sub` in the payload — so this suite signs its own.
+  async function createTokenFor(subject: string, expiresIn = "365d") {
+    return new jose.SignJWT({ type: "paid", features: ["enterprise"] })
+      .setProtectedHeader({ alg: "ES256" })
+      .setIssuer("heypinchy.com")
+      .setSubject(subject)
+      .setIssuedAt()
+      .setExpirationTime(expiresIn)
+      .sign(testPrivateKey);
+  }
+
+  it("pins the subject string that revokes the leaked token", async () => {
+    const { DEV_LICENSE_SUBJECT } = await import("@/lib/license");
+    // Not decoration: the token in this repository's history carries exactly
+    // this `sub`. Change the string and that token is honoured again.
+    expect(DEV_LICENSE_SUBJECT).toBe("pinchy-dev");
+  });
+
+  it("is never honoured by default", async () => {
+    const { validateLicense, DEV_LICENSE_SUBJECT } = await import("@/lib/license");
+    const token = await createTokenFor(DEV_LICENSE_SUBJECT);
+    const status = await validateLicense(token, testPublicKeyPem);
+    expect(status.active).toBe(false);
+    expect(status.features).toEqual([]);
+  });
+
+  it("is refused without leaking its claims", async () => {
+    // No org, no date. The key did not expire — it was refused — so nothing
+    // may print an expiry for it. The banner's expired copy degrades to the
+    // dateless form, which is exactly what happened.
+    const { validateLicense, DEV_LICENSE_SUBJECT } = await import("@/lib/license");
+    const token = await createTokenFor(DEV_LICENSE_SUBJECT);
+    const status = await validateLicense(token, testPublicKeyPem);
+    expect(status.org).toBeUndefined();
+    expect(status.type).toBeUndefined();
+    expect(status.expiresAt).toBeUndefined();
+    expect(status.maxUsers).toBe(0);
+  });
+
+  it("refuses rather than falling back to community, so access never widens", async () => {
+    // The one that matters. INACTIVE derives the "community" state, and
+    // `effectiveVisibility` widens `restricted` to `all` there — so a refused
+    // key would publish agents somebody deliberately restricted. A license
+    // verdict must never widen access (pricing concept § 5).
+    const { validateLicense, DEV_LICENSE_SUBJECT } = await import("@/lib/license");
+    const { deriveLicenseState } = await import("@/lib/license-state");
+    const { effectiveVisibility } = await import("@/lib/agent-access");
+
+    const token = await createTokenFor(DEV_LICENSE_SUBJECT);
+    const status = await validateLicense(token, testPublicKeyPem);
+    const state = deriveLicenseState(status, new Date());
+
+    expect(state).toBe("expired");
+    expect(effectiveVisibility("restricted", state)).toBe("restricted");
+  });
+
+  it("is refused past its exp too", async () => {
+    const { validateLicense, DEV_LICENSE_SUBJECT } = await import("@/lib/license");
+    vi.useFakeTimers();
+    try {
+      const token = await createTokenFor(DEV_LICENSE_SUBJECT, "1s");
+      vi.setSystemTime(Date.now() + 1500);
+      const status = await validateLicense(token, testPublicKeyPem);
+      expect(status.active).toBe(false);
+      expect(status.org).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("is honoured when the caller opts in (the development key ring)", async () => {
+    const { validateLicense, DEV_LICENSE_SUBJECT } = await import("@/lib/license");
+    const token = await createTokenFor(DEV_LICENSE_SUBJECT);
+    const status = await validateLicense(token, testPublicKeyPem, { honourDevSubject: true });
+    expect(status.active).toBe(true);
+    expect(status.org).toBe(DEV_LICENSE_SUBJECT);
+  });
+
+  it("does not affect any other subject", async () => {
+    const { validateLicense } = await import("@/lib/license");
+    const token = await createTokenFor("acme-gmbh");
+    const status = await validateLicense(token, testPublicKeyPem);
+    expect(status.active).toBe(true);
+    expect(status.org).toBe("acme-gmbh");
   });
 });

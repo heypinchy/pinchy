@@ -157,6 +157,14 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
     integration: "odoo",
   },
   {
+    id: "odoo_reconcile",
+    label: "Odoo: Reconcile payment",
+    description:
+      "Match a posted bill or invoice against a bank transaction or payment, and verify the result on the document",
+    category: "powerful",
+    integration: "odoo",
+  },
+  {
     id: "odoo_write",
     label: "Odoo: Update records",
     description: "Modify existing records in Odoo",
@@ -166,7 +174,7 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
   {
     id: "odoo_delete",
     label: "Odoo: Delete records",
-    description: "Delete records from Odoo",
+    description: "Delete records the agent has read from Odoo — cannot be undone",
     category: "powerful",
     integration: "odoo",
   },
@@ -223,11 +231,38 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
     integration: "email",
   },
 
-  // Workspace write — governed by pinchy-files plugin
+  // Persistent agent memory — MEMORY.md + memory/, governed by pinchy-files.
+  //
+  // This grant owns no tool of its own. build.ts turns it into write_paths
+  // entries and pinchy-files registers `pinchy_write` off the presence of
+  // write_paths, so a memory-only agent gets a write tool scoped to nothing but
+  // its memory. Deliberately absent from every plugin manifest, so
+  // computeAllowedTools() — which derives the emitted OpenClaw allowlist from
+  // those manifests — can never put this name into tools.allow.
+  //
+  // Memory used to ride on the `pinchy_write` grant below, which made an
+  // agent's recall a side effect of a checkbox about files: no template granted
+  // it, so template-created agents had memory tools and no memory (#755).
+  {
+    id: "pinchy_memory",
+    label: "Memory",
+    description: "Remember information across conversations and look it up later",
+    category: "powerful",
+  },
+
+  // Workspace write — governed by pinchy-files plugin.
+  //
+  // Also what registers `pinchy_generate_file` (CSV/XLSX/PDF export delivered
+  // as a chat download): that tool is gated on `workbench` being in write_paths,
+  // so it rides on this grant. The description says "create files" rather than
+  // naming a tool, because the grant is about the ZONE — the agent's own drawer
+  // — and not about which of the two tools it reaches for. It previously read
+  // "into the agent's workspace (uploads directory)", which named the one
+  // directory this grant no longer touches.
   {
     id: "pinchy_write",
-    label: "Write files",
-    description: "Write files into the agent's workspace (uploads directory)",
+    label: "Create files",
+    description: "Create files in its workspace and share them with you as downloads",
     category: "powerful",
   },
 ];
@@ -237,7 +272,7 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
 // allowlist is denied — so this list is the complete set of non-Pinchy tools an
 // agent may use:
 //   - memory_search / memory_get: the bundled `memory-core` plugin powers
-//     Pinchy's agent-memory feature (see memory-prompt.ts). They are
+//     Pinchy's agent-memory feature (see pinchy-files/memory-prompt.ts). They are
 //     plugin-owned, so they must be allowed by NAME — `group:memory` does NOT
 //     match them (verified against OpenClaw 2026.6.8).
 //   - session_status: read-only self-status (the baseline `minimal` profile).
@@ -256,7 +291,21 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
 // at all. Worse, keeping them in the allowlist gave weaker models (e.g.
 // kimi-k2.6) a temptingly-named `pdf` tool they picked over `pinchy_read`, then
 // told the user the attachment was unreadable (prod incident 2026-07-14).
-const INTENDED_BUILTIN_TOOLS = ["memory_search", "memory_get", "session_status"] as const;
+const INTENDED_BUILTIN_TOOLS = ["session_status"] as const;
+
+// The two memory built-ins are the ONLY per-agent entry in this allowlist.
+// Every other tool here is either unconditional or gated inside its own
+// plugin's config; these are OpenClaw built-ins with no Pinchy-side config, so
+// `tools.allow` is the only place they can be withheld — and `tools.allow` is
+// already emitted per agent (build.ts), so this costs nothing structurally.
+//
+// Withholding them matters more than "a useless tool": memory-core builds its
+// own `## Memory Recall` prompt section off these NAMES being present
+// (buildPromptSection), and that section instructs the agent to search memory
+// before answering anything about prior work. Hand them to an agent with no
+// memory and OpenClaw itself tells it to go looking — which is the #755 report,
+// an agent that insists it has memory, finds nothing, and invents a reason.
+const MEMORY_BUILTIN_TOOLS = ["memory_search", "memory_get"] as const;
 
 export function getToolById(id: string): ToolDefinition | undefined {
   return TOOL_REGISTRY.find((t) => t.id === id);
@@ -275,13 +324,22 @@ export function getToolsByCategory(category: "safe" | "powerful"): ToolDefinitio
  * tool (derived from the manifests, so it can't drift) plus the intentionally
  * allowed read-only built-ins.
  *
- * The same superset is emitted for every agent: per-agent tool gating already
- * happens inside each plugin's own config (the plugin only registers the tools
- * that agent is permitted), so listing a tool an agent lacks is a harmless
- * no-match. This allowlist is the OUTER boundary against built-ins.
+ * Almost the same superset is emitted for every agent: per-agent tool gating
+ * already happens inside each plugin's own config (the plugin only registers the
+ * tools that agent is permitted), so listing a plugin tool an agent lacks is a
+ * harmless no-match. This allowlist is the OUTER boundary against built-ins.
+ *
+ * The exception is MEMORY_BUILTIN_TOOLS, which has no plugin config to gate it —
+ * see the comment there. `allowedTools` is the agent's Pinchy grant list
+ * (`agents.allowed_tools`), NOT this function's own output; it is passed in so
+ * the memory built-ins can follow the `pinchy_memory` grant.
  */
-export function computeAllowedTools(): string[] {
-  return [...getAllPinchyPluginToolNames(), ...INTENDED_BUILTIN_TOOLS];
+export function computeAllowedTools(allowedTools: string[]): string[] {
+  return [
+    ...getAllPinchyPluginToolNames(),
+    ...INTENDED_BUILTIN_TOOLS,
+    ...(allowedTools.includes("pinchy_memory") ? MEMORY_BUILTIN_TOOLS : []),
+  ];
 }
 
 // --- Email operation helpers ---
@@ -302,7 +360,15 @@ export const EMAIL_OPERATIONS = ["read", "draft", "send"] as const;
 export type EmailOperation = (typeof EMAIL_OPERATIONS)[number];
 
 /**
- * Display order for rendering granted operations (TOOLS.md mailbox context).
+ * Every operation value that grants READ access to a mailbox: the canonical
+ * "read" plus the legacy "search"/"list" aliases described above. Use this
+ * wherever a gate asks "may this agent read this mailbox?" (e.g. the
+ * Automations write-API) so legacy rows keep working — never for draft/send.
+ */
+export const EMAIL_READ_OPERATIONS = ["read", "search", "list"] as const;
+
+/**
+ * Display order for rendering granted operations (the mailbox context in IDENTITY.md).
  * Superset of EMAIL_OPERATIONS: includes the legacy "search" and "list" slots
  * so old permission rows still render in a stable position.
  */
@@ -335,7 +401,7 @@ const EMAIL_SEND_TOOLS = ["email_send"] as const;
 export function getEmailToolsForOperations(operations: string[]): string[] {
   const tools: string[] = [];
   const ops = new Set(operations);
-  if (ops.has("read") || ops.has("search") || ops.has("list")) tools.push(...EMAIL_READ_TOOLS);
+  if (EMAIL_READ_OPERATIONS.some((op) => ops.has(op))) tools.push(...EMAIL_READ_TOOLS);
   if (ops.has("draft")) tools.push(...EMAIL_DRAFT_TOOLS);
   if (ops.has("send")) tools.push(...EMAIL_SEND_TOOLS);
   return tools;
@@ -375,6 +441,7 @@ const ODOO_WRITE_TOOLS = [
   "odoo_validate_picking",
   "odoo_mark_mo_done",
   "odoo_set_approval",
+  "odoo_reconcile",
   "odoo_write",
   "odoo_attach_file",
 ] as const;
@@ -394,6 +461,7 @@ const ODOO_ADDITIVE_TOOLS = new Set<string>([
   "odoo_validate_picking",
   "odoo_mark_mo_done",
   "odoo_set_approval",
+  "odoo_reconcile",
 ]);
 
 /** Returns all Odoo tool definitions from the registry. */
@@ -404,6 +472,53 @@ export function getOdooTools(): ToolDefinition[] {
 /** Returns all email tool definitions from the registry. */
 export function getEmailTools(): ToolDefinition[] {
   return TOOL_REGISTRY.filter((t) => t.integration === "email");
+}
+
+/**
+ * Which tools each column of the Odoo permission matrix speaks for.
+ *
+ * The matrix is (model × read|create|write|delete) and #1133 gives each cell a
+ * third state, "ask". That state is stored per tool (`odoo_delete:account.move`)
+ * because the gate matches on tool name, so a cell has to know its tools.
+ *
+ * This is the one hand-maintained list the feature could not derive, and
+ * `odoo-operation-tools.test.ts` guards it: every non-deprecated Odoo tool must
+ * appear here or in `ODOO_MODEL_AGNOSTIC_TOOLS`, exactly once. Without that,
+ * a new Odoo tool would be one the "ask" state cannot reach — an admin sets a
+ * cell to ask, the call runs unconfirmed, and nothing says why.
+ *
+ * The record-action tools sit under `write`: each mutates an existing record,
+ * and filing them elsewhere would hide them under a column nobody associates
+ * with them.
+ */
+export const ODOO_OPERATION_TOOLS: Record<"read" | "create" | "write" | "delete", string[]> = {
+  read: ["odoo_read", "odoo_count", "odoo_aggregate"],
+  create: ["odoo_create"],
+  write: [
+    "odoo_write",
+    "odoo_attach_file",
+    "odoo_schedule_activity",
+    "odoo_complete_activity",
+    "odoo_reschedule_activity",
+    "odoo_confirm_order",
+    "odoo_apply_inventory",
+    "odoo_validate_picking",
+    "odoo_mark_mo_done",
+    "odoo_set_approval",
+    "odoo_reconcile",
+  ],
+  delete: ["odoo_delete"],
+};
+
+/**
+ * Odoo tools that act on the schema rather than on records, so no row of the
+ * model matrix owns them. They are listed rather than left out, so the drift
+ * guard can tell "deliberately not in a cell" from "nobody classified it".
+ */
+export const ODOO_MODEL_AGNOSTIC_TOOLS: string[] = ["odoo_list_models", "odoo_describe_model"];
+
+export function odooToolsForOperation(operation: keyof typeof ODOO_OPERATION_TOOLS): string[] {
+  return ODOO_OPERATION_TOOLS[operation];
 }
 
 /** Returns the odoo_* tool IDs that should be enabled for the given access level. */

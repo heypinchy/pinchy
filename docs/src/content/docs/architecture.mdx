@@ -59,7 +59,7 @@ Each browser connection gets its own `ClientRouter` instance that manages agent 
 
 ### Agent routing
 
-When a message arrives, the `ClientRouter` passes the `agentId` from the browser message to OpenClaw via `chatOptions`. OpenClaw uses this to select the matching agent from its `agents.list[]` config — each agent can have its own model, system prompt, tools, and workspace.
+When a message arrives, the `ClientRouter` passes the `agentId` from the browser message to OpenClaw via `chatOptions`. OpenClaw uses this to select the matching agent from its `agents.entries` config, keyed by agent id — each agent can have its own model, system prompt, tools, and workspace.
 
 ### Chat sessions
 
@@ -79,7 +79,7 @@ Session keys follow the format `agent:<agentId>:<scope>`. OpenClaw validates tha
 
 This format is used for both personal and shared agents. Each user always gets their own session, which means converting a personal agent to a shared agent is seamless — the original user keeps their session, and other users get new ones.
 
-**Planned formats (not yet implemented):**
+**Planned formats — not yet implemented, and reserved so that background work ([#704](https://github.com/heypinchy/pinchy/issues/704)) doesn't collide with a user's own session:**
 
 | Scope            | Key format                      | Example                               | Use case                   |
 | ---------------- | ------------------------------- | ------------------------------------- | -------------------------- |
@@ -96,7 +96,7 @@ The browser-to-Pinchy WebSocket connection includes several layers of protection
 
 **OpenClaw disconnect propagation** — If Pinchy loses its connection to OpenClaw while a stream is in progress, it immediately closes all active browser WebSockets. This triggers the browser's existing disconnect-recovery path (disconnect error + auto-reconnect) without waiting for the server-side stream to time out. openclaw-node's chat generator hangs indefinitely when OpenClaw disappears, so the close is the only reliable way to surface the error quickly.
 
-**Auto-reconnect with exponential backoff** — If the connection drops, the browser automatically reconnects. Delays start at 1 second and double with each attempt, capped at 5 seconds, up to 10 attempts total. On reconnect, conversation history is re-fetched from the server and any partial streamed message is replaced with the canonical server version.
+**Auto-reconnect with exponential backoff** — If the connection drops, the browser automatically reconnects. Delays start at 1 second and double with each attempt, capped at about 15 seconds, with a little random jitter so many tabs don't retry in lockstep. The browser never gives up while the tab is visible. A connection attempt that hasn't opened after 10 seconds is cut and retried, and an open connection that goes silent is detected by a small keep-alive ping about every 25 seconds. A connection counts as established only once the server has sent its first message, so a connection the server turns away right after the handshake never resets the backoff, and a message queued while reconnecting waits for a connection that was accepted. When the browser reports it is offline, retries pause and resume the moment the network returns. From the second failed reconnect in a row on, the browser also asks `/api/auth/get-session` whether it still has a session; when the answer is "no session" (the account was deactivated, or the session ended, while the tab had no connection open to be told) it goes to the login page instead of retrying. A failed check — Pinchy restarting, say — leaves the backoff running. On reconnect, conversation history is re-fetched from the server and any partial streamed message is replaced with the canonical server version.
 
 **Disconnect recovery** — If the WebSocket closes while a response is being streamed, an inline error appears in the chat so the user knows the response may have been interrupted. If OpenClaw finished processing the request before the disconnect, the error is automatically replaced by the complete response when history reloads after reconnect.
 
@@ -104,17 +104,23 @@ The browser-to-Pinchy WebSocket connection includes several layers of protection
 
 **Stuck-request timeout** — If 60 seconds pass without any response activity (no chunks and no thinking heartbeats), the spinner stops and an error is shown prompting the user to send the message again. Heartbeats reset the timer between turns, so a slow-but-alive agent is never killed prematurely.
 
-**Run watchdog** _(v0.5.7)_ — A server-side 30-second interval scans `ActiveRuns` for runs whose absolute age exceeds a per-deployment cap (default 15 minutes, sized for Pinchy's slower-than-cloud workload mix: local Ollama, knowledge-base agents with PDF vision, air-gapped deployments). Stuck runs are aborted via `openclaw-node.chatAbort(sessionKey, runId)`, recorded as a `chat.run_timed_out` audit row, and a terminal error frame is broadcast to any still-connected listener. The watchdog catches runs that the client-side stuck timer can't — closed tabs, backgrounded laptops, and tabs that joined a run via reconnect after the original tab was already closed. A **first-chunk timeout** (default 180 seconds — set above the 150s dispatch-race retry budget so a normal OpenClaw restart isn't mistaken for a hang) covers the complementary failure: a run OpenClaw never acknowledges (no first chunk). Such runs are registered in `ActiveRuns` at dispatch time and, if no first chunk arrives in time, are aborted and broadcast a **retryable** error (audited as `chat.run_no_first_chunk`) so the user can resend instead of waiting on a blank thread — the server-side, reload-surviving backstop to the client's 60-second stuck timer.
+**Run watchdog** _(v0.5.7)_ — A server-side 30-second interval scans `ActiveRuns`. Pinchy sets no cap on how long a started run may take: OpenClaw owns that and aborts runs that go idle or stuck, and the gateway's `agent.wait` answers whether a run is still alive. (Earlier versions also had the watchdog abort runs older than 15 minutes and recorded them as `chat.run_timed_out`; that cap is gone and the event is no longer written.) The **first-chunk timeout** (default 180 seconds — set above the 150s dispatch-race retry budget so a normal OpenClaw restart isn't mistaken for a hang) covers the complementary failure: a run OpenClaw never acknowledges (no first chunk). Such runs are registered in `ActiveRuns` at dispatch time and, if no first chunk arrives in time, are aborted and broadcast a **retryable** error (audited as `chat.run_no_first_chunk`) so the user can resend instead of waiting on a blank thread — the server-side, reload-surviving backstop to the client's 60-second stuck timer.
 
 **Channel-health watchdog** _(v0.5.7)_ — OpenClaw owns the channel pollers (Telegram, …), so a channel worker that crash-loops _below_ the gateway WebSocket is invisible at the connection level — `connected` stays true and nothing is audited. The classic trigger is a Telegram bot token polled by two deployments: Telegram returns a `getUpdates` 409 conflict and OpenClaw enters a CPU-burning auto-restart loop. A 30-second probe calls `channels.status()`, classifies each account (connected / running / `lastError` / `reconnectAttempts`), and audits the transitions — `channel.degraded` on the first failure, `channel.polling_failed` if it stays down, `channel.recovered` when it comes back. The same status feeds a "Degraded" badge in the agent's Telegram settings.
 
-**Reconnect exhausted** — After 10 failed reconnect attempts, a persistent banner prompts the user to reload the page.
+**Long outages** — There is no "reconnect exhausted" dead end. After about 30 seconds without a connection, the status message changes to say Pinchy still can't be reached and offers **Try again** and **Reload**, while the retries carry on in the background. **Try again** closes the connection, opens a fresh one at once and resets the backoff; a message you were typing is kept.
 
 ### Session lifecycle and compaction
 
 Sessions grow with each message. OpenClaw tracks the full conversation in JSONL files and sends the relevant context to the LLM provider with each request. Over time, this increases token usage and cost.
 
-OpenClaw handles this via **compaction** — automatic summarization of older messages when the context window approaches its limit. Pinchy relies on OpenClaw's built-in compaction and does not override its mode. It does disable one related feature: OpenClaw's **pre-compaction memory flush** (`agents.defaults.compaction.memoryFlush.enabled: false`). That flush is a separate runtime turn OpenClaw fires right before compacting to salvage unsaved context, but it is hard-wired to the built-in `read`/`write` tools — which Pinchy denies for every agent (workspace writes go through the audited `pinchy_write`). With those tools removed the flush would run with no tools, produce no reply, and consume the user's inbound turn. Pinchy's agents persist memory through `pinchy_write` instead, so the native flush is a redundant, ungoverned duplicate. There is also an explicit `sessions.compact(key, { maxLines })` API for manual compaction.
+OpenClaw handles this via **compaction** — automatic summarization of older messages when the context window approaches its limit. Pinchy relies on OpenClaw's built-in compaction and does not override its mode, but it does bound one input to it: the **effective context budget** every model runs on.
+
+Compaction triggers a fixed distance below a model's context limit. On a model advertising a million-token window, that trigger sits so high it never fires in practice — the session just keeps growing until a single turn has to reprocess everything at once, which is slow, expensive, and eventually blocks the runtime. So Pinchy caps the budget it hands OpenClaw at **256K tokens** for every model it configures, through a per-model `contextTokens` in the emitted `models.providers` tree. OpenClaw 2026.9 retired the defaults-level `agents.defaults.contextTokens`, so the per-model value is the only layer, and Pinchy removes the old key from a file an earlier version wrote.
+
+The cap only ever lowers. A model whose window is already at or below 256K is unaffected, and a model with a documented long-context quality limit would keep its lower value (no model in the current catalog carries one). Each model's advertised `contextWindow` stays honest — Pinchy bounds what agents _use_, not what the provider _offers_. In exchange, compaction reliably fires, and a very-long-window model like Gemini works the same way every other model does. If you need a larger effective window, that's a change to Pinchy's ceiling, not a per-model setting.
+
+Pinchy also disables one related feature: OpenClaw's **pre-compaction memory flush** (`agents.defaults.compaction.memoryFlush.enabled: false`). That flush is a separate runtime turn OpenClaw fires right before compacting to salvage unsaved context, but it is hard-wired to the built-in `read`/`write` tools — which Pinchy denies for every agent (workspace writes go through the audited `pinchy_write`). With those tools removed the flush would run with no tools, produce no reply, and consume the user's inbound turn. Pinchy's agents persist memory through `pinchy_write` instead, so the native flush is a redundant, ungoverned duplicate. There is also an explicit `sessions.compact(key, { maxLines })` API for manual compaction.
 
 Sessions track a `compactionCount` to record how many compactions have occurred. The impact on `sessions.history()` output after compaction (whether summaries appear as regular messages or a special type) is an open question that will be addressed when sessions grow large enough to trigger it.
 
@@ -156,7 +162,7 @@ Tools are organized into two categories:
 
 When an agent has safe tools enabled, the `pinchy-files` plugin validates every file access request against the agent's allowed directories, with symlink resolution to prevent escapes.
 
-In addition to the allow-list, every agent has built-in PDF and image readers that are **scoped to its own [workspace](/concepts/workspaces/)** — they cannot reach files outside the workspace, regardless of permissions. Each workspace has two subdirectories: `uploads/` (files the user attached in chat) and `workbench/` (the agent's writable area for `pinchy_write` deliverables). Both are created eagerly on workspace spawn, so a fresh agent can save files immediately without needing a prior user upload.
+In addition to the allow-list, every agent has built-in PDF and image readers that are **scoped to its own [workspace](/concepts/workspaces/)** — they cannot reach files outside the workspace, regardless of permissions. Each workspace has two subdirectories: `uploads/` (files the user attached in chat — the agent reads them, and its file tools can never write there) and `workbench/` (the agent's writable area for `pinchy_write` deliverables). Both are created eagerly on workspace spawn, so a fresh agent can save files immediately without needing a prior user upload.
 
 Smithers agents also use the `pinchy-context` plugin, which provides `pinchy_save_user_context` and `pinchy_save_org_context` tools. These tools call Pinchy's internal API (authenticated via a shared gateway token) to save context from the onboarding interview directly to the database and sync it to agent workspaces.
 
@@ -166,8 +172,9 @@ All agent-accessible files live under `/data/` in the container, mounted via Doc
 
 Pinchy restricts which agents a user can see:
 
-- **Admins** can access all agents (personal and shared)
-- **Users** can access shared agents and their own personal agent
+- **Admins** can access every shared agent, and their own personal agent
+- **Users** can access shared agents their visibility admits them to, and their own personal agent, unless an admin has turned members' personal agents off ([Member access](/guides/cost-governance/#member-access))
+- A personal agent is private to its owner. No role reaches somebody else's — an admin's sidebar does not list it, and its ID answers "not found" on every `/api/agents/:id/` endpoint, management surfaces and automations included
 - Only admins can view and modify agent permissions
 
 For the full details, see [Agent Permissions](/concepts/agent-permissions/).
@@ -254,7 +261,9 @@ Because the same volume is mounted at two different paths, two helpers in `lib/w
 
 ## Channels
 
-Users don't have to reach their agents through the web UI. Pinchy supports external **channels** that connect agents to messaging platforms. Telegram is the first implemented channel; additional channels (email, Slack) are planned.
+Users don't have to reach their agents through the web UI. Pinchy supports external **channels** that connect agents to messaging platforms. Telegram is the channel implemented today.
+
+Mail reaches agents by a different route: it is an [integration](/concepts/integrations/) they poll rather than a channel that pushes to them, and standing rules over that mailbox are [automations](/concepts/agent-settings/#automations-tab).
 
 ### Per-agent bots
 
@@ -284,7 +293,7 @@ Integrations let agents work with external business data — email accounts, ERP
 | **Odoo**       | API key           | URL, database, login, API key |
 | **Web Search** | API key           | Brave Search API key          |
 
-All credentials are encrypted at rest with AES-256-GCM and isolated per-row: a single decryption failure no longer hides every integration. Credentials never reach the OpenClaw config file — plugins fetch them on-demand via Pinchy's internal API, authenticated with the shared gateway token.
+All credentials are encrypted at rest with AES-256-GCM and isolated per-row: a single decryption failure no longer hides every integration. Credentials never reach the OpenClaw config file — plugins fetch them on-demand via Pinchy's internal API. That call carries two things: the shared gateway token, which says the caller is the OpenClaw runtime, and the id of the agent it is acting for. Pinchy checks that agent's grant before it decrypts anything, so a plugin cannot ask for a connection the agent was never given.
 
 Each integration enforces its own permission model on the agent side:
 

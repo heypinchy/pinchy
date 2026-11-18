@@ -1,0 +1,725 @@
+/**
+ * The knowledge-base index worker (#714).
+ *
+ * Claims a kb_index_jobs row, runs the ingest against the paths the job
+ * snapshotted at enqueue, publishes progress as it goes, and records the
+ * outcome — on the job row and in the audit trail.
+ *
+ * Lives in the web process on a setInterval, like every other background job
+ * here (upload-gc, chat-error-gc, audit-verify-job): one container, one worker,
+ * stopped through buildShutdownSteps so SIGTERM doesn't hang. That single-
+ * container assumption is also what makes requeueOrphanedIndexJobs() safe at
+ * boot — see its doc comment — and clearStagedBatches(), which frees the disk
+ * an interrupted run left behind. After an update that changed how Office
+ * documents are converted, the worker queues the reindex that converts the
+ * documents indexed the old way again (office-format-upgrade.ts) — at boot, and
+ * hourly after — and every boot and every finished run removes an artifact
+ * format directory no document is read from any more (pruneOtherFormatVersions).
+ *
+ * A run can take hours (a ~2k-PDF corpus is 1.5-7h of CPU-only embedding), so
+ * the interval is a poll for NEW work, not a run cadence: the re-entrancy guard
+ * keeps overlapping ticks from starting a second run.
+ */
+import { randomUUID } from "node:crypto";
+import { mkdir, rm } from "node:fs/promises";
+import { join } from "node:path";
+
+import { db } from "@/db";
+import { usageRecords } from "@/db/schema";
+import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
+import { safeProviderError } from "@/lib/audit";
+import { recordAuditFailure } from "@/lib/audit-deferred";
+import { errorLine, LOG_PATH_MAX, oneLine } from "@/lib/log-line";
+import {
+  describeUnavailableFolders,
+  type UnavailableFolder,
+} from "@/lib/knowledge/unavailable-folders";
+import { embedTexts, fitTextsForEmbedding } from "@/lib/knowledge/embeddings";
+import { kbEmbedderAvailable, kbEmbeddingConfig } from "@/lib/knowledge/kb-embedder";
+import { resolveKbOcr } from "@/lib/knowledge/kb-ocr";
+import { DEFAULT_MAX_OCR_PAGES, extractPdfPages } from "@/lib/knowledge/pdf-extract";
+import {
+  extractXlsxIsolated,
+  readDocxTextIsolated,
+  readMsgIsolated,
+  tiffToPdfIsolated,
+} from "@/lib/knowledge/xlsx-isolated";
+import { convertOfficeFiles } from "@/lib/knowledge/office-convert";
+import { clearSpoolBatches } from "@/lib/knowledge/office-converter-sidecar";
+import {
+  clearStagedBatches,
+  getScanArtifactStore,
+  OFFICE_ARTIFACT_FORMAT_VERSION,
+  pruneOtherFormatVersions,
+  stagingDirOf,
+} from "@/lib/knowledge/office-artifacts";
+import {
+  agentsOwedReconversion,
+  officeFormatVersionInUse,
+  queueReconversion,
+  searchingAgents,
+} from "@/lib/knowledge/office-format-upgrade";
+import { buildFolderPlan } from "@/lib/knowledge/folder-plan";
+import { ingestPaths, type IngestDeps, type ScanConversion } from "@/lib/knowledge/ingest";
+import {
+  agentsOwedFirstIndex,
+  anyAgentSearchesTheIndex,
+  loadRunPaths,
+  queueFirstIndex,
+} from "@/lib/knowledge/first-index";
+import { DEFAULT_ORG_ID } from "@/lib/knowledge/constants";
+import {
+  claimNextIndexJob,
+  findActiveIndexJob,
+  finishIndexJob,
+  recordIndexJobFolderPlan,
+  recordIndexJobProgress,
+  requeueOrphanedIndexJobs,
+  type KbIndexJob,
+} from "@/lib/knowledge/index-jobs";
+import { KB_INDEX_WORKER_ACTOR, reindexAuditEntry } from "@/lib/knowledge/reindex-audit";
+import { zeroIngestResult, type IngestResult } from "@/lib/knowledge/types";
+
+/**
+ * What one run sent to a vision model, for the audit row.
+ *
+ * Counts, never paths: `reindexAuditEntry` explains why an immutable,
+ * HMAC-signed detail must not carry filesystem paths, and that reasoning does
+ * not weaken because the payload would be interesting. So the trail answers
+ * "how much of this corpus was sent, and to which model" — not "which files",
+ * which stays answerable from the index itself.
+ */
+interface OcrTally {
+  model: string;
+  documents: number;
+  pages: number;
+  skippedPages: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+/**
+ * Converts a scanned TIFF in the fenced child, at most as many frames as the
+ * OCR reads of a scanned PDF, and commits the PDF to the scan store under the
+ * file's content hash — where a citation opens it.
+ */
+async function convertScan(copyPath: string, contentHash: string): Promise<ScanConversion> {
+  const dir = join(stagingDirOf(), `scan-${randomUUID()}`);
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- a fresh directory inside the artifact volume's staging area.
+  await mkdir(dir, { recursive: true });
+  try {
+    const staged = join(dir, "scan.pdf");
+    const { frames, converted } = await tiffToPdfIsolated(copyPath, staged, {
+      maxFrames: DEFAULT_MAX_OCR_PAGES,
+    });
+    const pdfPath = await getScanArtifactStore().put(contentHash, staged);
+    return { pdfPath, frames, converted };
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+/** Resolves the production embedder + extractor, or null if the bundled embedding model is missing (a broken image, not a config choice). */
+async function resolveIngestDeps(tally: { current: OcrTally | null }): Promise<IngestDeps | null> {
+  if (!kbEmbedderAvailable()) return null;
+
+  const cfg = kbEmbeddingConfig();
+  // Resolved once per run rather than per document: the model choice and the
+  // provider key cannot meaningfully change mid-run, and re-resolving would
+  // re-read settings once per PDF across a corpus of thousands.
+  const ocr = await resolveKbOcr({
+    onUsage: ({ inputTokens, outputTokens }) => {
+      const t = tally.current;
+      if (!t) return;
+      t.inputTokens += inputTokens;
+      t.outputTokens += outputTokens;
+    },
+  });
+  if (ocr) {
+    tally.current = {
+      model: ocr.model,
+      documents: 0,
+      pages: 0,
+      skippedPages: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+    };
+  }
+
+  return {
+    embed: (texts) => embedTexts(texts, cfg),
+    fitForEmbedding: (texts) => fitTextsForEmbedding(texts, cfg),
+    extractPdf: (absPath, opts) =>
+      extractPdfPages(absPath, {
+        outline: opts?.outline,
+        ...(ocr
+          ? {
+              ocr: {
+                ocrPage: ocr.ocrPage,
+                onDocumentOcr: ({ rendered, skipped }) => {
+                  const t = tally.current;
+                  if (!t) return;
+                  t.documents++;
+                  t.pages += rendered;
+                  t.skippedPages += skipped;
+                },
+              },
+            }
+          : {}),
+      }),
+    // In a heap-capped child process: a workbook's cell model costs ~20× its
+    // sheet XML, and in this process that is an OOM kill of the web server on
+    // every nightly reindex (xlsx-isolated.ts).
+    extractXlsx: (absPath) => extractXlsxIsolated(absPath),
+    convertOffice: (sources) => convertOfficeFiles(sources),
+    convertScan: async (copyPath, contentHash) => {
+      const conversion = await convertScan(copyPath, contentHash);
+      // Frames past the OCR budget are never pages of the PDF, so the OCR
+      // tally never sees them; they are skipped pages all the same.
+      const t = tally.current;
+      if (t) t.skippedPages += conversion.frames - conversion.converted;
+      return conversion;
+    },
+    // Behind the same fence: the parser walks an untrusted Compound File.
+    readEmail: (copyPath) => readMsgIsolated(copyPath),
+    readDocxText: (copyPath) => readDocxTextIsolated(copyPath),
+    ocrModel: ocr?.model ?? null,
+    // The artifact volume, not the container's /tmp: see IngestDeps.stagingDir.
+    stagingDir: stagingDirOf(),
+  };
+}
+
+/**
+ * Why a run that found none of its folders failed, as the audit row records
+ * it: what to check, never a path — a folder name can embed a person's name,
+ * and the row can never be rewritten. The admin reads the run's own error
+ * instead, which names the folders (describeUnavailableFolders, #1363).
+ */
+export const FOLDERS_UNAVAILABLE_ERROR =
+  "None of the granted folders could be read — they were missing, unreadable, or came up empty while the index still holds their documents — so the index was left as it was. If they live on a network share, check that it is mounted.";
+
+/**
+ * Thrown when every root was skipped. Carries the text the admin reads, which
+ * names the folders, apart from the path-free audit reason.
+ */
+class FoldersUnavailableError extends Error {
+  constructor(readonly forAdmin: string) {
+    super(FOLDERS_UNAVAILABLE_ERROR);
+  }
+}
+
+export interface RunIndexJobOptions {
+  /** Test seam: injects a deterministic embedder/extractor. Production resolves them from the bundled in-process embeddinggemma GGUF. */
+  deps?: IngestDeps;
+  /** Test seam: the artifact volume the first tick clears leftover staging (batches and source copies) and superseded format versions from. Production uses the store's default. */
+  artifactDir?: string;
+}
+
+/**
+ * Runs the next queued job to completion, or returns null if there is none.
+ *
+ * Exported for tests and for the boot kick; the interval calls it through the
+ * re-entrancy guard below.
+ */
+export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<KbIndexJob | null> {
+  const job = await claimNextIndexJob();
+  if (!job) return null;
+
+  const agent = { id: job.agentId, name: job.agentName };
+  // Updated from every progress report, NOT from ingestPaths' return value: a
+  // systemic throw skips the return, and a run that died on file 1501 of 2000
+  // still indexed 1500 documents. Reading the tally off the last report is the
+  // only way that survives the throw.
+  let counts: IngestResult = zeroIngestResult();
+  // Mutated by the extractor's per-document callback. Held in a box rather
+  // than returned, for the same reason as `counts`: a run that dies partway
+  // still sent whatever it sent, and that has to reach the audit row.
+  const ocrTally: { current: OcrTally | null } = { current: null };
+  // Folders ingest left as they were: granted roots it could not read or that
+  // came up emptied, and emptied folders below a root. Counted onto the job and
+  // the outcome row, never named there. `skippedRoots` decides whether the run
+  // read anything at all, and when it read nothing, its roots are what the
+  // admin's error names — the job row, which the admin reads and which is
+  // replaced by the next run, not the audit row (#1363).
+  let unavailableFolders = 0;
+  const skippedRoots: UnavailableFolder[] = [];
+  // Files refused because their path no longer led to a regular file inside
+  // the folder (swapped for a link or a non-file, or reached through a folder
+  // swapped for a link) — never a file merely saved again since the walk.
+  // Already in `failed`; counted apart because a refusal is a security
+  // finding, not a broken file. Named in the server log only.
+  let refusedFiles = 0;
+
+  try {
+    // Resolved per run, not per process: the route's precheck only covers the
+    // moment of the request, and existsSync is cheap enough to re-check here.
+    const deps = opts.deps ?? (await resolveIngestDeps(ocrTally));
+    if (!deps) throw new Error("embedding_model_missing");
+
+    // Read per run, like the job's own paths: a grant added or revoked since
+    // the last run moves where the archive rule cuts a path (#1420).
+    const archiveRoots = (await searchingAgents()).flatMap((searching) => searching.paths);
+
+    counts = await ingestPaths(job.orgId, job.paths, deps, {
+      archiveRoots,
+      onProgress: (progress) => {
+        counts = progress.counts;
+        return recordIndexJobProgress(job.id, progress);
+      },
+      onQueue: (queue) => recordIndexJobFolderPlan(job.id, buildFolderPlan(job.paths, queue)),
+      onSkippedRoot: (rootDir, reason) => {
+        unavailableFolders++;
+        skippedRoots.push({ path: rootDir, reason });
+        console.warn(
+          `[kb-index-worker] job ${job.id}: skipped ${oneLine(rootDir, LOG_PATH_MAX)} (${reason}); nothing under it was indexed or removed`
+        );
+      },
+      onRefusedFile: (absPath, refusal) => {
+        refusedFiles++;
+        console.warn(
+          `[kb-index-worker] job ${job.id}: refused to read ${oneLine(absPath, LOG_PATH_MAX)} (${refusal}); it was not indexed, and any version indexed before was kept`
+        );
+      },
+      onKeptFolder: (folder) => {
+        unavailableFolders++;
+        console.warn(
+          `[kb-index-worker] job ${job.id}: ${oneLine(folder, LOG_PATH_MAX)} came up empty while the index still holds documents from it; they were kept`
+        );
+      },
+      // A share that failed to mount is an empty directory under Docker, and
+      // that holds for every run: the nightly one nobody watches, and the
+      // admin's retry after it failed saying "check that it is mounted" —
+      // which, read literally, would delete the folder's whole index.
+      keepEmptiedFolders: true,
+    });
+
+    // Every folder skipped is not a run that found nothing — it is a run that
+    // could not look. Reporting it as a success is how an unmounted share
+    // would read "Last indexed automatically today" for weeks.
+    if (job.paths.length > 0 && skippedRoots.length === job.paths.length) {
+      throw new FoldersUnavailableError(describeUnavailableFolders(skippedRoots));
+    }
+  } catch (err) {
+    // Ingest already absorbs a single unreadable file, or one whose values the
+    // database refuses (counting it `failed`), so reaching here means something
+    // systemic — the embedder (a missing GGUF
+    // or a node-llama-cpp load failure) or the database — took the run down.
+    // Finishing the job (rather than leaving it `running`) is what frees the
+    // org's active-job slot: without it, one transient failure would wedge the
+    // queue until the next restart.
+    //
+    // The one case this cannot rescue is the database itself being the outage:
+    // then finishIndexJob's own write fails too, the row stays `running`, and
+    // the slot is held until the next boot requeues it. Recovering from that
+    // without a restart would need a liveness signal (heartbeat + staleness
+    // sweep) that the single-container design does not otherwise need — and a
+    // database outage is already an operator's problem, not a queue's.
+    const reason = safeProviderError(err instanceof Error ? err.message : "reindex_failed");
+    const shown = err instanceof FoldersUnavailableError ? safeProviderError(err.forAdmin) : reason;
+    await finishIndexJob(job.id, { outcome: "failed", counts, error: shown, unavailableFolders });
+    await recordOcrUsage(job, ocrTally.current);
+    await auditOutcome({
+      job,
+      agent,
+      outcome: "failure",
+      counts,
+      reason,
+      ocr: ocrTally.current,
+      unavailableFolders,
+      refusedFiles,
+    });
+    return { ...job, status: "failed", counts, error: shown, unavailableFolders };
+  }
+
+  // `unsearchable` and `failed` files do not make this a failed run: the
+  // reindex did its job, and those counts are findings about the corpus.
+  // Burying them would be the failure.
+  await finishIndexJob(job.id, { outcome: "succeeded", counts, unavailableFolders });
+  await recordOcrUsage(job, ocrTally.current);
+  await auditOutcome({
+    job,
+    agent,
+    outcome: "success",
+    counts,
+    ocr: ocrTally.current,
+    unavailableFolders,
+    refusedFiles,
+  });
+  return { ...job, status: "succeeded", counts, unavailableFolders };
+}
+
+/**
+ * Writes one usage row for the vision tokens this run spent.
+ *
+ * One row per RUN, not per page: a corpus of scans is hundreds of calls, and
+ * the dashboard's question is "what did indexing cost", not "what did page 7
+ * cost". The `kb-index:` session key classifies as `system` — background work
+ * Pinchy triggered on the agent's behalf, which is exactly what a reindex is.
+ *
+ * Written inline rather than through /api/internal/usage/record: that route
+ * exists so the OpenClaw container can reach the database it has no connection
+ * to. This worker runs inside the web process and already has one.
+ */
+async function recordOcrUsage(job: KbIndexJob, ocr: OcrTally | null): Promise<void> {
+  if (!ocr || ocr.inputTokens + ocr.outputTokens === 0) return;
+
+  try {
+    await db.insert(usageRecords).values({
+      // Same sentinel the plugin's vision reporter uses: nobody typed
+      // anything, so there is no user to attribute this to.
+      userId: "system",
+      agentId: job.agentId,
+      agentName: job.agentName,
+      sessionKey: `kb-index:${job.id}`,
+      model: ocr.model,
+      inputTokens: ocr.inputTokens,
+      outputTokens: ocr.outputTokens,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      estimatedCostUsd: null,
+    });
+  } catch (err) {
+    // Telemetry must never take down a reindex that actually happened — the
+    // same call the audit write makes one line below.
+    console.error("[kb-index-worker] failed to record OCR usage:", errorLine(err));
+  }
+}
+
+/**
+ * Writes the run's audit row.
+ *
+ * No request context here, so this follows the AGENTS.md non-request pattern:
+ * await the append, and hand a failure to recordAuditFailure rather than
+ * letting a broken audit sink take down a reindex that actually happened.
+ */
+async function auditOutcome(args: {
+  job: KbIndexJob;
+  agent: { id: string; name: string };
+  outcome: "success" | "failure";
+  counts: IngestResult;
+  reason?: string;
+  ocr: OcrTally | null;
+  unavailableFolders: number;
+  refusedFiles: number;
+}): Promise<void> {
+  const entry = reindexAuditEntry({
+    actorType: "system",
+    actorId: KB_INDEX_WORKER_ACTOR,
+    agent: args.agent,
+    outcome: args.outcome,
+    pathCount: args.job.paths.length,
+    jobId: args.job.id,
+    // Copied from the job rather than inferred: the worker runs a scheduled
+    // job exactly like a manual one, so the row is the only place the
+    // difference survives.
+    trigger: args.job.trigger,
+    ...(args.job.sweepId !== null ? { sweepId: args.job.sweepId } : {}),
+    counts: args.counts,
+    reason: args.reason,
+    // Omitted entirely when the run OCR'd nothing, so an absent field means
+    // "nothing was sent" rather than "we did not look".
+    ocr: args.ocr && args.ocr.documents > 0 ? args.ocr : undefined,
+    unavailableFolders: args.unavailableFolders > 0 ? args.unavailableFolders : undefined,
+    refusedFiles: args.refusedFiles > 0 ? args.refusedFiles : undefined,
+  });
+  try {
+    await appendAuditLog(entry);
+  } catch (err) {
+    recordAuditFailure(err, entry);
+  }
+}
+
+/**
+ * How often to look for new work. Short because it is a poll for a QUEUED job,
+ * not a run cadence — a claimed run holds the guard below for as long as it
+ * takes, however many ticks pass underneath it.
+ */
+const POLL_INTERVAL_MS = 10_000;
+
+let _pollInterval: ReturnType<typeof setInterval> | null = null;
+// Re-entrancy guard: a multi-hour run must not be started a second time by an
+// overlapping tick. The DB claim would refuse the double-run anyway; this keeps
+// us from hammering it every 10s for hours to find that out.
+let _runInFlight = false;
+/**
+ * How often to look for Office documents owed a conversion under the current
+ * artifact format. At boot, and then hourly: an agent granted
+ * `knowledge_search` or a folder after boot is owed that run too, and with the
+ * nightly reindex switched off nothing else would give it one before the next
+ * restart.
+ */
+const RECONVERSION_LOOK_INTERVAL_MS = 60 * 60 * 1000;
+
+// Agents whose folders hold Office documents converted under an earlier
+// artifact format, not yet queued.
+let _reconversionsOwed: string[] = [];
+// When the worker last looked for them; null until the first tick.
+let _reconversionLookedAt: number | null = null;
+// Whether this process has already cleaned up after its predecessor. See the
+// requeue in runKbIndexWorkerTick for why doing it exactly once is not an
+// optimization but a correctness condition.
+let _orphansRequeued = false;
+
+/**
+ * One turn of the worker: adopt any jobs the previous process left behind, then
+ * drain the queue.
+ *
+ * Exported for tests. The interval calls it; the re-entrancy guard means a tick
+ * that lands during a multi-hour run returns immediately.
+ */
+export async function runKbIndexWorkerTick(opts: RunIndexJobOptions = {}): Promise<void> {
+  if (_runInFlight) return;
+  _runInFlight = true;
+  try {
+    // Requeueing is only sound as a BOOT act: a `running` job is safe to reset
+    // precisely because this process is the only worker and has not started
+    // one yet, so whatever holds it is gone. Once we begin claiming, that
+    // premise dies — the next `running` job we would find is OUR OWN, and
+    // resetting it flips a live run to `pending`, blanks its total, and makes
+    // every status read lie for the hours it keeps running. Hence: strictly
+    // before the first claim, and exactly once.
+    if (!_orphansRequeued) {
+      _orphansRequeued = true;
+      const requeued = await requeueOrphanedIndexJobs();
+      if (requeued > 0) {
+        console.log(`[kb-index-worker] requeued ${requeued} job(s) orphaned by a restart`);
+      }
+      // The same premise frees the disk the dead run held: an Office batch
+      // that never finished left its copies in the artifact volume's
+      // `staging/`, and so did a document whose read was cut short — a full
+      // plaintext copy of it, which nothing else would ever remove. No batch
+      // or read of ours exists yet. Housekeeping, so a failure is logged and
+      // the queue still runs.
+      try {
+        // With the office-converter sidecar, Office batches are staged in its
+        // spool instead (office-converter-sidecar.ts): same premise, same act.
+        const spoolDir = process.env.KB_OFFICE_SPOOL_DIR;
+        const cleared =
+          (await clearStagedBatches(opts.artifactDir)) +
+          (spoolDir ? await clearSpoolBatches(spoolDir) : 0);
+        if (cleared > 0) {
+          console.log(
+            `[kb-index-worker] cleared ${cleared} staged batch(es) and source copies left by an interrupted run`
+          );
+        }
+      } catch (err) {
+        console.warn("[kb-index-worker] could not clear leftover staging:", errorLine(err));
+      }
+      await pruneSupersededArtifacts(opts.artifactDir);
+    }
+
+    await lookForOwedReconversions();
+
+    // Drains the queue rather than running one job per tick. Pinchy is
+    // single-tenant (DEFAULT_ORG_ID) and the active-job index is per org, so
+    // one job runs at a time; another is found here when one was queued as
+    // the last freed the slot — the next agent owed a reconversion, queued
+    // just above, or the nightly schedule's next agent. "Keep going while
+    // there is work" is the rule either way, and it stays right the day a
+    // second org exists.
+    for (;;) {
+      await queueOwedReconversion();
+      await queueOwedFirstIndex();
+      if (!(await runNextIndexJob(opts))) break;
+      // A finished run may have converted the last document an earlier
+      // format's directory was kept for.
+      await pruneSupersededArtifacts(opts.artifactDir);
+    }
+  } catch (err) {
+    console.error("[kb-index-worker] job run failed:", errorLine(err));
+  } finally {
+    _runInFlight = false;
+  }
+}
+
+/**
+ * Queues the next agent owed a reconversion, if the instance's one job slot
+ * is free. Called before every claim, so these runs queue behind whatever an
+ * admin or the nightly schedule already started — one job at a time, like any
+ * other.
+ */
+async function queueOwedReconversion(): Promise<void> {
+  try {
+    while (_reconversionsOwed.length > 0) {
+      const outcome = await queueReconversion(_reconversionsOwed[0]);
+      if (outcome.status === "busy") return;
+      _reconversionsOwed.shift();
+      if (outcome.status === "queued") return;
+    }
+  } catch (err) {
+    // A database problem: drop the rest rather than ask again every tick.
+    // The next look, within the hour, finds what is left.
+    _reconversionsOwed = [];
+    console.warn(
+      "[kb-index-worker] could not queue the reconversion of Office documents:",
+      errorLine(err)
+    );
+  }
+}
+
+/**
+ * How long the first-index look pauses after it failed — a database problem,
+ * which asking again every ten seconds would only log ten times as often.
+ */
+const FIRST_INDEX_RETRY_MS = 5 * 60 * 1000;
+
+// When the first-index look last failed; null while it works.
+let _firstIndexFailedAt: number | null = null;
+
+/**
+ * Queues the first index of an agent granted a folder nothing has indexed yet
+ * (#1280), if the instance's one job slot is free.
+ *
+ * The route that granted the folder queues it already; this is for the grant
+ * that found the slot taken — by a nightly run, an admin's, or another
+ * agent's first index — and for one the route never got to (a restart in
+ * between). The folder being unindexed IS the record, so nothing is kept in
+ * memory and nothing is lost to a restart. Asked on every tick the slot is
+ * free, not hourly like the reconversion: a new agent answers "nothing found"
+ * until it has run. An idle look is three reads — the active job, the agents,
+ * and the distinct folders the runs went through (a handful of rows however
+ * many nights are recorded) — plus a document probe only for a folder no run
+ * has gone through.
+ */
+async function queueOwedFirstIndex(): Promise<void> {
+  if (_firstIndexFailedAt !== null && Date.now() - _firstIndexFailedAt < FIRST_INDEX_RETRY_MS) {
+    return;
+  }
+  // Without the bundled embedding model every run could only fail, so there
+  // is nothing to queue and nothing worth reading every tick to find out.
+  if (!kbEmbedderAvailable()) return;
+  try {
+    if (await findActiveIndexJob(DEFAULT_ORG_ID)) return;
+    // No agent searches the index: nothing can be owed, and the run folders
+    // need not be read on every idle tick to find that out.
+    if (!(await anyAgentSearchesTheIndex())) return;
+    const runs = await loadRunPaths();
+    for (const agentId of await agentsOwedFirstIndex(runs)) {
+      const outcome = await queueFirstIndex(
+        agentId,
+        { actorType: "system", actorId: KB_INDEX_WORKER_ACTOR },
+        recordAudit,
+        runs
+      );
+      if (outcome.status !== "skipped") return;
+    }
+    _firstIndexFailedAt = null;
+  } catch (err) {
+    _firstIndexFailedAt = Date.now();
+    console.warn("[kb-index-worker] could not queue a first index:", errorLine(err));
+  }
+}
+
+/** Writes an audit row outside any request — the AGENTS.md non-request pattern. */
+async function recordAudit(entry: AuditLogEntry): Promise<void> {
+  try {
+    await appendAuditLog(entry);
+  } catch (err) {
+    recordAuditFailure(err, entry);
+  }
+}
+
+/**
+ * After a format bump, the documents indexed from the earlier format's
+ * artifacts are owed a conversion under the current rules, and until they get
+ * it their chunks answer no search and their previews cannot open. The nightly
+ * run would do it — unless it is switched off — so the agents whose folders
+ * hold them are queued from here, one at a time: at boot, and then hourly,
+ * which also reaches an agent granted `knowledge_search` or a folder since.
+ * Folders a run — any run — read whole and succeeded over, started within
+ * the last day, are left out, so a document that cannot be converted now costs
+ * its folder at most one run a day, across restarts; a folder a run failed
+ * over, or had to leave as it was, is left out for six hours from its start,
+ * so a share that stays unmounted costs four failed runs a day, not 24. While
+ * the bundled embedding model is missing nothing is queued — every run could
+ * only fail — and the look says so instead. A failure to look is logged and
+ * leaves it to the next look; the queue still runs.
+ */
+async function lookForOwedReconversions(): Promise<void> {
+  const now = Date.now();
+  if (
+    _reconversionLookedAt !== null &&
+    now - _reconversionLookedAt < RECONVERSION_LOOK_INTERVAL_MS
+  ) {
+    return;
+  }
+  _reconversionLookedAt = now;
+  try {
+    const owed = (await agentsOwedReconversion()).filter(
+      (agentId) => !_reconversionsOwed.includes(agentId)
+    );
+    if (owed.length === 0) return;
+    if (!kbEmbedderAvailable()) {
+      console.warn(
+        `[kb-index-worker] ${owed.length} agent(s) hold Office documents converted under an earlier format; their reindex is held until the bundled embedding model is back`
+      );
+      return;
+    }
+    _reconversionsOwed.push(...owed);
+    console.log(
+      `[kb-index-worker] ${owed.length} agent(s) hold Office documents converted under an earlier format; reindexing them`
+    );
+  } catch (err) {
+    console.warn(
+      "[kb-index-worker] could not look for Office documents owed a conversion:",
+      errorLine(err)
+    );
+  }
+}
+
+/**
+ * Removes the artifacts of a superseded format version once no document is
+ * read from it any more. Housekeeping, so a failure is logged and the queue
+ * still runs.
+ */
+async function pruneSupersededArtifacts(artifactDir: string | undefined): Promise<void> {
+  try {
+    const pruned = await pruneOtherFormatVersions(
+      artifactDir,
+      OFFICE_ARTIFACT_FORMAT_VERSION,
+      officeFormatVersionInUse
+    );
+    if (pruned > 0) {
+      console.log(
+        `[kb-index-worker] removed ${pruned} converted Office document(s) of a superseded format version`
+      );
+    }
+  } catch (err) {
+    console.warn("[kb-index-worker] could not remove superseded Office artifacts:", errorLine(err));
+  }
+}
+
+/**
+ * Starts polling for queued index jobs.
+ *
+ * No post-boot kick, unlike the hourly sweeps (upload-gc, chat-error-gc): the
+ * poll is already 10s, so the first tick IS the kick. Arming a second, earlier
+ * path to the same work is what let an orphan-requeue race a claim the interval
+ * had already made.
+ */
+export function startKbIndexWorker(): void {
+  _pollInterval = setInterval(() => {
+    void runKbIndexWorkerTick();
+  }, POLL_INTERVAL_MS);
+}
+
+export function stopKbIndexWorker(): void {
+  if (_pollInterval !== null) {
+    clearInterval(_pollInterval);
+    _pollInterval = null;
+  }
+}
+
+// Test-only helper (mirrors upload-gc / chat-error-gc / audit-verify-job).
+export function _isKbIndexWorkerRunning(): boolean {
+  return _pollInterval !== null;
+}
+
+/** Test-only: returns the module to its just-booted state, so a test can exercise the once-per-process orphan requeue. */
+export function _resetKbIndexWorkerForTest(): void {
+  _orphansRequeued = false;
+  _reconversionsOwed = [];
+  _reconversionLookedAt = null;
+  _firstIndexFailedAt = null;
+  _runInFlight = false;
+}

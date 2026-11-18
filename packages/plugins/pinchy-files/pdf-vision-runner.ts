@@ -26,7 +26,7 @@ export interface AggregatedVisionUsage {
 
 export async function runVisionTasks(
   pages: VisionRunnerPage[],
-  visionConfig: VisionApiConfig,
+  visionConfig: VisionApiConfig
 ): Promise<AggregatedVisionUsage> {
   let inputTokens = 0;
   let outputTokens = 0;
@@ -47,7 +47,7 @@ export async function runVisionTasks(
             inputTokens += visionResult.usage.inputTokens;
             outputTokens += visionResult.usage.outputTokens;
           }
-        })(),
+        })()
       );
     }
 
@@ -62,7 +62,7 @@ export async function runVisionTasks(
             inputTokens += visionResult.usage.inputTokens;
             outputTokens += visionResult.usage.outputTokens;
           }
-        })(),
+        })()
       );
     }
   }

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("@/lib/domain", () => ({
   getCachedDomain: vi.fn(),
@@ -40,6 +40,47 @@ describe("Auth HTTP/HTTPS configuration", () => {
       vi.mocked(shouldUseSecureCookies).mockReturnValue(true);
       const mod = await import("@/lib/auth");
       expect(mod.auth.options.advanced?.useSecureCookies).toBe(true);
+    });
+  });
+
+  describe("session cookie attributes", () => {
+    // The WS upgrade path's Origin check (ws-upgrade-gate.ts) is deliberately
+    // permissive about a *missing* Origin, so the session cookie's SameSite
+    // attribute carries real weight in the defense-in-depth against
+    // cross-site WebSocket hijacking. It is pinned explicitly rather than left
+    // to Better Auth's implicit default, so a dependency bump can't silently
+    // change it. "lax" (not "strict") preserves today's behavior — "strict"
+    // would drop the cookie on legitimate top-level-navigation flows, e.g. an
+    // email verification link landing the user on an authenticated page.
+    //
+    // These read the *resolved* cookie rather than `options.advanced`: Better
+    // Auth spreads defaultCookieAttributes over its own defaults, so a value
+    // declared there is not proof of a value on the wire, and an attributes
+    // object that quietly dropped httpOnly/secure would read as configured
+    // either way. Same distinction as the X-Frame-Options gate — assert what a
+    // concrete request resolves to, not what the config asked for.
+    async function resolvedSessionCookie(secure: boolean) {
+      const { shouldUseSecureCookies } = await import("@/lib/secure-cookies");
+      vi.mocked(shouldUseSecureCookies).mockReturnValue(secure);
+      const [{ auth }, { getCookies }] = await Promise.all([
+        import("@/lib/auth"),
+        import("better-auth/cookies"),
+      ]);
+      return getCookies(auth.options).sessionToken.attributes;
+    }
+
+    it("resolves to SameSite=Lax, HttpOnly in insecure mode", async () => {
+      const attributes = await resolvedSessionCookie(false);
+      expect(attributes.sameSite).toBe("lax");
+      expect(attributes.httpOnly).toBe(true);
+      expect(attributes.secure).toBe(false);
+    });
+
+    it("stays SameSite=Lax, HttpOnly and gains Secure in domain-locked mode", async () => {
+      const attributes = await resolvedSessionCookie(true);
+      expect(attributes.sameSite).toBe("lax");
+      expect(attributes.httpOnly).toBe(true);
+      expect(attributes.secure).toBe(true);
     });
   });
 
@@ -132,6 +173,58 @@ describe("Auth HTTP/HTTPS configuration", () => {
         const origins = fn(req);
         expect(origins).toEqual(["https://pinchy.example.com:8443"]);
       });
+    });
+  });
+
+  // #825. These assert the address Better Auth actually derives, through its
+  // own `getIP`, rather than that a config field is set — the config is only
+  // interesting because it decides which bucket a sign-in attempt lands in.
+  describe("sign-in throttle bucketing", () => {
+    // Restored, not just cleared up front: `@/lib/auth` reads the variable at
+    // import time and vitest reuses a worker across test FILES, so a value left
+    // behind here decides the trust list for whatever file this worker picks up
+    // next — a cross-file failure with nothing in it pointing back to here.
+    const original = process.env.PINCHY_TRUSTED_PROXIES;
+
+    beforeEach(() => {
+      delete process.env.PINCHY_TRUSTED_PROXIES;
+    });
+
+    afterEach(() => {
+      if (original === undefined) delete process.env.PINCHY_TRUSTED_PROXIES;
+      else process.env.PINCHY_TRUSTED_PROXIES = original;
+    });
+
+    async function resolve(headers: Record<string, string>): Promise<string | null> {
+      const { getIP } = await import("@better-auth/core/utils/ip");
+      const mod = await import("@/lib/auth");
+      return getIP(new Headers(headers), mod.auth.options);
+    }
+
+    it("prefers the address the HTTP server already resolved", async () => {
+      // server.ts can see the socket; Better Auth cannot. Its answer wins, and
+      // it is the one the WS limiter and the audit rows carry too.
+      const ip = await resolve({
+        "x-pinchy-client-ip": "203.0.113.42",
+        "x-forwarded-for": "198.51.100.7",
+      });
+      expect(ip).toBe("203.0.113.42");
+    });
+
+    it("ignores a hop the sender chose, left of the one the proxy appended", async () => {
+      // The bypass: an attacker prepends X-Forwarded-For, and unconfigured
+      // Better Auth either trusts it outright (single value) or gives up and
+      // buckets everyone together (two values). Neither throttles the attacker.
+      expect(await resolve({ "x-forwarded-for": "1.2.3.4, 203.0.113.42" })).toBe("203.0.113.42");
+    });
+
+    it("keeps a private client address, which a broader trust list would strip", async () => {
+      expect(await resolve({ "x-forwarded-for": "1.2.3.4, 192.168.1.50" })).toBe("192.168.1.50");
+    });
+
+    it("walks past the operator's own inner proxy when it is configured", async () => {
+      process.env.PINCHY_TRUSTED_PROXIES = "10.0.0.0/8";
+      expect(await resolve({ "x-forwarded-for": "203.0.113.42, 10.0.0.5" })).toBe("203.0.113.42");
     });
   });
 });

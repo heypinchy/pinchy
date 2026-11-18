@@ -44,7 +44,7 @@ describe("mail lister — listDispatchableEmails", () => {
       },
     ]);
 
-    const emails = await listDispatchableEmails(port, { sinceDays: 14 });
+    const { emails } = await listDispatchableEmails(port, { sinceDays: 14 });
 
     expect(emails).toEqual([
       {
@@ -75,7 +75,9 @@ describe("mail lister — listDispatchableEmails", () => {
       },
     ]);
 
-    const [email] = await listDispatchableEmails(port, {});
+    const {
+      emails: [email],
+    } = await listDispatchableEmails(port, {});
 
     expect(email.to).toEqual(["shared@acme.test"]);
   });
@@ -95,7 +97,9 @@ describe("mail lister — listDispatchableEmails", () => {
       },
     ]);
 
-    const [email] = await listDispatchableEmails(port, {});
+    const {
+      emails: [email],
+    } = await listDispatchableEmails(port, {});
 
     expect(email.to).toEqual([]);
     expect(email.attachments).toEqual([]);
@@ -138,7 +142,9 @@ describe("mail lister — listDispatchableEmails", () => {
       },
     ]);
 
-    const [email] = await listDispatchableEmails(port, {});
+    const {
+      emails: [email],
+    } = await listDispatchableEmails(port, {});
 
     expect(email.to).toEqual(["john@acme.test", "jane@acme.test"]);
   });
@@ -158,7 +164,9 @@ describe("mail lister — listDispatchableEmails", () => {
       },
     ]);
 
-    const [email] = await listDispatchableEmails(port, {});
+    const {
+      emails: [email],
+    } = await listDispatchableEmails(port, {});
 
     expect(email.to).toEqual(["a@acme.test", "b@acme.test"]);
   });
@@ -178,9 +186,103 @@ describe("mail lister — listDispatchableEmails", () => {
       },
     ]);
 
-    const [email] = await listDispatchableEmails(port, {});
+    const {
+      emails: [email],
+    } = await listDispatchableEmails(port, {});
 
     expect(email.from).toBe("bad@y.test");
+  });
+
+  it("skips a single unusable message and still returns the rest of the mailbox", async () => {
+    // Poison-message isolation. One malformed message must not cost a mailbox its
+    // whole pass: `normalize` throws on a bad date, and the sweep's unit-level
+    // catch is per (workflow × connection) — so without isolation here, one
+    // corrupt mail silently stops every OTHER mail on that connection from ever
+    // being dispatched, and parks the workflow in `error` until a human deletes
+    // it from the mailbox by hand.
+    const port = fakePort([
+      {
+        id: "id-good-before",
+        from: "a@x.test",
+        to: "",
+        cc: "",
+        subject: "A",
+        date: "2026-07-10T00:00:00.000Z",
+        attachments: [],
+      },
+      {
+        id: "id-poison",
+        from: "bad@x.test",
+        to: "",
+        cc: "",
+        subject: "corrupt",
+        date: "not-a-date",
+        attachments: [],
+      },
+      {
+        id: "id-good-after",
+        from: "b@x.test",
+        to: "",
+        cc: "",
+        subject: "B",
+        date: "2026-07-11T00:00:00.000Z",
+        attachments: [],
+      },
+    ]);
+
+    const { emails, candidateCount } = await listDispatchableEmails(port, {});
+
+    // The poison message is dropped — never a half-normalized email with an
+    // Invalid Date, which would only throw later inside the run adapter.
+    expect(emails.map((e) => e.providerMessageId)).toEqual(["id-good-before", "id-good-after"]);
+    // …but the dropped candidate still counts: `candidateCount` reflects what
+    // `search` returned, so the sweep can see a page was full even after a drop.
+    expect(candidateCount).toBe(3);
+  });
+
+  it("skips a message whose hydration fails, not just one that fails to normalize", async () => {
+    // A provider that 404s or errors on a single message (deleted mid-sweep,
+    // server-side corruption) is the same class of failure as a bad date: it is
+    // about ONE message, so it must cost exactly that message.
+    const port: EmailPort = {
+      async search() {
+        return [{ id: "id-gone" }, { id: "id-ok" }];
+      },
+      async read(id) {
+        if (id === "id-gone") throw new Error("404 message not found");
+        return {
+          id: "id-ok",
+          from: "b@x.test",
+          to: "",
+          cc: "",
+          subject: "B",
+          date: "2026-07-11T00:00:00.000Z",
+          attachments: [],
+        };
+      },
+    };
+
+    const { emails } = await listDispatchableEmails(port, {});
+
+    expect(emails.map((e) => e.providerMessageId)).toEqual(["id-ok"]);
+  });
+
+  it("throws when EVERY candidate fails — a dead mailbox is not a poison message", async () => {
+    // The isolation above must not swallow a broken *mailbox*. Credentials that
+    // expire between `search` and `read` fail every hydration; reporting that as
+    // an empty inbox would turn a loud `error` status into "nothing new today"
+    // and silently stop the workflow. Per-message isolation is for the outlier —
+    // when there IS no good message, the failure is the mailbox's.
+    const port: EmailPort = {
+      async search() {
+        return [{ id: "a" }, { id: "b" }];
+      },
+      async read() {
+        throw new Error("401 credentials expired");
+      },
+    };
+
+    await expect(listDispatchableEmails(port, {})).rejects.toThrow(/401 credentials expired/);
   });
 
   it("forwards the listing window (sinceDays/folder/limit) to the port and hydrates every candidate in order", async () => {
@@ -218,7 +320,7 @@ describe("mail lister — listDispatchableEmails", () => {
       },
     };
 
-    const emails = await listDispatchableEmails(port, {
+    const { emails, candidateCount } = await listDispatchableEmails(port, {
       sinceDays: 14,
       folder: "INBOX",
       limit: 50,
@@ -226,5 +328,102 @@ describe("mail lister — listDispatchableEmails", () => {
 
     expect(seen).toEqual([{ sinceDays: 14, folder: "INBOX", limit: 50 }]);
     expect(emails.map((e) => e.providerMessageId)).toEqual(["a", "b"]);
+    // Every candidate hydrated, so the count matches the returned batch.
+    expect(candidateCount).toBe(2);
+  });
+
+  it("skips hydrating candidates the ledger already holds, sparing the expensive read()", async () => {
+    // The cheap-poll optimization: `read` is the N+1 cost of a pass, and re-reading
+    // mail the ledger has already claimed is pure waste — the claim would just
+    // `onConflictDoNothing`. `resolveAlreadyProcessed` is injected (so the lister
+    // stays DB-decoupled, like the port) and names the ids to skip BEFORE hydration.
+    // In steady state it skips everything, so a poll costs one search and zero reads,
+    // which is what makes a frequent cadence affordable.
+    const reads: string[] = [];
+    const port: EmailPort = {
+      async search() {
+        return [{ id: "seen-1" }, { id: "fresh-2" }, { id: "seen-3" }];
+      },
+      async read(id) {
+        reads.push(id);
+        return {
+          id,
+          from: "s@x.test",
+          to: "",
+          cc: "",
+          subject: id,
+          date: "2026-07-14T00:00:00.000Z",
+          attachments: [],
+        };
+      },
+    };
+
+    const { emails, candidateCount } = await listDispatchableEmails(port, {
+      resolveAlreadyProcessed: async (ids) => {
+        // The resolver sees every candidate id, and returns the subset to skip.
+        expect(ids).toEqual(["seen-1", "fresh-2", "seen-3"]);
+        return new Set(["seen-1", "seen-3"]);
+      },
+    });
+
+    // Only the un-ledgered candidate was hydrated; the seen ones cost no read.
+    expect(reads).toEqual(["fresh-2"]);
+    expect(emails.map((e) => e.providerMessageId)).toEqual(["fresh-2"]);
+    // candidateCount stays the pre-skip `search` count: the sweep's saturation
+    // check reads it to detect a full page, which is about what search returned,
+    // not what survived the skip.
+    expect(candidateCount).toBe(3);
+  });
+
+  it("treats a fully-skipped pass as an empty result, not a dead mailbox", async () => {
+    // The dead-mailbox guard throws when every candidate FAILS to hydrate. A pass
+    // where every candidate was SKIPPED (already in the ledger) is the steady-state
+    // success case — zero reads, zero failures — and must never be mistaken for a
+    // mailbox whose credentials just expired.
+    const port: EmailPort = {
+      async search() {
+        return [{ id: "seen-1" }, { id: "seen-2" }];
+      },
+      async read(id) {
+        throw new Error(`must not hydrate skipped id ${id}`);
+      },
+    };
+
+    const { emails, candidateCount } = await listDispatchableEmails(port, {
+      resolveAlreadyProcessed: async () => new Set(["seen-1", "seen-2"]),
+    });
+
+    expect(emails).toEqual([]);
+    expect(candidateCount).toBe(2);
+  });
+
+  it("does not mistake one isolated poison message for a dead mailbox when the rest were skipped", async () => {
+    // The dead-mailbox guard fires when NO candidate hydrates. Before the skip
+    // filter existed, "no hydration" meant every candidate was read and every read
+    // failed — a real credential death. With the skip filter, a healthy, caught-up
+    // mailbox hydrates almost nothing: skip the processed mail, and the ONE
+    // un-skipped candidate may be a persistently-unhydratable message (an
+    // unparseable date, a mid-sweep 404). That single failure must stay isolated —
+    // exactly what the per-message try/catch promises — and must NOT flip the whole
+    // workflow to `error` every pass. The guard must only cry "dead" when EVERY
+    // candidate `search` returned was attempted and failed, not when the sole
+    // attempted one did.
+    const port: EmailPort = {
+      async search() {
+        return [{ id: "seen-1" }, { id: "poison" }];
+      },
+      async read(id) {
+        if (id === "poison") throw new Error("unparseable message poison");
+        throw new Error(`must not hydrate skipped id ${id}`);
+      },
+    };
+
+    const { emails, candidateCount } = await listDispatchableEmails(port, {
+      resolveAlreadyProcessed: async () => new Set(["seen-1"]),
+    });
+
+    // Poison isolated to itself; the healthy mailbox reports an empty batch, never a throw.
+    expect(emails).toEqual([]);
+    expect(candidateCount).toBe(2);
   });
 });

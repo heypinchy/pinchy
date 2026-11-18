@@ -19,6 +19,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { EnterpriseFeatureCard } from "@/components/enterprise-feature-card";
+import { useLicenseStatus } from "@/hooks/use-license-status";
 import type { LicenseState } from "@/lib/license-state";
 import { buildChartData } from "@/lib/usage-chart-data";
 import {
@@ -150,7 +151,9 @@ export function UsageDashboard({
   licenseState = "community",
   licensePeriodEnd = null,
 }: UsageDashboardProps) {
-  const [enterprise, setEnterprise] = useState(initialEnterprise);
+  // The server-rendered value stands until a fresh status arrives (it may be
+  // stale after a dev toggle). A failed refetch changes nothing.
+  const enterprise = useLicenseStatus().license?.enterprise ?? initialEnterprise;
   const [days, setDays] = useState<DaysOption>(30);
   const [selectedAgent, setSelectedAgent] = useState("all");
   const [summary, setSummary] = useState<SummaryResponse | null>(null);
@@ -162,14 +165,6 @@ export function UsageDashboard({
   const [retryKey, setRetryKey] = useState(0);
   const [byUserError, setByUserError] = useState<string | null>(null);
   const [byUserRetryKey, setByUserRetryKey] = useState(0);
-
-  // Fetch fresh enterprise status client-side (server value may be stale after dev toggle)
-  useEffect(() => {
-    fetch("/api/enterprise/status")
-      .then((r) => r.json())
-      .then((data) => setEnterprise(data.enterprise ?? false))
-      .catch(() => {});
-  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -463,7 +458,9 @@ export function UsageDashboard({
             </CardHeader>
             <CardContent className="px-2 pb-2 sm:px-6 sm:pb-3">
               <ResponsiveContainer width="100%" height={220}>
-                <LineChart data={chartData} margin={{ left: -10, right: 5, top: 5, bottom: 0 }}>
+                {/* No negative left margin: it pulled the y-axis labels past the
+                    card edge and clipped "50.0k" to "0.0k" on a phone (#1300). */}
+                <LineChart data={chartData} margin={{ left: 0, right: 5, top: 5, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.9 0 0)" />
                   <XAxis
                     dataKey="date"

@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * #583: the runtime must report whether the thread currently shows an inline
  * error bubble, so the durable paused-error banner can suppress itself and act

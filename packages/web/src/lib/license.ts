@@ -26,7 +26,55 @@ export interface LicenseStatus {
 
 const INACTIVE: LicenseStatus = { active: false, features: [], ver: 1, maxUsers: 0 };
 
+/**
+ * Authentic signature, refused by policy.
+ *
+ * Distinct from INACTIVE because the difference is load-bearing downstream:
+ * `deriveLicenseState` reads `expired` and answers "expired" rather than
+ * "community", and `effectiveVisibility` widens `restricted` to `all` in the
+ * community state alone. An install that refuses its key must not thereby
+ * publish agents somebody deliberately restricted — a license verdict never
+ * widens access (pricing concept § 5).
+ *
+ * Carries no claims on purpose: the key did not expire, so nothing may print a
+ * date for it. The banner's expired copy degrades to "Your license period
+ * ended. Existing access restrictions remain enforced; management features are
+ * locked." — which is exactly what happened.
+ */
+const REFUSED: LicenseStatus = { active: false, expired: true, features: [], ver: 1, maxUsers: 0 };
+
 const ISSUER = "heypinchy.com";
+
+/**
+ * Subject reserved for the development license this repository ships (in
+ * `docker-compose.dev.yml` and the dev toolbar's toggle route).
+ *
+ * Two rules hang off it, and together they are the fix for #1083. Only the
+ * second is enforced here — say which is which, because a comment that claims
+ * coverage the code lacks is how the unbounded Gmail fetch survived a review
+ * (agent-rules/plugins.md § "Every plugin `fetch()` passes a signal"):
+ *
+ *   - CONVENTION: we mint development licenses for this subject and no other.
+ *     Nothing checks it, and nothing needs to — the development private key is
+ *     not published, so no one else can mint under that key at all.
+ *   - ENFORCED: the PRODUCTION key never honours this subject, on the valid and
+ *     the expired path alike.
+ *
+ * The second rule is what revokes the production-signed dev token this
+ * repository shipped until v0.9. That token cannot be un-published — it is in
+ * the history of every clone and every fork, and it verified against the key
+ * every install trusts — so revoking it has to happen here, in the validator.
+ * Changing this string un-revokes it; a test pins the value for that reason.
+ */
+export const DEV_LICENSE_SUBJECT = "pinchy-dev";
+
+export interface ValidateLicenseOptions {
+  /**
+   * Honour a license issued to `DEV_LICENSE_SUBJECT`. Only the development key
+   * passes this — under the production key such a license is always inactive.
+   */
+  honourDevSubject?: boolean;
+}
 
 function readClaims(payload: jose.JWTPayload): Omit<LicenseStatus, "active" | "expired"> {
   const features = (payload.features as string[]) ?? [];
@@ -43,8 +91,11 @@ function readClaims(payload: jose.JWTPayload): Omit<LicenseStatus, "active" | "e
   const paidUntilAt =
     typeof payload.paidUntil === "number" ? new Date(payload.paidUntil * 1000) : undefined;
   const now = new Date();
+  // Round up: a partial day still counts as a day the key works. Rounding
+  // down showed "6 days remaining" on a 7-day trial issued seconds ago (#1278),
+  // and "0 days" for a key with hours left. 0 means expired.
   const daysRemaining = expiresAt
-    ? Math.max(0, Math.floor((expiresAt.getTime() - now.getTime()) / 86400000))
+    ? Math.max(0, Math.ceil((expiresAt.getTime() - now.getTime()) / 86400000))
     : undefined;
 
   return {
@@ -60,10 +111,26 @@ function readClaims(payload: jose.JWTPayload): Omit<LicenseStatus, "active" | "e
 }
 
 /**
+ * Whether this key refuses these claims outright — checked on the valid and
+ * the expired path alike, so a dev license past its exp is refused under the
+ * production key too rather than surfacing its claims.
+ */
+function refused(
+  claims: Omit<LicenseStatus, "active" | "expired">,
+  options: ValidateLicenseOptions
+): boolean {
+  return claims.org === DEV_LICENSE_SUBJECT && !options.honourDevSubject;
+}
+
+/**
  * Validate a JWT license token against a public key.
  * Pure function — no side effects, no caching.
  */
-export async function validateLicense(token: string, publicKeyPem: string): Promise<LicenseStatus> {
+export async function validateLicense(
+  token: string,
+  publicKeyPem: string,
+  options: ValidateLicenseOptions = {}
+): Promise<LicenseStatus> {
   if (!token) return INACTIVE;
 
   try {
@@ -74,6 +141,7 @@ export async function validateLicense(token: string, publicKeyPem: string): Prom
 
     const claims = readClaims(payload);
     if (!claims.features.includes("enterprise")) return INACTIVE;
+    if (refused(claims, options)) return REFUSED;
 
     return { active: true, ...claims };
   } catch (err) {
@@ -86,6 +154,7 @@ export async function validateLicense(token: string, publicKeyPem: string): Prom
       if (payload.iss !== ISSUER) return INACTIVE;
       const claims = readClaims(payload);
       if (!claims.features.includes("enterprise")) return INACTIVE;
+      if (refused(claims, options)) return REFUSED;
       return { active: false, expired: true, ...claims };
     }
     return INACTIVE;

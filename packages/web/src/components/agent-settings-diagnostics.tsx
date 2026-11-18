@@ -1,9 +1,6 @@
 "use client";
 
-import { useState } from "react";
-
-import { Button } from "@/components/ui/button";
-import { DiagnosticsExportDialog } from "@/components/diagnostics-export-dialog";
+import { DiagnosticsExportForm } from "@/components/diagnostics-export-form";
 
 interface AgentSettingsDiagnosticsProps {
   agentId: string;
@@ -13,33 +10,33 @@ interface AgentSettingsDiagnosticsProps {
 /**
  * Agent Settings → Diagnostics tab.
  *
+ * The form is inline: this tab is already the dedicated surface for the one
+ * task it offers, so a modal would only add a click, a focus trap, and a
+ * duplicate of the heading — while squeezing the chat picker into a width it
+ * doesn't fit. The per-message "Report issue to support" flow in chat still
+ * uses DiagnosticsExportDialog, where a modal earns its keep.
+ *
  * The export is per-agent, and here the agent is already in context, so there's
- * no agent picker — unlike the old general Settings → Support flow this replaces.
- * Chat selection (#639) is handled entirely inside DiagnosticsExportDialog: we
- * don't pass a `chatId`, so it preselects the agent's default chat.
+ * no agent picker — unlike the old general Settings → Support flow this
+ * replaces. Chat selection (#639) lives in the form: we don't pass a `chatId`,
+ * so it preselects the agent's default chat.
  */
 export function AgentSettingsDiagnostics({ agentId, agentName }: AgentSettingsDiagnosticsProps) {
-  const [dialogOpen, setDialogOpen] = useState(false);
-
   return (
-    <div className="space-y-6">
+    <div className="max-w-xl space-y-6">
       <div className="space-y-2">
         <h3 className="text-lg font-medium">Diagnostics</h3>
         <p className="text-sm text-muted-foreground">
-          Run into an issue with {agentName}? Generate a diagnostics export to share with Pinchy
-          support.
+          Run into an issue with {agentName}? Generate a file containing your recent conversation,
+          model and tool activity, and version info. Secrets and emails are automatically removed.
+          You decide if and how to share it with Pinchy support.
         </p>
       </div>
 
-      <Button type="button" onClick={() => setDialogOpen(true)}>
-        Generate diagnostics export
-      </Button>
-
-      <DiagnosticsExportDialog
-        open={dialogOpen}
+      <DiagnosticsExportForm
         agentId={agentId}
         agentName={agentName}
-        onClose={() => setDialogOpen(false)}
+        submitLabel="Generate diagnostics export"
       />
     </div>
   );

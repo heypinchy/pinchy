@@ -6,54 +6,42 @@ import type {
   AgentWaitResult,
 } from "openclaw-node";
 import { chatWithDispatchRaceRetry } from "@/server/chat-dispatch-retry";
-import { waitForAgentInRuntime } from "@/server/agent-readiness";
+import { dispatchableAgentIds, waitForAgentInRuntime } from "@/server/agent-readiness";
 import type { WebSocket } from "ws";
-import { assertAgentAccess, effectiveVisibility } from "@/lib/agent-access";
-import { directSessionKey } from "@/lib/session-key";
+import {
+  assertAgentAccess,
+  effectiveVisibility,
+  isPersonalAgentPausedFor,
+  PERSONAL_AGENT_DISABLED,
+} from "@/lib/agent-access";
+import { auditChatId, directSessionKey } from "@/lib/session-key";
 import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
 import { getLicenseState } from "@/lib/enterprise";
-import { buildMemoryPromptBlock } from "@/lib/memory-prompt";
-import { appendAuditLog, safeProviderError } from "@/lib/audit";
+import { budgetExhaustedMessage, getExhaustedBlockingBudget } from "@/lib/budgets";
+import { appendAuditLog } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
-import { maybeSelfHealOnModelError } from "@/server/model-self-heal";
-import { ActiveRuns } from "@/server/active-runs";
-import { iterateUntilAborted } from "@/server/abortable-stream";
+import { ActiveRuns, type ActiveRun } from "@/server/active-runs";
+import { stripMediaDirectives } from "@/server/media-directive";
 import { NEVER_DISCONNECTS, type DisconnectSignal } from "@/server/openclaw-disconnect-signal";
 import type { SessionPokeBridge } from "@/server/session-poke-bridge";
-import { recordSessionTurnsUsage } from "@/lib/usage-per-turn";
 import {
   QUEUED_RETRY_PREFIX,
   CHAT_HISTORY_OVERSIZED_PLACEHOLDER,
   OVERSIZED_HISTORY_MESSAGE_TEXT,
 } from "@/lib/openclaw-history";
-import {
-  shouldEmitModelUnavailableAudit,
-  shouldEmitSilentStreamAudit,
-} from "@/server/model-unavailable-throttle";
 import { SessionCache } from "@/server/session-cache";
 import { resolveUserPlaceholder } from "@/server/user-placeholder";
-import { getErrorHint, presentProviderError } from "@/server/error-hints";
-import { classifyModelError } from "@/server/model-error-classifier";
-import {
-  classifyAgentError,
-  classifySynthesisedError,
-  classifyTransientReason,
-  shouldPersistDurableError,
-  type AgentErrorClass,
-} from "@/server/agent-error-classifier";
-import {
-  recordChatSessionError,
-  supersedeChatSessionErrors,
-  agentRanToolSince,
-} from "@/server/chat-session-errors";
-import {
-  SILENT_REPLY_TOKEN,
-  safeEmitLength,
-  stripFinalEnvelope,
-} from "@/server/silent-reply-buffer";
+import { classifyAgentError } from "@/server/agent-error-classifier";
 import { db } from "@/db";
-import { agents, users, models } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { agents, users, models, agentDeliveredFiles, uploadedFiles } from "@/db/schema";
+import { attachDeliveredFilesToHistory } from "@/server/delivered-file-history";
+import {
+  type HistoryFileMeta,
+  collectAttachmentFilenames,
+  indexUploadIdsByFilename,
+  attachUploadIdsToHistory,
+} from "@/server/history-upload-ids";
+import { and, eq, inArray } from "drizzle-orm";
 import { isModelVisionCapable } from "@/lib/model-vision";
 import { resolveImageTurnModel, type VisionCandidate } from "@/lib/image-fallback";
 import { readExistingConfig } from "@/lib/openclaw-config/write";
@@ -66,18 +54,21 @@ import {
   AttachmentNotFoundError,
   AttachmentExpiredError,
   AttachmentAlreadyAttachedError,
+  AttachmentFileMissingError,
 } from "@/server/attachment-pipeline";
 import { attachmentIdsSchema } from "@/lib/schemas/uploads";
 import { chatIdSchema } from "@/lib/schemas/sessions";
+import { StreamPipe, GENERIC_RUN_FAILURE_MESSAGE } from "@/server/stream-pipe";
+import { getUserSocketRegistry, refuseDeactivatedSocket } from "@/server/user-sockets";
+import {
+  abortSessionRun,
+  auditStoppedBeforeDispatch,
+  followUpDepsFor,
+  watchDispatchRejections,
+} from "@/server/abort-runs";
 
 const WS_OPEN = 1;
 const CONNECTION_TIMEOUT_MS = 10_000;
-// Browsers and intermediate proxies close idle WebSockets after ~30-60s of
-// silence. While the agent is in a slow tool-use loop (e.g. local Ollama
-// thinking for >60s between turns), the server must keep the socket alive
-// with periodic frames. We send a "thinking" heartbeat every 15s — frequent
-// enough to defeat any reasonable idle timer, sparse enough not to spam.
-const THINKING_HEARTBEAT_MS = 15_000;
 
 // How long the reconnect path waits on the gateway's authoritative
 // run-liveness oracle (`agentWait`) before giving up on a verdict. Short by
@@ -86,6 +77,14 @@ const THINKING_HEARTBEAT_MS = 15_000;
 // outlives the window — that's already the "responding" verdict. A throw is an
 // infra hiccup, which we deliberately do NOT turn into a `failed` verdict.
 const RECONNECT_LIVENESS_TIMEOUT_MS = 5_000;
+
+// What a reconnect `failed` verdict says. `agentWait` carries no text meant
+// for a user — its `stopReason` is a code — so the verdict carries this.
+export const RUN_ENDED_WITHOUT_RESPONSE = "The agent run ended without a response.";
+
+// The `agentWait` stop reasons that mean "stopped", not "failed". `restart`
+// (the gateway restarted under the run) is deliberately not one of them.
+const STOP_REASONS: ReadonlySet<string> = new Set(["rpc", "stop", "aborted"]);
 
 type RetryReason = "orphan" | "partial_stream_failure" | "send_failure";
 const ALLOWED_RETRY_REASONS: ReadonlySet<string> = new Set([
@@ -147,6 +146,15 @@ interface HistoryMessage {
 }
 
 export class ClientRouter {
+  /**
+   * Streaming-loop collaborator (pinchy#1073 step 1). Constructed once here,
+   * sharing the SAME activeRuns/disconnectSignal/sessionCache/userId/userRole/
+   * openclawClient this router holds, plus this router's own broadcastForRun —
+   * no new sharing semantics, just an explicit seam around `pipeStream` and
+   * the private helpers only it drives. See stream-pipe.ts.
+   */
+  private readonly streamPipe: StreamPipe;
+
   constructor(
     private openclawClient: OpenClawClient,
     private userId: string,
@@ -176,7 +184,18 @@ export class ClientRouter {
      * subscriber behind the SAME access gate that already guards history.
      */
     private pokeBridge?: SessionPokeBridge
-  ) {}
+  ) {
+    this.streamPipe = new StreamPipe({
+      openclawClient: this.openclawClient,
+      userId: this.userId,
+      userRole: this.userRole,
+      sessionCache: this.sessionCache,
+      activeRuns: this.activeRuns,
+      disconnectSignal: this.disconnectSignal,
+      broadcastForRun: (sessionKey, fallbackWs, data) =>
+        this.broadcastForRun(sessionKey, fallbackWs, data),
+    });
+  }
 
   private computeSessionKey(agentId: string, chatId?: string): string {
     return directSessionKey(agentId, this.userId, chatId);
@@ -210,12 +229,8 @@ export class ClientRouter {
 
   /**
    * Abort the in-flight run for this (user, agent[, chat]) session (#550).
-   *
-   * Calls `chatAbort` with the runId from the active-run registry when known
-   * (precise — never aborts a newer run that already replaced this one on the
-   * same session), falling back to a sessionKey-only abort otherwise. The
-   * stream pipe for the aborted run handles the resulting synthetic terminal
-   * `done` through the existing post-abort path — no extra teardown here.
+   * The mechanics — runId gating, the #978 mark, reading the gateway's answer
+   * — live in `abortSessionRun`, which deactivation reuses.
    *
    * Emits `chat.run_aborted` (reserved by #441, first emitted here) only when
    * there was a run to abort, with `outcome` reflecting the RPC result so an
@@ -224,24 +239,25 @@ export class ClientRouter {
    * silent no-op) but is deliberately not audited — there is no run to
    * attribute it to, and an unbounded "aborted nothing" write is just noise a
    * buggy or hostile client could spam.
+   *
+   * An abort that stopped nothing is followed up by runId after this returns
+   * (`abort-runs.ts`), and a follow-up that takes effect writes its own row as
+   * this user.
    */
   private async handleAbort(
     agent: { id: string; name: string },
     chatId: string | undefined
   ): Promise<void> {
     const sessionKey = this.computeSessionKey(agent.id, chatId);
-    const run = this.activeRuns.get(sessionKey);
-
-    let outcome: "success" | "failure" = "success";
-    try {
-      await this.openclawClient.chatAbort(sessionKey, run?.runId);
-    } catch (err) {
-      outcome = "failure";
-      console.warn(
-        `[client-router] user-triggered chatAbort failed for ${sessionKey}:`,
-        err instanceof Error ? err.message : err
-      );
-    }
+    const { run, runId, outcome } = await abortSessionRun(
+      this.activeRuns,
+      (key, id) => this.openclawClient.chatAbort(key, id),
+      sessionKey,
+      {
+        request: { actorId: this.userId, reason: "user_request" },
+        followUp: followUpDepsFor(() => this.openclawClient),
+      }
+    );
 
     if (!run) return;
 
@@ -252,8 +268,12 @@ export class ClientRouter {
       resource: `agent:${agent.id}`,
       detail: {
         agent: { id: agent.id, name: agent.name },
-        sessionKey,
-        runId: run.runId,
+        // Not the session key: it embeds the acting user's raw id, and `detail`
+        // is out of crypto-erasure's reach (#824). The user is the actor.
+        chatId: auditChatId(sessionKey),
+        // Null while pending: the trail must not point at a runId the gateway
+        // never issued.
+        runId: runId ?? null,
         reason: "user_request",
       },
       outcome,
@@ -265,7 +285,66 @@ export class ClientRouter {
     }
   }
 
+  /**
+   * A send refused by an instance policy rather than by access: the member may
+   * see the agent, the admin has switched its use off. `chat.policy_refused`
+   * names which rule answered, with the agent snapshotted by name.
+   */
+  private async auditPolicyRefusal(
+    agent: { id: string; name: string },
+    reason: "personal_agent_disabled" | "budget_exhausted",
+    extra: Record<string, unknown> = {}
+  ): Promise<void> {
+    const auditEntry = {
+      actorType: "user" as const,
+      actorId: this.userId,
+      eventType: "chat.policy_refused" as const,
+      resource: `agent:${agent.id}`,
+      detail: { reason, agent: { id: agent.id, name: agent.name }, ...extra },
+      outcome: "failure" as const,
+    };
+    try {
+      await appendAuditLog(auditEntry);
+    } catch (err) {
+      recordAuditFailure(err, auditEntry);
+    }
+  }
+
   async handleMessage(clientWs: WebSocket, message: BrowserMessage): Promise<void> {
+    // The upgrade authenticated this socket once. If the account was
+    // deactivated since, DELETE /api/users/:id has closed the socket — but a
+    // frame already on its way still lands here, and must not reach an agent.
+    if (getUserSocketRegistry().isRevoked(this.userId)) {
+      refuseDeactivatedSocket(clientWs);
+      return;
+    }
+
+    // A new message moves this tab onto a new turn now, before any await below.
+    // Whatever run still holds the session (a reply just stopped, still winding
+    // down) must stop reaching this tab from here on — its `complete` would end
+    // the new turn instead (#1301). Marked before the agent and access checks
+    // on purpose: the key embeds this user's own id, so the only entry it can
+    // touch is one of their own runs.
+    let prior: ActiveRun | undefined;
+    if (message.type === "message") {
+      const chat = chatIdSchema.safeParse(message.chatId);
+      const chatId = message.chatId === undefined ? undefined : chat.success ? chat.data : null;
+      if (chatId !== null) {
+        prior = this.activeRuns.get(this.computeSessionKey(message.agentId, chatId));
+        if (prior) (prior.handedOverTo ??= new Set()).add(clientWs);
+      }
+    }
+    try {
+      await this.routeMessage(clientWs, message);
+    } finally {
+      // The new turn is over: refused before it started (budget, a paused
+      // agent, no gateway…) or run to its end. Either way this tab is no
+      // longer on it, and must hear the earlier run again if it still goes.
+      prior?.handedOverTo?.delete(clientWs);
+    }
+  }
+
+  private async routeMessage(clientWs: WebSocket, message: BrowserMessage): Promise<void> {
     // Look up agent and check access
     const agent = await db.query.agents.findFirst({
       where: eq(agents.id, message.agentId),
@@ -295,7 +374,12 @@ export class ClientRouter {
         licenseState
       );
     } catch {
-      this.sendToClient(clientWs, { type: "error", message: "Access denied" });
+      // Same message as the missing-agent branch above, for the reason spelled
+      // out on getAgentWithAccess: the HTTP routes stopped distinguishing the
+      // two, and a socket that still says "Access denied" hands back the exact
+      // fact they withhold. The audit row below keeps the distinction where it
+      // belongs — on the server, not in the answer.
+      this.sendToClient(clientWs, { type: "error", message: "Agent not found" });
       const auditEntry = {
         actorType: "user" as const,
         actorId: this.userId,
@@ -308,6 +392,24 @@ export class ClientRouter {
         await appendAuditLog(auditEntry);
       } catch (err) {
         recordAuditFailure(err, auditEntry);
+      }
+      return;
+    }
+
+    // The caller's own personal agent while members may not use one. Answered
+    // for history and sends, so an open tab can neither read nor send; audited
+    // only for a send, because a tab re-requests history on every reconnect and
+    // those rows would say nothing the first one did not. An abort goes
+    // through: a run that was already going when the switch flipped must stay
+    // stoppable — stopping is never what the policy is against.
+    if (message.type !== "abort" && (await isPersonalAgentPausedFor(agent, this.userRole))) {
+      this.sendToClient(clientWs, {
+        type: "error",
+        code: "policy_personal_agent_disabled",
+        message: PERSONAL_AGENT_DISABLED.error,
+      });
+      if (message.type === "message") {
+        await this.auditPolicyRefusal(agent, "personal_agent_disabled");
       }
       return;
     }
@@ -333,6 +435,23 @@ export class ClientRouter {
       message.content.some((part) => part.type === "image_url")
     ) {
       this.sendToClient(clientWs, { type: "error", code: "PROTOCOL_OUTDATED" });
+      return;
+    }
+
+    // A blocking cost budget (#36) used up for this month — the agent's own or
+    // the instance's. Checked for sends only: history and abort cost nothing.
+    // Spend is recorded after a turn, so the turn that crossed the line has
+    // finished; this is the next one.
+    const budget = await getExhaustedBlockingBudget(agent.id);
+    if (budget) {
+      this.sendToClient(clientWs, {
+        type: "error",
+        code: "policy_budget_exhausted",
+        message: budgetExhaustedMessage(agent.name, budget),
+      });
+      await this.auditPolicyRefusal(agent, "budget_exhausted", {
+        budget: { id: budget.id, period: budget.period },
+      });
       return;
     }
 
@@ -380,6 +499,10 @@ export class ClientRouter {
             attachmentIds: parsedIds.data,
             messageId,
             agentName: agent.name,
+            // A retry carries the original message's attachment ids (#1195).
+            // Whether the first attempt already promoted them decides between
+            // attaching and re-referencing, and only the pipeline can tell.
+            isRetry: message.isRetry === true,
           });
           chatAttachments = result.chatAttachments;
           workspaceRefs = result.workspaceRefs;
@@ -400,6 +523,15 @@ export class ClientRouter {
             this.sendToClient(clientWs, {
               type: "error",
               code: "attachment_already_attached",
+              message: err.message,
+            });
+          } else if (err instanceof AttachmentFileMissingError) {
+            // Distinct from the generic branch below on purpose: that one says
+            // "Please try again", and nothing about a file that is not on disk
+            // changes between attempts (#1195).
+            this.sendToClient(clientWs, {
+              type: "error",
+              code: "attachment_file_missing",
               message: err.message,
             });
           } else {
@@ -430,6 +562,22 @@ export class ClientRouter {
       // the agent's model the way the old recovery dialog did.
       const turnModel = await resolveImageTurnModel({
         agentModel: agent.model,
+        // PROXY, not ground truth: this is "has admin-configured tools", which is
+        // narrower than "will make tool calls this turn". `computeAllowedTools()`
+        // takes no agent argument — every agent, including one with an empty
+        // `allowedTools`, is emitted the read-only built-ins (memory_search,
+        // memory_get, session_status). So `false` here does NOT mean the turn is
+        // tool-free; it means the turn only has built-ins.
+        //
+        // That is why the false branch may still route to a tools-blocked model
+        // (gemini-3-flash-preview, minimax-m3) and is accepted for now: those
+        // built-ins have flat, few-property schemas, which is exactly the shape
+        // both models get right — the flat tool probe in
+        // scripts/lib/ollama-cloud-tool-probe.mjs passes on minimax-m3. The
+        // defects bite nested arrays (and, for minimax, positional args in
+        // multi-property schemas). If a built-in ever gains a nested-array
+        // argument, this proxy becomes wrong and the required capabilities have
+        // to be derived from the tools actually registered for the agent.
         agentUsesTools: ((agent.allowedTools as string[] | null) ?? []).length > 0,
         attachmentMimeTypes: chatAttachments.map((a) => a.mimeType ?? ""),
         deps: {
@@ -479,7 +627,7 @@ export class ClientRouter {
           resource: `agent:${message.agentId}`,
           detail: {
             agent: { id: agent.id, name: agent.name },
-            sessionKey,
+            chatId: auditChatId(sessionKey),
             agentModel: agent.model,
             fallbackModel: turnModel.model,
             reason: "text_only_model_received_image",
@@ -500,17 +648,11 @@ export class ClientRouter {
         chatOptions.clientMessageId = message.clientMessageId;
       }
 
-      // Build extraSystemPrompt from memory capability + user name + context +
-      // greeting. The memory block goes first: it's a stable platform
-      // capability, not per-turn context. We inject it here (not AGENTS.md)
-      // because it's a capability every write-capable agent has and must not
-      // be user-editable — see memory-prompt.ts.
+      // Build extraSystemPrompt from user name + context + greeting: what this
+      // web turn knows that OpenClaw doesn't. The `## Memory` block is not
+      // here: pinchy-files adds it to every turn of a memory agent, whichever
+      // channel started it (pinchy-files/memory-prompt.ts).
       const extraPromptParts: string[] = [];
-      const allowedTools = (agent.allowedTools as string[] | null) ?? [];
-      const memoryBlock = buildMemoryPromptBlock(allowedTools);
-      if (memoryBlock) {
-        extraPromptParts.push(memoryBlock);
-      }
       const user = await db.query.users.findFirst({
         where: eq(users.id, this.userId),
       });
@@ -562,7 +704,7 @@ export class ClientRouter {
           resource: `agent:${message.agentId}`,
           detail: {
             agent: { id: agent.id, name: agent.name },
-            sessionKey,
+            chatId: auditChatId(sessionKey),
             reason,
           },
           outcome: "success" as const,
@@ -600,16 +742,40 @@ export class ClientRouter {
       // "no heartbeats before first chunk" contract (let the client stuck-timer
       // surface real OC hangs) is preserved for the hang case.
       let dispatchRaceKeepAlive: ReturnType<typeof setInterval> | null = null;
+      // This turn's registry entry, filled in by `registerPending` below.
+      // `stream` is lazy, so the retry reads it only after it is set. Held by
+      // identity, not looked up by sessionKey: a newer turn on the same session
+      // replaces the entry, and its stop must not end this one's retry (or the
+      // reverse).
+      const thisTurn: { run?: ActiveRun } = {};
 
       const stream = chatWithDispatchRaceRetry(text, chatOptions as ChatOptions, {
-        chat: (m, o) => this.openclawClient.chat(m, o),
+        chat: (m, o) => {
+          // Before the dispatch goes out: should this turn be stopped while
+          // OpenClaw prepares it, the follow-up must learn that OpenClaw turned
+          // it away — an answer the stopped stream no longer reads.
+          watchDispatchRejections(this.openclawClient);
+          return this.openclawClient.chat(m, o);
+        },
+        // Stopped (stop button or deactivation) while the dispatch race keeps
+        // it pending: the session-only abort found nothing running, so the
+        // retry must not dispatch it again.
+        shouldStop: () => thisTurn.run?.abortedByUser === true,
+        // …and the trail says the stop took effect: its abort, sent while
+        // nothing was running, answered "stopped nothing".
+        onStopped: async () => {
+          if (thisTurn.run) await auditStoppedBeforeDispatch(thisTurn.run);
+        },
         // Deterministic readiness gate: on a dispatch-race, poll OC's RUNTIME
         // `agents.list` (the same `getRuntimeConfig()` view the dispatch handler
-        // checks) until this agent is present, instead of blind-sleeping a
+        // checks, filtered by `dispatchableAgentIds` to the ids that handler
+        // accepts) until this agent is present, instead of blind-sleeping a
         // backoff window. Reading the runtime list — not `config.get` (the FILE,
         // which leads the runtime) — is what makes this reliable. Bounded by the
-        // remaining retry budget; never throws, so a probe miss only costs a
-        // little latency (the backoff retry remains the backstop). Requires
+        // remaining retry budget and never throws. A gate that never confirms
+        // therefore spends that whole budget and the chat surfaces the race
+        // error; a "ready" the next dispatch contradicts is trusted only once
+        // (see chat-dispatch-retry.ts). Requires
         // openclaw-node >= 0.12.0; `hasMethod` guards older Gateways.
         awaitAgentReady: (budgetMs) =>
           waitForAgentInRuntime(
@@ -617,7 +783,7 @@ export class ClientRouter {
             {
               hasAgentsListRpc: () => this.openclawClient.hasMethod("agents.list"),
               listRuntimeAgentIds: async () =>
-                (await this.openclawClient.agents.list()).agents.map((a) => a.id),
+                dispatchableAgentIds(await this.openclawClient.agents.list()),
               onWaitObserved: ({ waitedMs, ready, polls }) => {
                 if (process.env.PINCHY_E2E_CHAT_TRACE === "1") {
                   console.log(
@@ -651,7 +817,7 @@ export class ClientRouter {
           // the umbrella event with a `retried: true` flag so a follow-up
           // dedicated event type (e.g. `chat.agent_dispatch_race`) can be
           // added later without rewriting historical rows.
-          await this.writeAgentErrorAudit({
+          await this.streamPipe.writeAgentErrorAudit({
             agent,
             errorClass: classifyAgentError(providerError),
             providerError,
@@ -676,7 +842,21 @@ export class ClientRouter {
       // of leaving the user on an indefinitely blank thread. The provisional
       // runId (the per-turn messageId) is reconciled to the real runId by
       // `markFirstChunk` on the first chunk in pipeStream.
-      this.activeRuns.registerPending({
+      //
+      // Deactivation re-check. The check at the top of handleMessage is many
+      // awaits ago (agent, licence, budget, connection, attachments, model,
+      // user). DELETE /api/users/:id revokes and then snapshots the registered
+      // runs to abort them in the same tick, so a deactivation that landed in
+      // between found nothing to abort. Checking here, with NO await between
+      // this check and registerPending, closes that window: either the revoke
+      // happened first and we refuse, or the run is registered first and
+      // abortRunsOfUser sees it. `stream` is a lazy generator — nothing has
+      // reached OpenClaw yet.
+      if (getUserSocketRegistry().isRevoked(this.userId)) {
+        refuseDeactivatedSocket(clientWs);
+        return;
+      }
+      thisTurn.run = this.activeRuns.registerPending({
         runId: messageId,
         sessionKey,
         agentId: agent.id,
@@ -717,7 +897,39 @@ export class ClientRouter {
     const activeRun = this.activeRuns.get(sessionKey);
     if (activeRun) {
       this.activeRuns.addListener(sessionKey, clientWs);
+      // Re-attaching to the run is asking for its frames again (#1301).
+      activeRun.handedOverTo?.delete(clientWs);
     }
+
+    // Signal embedded in every history response variant so the client
+    // can preserve `isRunning=true` and anchor incoming chunks to the
+    // right message id after reconcile.
+    //
+    // It is snapshotted in the SAME synchronous block as `addListener` above —
+    // no await may sit between them. From `addListener` on, every chunk reaches
+    // this ws as a live delta, so `partialContent` must hold exactly the chunks
+    // emitted before it. With an await in between (say, the `view()` below), a
+    // chunk landing during the await is in both, and the resumed bubble repeats
+    // a word: "one two two three…".
+    //
+    // B-1: only signal a run that has actually STARTED streaming
+    // (firstChunkAt !== null). A dispatch-time pending run must NOT flip a
+    // reconnecting UI into "responding" — there is nothing to anchor yet, and
+    // the watchdog will either reconcile it (first chunk) or tear it down with
+    // a retryable error. Either way the frame reaches this ws via the listener
+    // set joined above; we just withhold the false "running" signal.
+    const activeRunSignal =
+      activeRun && activeRun.firstChunkAt !== null
+        ? {
+            runId: activeRun.runId,
+            messageId: activeRun.currentMessageId,
+            startedAt: activeRun.startedAt,
+            // Tier 2b resume completeness (#470): the text emitted for the
+            // in-flight message so far. The client seeds the anchored assistant
+            // bubble with this, then appends every live delta it receives.
+            partialContent: activeRun.currentContent,
+          }
+        : undefined;
 
     // Multi-device live-sync (Lane B): this socket now EXCLUSIVELY views this
     // session, so register it as a persistent session subscriber. Done here —
@@ -737,31 +949,6 @@ export class ClientRouter {
         console.error("poke-bridge view failed:", err instanceof Error ? err.message : err);
       }
     }
-    // Signal embedded in every history response variant so the client
-    // can preserve `isRunning=true` and anchor incoming chunks to the
-    // right message id after reconcile.
-    //
-    // B-1: only signal a run that has actually STARTED streaming
-    // (firstChunkAt !== null). A dispatch-time pending run must NOT flip a
-    // reconnecting UI into "responding" — there is nothing to anchor yet, and
-    // the watchdog will either reconcile it (first chunk) or tear it down with
-    // a retryable error. Either way the frame reaches this ws via the listener
-    // set joined above; we just withhold the false "running" signal.
-    const activeRunSignal =
-      activeRun && activeRun.firstChunkAt !== null
-        ? {
-            runId: activeRun.runId,
-            messageId: activeRun.currentMessageId,
-            startedAt: activeRun.startedAt,
-            // Tier 2b resume completeness (#470): the text emitted for the
-            // in-flight message so far. Snapshotted here in the SAME
-            // synchronous block as `addListener` above (no await between) so it
-            // can't double-count a chunk that also arrives as a live delta. The
-            // client seeds the anchored assistant bubble with this, then
-            // appends future deltas.
-            partialContent: activeRun.currentContent,
-          }
-        : undefined;
 
     const fetchAndParseHistory = async () => {
       const result = (await this.openclawClient.sessions.history(sessionKey)) as {
@@ -779,101 +966,178 @@ export class ClientRouter {
       // filter silently drop the whole row — the vanishing-user-message bug
       // found in v0.8.0 staging.
 
-      return (
-        rawMessages
-          .filter((msg) => msg.role === "user" || msg.role === "assistant")
-          .map((msg) => {
-            let content: string;
-            if (Array.isArray(msg.content)) {
-              content = msg.content
-                .filter(
-                  (
-                    part: { type?: string; text?: string } | null | undefined
-                  ): part is { text: string } =>
-                    part != null &&
-                    part.type === "text" &&
-                    typeof part.text === "string" &&
-                    part.text.length > 0
-                )
-                .map((part) => part.text)
-                .join(" ");
-            } else {
-              content = typeof msg.content === "string" ? msg.content : "";
+      const mapped = rawMessages
+        .filter((msg) => msg.role === "user" || msg.role === "assistant")
+        .map((msg) => {
+          let content: string;
+          if (Array.isArray(msg.content)) {
+            content = msg.content
+              .filter(
+                (
+                  part: { type?: string; text?: string } | null | undefined
+                ): part is { text: string } =>
+                  part != null &&
+                  part.type === "text" &&
+                  typeof part.text === "string" &&
+                  part.text.length > 0
+              )
+              .map((part) => part.text)
+              .join(" ");
+          } else {
+            content = typeof msg.content === "string" ? msg.content : "";
+          }
+
+          // Strip protocol tags from assistant responses
+          content = content.replace(/<\/?final>/g, "");
+
+          // OpenClaw's `MEDIA:<path>` attachment lines (#1298) — the delivered
+          // chip stands for the file. A reply that was nothing BUT a directive
+          // is kept for now, empty: it is the turn its chip belongs to, and
+          // dropping it would move the chip onto an earlier answer.
+          let mediaOnly = false;
+          if (msg.role === "assistant") {
+            const stripped = stripMediaDirectives(content);
+            mediaOnly = stripped !== content && stripped.trim() === "";
+            content = stripped;
+          }
+
+          // Match the placeholder both bare and behind OpenClaw's optional
+          // leading `[timestamp]` prefix (which it stamps on user messages —
+          // see the timestamp-strip below). Without the second form, a
+          // timestamped oversized turn would slip past this check and its
+          // raw internal string would leak to the user, unflagged.
+          const isOversizedPlaceholder =
+            content === CHAT_HISTORY_OVERSIZED_PLACEHOLDER ||
+            content.replace(/^\[.*?\]\s*/, "") === CHAT_HISTORY_OVERSIZED_PLACEHOLDER;
+
+          // For user messages: strip OpenClaw's timestamp prefix AND extract
+          // the per-message <pinchy:attachments> block (see buildAttachmentBlock
+          // in attachment-pipeline.ts). The block lives in the message text in
+          // OpenClaw's session JSONL — we round-trip its metadata into the
+          // wire-level `files` field so the browser can render the chip
+          // without ever seeing the markup.
+          // `HistoryFileMeta`, not an inline pair: the upload id is stamped on
+          // below (#1195) and an inline type would drop it from the frame's
+          // static shape while it rode along at runtime.
+          let files: HistoryFileMeta[] | undefined;
+          if (isOversizedPlaceholder) {
+            // The original content (and any attachment block it carried) is
+            // gone for good — OpenClaw already discarded it server-side.
+            // Surface a friendly, non-empty placeholder instead of dropping
+            // the row, and flag it so the client's history-reconcile can
+            // prefer a richer LOCAL copy of this same message when one
+            // exists (use-ws-runtime.ts).
+            content = OVERSIZED_HISTORY_MESSAGE_TEXT;
+          } else if (msg.role === "user") {
+            content = content.replace(/^\[.*?\]\s*/, "");
+            const parsed = parseAttachmentBlock(content);
+            content = parsed.cleanText;
+            if (parsed.attachments.length > 0) {
+              files = parsed.attachments.map((a) => ({
+                filename: a.filename,
+                mimeType: a.mimeType,
+              }));
             }
+          }
 
-            // Strip protocol tags from assistant responses
-            content = content.replace(/<\/?final>/g, "");
-
-            // Match the placeholder both bare and behind OpenClaw's optional
-            // leading `[timestamp]` prefix (which it stamps on user messages —
-            // see the timestamp-strip below). Without the second form, a
-            // timestamped oversized turn would slip past this check and its
-            // raw internal string would leak to the user, unflagged.
-            const isOversizedPlaceholder =
-              content === CHAT_HISTORY_OVERSIZED_PLACEHOLDER ||
-              content.replace(/^\[.*?\]\s*/, "") === CHAT_HISTORY_OVERSIZED_PLACEHOLDER;
-
-            // For user messages: strip OpenClaw's timestamp prefix AND extract
-            // the per-message <pinchy:attachments> block (see buildAttachmentBlock
-            // in attachment-pipeline.ts). The block lives in the message text in
-            // OpenClaw's session JSONL — we round-trip its metadata into the
-            // wire-level `files` field so the browser can render the chip
-            // without ever seeing the markup.
-            let files: Array<{ filename: string; mimeType: string }> | undefined;
-            if (isOversizedPlaceholder) {
-              // The original content (and any attachment block it carried) is
-              // gone for good — OpenClaw already discarded it server-side.
-              // Surface a friendly, non-empty placeholder instead of dropping
-              // the row, and flag it so the client's history-reconcile can
-              // prefer a richer LOCAL copy of this same message when one
-              // exists (use-ws-runtime.ts).
-              content = OVERSIZED_HISTORY_MESSAGE_TEXT;
-            } else if (msg.role === "user") {
-              content = content.replace(/^\[.*?\]\s*/, "");
-              const parsed = parseAttachmentBlock(content);
-              content = parsed.cleanText;
-              if (parsed.attachments.length > 0) {
-                files = parsed.attachments.map((a) => ({
-                  filename: a.filename,
-                  mimeType: a.mimeType,
-                }));
-              }
-            }
-
-            return {
-              role: msg.role as "user" | "assistant",
-              content,
-              files,
-              oversized: isOversizedPlaceholder,
-              rawContent:
-                typeof msg.content === "string"
+          return {
+            role: msg.role as "user" | "assistant",
+            content,
+            files,
+            oversized: isOversizedPlaceholder,
+            mediaOnly,
+            rawContent:
+              typeof msg.content === "string"
+                ? msg.content
+                : Array.isArray(msg.content)
                   ? msg.content
-                  : Array.isArray(msg.content)
-                    ? msg.content
-                        .filter(
-                          (part: { type: string; text?: string }) =>
-                            part.type === "text" && part.text
-                        )
-                        .map((part: { text?: string }) => part.text!)
-                        .join(" ")
-                    : "",
-              timestamp: msg.timestamp,
-            };
-          })
-          // Keep messages that have either text content OR a non-empty `files`
-          // chip list. Attachment-only user messages (PDF dropped without any
-          // accompanying prose) round-trip to `content === ""` after the block
-          // is stripped — dropping them here would silently delete the user's
-          // own upload from history. The chip's `files` metadata is the carrier
-          // of meaning in that case, so it must be enough on its own.
-          .filter((msg) => msg.content || (msg.files && msg.files.length > 0))
-          .filter((msg) => !(msg.role === "user" && msg.rawContent.startsWith(QUEUED_RETRY_PREFIX)))
+                      .filter(
+                        (part: { type: string; text?: string }) => part.type === "text" && part.text
+                      )
+                      .map((part: { text?: string }) => part.text!)
+                      .join(" ")
+                  : "",
+            timestamp: msg.timestamp,
+          };
+        })
+        // Keep messages that have either text content OR a non-empty `files`
+        // chip list. Attachment-only user messages (PDF dropped without any
+        // accompanying prose) round-trip to `content === ""` after the block
+        // is stripped — dropping them here would silently delete the user's
+        // own upload from history. The chip's `files` metadata is the carrier
+        // of meaning in that case, so it must be enough on its own.
+        .filter((msg) => msg.content || msg.mediaOnly || (msg.files && msg.files.length > 0))
+        .filter((msg) => !(msg.role === "user" && msg.rawContent.startsWith(QUEUED_RETRY_PREFIX)))
+        .map(({ role, content, files, timestamp, oversized, mediaOnly }) => ({
+          role,
+          content,
+          files,
+          timestamp,
+          mediaOnly,
+          ...(oversized ? { oversized: true as const } : {}),
+        }));
+
+      // Recover the upload id behind each user chip (#1195). The client keeps
+      // `attachmentIds` in message state so a retry can re-send the files, and
+      // that state dies on reload — while the retry affordance does not
+      // (ChatErrorBanner re-surfaces the session's last agent error on mount).
+      // Without this, a retry clicked after a reload sends the text alone,
+      // which is the very symptom #1195 exists to fix.
+      //
+      // Runs BEFORE attachDeliveredFilesToHistory: that one adds chips to
+      // ASSISTANT turns from the delivery grant table, and those have no upload
+      // row to name.
+      const attachmentFilenames = collectAttachmentFilenames(mapped);
+      let uploadIdsByFilename = new Map<string, string>();
+      if (attachmentFilenames.length > 0) {
+        const uploadRows = await db
+          .select({ id: uploadedFiles.id, filename: uploadedFiles.filename })
+          .from(uploadedFiles)
+          .where(
+            and(
+              eq(uploadedFiles.agentId, agent.id),
+              eq(uploadedFiles.userId, this.userId),
+              eq(uploadedFiles.status, "attached"),
+              inArray(uploadedFiles.filename, attachmentFilenames)
+            )
+          );
+        uploadIdsByFilename = indexUploadIdsByFilename(uploadRows);
+      }
+      const withUploadIds = attachUploadIdsToHistory(mapped, uploadIdsByFilename);
+
+      // Re-attach agent-delivered files (#703). Delivered-file chips are not
+      // recoverable from the transcript on reload (chat.history drops the
+      // tool_result that carried the marker), so we read them from the durable
+      // grant table and map each back onto the assistant turn it was delivered
+      // during. Grants are session-scoped (`agent:{id}:direct:{userId}`), so
+      // this only ever surfaces the caller's own deliveries.
+      const grants = await db
+        .select({
+          filename: agentDeliveredFiles.filename,
+          mimeType: agentDeliveredFiles.mimeType,
+          createdAt: agentDeliveredFiles.createdAt,
+        })
+        .from(agentDeliveredFiles)
+        .where(eq(agentDeliveredFiles.sessionKey, sessionKey));
+
+      return (
+        attachDeliveredFilesToHistory(
+          withUploadIds,
+          grants.map((g) => ({
+            filename: g.filename,
+            mimeType: g.mimeType,
+            createdAt: g.createdAt.getTime(),
+          }))
+        )
+          // A directive-only reply that got no chip (the grant is gone) has
+          // nothing left to show.
+          .filter((msg) => !msg.mediaOnly || (msg.files && msg.files.length > 0))
           .map(({ role, content, files, timestamp, oversized }) => ({
             role,
             content,
             files,
             timestamp,
-            ...(oversized ? { oversized: true as const } : {}),
+            ...(oversized ? { oversized } : {}),
           }))
       );
     };
@@ -896,13 +1160,12 @@ export class ClientRouter {
     // When there is a STARTED in-flight run for this session, the gateway's
     // `agentWait` oracle is the source of truth for whether the run is still
     // alive, has completed, or has failed — replacing the old client-side
-    // silence guess. We capture the runId here (the same gate as
-    // `activeRunSignal`: a started run with a real runId) and emit the verdict
-    // in the `finally` below so it always follows the history frame the client
+    // silence guess. The runId comes from `activeRunSignal` (a started run,
+    // decided at the same moment as the snapshot) and the verdict goes out in
+    // the `finally` below so it always follows the history frame the client
     // is about to reconcile against. A pending run has no meaningful runId yet,
     // so it is intentionally excluded.
-    const livenessRunId =
-      activeRun && activeRun.firstChunkAt !== null ? activeRun.runId : undefined;
+    const livenessRunId = activeRunSignal?.runId;
 
     try {
       await this.waitForConnection();
@@ -1033,7 +1296,11 @@ export class ClientRouter {
    *     paused / blocked) → `responding` (keep the UI on "responding"; NEVER
    *     fail a run that is still going).
    *   - `livenessState: "abandoned"`, or `status: "error"` → `failed` with a
-   *     reason from `stopReason` (or a generic fallback).
+   *     readable reason — never `stopReason`, which is a code.
+   *   - a stop (the user's, or a cancellation `stopReason`) → `completed`:
+   *     OpenClaw reports a stopped run as `status: "error"` too.
+   *   - the session moved on to another run (or the run's pipe finished)
+   *     while `agentWait` was in flight → no verdict at all (#1301).
    *
    * Infra hiccups (a thrown `agentWait`) are deliberately NOT turned into a
    * `failed` verdict — we log and skip, letting the existing flow continue.
@@ -1058,20 +1325,41 @@ export class ClientRouter {
       return;
     }
 
+    // The verdict is about `runId`, and `broadcastForRun` reaches whichever run
+    // holds the session NOW. The `agentWait` above (and the history fetch
+    // before it) gave the session time to move on: the user stopped this run
+    // and sent the next message, so the listeners are that newer turn's. A
+    // verdict about the stopped run would end the turn that is still running
+    // (#1301). And once the run's pipe has finished, its own terminal frames
+    // already reached this socket, which joined the run's listeners at the
+    // start of `handleHistory`.
+    const current = this.activeRuns.get(sessionKey);
+    if (!current || current.runId !== runId) return;
+
     const abandoned = result.livenessState === "abandoned";
     const ended = result.status === "ok" || result.endedAt !== undefined;
+    // OpenClaw answers a stopped run like a failed one — `status: "error"` —
+    // and only `stopReason` says it was a stop: `rpc` for `chat.abort` and
+    // `stop` for a stop command (OpenClaw's `isCancellationStopReason`),
+    // `aborted` for any other abort of the run's signal (`isAbortedAgentStopReason`
+    // — not only the user's; none of them is a failure to show).
+    // A run the user stopped ended the way they asked; the stop click already
+    // showed it as a clean end of turn.
+    const stopped = current.abortedByUser || STOP_REASONS.has(result.stopReason ?? "");
 
-    if (result.status === "error" || abandoned) {
-      this.broadcastForRun(sessionKey, clientWs, {
+    if (!stopped && (result.status === "error" || abandoned)) {
+      this.broadcastVerdict(current, sessionKey, clientWs, {
         type: "liveness",
         state: "failed",
-        reason: result.stopReason ?? "the agent run ended without a response",
+        // Never `stopReason`: it is a machine code ("rpc", "timeout"), not
+        // something to show a user.
+        reason: RUN_ENDED_WITHOUT_RESPONSE,
       });
       return;
     }
 
     if (ended) {
-      this.broadcastForRun(sessionKey, clientWs, {
+      this.broadcastVerdict(current, sessionKey, clientWs, {
         type: "liveness",
         state: "completed",
       });
@@ -1081,20 +1369,44 @@ export class ClientRouter {
     // Still alive (pending/timeout with a non-terminal livenessState, or no
     // terminal signal at all). Keep the UI on "responding" — never fail a run
     // that is still going.
-    this.broadcastForRun(sessionKey, clientWs, {
+    this.broadcastVerdict(current, sessionKey, clientWs, {
       type: "liveness",
       state: "responding",
     });
   }
 
-  // Shared streaming loop used by handleMessage. Handles heartbeat, chunk
-  // routing (text/error/done/userMessagePersisted), and the terminal "complete"
-  // frame. The loop drains the OpenClaw stream to its natural end regardless
-  // of browser WS state — Pinchy-side accounting (sessionCache, messageId
-  // rotation) always runs; consumer-bound frames are gated by readyState so
-  // we don't write to a closed socket. This makes the assistant reply
-  // deterministically present in OpenClaw's session.jsonl by the time the
-  // user reconnects (issue #199 Layer B).
+  /**
+   * `broadcastForRun`, minus the sockets that already sent the next message
+   * (`handedOverTo`): the verdict is about this run, and those tabs are on a
+   * turn that has not reached the registry yet (#1301). Everyone else still
+   * watching the run — a second device — hears it.
+   */
+  private broadcastVerdict(
+    run: ActiveRun,
+    sessionKey: string,
+    clientWs: WebSocket,
+    data: Record<string, unknown>
+  ): void {
+    const skip = run.handedOverTo;
+    if (!skip?.size) {
+      this.broadcastForRun(sessionKey, clientWs, data);
+      return;
+    }
+    const payload = JSON.stringify(data);
+    for (const ws of new Set([...run.listeners, clientWs])) {
+      if (!skip.has(ws) && ws.readyState === WS_OPEN) ws.send(payload);
+    }
+  }
+
+  // Delegates to StreamPipe (pinchy#1073 step 1 of the ClientRouter
+  // breakup). See stream-pipe.ts for the full streaming loop — heartbeat,
+  // chunk routing (text/error/done/userMessagePersisted), the terminal
+  // "complete" frame, artifact delivery, durable error persistence, and the
+  // `chat.agent_error` umbrella audit. `streamPipe` is constructed once per
+  // ClientRouter (see the constructor) sharing the SAME activeRuns,
+  // disconnectSignal, sessionCache, userId, userRole, and openclawClient this
+  // router holds, and the SAME broadcastForRun below — no new state, no
+  // behavior change, just an explicit seam.
   private async pipeStream(
     clientWs: WebSocket,
     stream: AsyncIterable<ChatChunk>,
@@ -1102,554 +1414,7 @@ export class ClientRouter {
     sessionKey: string,
     initialMessageId: string
   ): Promise<void> {
-    let messageId = initialMessageId;
-
-    // Per-turn rolling buffer for text chunks. We hold back any tail that
-    // could still grow into a SILENT_REPLY_TOKEN, then either flush or
-    // suppress it when the turn ends.
-    let textBuffer = "";
-
-    // Safety net for issue #320: OpenClaw's embedded runner falls through to
-    // `continue_normal` when `surface_error` fires with `params.timedOut`,
-    // emitting no lifecycle error event. The stream ends silently and the
-    // user is left with no error bubble and no retry button. We track
-    // whether any consumer-visible output reached the client and synthesize
-    // an error frame if the stream ends with nothing visible. Heartbeats
-    // and lifecycle/tool chunks don't count — only text the user would see
-    // or an explicit error chunk closes the safety net.
-    let sawText = false;
-    let sawError = false;
-    // Durable chat-error banner (Concern 1): the triggering user message id
-    // anchors supersede + a safe retry. `runStartedAt` (with a small clock-skew
-    // buffer) bounds the audit lookup that decides `sideEffects` — whether the
-    // run executed a tool, so the banner can warn that a retry may duplicate
-    // already-applied writes.
-    let triggeringClientMessageId: string | undefined;
-    const runStartedAt = new Date(Date.now() - 2000);
-    // Authoritative liveness: set when a terminal `liveness: failed` verdict has
-    // been emitted (a real error chunk OR the silent-stream synthesis). Gates
-    // the terminal `liveness: completed` so a failed run is never also reported
-    // as completed.
-    let emittedFailedLiveness = false;
-
-    // Heartbeat is intentionally deferred until the first chunk arrives.
-    // Starting it immediately would reset the client-side stuck timer even
-    // when OpenClaw's stream hangs before producing any output (e.g. after a
-    // restart), trapping the user in an infinite spinner. Once the first
-    // chunk arrives we know OpenClaw is actively responding, so heartbeats
-    // are safe to send between turns.
-    let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
-
-    // #310 Tier 2a: track this run in `activeRuns` so the watchdog can
-    // see it and so chunks arriving after the browser disconnect still
-    // attribute to a known server-side record. Registration is lazy —
-    // we don't have the runId until the first event arrives — and
-    // strictly idempotent (only the first registering chunk creates an
-    // entry). `sawTerminalError` distinguishes "stream ended with no
-    // listeners" (= audit chat.run_completed_after_disconnect) from
-    // "stream errored and no one was watching" (= just clean up).
-    let activeRunRegistered = false;
-    let activeRunId: string | undefined;
-    let sawTerminalError = false;
-    // Tier 2b resume buffer: the assistant text emitted to clients for the
-    // current `messageId` so far. Mirrored into the ActiveRun registry on every
-    // emit so a reconnecting client can be re-seeded with the words it streamed
-    // before the reload (chunks are deltas; the server never replays them and
-    // OpenClaw may not have persisted the partial yet). Reset on each per-turn
-    // `done` rotation.
-    let emittedContent = "";
-    // C-1: set when the first chunk we observe is the synthetic post-abort
-    // `done` for a pending run the watchdog already tore down. Lets us skip the
-    // silent-stream synthesis + `complete` frame so the user isn't
-    // double-signalled for an event the watchdog already handled.
-    let tornDownByWatchdog = false;
-    // #7: set when OpenClaw drops the socket mid-stream. The chat() generator
-    // then hangs forever, so we race each chunk against the disconnect signal
-    // and break out. There is no real terminal verdict to compute in that case
-    // (the run did NOT complete), so this gates the silent-stream synthesis,
-    // the `complete`/`liveness` frames, and the `run_completed_after_disconnect`
-    // audit below — only the finally cleanup (heartbeat + registry) still runs.
-    let openclawDisconnected = false;
-
-    try {
-      for await (const chunk of iterateUntilAborted(
-        stream,
-        this.disconnectSignal.whenDisconnected(),
-        () => {
-          openclawDisconnected = true;
-        }
-      )) {
-        // Lazily start the keep-alive heartbeat on the first chunk.
-        //
-        // For client-originated messages (always have a `clientMessageId`)
-        // the first chunk IS `userMessagePersisted` — OC's `accepted`
-        // response that confirms the run is queued. That's the earliest
-        // possible signal it's safe to fire heartbeats: starting before
-        // accepted would mask a Gateway that hangs at request-receive
-        // time, but starting on accepted catches the slow-first-token
-        // case where OC is busy and the model takes >60s to emit any
-        // text. See #310 Tier 2c.
-        //
-        // For server-originated messages without a clientMessageId
-        // (cron jobs, webhooks) the first chunk falls back to
-        // `agent_start` or text — same heartbeat-safe property holds.
-        if (heartbeatInterval === null) {
-          heartbeatInterval = setInterval(() => {
-            // Tier 2b: heartbeats broadcast to every listener so a tab that
-            // joined via reconnect-resume keeps its "thinking" indicator
-            // alive across the silent windows of slow tool-use loops.
-            this.broadcastForRun(sessionKey, clientWs, { type: "thinking", messageId });
-          }, THINKING_HEARTBEAT_MS);
-        }
-
-        // Tier 2a: lazy registration on the first chunk that carries a
-        // runId, then a touch on every subsequent chunk. Both run BEFORE
-        // existing chunk handling so a thrown error in the existing block
-        // still leaves the registry up-to-date for the finally cleanup.
-        if (!activeRunRegistered && chunk.runId) {
-          const firstChunkAt = Date.now();
-          // B-1: reconcile the dispatch-time pending registration (created by
-          // `registerPending`) to the real runId and flip it to "started". The
-          // #470 resume buffer needs no seeding here — it's kept current by the
-          // per-emit `setContent` calls below against the same accumulator.
-          const reconciled = this.activeRuns.markFirstChunk(sessionKey, firstChunkAt, chunk.runId);
-          if (!reconciled) {
-            // C-1: the pending run is gone — the watchdog tore it down on the
-            // first-chunk timeout and aborted the stream, which is precisely
-            // why this synthetic terminal `done` arrived (openclaw-node emits
-            // one post-abort). Do NOT resurrect the registry entry and do NOT
-            // fall through to the silent-stream net below: the watchdog already
-            // notified the user (a retryable error) and audited the event
-            // (`chat.run_no_first_chunk`). Bail; the finally still cleans up.
-            tornDownByWatchdog = true;
-            break;
-          }
-          activeRunRegistered = true;
-          activeRunId = chunk.runId;
-          // Authoritative liveness: the run has actually started streaming.
-          // Additive to the existing chunk/done frames — the client switchover
-          // is a later task. Emitted exactly once per run (gated by
-          // `activeRunRegistered` above), before the chunk-specific handling so
-          // the "responding" verdict precedes the first text/ack frame.
-          this.broadcastForRun(sessionKey, clientWs, {
-            type: "liveness",
-            state: "responding",
-          });
-          if (process.env.PINCHY_E2E_CHAT_TRACE === "1") {
-            console.log(
-              `[trace:chat] first-chunk session=${sessionKey} runId=${chunk.runId} ` +
-                `ws-state=${clientWs.readyState} chunk-type=${chunk.type}`
-            );
-          }
-        } else if (activeRunRegistered) {
-          this.activeRuns.touch(sessionKey, Date.now());
-        }
-        if (chunk.type === "error") {
-          sawTerminalError = true;
-        }
-        // Durable-banner bookkeeping: `userMessagePersisted` is OC's first chunk
-        // and carries the triggering client message id (anchor for supersede +
-        // retry). Tool execution is NOT signalled as a chunk by OpenClaw — the
-        // sideEffects flag is derived from the audit trail at persist time.
-        if (chunk.type === "userMessagePersisted") {
-          triggeringClientMessageId = chunk.clientMessageId;
-        }
-
-        // Pinchy-side accounting — runs regardless of consumer state. The
-        // browser may have navigated away, but OpenClaw is still streaming
-        // and persisting on its side; our local view of the session
-        // (sessionCache, per-turn messageId rotation) must keep up so the
-        // next history fetch / WS reconnect sees a coherent state.
-        // Note: errored turns intentionally do NOT update the cache — only
-        // turns that reach a `done` chunk count as completed sessions.
-        if (chunk.type === "done") {
-          this.sessionCache.add(sessionKey);
-          // A SUCCESSFUL turn's `done` supersedes the message's durable error.
-          // OpenClaw also emits a terminal `done` AFTER an `error` chunk to close
-          // the stream — superseding on that would immediately clear the error we
-          // just persisted, so the banner would never appear. `sawTerminalError`
-          // (set on any error chunk earlier in this stream) gates it out. Scoped
-          // to the triggering id so an unrelated later message succeeding never
-          // clears an unanswered error. Best-effort.
-          if (!sawTerminalError) {
-            try {
-              await supersedeChatSessionErrors({
-                sessionKey,
-                clientMessageId: triggeringClientMessageId,
-              });
-            } catch (err) {
-              console.error("Failed to supersede durable chat error:", err);
-            }
-          }
-        }
-
-        // Server-side error logging — unconditional. With the drain-always
-        // loop, error chunks arriving after the browser navigates away are
-        // exactly the chunks operators most need to see (no UI to surface
-        // them). Gating this on readyState would silently swallow upstream
-        // failures during nav-aways.
-        //
-        // sideEffects is computed once by the durable-persist below (audit-
-        // derived) and reused for the live error frame further down, so a
-        // failed run's in-chat retry and its durable banner agree without a
-        // second DB query — and inherit the persist's best-effort try/catch
-        // (a persist failure can never break the live error frame).
-        let liveSideEffects = false;
-        if (chunk.type === "error") {
-          console.error("OpenClaw error chunk:", chunk.text);
-
-          // Issue #355: universal `chat.agent_error` audit. Fires for every
-          // error chunk regardless of clientWs state and regardless of
-          // whether a more specialised event (agent.model_unavailable,
-          // chat.silent_stream further below) also fires. The specialised
-          // events stay in their role as
-          // throttled operational signals with richer per-class detail; this
-          // umbrella exists so a single query grouped by `errorClass` covers
-          // every failure shape — including the long tail (FailoverError
-          // incomplete-stream, unclassified) that currently has no audit
-          // signal at all.
-          //
-          // PII note: same reasoning as the existing model_unavailable
-          // branch — provider error envelopes don't echo user prompt text on
-          // these failures. Truncated to 1024 bytes as a belt-and-braces.
-          //
-          // Ordering: the audit `await` runs BEFORE the consumer-forwarding
-          // block below. Intentional — the audit row must land before any
-          // browser-facing side effect so that a forwarding-related throw
-          // (closed WS, send error) can't lose the audit trail. This is
-          // safe because exactly one error chunk arrives per failed stream
-          // (the stream terminates after it), so the await runs at most
-          // once per failed request — not on a hot per-chunk path.
-          const errorClass = classifyAgentError(chunk.text);
-          await this.writeAgentErrorAudit({
-            agent,
-            errorClass,
-            providerError: chunk.text,
-          });
-          // Durable banner (Concern 1): mirror the error into chat_session_errors
-          // so it survives reload/reconnect. Best-effort — never fails the stream.
-          // Returns the audit-derived sideEffects flag, reused for the live frame.
-          liveSideEffects = await this.persistDurableChatError({
-            agent,
-            sessionKey,
-            clientMessageId: triggeringClientMessageId,
-            runId: activeRunId,
-            providerError: chunk.text,
-            errorClass,
-            runStartedAt,
-          });
-        }
-
-        // Consumer forwarding — always runs the state-tracking (sawText,
-        // sawError, textBuffer) so the silent-stream safety net stays
-        // correct, then broadcasts to every ws in the listener set
-        // (Tier 2b). `broadcastForRun` falls back to the originating ws
-        // when no run is registered (e.g. pre-first-chunk frames) and
-        // per-listener readyState-gates internally.
-        {
-          if (chunk.type === "userMessagePersisted") {
-            this.broadcastForRun(sessionKey, clientWs, {
-              type: "ack",
-              clientMessageId: chunk.clientMessageId,
-            });
-          } else if (chunk.type === "text") {
-            sawText = true;
-            textBuffer = stripFinalEnvelope(textBuffer + chunk.text);
-            const safeLen = safeEmitLength(textBuffer);
-            if (safeLen > 0) {
-              const emit = textBuffer.slice(0, safeLen);
-              textBuffer = textBuffer.slice(safeLen);
-              // Accumulate then mirror into the registry in the SAME synchronous
-              // block as the broadcast: a reconnect's atomic snapshot+addListener
-              // means any chunk is either fully before the snapshot (counted in
-              // partialContent, not re-broadcast to the new ws) or fully after
-              // (not in the snapshot, delivered as a live delta) — never both.
-              emittedContent += emit;
-              this.activeRuns.setContent(sessionKey, emittedContent);
-              this.broadcastForRun(sessionKey, clientWs, {
-                type: "chunk",
-                content: emit,
-                messageId,
-              });
-            }
-          } else if (chunk.type === "error") {
-            sawError = true;
-            const modelUnavailable = classifyModelError(chunk.text, agent.model ?? "");
-            // Carry sideEffects on the LIVE frame too (reusing the audit-derived
-            // value the durable-persist above already computed) so the in-chat
-            // bubble's retry is gated behind the duplicate-write confirm — not
-            // just the durable banner after reload.
-            this.broadcastForRun(sessionKey, clientWs, {
-              type: "error",
-              agentName: agent.name,
-              // Banner display only — rewrites OpenClaw's context-overflow /reset
-              // advice (#611) and names the dispatched model for a retired/
-              // unclassified error (#611 follow-up). The audit + durable-persist
-              // keep the raw text.
-              providerError: presentProviderError(chunk.text, agent.model ?? undefined),
-              hint: getErrorHint(chunk.text, this.userRole),
-              messageId,
-              ...(modelUnavailable ? { modelUnavailable } : {}),
-              ...(liveSideEffects ? { sideEffects: true } : {}),
-            });
-            // Authoritative liveness: this is a terminal failure. Reuse the
-            // provider error text already computed above so the client never has
-            // to guess failure from silence. Additive to the `error` frame.
-            this.broadcastForRun(sessionKey, clientWs, {
-              type: "liveness",
-              state: "failed",
-              reason: chunk.text,
-            });
-            emittedFailedLiveness = true;
-            if (modelUnavailable && shouldEmitModelUnavailableAudit(agent.id, agent.model ?? "")) {
-              // PII note: `chunk.text` is the raw provider error string. For
-              // 5xx upstream failures (the only branch we audit here) the
-              // server failed before processing the request body, so it
-              // generally returns a generic error envelope without echoing
-              // the user's prompt. If a future provider starts including
-              // request fragments in 5xx error bodies, redact here before
-              // appending to the audit trail. AGENTS.md §"Audit logging
-              // rules" forbids plaintext PII in audit `detail`.
-              const auditEntry = {
-                actorType: "user" as const,
-                actorId: this.userId,
-                eventType: "agent.model_unavailable" as const,
-                resource: `agent:${agent.id}`,
-                detail: {
-                  agent: { id: agent.id, name: agent.name },
-                  model: agent.model,
-                  providerError: safeProviderError(chunk.text),
-                  ...(modelUnavailable.ref ? { ref: modelUnavailable.ref } : {}),
-                  httpStatus: modelUnavailable.httpStatus,
-                },
-                outcome: "failure" as const,
-              };
-              try {
-                await appendAuditLog(auditEntry);
-              } catch (err) {
-                recordAuditFailure(err, auditEntry);
-              }
-            }
-          } else if (chunk.type === "done") {
-            // Flush remaining buffer at end-of-turn. If the entire turn
-            // resolved to the silent-reply sentinel, suppress it; otherwise
-            // emit whatever text was held back.
-            if (textBuffer && textBuffer !== SILENT_REPLY_TOKEN) {
-              emittedContent += textBuffer;
-              this.activeRuns.setContent(sessionKey, emittedContent);
-              this.broadcastForRun(sessionKey, clientWs, {
-                type: "chunk",
-                content: textBuffer,
-                messageId,
-              });
-            }
-            this.broadcastForRun(sessionKey, clientWs, { type: "done", messageId });
-          }
-        }
-
-        // Per-turn messageId rotation — runs after the optional `done`
-        // forwarding so the next agent turn starts with a fresh id whether
-        // or not the browser is listening (consistent with how OpenClaw
-        // stores them in history).
-        if (chunk.type === "done") {
-          textBuffer = "";
-          // The completed turn is now in OpenClaw history; the next turn starts
-          // with an empty resume buffer (updateMessageId clears the registry's).
-          emittedContent = "";
-          messageId = crypto.randomUUID();
-          // Tier 2b: keep the registry's view of the current messageId in
-          // sync with the per-turn rotation so a reconnecting client gets
-          // an `activeRun.messageId` that anchors incoming chunks to the
-          // right message after history reconcile.
-          if (activeRunRegistered) {
-            this.activeRuns.updateMessageId(sessionKey, messageId);
-          }
-          // #483: low-latency per-turn usage. The just-completed turn is now in
-          // OpenClaw history; scan this session's trajectory and record its
-          // exact tokens NOW rather than waiting up to a poll interval. Fire-
-          // and-forget — recordSessionTurnsUsage never throws, and DB dedup by
-          // (sessionKey, runId) makes this and the poll backstop idempotent.
-          void recordSessionTurnsUsage({
-            openclawClient: this.openclawClient,
-            agentId: agent.id,
-            userId: this.userId,
-            agentName: agent.name,
-            sessionKey,
-          });
-        }
-      }
-
-      // #7: OpenClaw dropped the socket mid-stream. The stream will never
-      // produce a terminal chunk, so there is nothing to synthesize and no
-      // genuine `complete`. Skip straight to the finally cleanup so the
-      // heartbeat interval and ActiveRuns entry don't leak. The browser WS is
-      // being closed by the disconnect handler, which fires the client's own
-      // reconnect/error recovery.
-      if (openclawDisconnected) return;
-
-      // C-1: the watchdog already tore this run down (the loop broke on the
-      // synthetic post-abort `done`) and already notified the user with a
-      // retryable error — skip the silent-stream synthesis and the `complete`
-      // frame entirely. The finally still runs to clean up registry/heartbeat.
-      if (tornDownByWatchdog) return;
-
-      // Issue #320 safety net: stream ended without any consumer-visible
-      // output. Surface a retry-able error so the user isn't stranded with
-      // an empty assistant turn (most likely cause: OC's embedded runner
-      // swallowed a `surface_error reason=timeout` into `continue_normal`).
-      // Must precede the `complete` frame so the client's error handler
-      // runs before the spinner is cleared.
-      if (!sawText && !sawError) {
-        const providerError = "The model did not produce a response. It may have timed out.";
-        // Durable banner: a silent timeout is also a "no response" the user
-        // should still see after a reload. Best-effort. Computed before the
-        // frame so the live retry is gated on the same audit-derived
-        // sideEffects signal as the error-chunk path above.
-        const sideEffects = await this.persistDurableChatError({
-          agent,
-          sessionKey,
-          clientMessageId: triggeringClientMessageId,
-          runId: activeRunId,
-          providerError,
-          errorClass: classifySynthesisedError("silent_stream"),
-          runStartedAt,
-        });
-        // Tier 2b: broadcast so a tab joined via reconnect-resume also
-        // sees the synthesised error (the original ws might already be
-        // gone). The listener-set fallback inside broadcastForRun reaches
-        // the originating ws when no run is registered, e.g. if the OC
-        // stream produced zero chunks at all.
-        this.broadcastForRun(sessionKey, clientWs, {
-          type: "error",
-          agentName: agent.name,
-          providerError,
-          hint: getErrorHint(providerError, this.userRole),
-          messageId,
-          ...(sideEffects ? { sideEffects: true } : {}),
-        });
-        // Authoritative liveness: a silent stream is a terminal failure too, so
-        // the client never falls back to a timer guess for this class either.
-        this.broadcastForRun(sessionKey, clientWs, {
-          type: "liveness",
-          state: "failed",
-          reason: providerError,
-        });
-        emittedFailedLiveness = true;
-
-        // Issue #355: umbrella `chat.agent_error` for the silent-stream
-        // synthesised error too, so the universal measurement signal
-        // captures this class alongside the throttled `chat.silent_stream`
-        // operational signal below. Routed through `classifySynthesisedError`
-        // so adding a future synthesised-error site is a compile error in
-        // the classifier rather than a silent gap in audit coverage.
-        await this.writeAgentErrorAudit({
-          agent,
-          errorClass: classifySynthesisedError("silent_stream"),
-          providerError,
-        });
-
-        // Operational signal: a silent timeout shouldn't be invisible to
-        // admins reviewing the audit trail. Throttled per (agentId, model)
-        // so a degraded provider can't flood the log via user retries.
-        if (shouldEmitSilentStreamAudit(agent.id, agent.model ?? "")) {
-          const auditEntry = {
-            actorType: "user" as const,
-            actorId: this.userId,
-            eventType: "chat.silent_stream" as const,
-            resource: `agent:${agent.id}`,
-            detail: {
-              agent: { id: agent.id, name: agent.name },
-              model: agent.model ?? null,
-              // safeProviderError is a no-op on the synthesised Pinchy
-              // string today (no email, fits under 1024 bytes), but
-              // routing every providerError through the same helper
-              // means future refactors that change the synthesised text
-              // can't silently regress the audit-PII contract.
-              providerError: safeProviderError(providerError),
-              reason: "silent_stream_end" as const,
-            },
-            outcome: "failure" as const,
-          };
-          try {
-            await appendAuditLog(auditEntry);
-          } catch (err) {
-            recordAuditFailure(err, auditEntry);
-          }
-        }
-      }
-
-      // Authoritative liveness: the run reached its natural terminal end WITHOUT
-      // a failure. Gate on `!emittedFailedLiveness` so a stream that already
-      // emitted a terminal `liveness: failed` (a real error chunk OR the
-      // silent-stream synthesis above) is never contradicted with a `completed`
-      // verdict. Emitted BEFORE the `complete` frame so `complete` stays the
-      // genuine "no more frames" terminator the client keys its spinner off of.
-      // Additive to the `complete` frame; the client switchover to liveness is a
-      // later task.
-      if (!emittedFailedLiveness) {
-        this.broadcastForRun(sessionKey, clientWs, {
-          type: "liveness",
-          state: "completed",
-        });
-      }
-
-      // Tell the client the entire request is finished. Unlike "done" events
-      // (which fire between agent turns) this is sent exactly once after the
-      // iterator is exhausted, so the UI can confidently turn off the
-      // thinking indicator only when no more chunks will arrive.
-      // No messageId — this terminator is not tied to any specific turn.
-      // Tier 2b broadcasts so any tab that joined via reconnect-resume gets
-      // the terminator too; broadcastForRun reaches the originating ws if
-      // no listener set exists.
-      this.broadcastForRun(sessionKey, clientWs, { type: "complete" });
-    } finally {
-      // #310 Tier 2a: clean up the registry entry and, if the run finished
-      // normally but with zero listeners, write a chat.run_completed_after_disconnect
-      // audit row so operators can see "this run completed for a browser
-      // session that had already gone away". A terminated error path
-      // (sawTerminalError === true) doesn't get this audit — that's
-      // covered by the existing chat.agent_error / classified events.
-      if (activeRunRegistered) {
-        const run = this.activeRuns.get(sessionKey);
-        // `!openclawDisconnected`: a run abandoned because OpenClaw dropped the
-        // socket did NOT complete, so it must not be logged as
-        // `run_completed_after_disconnect` (that event means the browser left
-        // but the reply still finished server-side).
-        if (run && run.listeners.size === 0 && !sawTerminalError && !openclawDisconnected) {
-          const auditEntry = {
-            actorType: "user" as const,
-            actorId: this.userId,
-            eventType: "chat.run_completed_after_disconnect" as const,
-            resource: `agent:${agent.id}`,
-            detail: {
-              agent: { id: agent.id, name: agent.name },
-              user: { id: this.userId },
-              sessionKey,
-              runId: activeRunId!,
-            },
-            outcome: "success" as const,
-          };
-          try {
-            await appendAuditLog(auditEntry);
-          } catch (err) {
-            recordAuditFailure(err, auditEntry);
-          }
-        }
-      }
-      // B-1/S-1: drop the registry entry for THIS run only. Covers a
-      // dispatch-time pending run that errored before its first chunk
-      // (`activeRunRegistered` stays false → owned id is the provisional
-      // `initialMessageId`) and a normal started run (owned id is the
-      // reconciled `activeRunId`). The identity check is critical: a rapid
-      // resend replaces the entry with a NEWER run on the same sessionKey, and
-      // an unconditional delete here would clobber it — `deleteIfRunId` only
-      // removes the entry if it is still ours. Idempotent if the watchdog
-      // already tore the run down.
-      this.activeRuns.deleteIfRunId(sessionKey, activeRunId ?? initialMessageId);
-      if (heartbeatInterval !== null) {
-        clearInterval(heartbeatInterval);
-      }
-    }
+    return this.streamPipe.pipe(clientWs, stream, agent, sessionKey, initialMessageId);
   }
 
   private waitForConnection(): Promise<void> {
@@ -1686,7 +1451,7 @@ export class ClientRouter {
     if (err instanceof Error && err.stack) {
       console.error(err.stack);
     }
-    return "Something went wrong. Please try again.";
+    return GENERIC_RUN_FAILURE_MESSAGE;
   }
 
   private sendToClient(ws: WebSocket, data: Record<string, unknown>): void {
@@ -1720,131 +1485,6 @@ export class ClientRouter {
     for (const ws of run.listeners) {
       if (ws.readyState === WS_OPEN) ws.send(payload);
     }
-  }
-
-  /**
-   * Write the `chat.agent_error` umbrella audit row (issue #355).
-   *
-   * Universal measurement signal: fires for every error chunk that reaches
-   * the chat WS error surface, plus the silent-stream synthesised error.
-   * Specialised events (agent.model_unavailable, chat.silent_stream)
-   * remain in their role as throttled operational
-   * signals; this umbrella exists so a single query grouped by errorClass
-   * captures every failure shape, including the long tail.
-   *
-   * Called from WebSocket handler scope (not Next request scope), so uses
-   * the appendAuditLog + recordAuditFailure pattern per audit-deferred.ts.
-   *
-   * The call site `await`s this against forwarding to the browser. That's
-   * deliberate, not an oversight: the AGENTS.md rule forbids fire-and-forget
-   * audit writes, and there is exactly one error chunk per stream (the
-   * stream terminates after it), so the audit await runs at most once per
-   * failed request — not in a hot loop.
-   *
-   * PII: `providerError` is routed through `safeProviderError()` from
-   * `lib/audit.ts` — single source of truth for "scrub emails, then
-   * truncate to 1024 bytes" across every providerError audit field.
-   * The umbrella covers the long tail (`errorClass="unknown"`) where
-   * we can't pre-validate what providers echo back. The audit table is
-   * append-only and HMAC-signed, so GDPR Art. 17 erasure is impossible
-   * by design; scrubbing at write time is the only protection.
-   */
-  /**
-   * Mirror an agent error into the durable `chat_session_errors` store that
-   * backs the chat "paused" banner (Concern 1). Best-effort: a failure here is
-   * logged but never propagated, so it can't break the stream or lose the audit
-   * row that already landed. `transientReason` is only meaningful for the
-   * `transient` class, where it lets the banner name the actual cause.
-   */
-  private async persistDurableChatError(args: {
-    agent: { id: string; name: string; model?: string | null };
-    sessionKey: string;
-    clientMessageId?: string;
-    runId?: string;
-    providerError: string;
-    errorClass: AgentErrorClass;
-    runStartedAt: Date;
-  }): Promise<boolean> {
-    try {
-      // Derive sideEffects from the audit trail: OpenClaw doesn't signal tool
-      // execution as a chat chunk, so a `tool.*` audit row since this run began
-      // is the reliable "the agent already acted" signal. Computed for EVERY
-      // class — the live inline retry's duplicate-write gate needs it even when
-      // we skip the durable row below.
-      const sideEffects = await agentRanToolSince(args.agent.id, args.runStartedAt);
-      // Only persist a durable "paused" banner for retryable/intermittent
-      // classes. A persistent problem (retired model, over-large prompt, bad
-      // provider config → `unknown`/`provider_config`) recurs every attempt, so
-      // a sticky banner that reappears on every navigation is annoyance, not
-      // help — the inline turn-failure is enough. See shouldPersistDurableError.
-      if (shouldPersistDurableError(args.errorClass)) {
-        await recordChatSessionError({
-          userId: this.userId,
-          agentId: args.agent.id,
-          sessionKey: args.sessionKey,
-          clientMessageId: args.clientMessageId ?? null,
-          runId: args.runId ?? null,
-          agentName: args.agent.name,
-          model: args.agent.model ?? null,
-          errorClass: args.errorClass,
-          transientReason:
-            args.errorClass === "transient" ? classifyTransientReason(args.providerError) : null,
-          providerError: safeProviderError(args.providerError),
-          sideEffects,
-        });
-      }
-      return sideEffects;
-    } catch (err) {
-      console.error("Failed to persist durable chat error:", err);
-      // Best-effort: a persist failure must never break the live error frame.
-      // Default to "no side effects" so the in-chat retry stays ungated rather
-      // than spuriously demanding a duplicate-write confirm.
-      return false;
-    }
-  }
-
-  private async writeAgentErrorAudit(args: {
-    agent: { id: string; name: string; model?: string | null };
-    errorClass: AgentErrorClass;
-    providerError: string;
-    /**
-     * Set to true when the error was caught and Pinchy automatically
-     * retried — currently only the OC dispatch-race wrapper sets this.
-     * Surfaces in `detail.retried` so operator dashboards can filter
-     * recoverable from terminal failures without parsing `providerError`.
-     */
-    retried?: boolean;
-  }): Promise<void> {
-    const auditEntry = {
-      actorType: "user" as const,
-      actorId: this.userId,
-      eventType: "chat.agent_error" as const,
-      resource: `agent:${args.agent.id}`,
-      detail: {
-        agent: { id: args.agent.id, name: args.agent.name },
-        model: args.agent.model ?? null,
-        errorClass: args.errorClass,
-        providerError: safeProviderError(args.providerError),
-        ...(args.retried ? { retried: true } : {}),
-      },
-      outcome: "failure" as const,
-    };
-    try {
-      await appendAuditLog(auditEntry);
-    } catch (err) {
-      recordAuditFailure(err, auditEntry);
-    }
-
-    // Self-heal: if this error means the agent's model was retired upstream
-    // (HTTP 410 / "Unknown model"), regenerate config so it re-resolves to a
-    // live model. Fire-and-forget + debounced + never throws.
-    //
-    // Scope: this hook covers the CHAT-model path (an agent pinned to a model
-    // that was retired). The built-in pdf/image tools hit the same failure on
-    // their own dispatch path, but Pinchy is removing those in favour of
-    // pinchy_read (#501 follow-up), so we don't wire self-heal into the
-    // tool-dispatch audit path here.
-    void maybeSelfHealOnModelError(args.providerError);
   }
 }
 

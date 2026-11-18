@@ -3,7 +3,7 @@ import { NextRequest } from "next/server";
 import { makeNextRequest, routeContext } from "@/test-helpers/route";
 
 // ─────────────────────────────────────────────────────────────────────────
-// MIGRATION TEST (AGENTS.md § "Test Migrations Against Pre-Existing Data")
+// MIGRATION TEST (agent-rules/testing.md § "Test Migrations Against Pre-Existing Data")
 //
 // IMAP is a NEW connection `type` this feature introduces. Every unit test
 // elsewhere in the suite creates its imap fixtures fresh, in-process, inside
@@ -254,6 +254,20 @@ describe("Pre-existing IMAP connection — cross-route invariant (listed ⟹ rea
           }),
         },
       }));
+      // The (agent, connection) grant check the route runs before it decrypts
+      // anything (#987). It is stubbed here on purpose: this section's subject
+      // is whether a row an OLDER deploy wrote is still DECRYPTABLE by the
+      // current reader, and the `@/db` stub above answers exactly one query
+      // shape. The grant rule has its own migration coverage against real
+      // Postgres — see `lib/integrations/authorize-agent-connection.integration
+      // .test.ts`, including a grant row carrying the model/operation pair an
+      // older deploy wrote, which must still authorize.
+      vi.doMock("@/lib/integrations/authorize-agent-connection", () => ({
+        authorizeAgentConnection: vi.fn().mockResolvedValue({
+          allowed: true,
+          agent: { id: PRE_EXISTING_AGENT_ID, name: "Inbox Agent", allowedTools: [] },
+        }),
+      }));
       vi.doMock("@/lib/integrations/google-oauth", () => ({
         refreshAccessToken: vi.fn(),
       }));
@@ -263,11 +277,21 @@ describe("Pre-existing IMAP connection — cross-route invariant (listed ⟹ rea
       vi.doMock("@/lib/integrations/oauth-settings", () => ({
         getOAuthSettings: vi.fn().mockResolvedValue(null),
       }));
+      // The route checks the stored mail hosts before handing them out, which
+      // resolves them. Answered here: a real lookup of the fixture hosts made
+      // this section wait on the network, and under a loaded parallel suite it
+      // ran into the 20 s test timeout.
+      vi.doMock("node:dns/promises", () => ({
+        lookup: vi.fn().mockResolvedValue([{ address: "93.184.216.34", family: 4 }]),
+      }));
     });
 
     function makeRequest(connectionId: string) {
+      // `agentId` is how the plugin identifies itself since #987 — the agent
+      // here is the one the pre-existing permission row grants.
       return new NextRequest(
-        `http://localhost/api/internal/integrations/${connectionId}/credentials`,
+        `http://localhost/api/internal/integrations/${connectionId}/credentials` +
+          `?agentId=${PRE_EXISTING_AGENT_ID}`,
         { method: "GET", headers: { Authorization: "Bearer test-gateway-token" } }
       );
     }
@@ -407,19 +431,36 @@ describe("Pre-existing IMAP connection — cross-route invariant (listed ⟹ rea
         },
       ];
 
+      // Table-identity routing (see @/test-helpers/db-mock) doesn't survive
+      // this file's vi.resetModules() + dynamic-import pattern: the schema
+      // tables imported at this file's top level are a DIFFERENT module
+      // instance than the one build.ts sees when dynamically re-imported
+      // below, so `===` comparisons against them would silently fail. Route
+      // by call order instead, matching build.ts's query sequence:
+      //   1. agents (bare) · 2. agentConnectionPermissions (bare) ·
+      //   3. integrationConnections active-conn dedup (.where()) ·
+      //   4. integrationConnections web-search (.where()) · 5. channelLinks (bare)
+      const permRows = preExistingPermissionRows.map((r) => r.agent_connection_permissions);
+      const activeConnections = [preExistingPermissionRows[0]!.integration_connections];
+      let callCount = 0;
       vi.doMock("@/db", () => ({
         db: {
           select: vi.fn().mockImplementation(() => ({
-            from: vi.fn().mockImplementation(() =>
-              Object.assign(Promise.resolve(agentsData), {
-                innerJoin: vi.fn().mockReturnValue(
-                  Object.assign(Promise.resolve(preExistingPermissionRows), {
-                    where: vi.fn().mockResolvedValue(preExistingPermissionRows),
-                  })
-                ),
+            from: vi.fn().mockImplementation(() => {
+              callCount++;
+              if (callCount === 1) {
+                return Promise.resolve(agentsData);
+              }
+              if (callCount === 2) {
+                return Promise.resolve(permRows);
+              }
+              if (callCount === 3) {
+                return { where: vi.fn().mockResolvedValue(activeConnections) };
+              }
+              return Object.assign(Promise.resolve([]), {
                 where: vi.fn().mockResolvedValue([]),
-              })
-            ),
+              });
+            }),
           })),
         },
       }));

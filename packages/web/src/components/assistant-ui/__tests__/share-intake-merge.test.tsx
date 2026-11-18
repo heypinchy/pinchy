@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // Behavioural guard for the share prefill against the REAL assistant-ui
 // composer: ShareIntake and DraftPersistence both write the same composer's
 // text, so a shared payload arriving into a chat that already has a restored

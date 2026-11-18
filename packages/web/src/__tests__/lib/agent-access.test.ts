@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextResponse } from "next/server";
 import {
   assertAgentAccess,
@@ -6,6 +6,7 @@ import {
   requireAgentWriteAccess,
   getAgentWithAccess,
   effectiveVisibility,
+  isPersonalAgentPausedFor,
 } from "@/lib/agent-access";
 
 vi.mock("@/db", () => ({
@@ -31,9 +32,23 @@ vi.mock("@/lib/enterprise", () => ({
   getLicenseState: vi.fn().mockResolvedValue("paid"),
 }));
 
+vi.mock("@/lib/instance-policy", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/instance-policy")>();
+  return {
+    ...actual,
+    getInstancePolicy: vi
+      .fn()
+      .mockResolvedValue({ memberPersonalAgents: true, memberAutomations: true }),
+  };
+});
+
 import { db } from "@/db";
 import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
 import { getLicenseState } from "@/lib/enterprise";
+import { getInstancePolicy } from "@/lib/instance-policy";
+
+const ALL_ON = { memberPersonalAgents: true, memberAutomations: true };
+const PERSONAL_AGENTS_OFF = { memberPersonalAgents: false, memberAutomations: true };
 
 function mockSelectChain(resolvedValue: unknown) {
   vi.mocked(db.select).mockReturnValueOnce({
@@ -185,13 +200,32 @@ describe("getAgentWithAccess", () => {
     expect((result as NextResponse).status).toBe(404);
   });
 
-  it("returns 403 when user has no access", async () => {
+  it("returns 404 — not 403 — when user has no access, with the missing-agent body", async () => {
     mockSelectChain([{ id: "a1", ownerId: "other-user", isPersonal: true }]);
 
     const result = await getAgentWithAccess("a1", "user-1", "member");
 
     expect(result).toBeInstanceOf(NextResponse);
-    expect((result as NextResponse).status).toBe(403);
+    expect((result as NextResponse).status).toBe(404);
+    // Status alone is not the contract — a differing body would re-open the
+    // oracle this closes. Someone else's personal agent must be indis-
+    // tinguishable from an id that was never issued.
+    expect(await (result as NextResponse).json()).toEqual({ error: "Agent not found" });
+  });
+
+  it("gives a denied agent the very same answer as a missing one", async () => {
+    // Neither test above can see the two branches drift apart: each pins its own
+    // branch against a literal, so a later edit to the `!agent` body alone keeps
+    // both green while the invariant the docblock states is already broken.
+    // Compare the two answers against each other, which is the actual contract.
+    mockSelectChain([]);
+    const missing = (await getAgentWithAccess("nope", "user-1", "member")) as NextResponse;
+
+    mockSelectChain([{ id: "a1", ownerId: "other-user", isPersonal: true }]);
+    const denied = (await getAgentWithAccess("a1", "user-1", "member")) as NextResponse;
+
+    expect(denied.status).toBe(missing.status);
+    expect(await denied.json()).toEqual(await missing.json());
   });
 
   it("returns agent when access is granted", async () => {
@@ -216,7 +250,7 @@ describe("getAgentWithAccess", () => {
     expect(result).toEqual(groupsAgent);
   });
 
-  it("returns 403 when member is NOT in matching group for 'restricted' visibility", async () => {
+  it("returns 404 when member is NOT in matching group for 'restricted' visibility", async () => {
     const groupsAgent = { id: "a1", ownerId: null, isPersonal: false, visibility: "restricted" };
     mockSelectChain([groupsAgent]);
     vi.mocked(getUserGroupIds).mockResolvedValueOnce(["g1"]);
@@ -225,17 +259,17 @@ describe("getAgentWithAccess", () => {
     const result = await getAgentWithAccess("a1", "user-1", "member");
 
     expect(result).toBeInstanceOf(NextResponse);
-    expect((result as NextResponse).status).toBe(403);
+    expect((result as NextResponse).status).toBe(404);
   });
 
-  it("returns 403 for member accessing restricted agent with no groups", async () => {
+  it("returns 404 for member accessing restricted agent with no groups", async () => {
     const adminOnlyAgent = { id: "a1", ownerId: null, isPersonal: false, visibility: "restricted" };
     mockSelectChain([adminOnlyAgent]);
 
     const result = await getAgentWithAccess("a1", "user-1", "member");
 
     expect(result).toBeInstanceOf(NextResponse);
-    expect((result as NextResponse).status).toBe(403);
+    expect((result as NextResponse).status).toBe(404);
   });
 
   it("admin bypasses group checks for 'restricted' visibility", async () => {
@@ -294,7 +328,9 @@ describe("getAgentWithAccess", () => {
     const result = await getAgentWithAccess("a1", "user-1", "member");
 
     expect(result).toBeInstanceOf(NextResponse);
-    expect((result as NextResponse).status).toBe(403);
+    // Denial is a 404 (see the helper's docblock); what this test pins is that
+    // the restriction is still ENFORCED after expiry, not which status says so.
+    expect((result as NextResponse).status).toBe(404);
     expect(getUserGroupIds).toHaveBeenCalled();
   });
 
@@ -308,6 +344,63 @@ describe("getAgentWithAccess", () => {
     const result = await getAgentWithAccess("a1", "user-1", "member");
 
     expect(result).toEqual(agent);
+  });
+
+  describe("when members may not use a personal agent", () => {
+    const smithers = { id: "a1", ownerId: "user-1", isPersonal: true };
+
+    beforeEach(() => vi.mocked(getInstancePolicy).mockResolvedValue(PERSONAL_AGENTS_OFF));
+    afterEach(() => vi.mocked(getInstancePolicy).mockResolvedValue(ALL_ON));
+
+    it("answers the owning member 403 with a code the UI can explain", async () => {
+      mockSelectChain([smithers]);
+
+      const result = (await getAgentWithAccess("a1", "user-1", "member")) as NextResponse;
+
+      expect(result).toBeInstanceOf(NextResponse);
+      // 403, not the 404 a stranger gets: only the owner reaches this branch,
+      // and they already know their own agent exists — "not found" about the
+      // agent in their sidebar yesterday would be false.
+      expect(result.status).toBe(403);
+      expect(await result.json()).toMatchObject({ code: "personal_agent_disabled" });
+    });
+
+    it("leaves an admin's own personal agent alone", async () => {
+      const adminSmithers = { id: "a1", ownerId: "admin-user", isPersonal: true };
+      mockSelectChain([adminSmithers]);
+
+      const result = await getAgentWithAccess("a1", "admin-user", "admin");
+
+      expect(result).toEqual(adminSmithers);
+    });
+
+    it("still answers a stranger the byte-identical 404 — the switch must not open an oracle", async () => {
+      mockSelectChain([smithers]);
+
+      const result = (await getAgentWithAccess("a1", "someone-else", "member")) as NextResponse;
+
+      expect(result.status).toBe(404);
+      expect(await result.json()).toEqual({ error: "Agent not found" });
+    });
+  });
+});
+
+describe("isPersonalAgentPausedFor", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("is true for a member's own personal agent while personal agents are off", async () => {
+    vi.mocked(getInstancePolicy).mockResolvedValueOnce(PERSONAL_AGENTS_OFF);
+    await expect(isPersonalAgentPausedFor({ isPersonal: true }, "member")).resolves.toBe(true);
+  });
+
+  it("is false while personal agents are on", async () => {
+    await expect(isPersonalAgentPausedFor({ isPersonal: true }, "member")).resolves.toBe(false);
+  });
+
+  it("never reads the policy for a shared agent or an admin — the common path stays query-free", async () => {
+    await expect(isPersonalAgentPausedFor({ isPersonal: false }, "member")).resolves.toBe(false);
+    await expect(isPersonalAgentPausedFor({ isPersonal: true }, "admin")).resolves.toBe(false);
+    expect(getInstancePolicy).not.toHaveBeenCalled();
   });
 });
 

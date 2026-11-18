@@ -1,0 +1,346 @@
+import { DEFAULT_MODEL_CAPS, lookupModelCapabilities } from "@/lib/model-catalog";
+import { resolveAllowedProviderTarget } from "@/lib/provider-url-guard";
+import { pinnedFetch } from "@/lib/pinned-connection";
+import { canonicalDestinationUrl } from "@/lib/secret-destination";
+import { isMap, processWideCache } from "@/lib/process-wide-cache";
+import type { OpenClawModelDefinition } from "@/lib/openclaw-builtin-models";
+import {
+  AUTH_RETRY_DELAY_MS,
+  PROVIDER_PROBE_TIMEOUT_MS,
+  type ValidationResult,
+} from "@/lib/providers";
+
+// Generic "OpenAI-compatible" provider (#894). Any endpoint exposing the
+// OpenAI REST surface — `GET /models` for discovery, Bearer auth — can be
+// wired in without a bespoke ProviderName case. Discovery and validation both
+// hit the same `/models` endpoint the OpenAI probe uses in providers.ts, and
+// reuse that module's timeout + single-retry-on-auth-failure conventions.
+
+/**
+ * Join a provider base URL with `/models`, tolerating a single trailing slash
+ * so `https://host/v1/` does not become `https://host/v1//models`.
+ */
+function modelsUrl(baseUrl: string): string {
+  return `${baseUrl.replace(/\/$/, "")}/models`;
+}
+
+/** Safely read a property off an unknown value without throwing on non-objects. */
+function readProp(x: unknown, key: string): unknown {
+  return typeof x === "object" && x !== null && key in x
+    ? (x as Record<string, unknown>)[key]
+    : undefined;
+}
+
+// Follow a handful of hops like any HTTP client — but every hop is a fresh
+// destination that has to earn the same trust the base URL did.
+const MAX_REDIRECT_HOPS = 3;
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+/**
+ * A signal that aborts after `ms`, like `AbortSignal.timeout` — built on
+ * `setTimeout` so the budget is the same clock the rest of the hop (and a
+ * test's fake timers) runs on. The timer is left to fire: the caller reads
+ * the body after `fetch` resolves, and that read stays inside the budget.
+ */
+function timeoutSignal(ms: number): AbortSignal {
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () =>
+      controller.abort(new DOMException("The provider did not answer in time.", "TimeoutError")),
+    ms
+  );
+  // Don't hold a Node process open for a probe nobody is waiting on any more.
+  if (typeof timer === "object") timer.unref();
+  return controller.signal;
+}
+
+/** `work`'s result, or a rejection with the signal's reason if it aborts first. */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (err: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(err);
+      }
+    );
+  });
+}
+
+/**
+ * `GET <baseUrl>/models`, re-running the SSRF guard on every redirect target.
+ *
+ * The routes validate `baseUrl` before calling in here (see
+ * `settings/providers/openai-compatible/{route,discover/route}.ts`), but this
+ * fetched with the default `redirect: "follow"` — so a base URL that passed
+ * the guard could answer `302 Location: http://169.254.169.254/` and undici
+ * would obediently go there. A single check at the head of a redirect chain
+ * says nothing about where the request lands, and the probe carries the
+ * provider's API key in an Authorization header while it travels.
+ *
+ * Driving the chain by hand means taking over the part of `redirect: "follow"`
+ * that was never about convenience: the fetch spec DROPS `Authorization` when
+ * a redirect crosses an origin, so a provider cannot redirect its way to a
+ * credential meant only for itself. The SSRF guard does not cover this — a
+ * collector on an ordinary public address is exactly what it should allow —
+ * so the header is re-attached only while the destination's origin still
+ * matches the one the key was issued for, and never restored once a chain has
+ * left it.
+ *
+ * The first URL is checked too, not only the hops. The routes validate an
+ * admin's input, but `resolveCustomProviderModels` fetches the STORED base URL
+ * on every config regeneration and model-list load — a provider saved under
+ * older rules, before `PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS` was set, or
+ * whose name now resolves somewhere else, was fetched with its key attached.
+ * A refusal throws, which every caller below turns into "unreachable".
+ */
+async function fetchModels(baseUrl: string, apiKey: string): Promise<Response> {
+  let current = modelsUrl(baseUrl);
+  const keyOrigin = new URL(current).origin;
+  let sendKey = true;
+
+  for (let hop = 0; ; hop++) {
+    // One budget per hop, started before the guard: the guard resolves the
+    // host first, and a resolver that does not answer has to spend this hop's
+    // time, not add to it.
+    const signal = timeoutSignal(PROVIDER_PROBE_TIMEOUT_MS);
+    // One lookup per hop, and the request goes to its answer. Checking the URL
+    // and then fetching it by name resolved twice, so a resolver could answer
+    // public for the check and 127.0.0.1 for the connect — or fail the check's
+    // lookup (which the save-time guard treats as "allow") and answer the
+    // second. A name with no answer now fails the hop here.
+    const target = await untilAborted(resolveAllowedProviderTarget(current), signal);
+    // Annotated, not inferred: `sendKey` is decided from the hop's URL, which
+    // is read off the previous response, which is this call — so letting the
+    // header object's type flow into the fetch overload closes a loop tsc
+    // cannot resolve (TS7022).
+    const headers: Record<string, string> = sendKey ? { Authorization: `Bearer ${apiKey}` } : {};
+    const response = await pinnedFetch(current, { headers, redirect: "manual", signal }, target);
+
+    if (!REDIRECT_STATUSES.has(response.status)) return response;
+
+    const location = response.headers.get("location");
+    // A redirect without a Location is the provider's problem — hand it back
+    // and let the caller treat it as the non-2xx it is.
+    if (!location) return response;
+    if (hop >= MAX_REDIRECT_HOPS) {
+      throw new Error("Too many redirects from the provider endpoint");
+    }
+
+    // Relative Locations are legal and common, so resolve against the URL
+    // actually requested before classifying it.
+    const next = new URL(location, current);
+    // Once, and permanently: a hop back to the original origin does not earn
+    // the key back, or a chain through an attacker would be a way to launder
+    // one past this check.
+    sendKey = sendKey && next.origin === keyOrigin;
+    current = next.toString();
+  }
+}
+
+/**
+ * Probe an OpenAI-compatible endpoint's `GET /models` to validate credentials.
+ * Mirrors validateProviderKey in providers.ts: 200 ⇒ valid, 401/403 retried
+ * once before declaring the key invalid, any other non-2xx ⇒ provider_error,
+ * and a throw/abort ⇒ network_error. Never surfaces the API key in an error.
+ */
+export async function validateOpenAiCompatibleProvider(
+  baseUrl: string,
+  apiKey: string
+): Promise<ValidationResult> {
+  try {
+    const response = await fetchModels(baseUrl, apiKey);
+
+    if (response.ok) return { valid: true };
+
+    // 401/403 could be a genuinely invalid key, or a transient auth issue.
+    // Deliberately mirrors validateProviderKey's retry shape in providers.ts:
+    // a single retry on 401/403, same shared delay, before declaring invalid.
+    if (response.status === 401 || response.status === 403) {
+      await new Promise((r) => setTimeout(r, AUTH_RETRY_DELAY_MS));
+      const retry = await fetchModels(baseUrl, apiKey);
+      if (retry.ok) return { valid: true };
+      return { valid: false, error: "invalid_key" };
+    }
+
+    // Anything else (429, 5xx, etc.) = provider issue, not necessarily a bad key.
+    return { valid: false, error: "provider_error", status: response.status };
+  } catch {
+    return { valid: false, error: "network_error" };
+  }
+}
+
+// Ids that are clearly not chat/completions models. A `/models` listing on a
+// real gateway (Together, Groq, a private LiteLLM/vLLM proxy, …) commonly
+// mixes embedding, reranking, TTS, transcription, and moderation models in
+// with the chat models — none of which OpenClaw can use as an agent's
+// primary/fallback model, and offering them in the picker would just be
+// confusing (or actively break a chat request that tries to use one).
+// Conservative and case-insensitive: only ids that plainly signal one of
+// these categories are dropped.
+const NON_CHAT_MODEL_PATTERN =
+  /(embed|embedding|rerank|reranker|tts|text-to-speech|whisper|moderation|guard)/i;
+
+/**
+ * Discover an OpenAI-compatible endpoint's model list via `GET /models`.
+ * Each returned id is resolved to full capabilities from the model catalog,
+ * falling back to the compaction-safe DEFAULT_MODEL_CAPS for unknown ids.
+ * Returns [] on any non-200, throw, or malformed body — the caller then falls
+ * back to manual model-id entry. Defensive against missing/empty `data`,
+ * non-array `data`, and entries without a usable string `id`. Ids matching
+ * {@link NON_CHAT_MODEL_PATTERN} (embeddings, rerankers, TTS, whisper,
+ * moderation, guard models) are filtered out — see its doc-comment.
+ */
+export async function fetchOpenAiCompatibleModels(
+  baseUrl: string,
+  apiKey: string
+): Promise<OpenClawModelDefinition[]> {
+  try {
+    const response = await fetchModels(baseUrl, apiKey);
+    if (!response.ok) return [];
+
+    const body: unknown = await response.json();
+    const data = readProp(body, "data");
+    if (!Array.isArray(data)) return [];
+
+    const models: OpenClawModelDefinition[] = [];
+    for (const entry of data) {
+      const id = readProp(entry, "id");
+      if (typeof id !== "string" || id.length === 0) continue;
+      if (NON_CHAT_MODEL_PATTERN.test(id)) continue;
+      models.push(lookupModelCapabilities(id) ?? { ...DEFAULT_MODEL_CAPS, id, name: id });
+    }
+    return models;
+  } catch {
+    return [];
+  }
+}
+
+// Live-read cache for custom OpenAI-compatible providers (#894 backend
+// redesign). Mirrors the ollama-local pattern in provider-models.ts
+// (`ollamaLocalCache` / `OLLAMA_LOCAL_CACHE_TTL_MS`): the model list feeds
+// BOTH the agent model dropdown and openclaw.json emission, both of which run
+// far more often than a provider's catalog actually changes, so a short-lived
+// in-memory cache absorbs repeated calls (every `regenerateOpenClawConfig()`,
+// every dashboard model-list fetch) without re-hitting the endpoint each
+// time. An hour is generous compared to ollama-local's 10s: a custom endpoint
+// is a remote HTTP call (real network latency, real cost to hammer), and —
+// unlike ollama-local — there is no "I just pulled a new model, show it now"
+// UX expectation driving a short TTL here.
+//
+// An entry belongs to one slug, one destination and one key — see
+// {@link modelCacheKey}. The slug never changes, but the endpoint behind it
+// can: keyed by slug alone, the regenerate a re-pointing save triggers was
+// served the OLD endpoint's catalog and emitted it under the NEW base URL.
+//
+// Process-wide (see process-wide-cache.ts): a regenerate reads it, and the
+// module instance that runs a regenerate is not always the one that reset it.
+const CUSTOM_PROVIDER_MODEL_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+const customProviderModelCache = () =>
+  processWideCache<Map<string, { fetchedAt: number; result: OpenClawModelDefinition[] }>>(
+    "__pinchyCustomProviderModelCache",
+    () => new Map(),
+    isMap
+  );
+
+/** Clear the custom-provider live-model cache (mirrors provider-models.ts's `resetCache()`). */
+export function resetCustomModelCache(): void {
+  customProviderModelCache().clear();
+}
+
+/**
+ * The last live model list fetched for `slug` — under any base URL or key,
+ * however old — or `undefined`
+ * when none was. Never fetches. For a provider whose base URL is refused,
+ * which must not be fetched (the request would carry its key to the refused
+ * address) but whose emitted list should not shrink to the saved snapshot —
+ * see `refusedProviderModels` in openai-compatible-stored-url.ts.
+ */
+export function cachedCustomProviderModels(slug: string): OpenClawModelDefinition[] | undefined {
+  // The cache is keyed by slug, destination and key version (see
+  // modelCacheKey); any of them will do here, so take the newest for the slug.
+  let latest: { fetchedAt: number; result: OpenClawModelDefinition[] } | undefined;
+  for (const [key, entry] of customProviderModelCache()) {
+    if ((JSON.parse(key) as unknown[])[0] !== slug) continue;
+    if (!latest || entry.fetchedAt > latest.fetchedAt) latest = entry;
+  }
+  return latest?.result;
+}
+
+/** The inputs `resolveCustomProviderModels` needs to resolve one provider's live model list. */
+export interface CustomProviderModelSource {
+  /** Stable per row (immutable once created). Part of the cache key. */
+  slug: string;
+  /** Part of the cache key, in canonical form. */
+  baseUrl: string;
+  /** Decrypted API key. */
+  apiKey: string;
+  /**
+   * Fingerprint of the stored key's ciphertext (`secretVersion`), new on every
+   * save of a key. Part of the cache key — a list fetched with one key is not
+   * the answer for another — without the key itself ever being one.
+   */
+  keyVersion: string;
+  /** Last-known-good snapshot, written at save time — the offline/failure fallback. */
+  models: OpenClawModelDefinition[];
+}
+
+/**
+ * Resolve a custom OpenAI-compatible provider's model list: live, with a
+ * short-TTL cache and an offline fallback to the last-known-good snapshot
+ * (`p.models`, written at save time — see the `models` column doc-comment in
+ * db/schema.ts). Mirrors `fetchOllamaLocalModelsFromUrl`'s cache+fallback
+ * shape in provider-models.ts.
+ *
+ * - Cache hit (same slug, base URL and key version, within
+ *   {@link CUSTOM_PROVIDER_MODEL_CACHE_TTL_MS} of the last successful live
+ *   fetch) ⇒ return the cached result, no network call.
+ * - Cache miss ⇒ call `fetchOpenAiCompatibleModels(baseUrl, apiKey)`.
+ *   - ≥1 model discovered ⇒ cache it and return it.
+ *   - 0 models, or the call throws ⇒ return the snapshot WITHOUT caching, so
+ *     the very next call retries live rather than pinning the fallback for a
+ *     full TTL window (an endpoint that's down for one call may be back up
+ *     for the next).
+ */
+export async function resolveCustomProviderModels(
+  p: CustomProviderModelSource
+): Promise<OpenClawModelDefinition[]> {
+  const key = modelCacheKey(p);
+  const cached = customProviderModelCache().get(key);
+  if (cached && Date.now() - cached.fetchedAt < CUSTOM_PROVIDER_MODEL_CACHE_TTL_MS) {
+    return cached.result;
+  }
+
+  let live: OpenClawModelDefinition[];
+  try {
+    live = await fetchOpenAiCompatibleModels(p.baseUrl, p.apiKey);
+  } catch {
+    return p.models;
+  }
+
+  if (live.length === 0) {
+    return p.models;
+  }
+
+  customProviderModelCache().set(key, { fetchedAt: Date.now(), result: live });
+  return live;
+}
+
+/**
+ * (slug, canonical base URL, key version). The base URL in the form a secret is
+ * bound to (`canonicalDestinationUrl`): a trailing slash or the host's letter
+ * case is the same endpoint, a different path is not. JSON-encoded, so no field
+ * can run into the next.
+ */
+function modelCacheKey(p: CustomProviderModelSource): string {
+  return JSON.stringify([p.slug, canonicalDestinationUrl(p.baseUrl) ?? p.baseUrl, p.keyVersion]);
+}

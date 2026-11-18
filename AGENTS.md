@@ -9,13 +9,16 @@ Status: early development. The core is working: setup wizard, authentication, pr
 ## Repository Map
 
 - `packages/web/` - Next.js app, API routes, WebSocket bridge, Drizzle schema/migrations, tests.
-- `packages/plugins/` - OpenClaw plugins. Current Pinchy plugins: `pinchy-files`, `pinchy-context`, `pinchy-docs`, `pinchy-audit`, `pinchy-email`, `pinchy-odoo`, `pinchy-transcript`, `pinchy-web`.
+- `packages/plugins/` - OpenClaw plugins. Current Pinchy plugins: `pinchy-files`, `pinchy-context`, `pinchy-docs`, `pinchy-audit`, `pinchy-email`, `pinchy-odoo`, `pinchy-transcript`, `pinchy-web`, `pinchy-knowledge`, `pinchy-approvals`. Guarded against the directory listing by `scripts/lib/agents-md-repository-map.test.mjs`.
+- `packages/openclaw-runtime/` - Manifest-only workspace package: the OpenClaw version the `pinchy-openclaw` image ships. `Dockerfile.openclaw` installs it from `pnpm-lock.yaml` with `--frozen-lockfile`, so OpenClaw's own tree in the image is the one `vuln-scan` checks and the root `pnpm.overrides` apply to it — the llama-cpp provider and the `/opt/pinchy-*-deps` bundles in the same image are still npm installs no lockfile covers. Never `npm install -g openclaw` — that honours OpenClaw's own npm-shrinkwrap.json and bypasses both. `openclaw-version-pin-drift.test.ts` pins the install shape (including `strict-dep-builds`: a dependency install script not listed in `pnpm.onlyBuiltDependencies`/`ignoredBuiltDependencies` fails the image build) and keeps the version in lockstep with `packages/web`; `openclaw-runtime-closure.test.ts` fails when an override pushes a runtime dependency outside the major its dependent declares.
 - `config/` - OpenClaw config support, startup scripts, mock services for integration/E2E tests.
 - `docs/` - Astro Starlight documentation. It is standalone and has its own `package.json` and lockfile.
+- `plans/` - Design and implementation records for larger features, committed on purpose: the reasoning behind a decision outlives the PR that carried it, and a review that revisits one needs it. Not to be confused with `docs/plans/`, which `.gitignore` drops — those are scratch, these are the record.
 - `sample-data/` - Sample knowledge-base data mounted into Docker at `/data/`.
 - `marketplace/` - 1-Click deploy templates (DigitalOcean Packer image, CapRover one-click). Version-pinned to the release and guarded by `scripts/lib/marketplace-version.test.mjs` + `marketplace-lint.test.mjs`.
 - `docker-compose*.yml` - Development, production, integration, and E2E stack definitions.
 - `PERSONALITY.md` - Brand voice guide. Read before writing user-facing UI or docs copy.
+- `.claude/skills/designing-pinchy-features/` - Interaction design playbook. Read before building a create form, config dialog, wizard, settings tab, or onboarding step — it decides what the UI asks versus what Pinchy derives.
 
 ## Tech Stack
 
@@ -51,58 +54,34 @@ Status: early development. The core is working: setup wizard, authentication, pr
 - Update docs in the same PR when product behavior changes. Smithers reads docs on demand through the `pinchy-docs` plugin, so docs are product context, not decoration.
 - Never commit secrets. Assume code, decisions, and progress may be shared publicly.
 
-## No Untracked Test Skips
+## Topic Rules
 
-Permanent test skips need a tracking issue. The ESLint rule `pinchy/no-untracked-skips` and the vitest drift-guard `src/__tests__/lib/no-untracked-skips.test.ts` both enforce this — they fire on `test.skip`, `it.skip`, `describe.skip`, `.todo`, `.fixme`, `xit`, `xdescribe` unless the immediately surrounding 40 lines contain a tracking-issue reference (`#NNN` or a github.com/.../issues/NNN URL). A third guard, `no-untracked-skips-parity.test.ts`, pins the two checkers together: if you teach one a new skip syntax and forget the other, the parity fixtures will flag the drift.
+Rules that matter only when touching one area live in `agent-rules/`, one file per topic. They are not loaded with this file: read the file **before** you start work that matches its trigger. A `§ "Heading"` reference in code, a comment or one of these files names a section heading — search `agent-rules/` for it.
 
-Two patterns are explicitly allowed:
+- `agent-rules/testing.md` — before skipping, deleting or rewriting a test, writing an E2E wait, changing where a feature reads its data from, adding a type-level or jsdom test, or running the full suite.
+- `agent-rules/ci.md` — before changing anything under `.github/workflows/` or `.github/actions/`.
+- `agent-rules/release.md` — before editing `docs/src/content/docs/guides/upgrading.mdx`, any declared version (`package.json`, `.env.example`, the README quick start, `marketplace/`), or the release scripts.
+- `agent-rules/dependencies.md` — before bumping a dependency or Node, accepting a vulnerability (`osv-scanner.toml`, `pnpm.auditConfig`), or editing a Dockerfile.
+- `agent-rules/tooling.md` — before touching `.husky/`, lint-staged, a prettier config or `.prettierignore`, or when a pre-commit or pre-push hook fails.
+- `agent-rules/dev-stack.md` — before editing a `docker-compose*.yml` file or running a dev stack in a worktree.
+- `agent-rules/web-routes.md` — before adding or changing an API route, a request schema, a client-side `fetch`, `next.config.ts` headers, or anything under `/api/internal/`.
+- `agent-rules/ui.md` — before building a create form, config dialog, wizard, settings tab or onboarding step, or deciding how an error is shown.
+- `agent-rules/secrets.md` — before handling a credential, an API key or an `openclaw.json` value, or changing how a plugin fetches credentials.
+- `agent-rules/plugins.md` — before changing anything under `packages/plugins/`, or adding a plugin or a tool.
+- `agent-rules/docs.md` — before changing `docs/`, a user-visible surface or a docs check, and before opening a PR.
+- `agent-rules/eval.md` — before committing eval data under `packages/web/eval/` or changing `model-resolver/blocklist.ts`.
+- `agent-rules/issue-triage.md` — before changing `.github/workflows/issue-triage.yml`, `scripts/lib/issue-triage.mjs` or the in-app bug-report link.
 
-- **`describe.skipIf(condition)` / `it.skipIf(condition)`** — conditional gates driven by env vars or OS features (e.g. `describe.skipIf(!process.env.INTEGRATION_TEST)`). These are not "we'll come back to it later" suppressions.
-- **Any banned form (`.skip`, `.todo`, `.fixme`, `xit`, `xdescribe`) with `#NNN` in the leading comment block** — the issue is the contract. "Tracked separately" / "follow-up" / inline TODO without a number is not enough. `it.todo("…")` is treated exactly like `.skip` — it silently turns green in CI but never runs, which is precisely the failure mode this policy exists to stop.
+The hard "never" rules, in one place. Each topic file holds the reasoning and the guard behind them:
 
-If a check is in your way and you can't fix it in scope, **file the issue first**, link the number, then skip. Don't ship the skip with a promise to file the issue later — the 2026-05-22 audit found five clusters where exactly that happened, one of them hiding a production password-reset bug.
-
-## No Untracked Test Removal
-
-Skips are not the only way a test silently stops protecting you — **deleting** it does too, and the skip guards above cannot see a test that no longer exists. The 2026-06 `é`-dead-key regression shipped exactly this way: a refactor removed two composer composition tests (whole `it()` blocks from a surviving file), nothing flagged it, and the bug returned undetected on the next dependency bump.
-
-The `scripts/check-test-deletions.mjs` CI guard (PR-only, in the `quality` job) closes that gap. It diffs the PR against the base branch, counts test cases (`it`/`test`/`xit`/`fit`, including `.each`) across every changed test file, and **fails if the PR removes tests on net**. Pure logic lives in `scripts/lib/check-test-deletions.mjs` and is covered by `scripts/lib/check-test-deletions.test.mjs` (`pnpm test:scripts`).
-
-Removing tests must be a deliberate, tracked act — same contract as skips. When a removal is legitimate (dead-code cleanup, a deduplicated test, a removed feature), authorize it with **either**:
-
-- a commit trailer referencing an issue: `Allow-test-deletion: #NNN`, **or**
-- the `allow-test-deletion` label on the PR.
-
-A bare reason without an issue reference is not enough, exactly as with skips. Moving a test between files is net-zero and never trips the guard. Do not weaken or delete a test to make reduced code pass — a failing test after a refactor signals lost coverage, not a wrong test.
-
-Known limitations (it's a tripwire, not a precise metric):
-
-- It counts test-case calls with a regex, so it does **not** catch a test that is _commented out_ rather than deleted, and it counts `it(`/`test(` that appear inside string literals (including the guard's own fixtures). Review still owns these cases.
-- In CI it diffs against the merge-base; if a shallow clone has no merge-base it falls back to a tip-to-tip diff and logs a `::warning::`. A branch far behind the base can then report false removals — rebase on the base (or use the override) if that happens.
-
-## Test Migrations Against Pre-Existing Data
-
-When you change **where a feature reads its data from** — a new table, a new store, a different source (e.g. the Telegram mirror switching from OpenClaw `chat.history` to Pinchy's `channel_messages`) — you MUST add a test that reads data written by the **old** source with the **new** code.
-
-This is the read-side sibling of the test-skip/test-deletion guards: it forces a conscious decision about migration (backfill, fallback, or accept-and-document) instead of silently dropping data created before the switch.
-
-The trap is that every test starts from a clean slate where the new mechanism is live from the first write, so a green suite proves nothing about the state a real **upgrade** produces (old data, new code). The 2026-06 Telegram regression shipped exactly this way: the source switch blanked every conversation that predated the capture plugin, and the existing Telegram E2E stayed green because it only ever exercised freshly-captured conversations.
-
-Concretely:
-
-- **Simulate the pre-existing state:** let the new path capture/write, then delete those rows for the entity, then assert the feature still works (it must fall back or have been backfilled). See `deleteCapturedTelegramMessages` + the "listed ⟹ readable" test in `packages/web/e2e/telegram/chats.spec.ts`, and the deterministic route-level equivalent in `packages/web/src/__tests__/api/agent-telegram-chat.test.ts`.
-- **Assert the cross-route invariant**, not just one route in isolation: if an item appears in a list, opening it must show content (or a defined, honest empty state). List and detail are often changed independently.
-
-## Web Test Files Are Type-Checked
-
-`packages/web` test files (`*.test.ts(x)`, `*.integration.test.ts`, `*.test-d.ts`) are type-checked in CI by the `quality` job's "Typecheck web (incl. tests)" step: `pnpm -C packages/web typecheck` → `tsc --noEmit -p packages/web/tsconfig.typecheck.json`.
-
-This exists because `next build` type-checks the web package but its `tsconfig.json` deliberately **excludes** `src/**/*.test.ts(x)`, and vitest runs without `--typecheck`. So test-file type errors — including dormant `expectTypeOf`/`assertType` assertions that silently pass as runtime no-ops — went undetected until this gate landed. `tsconfig.typecheck.json` extends the base config but INCLUDES the test files and adds `vitest/globals` + `@testing-library/jest-dom` to `types`.
-
-- Write genuine type-level tests: `expectTypeOf(...).toEqualTypeOf<T>()` / `.toExtend<T>()` are now real compile-time checks. Do NOT paper over failures with `as any` / `@ts-expect-error`.
-- Shared, correctly-typed test helpers live in `packages/web/src/test-helpers/` (`auth.ts` → `mockSession`, `route.ts` → `makeNextRequest`/`routeContext`, `fixtures.ts` → `makeAgent`/`makeTemplateItem`). Prefer them over inline fixtures so a type change is a one-line helper fix, not a sweep across test files.
-- The drift guard `scripts/lib/web-typecheck-gate.test.mjs` (pure logic in `web-typecheck-gate.mjs`, run by `pnpm test:scripts`) fails if the tsconfig stops including test files, re-excludes them, the `typecheck` script drifts, or CI stops running the gate — the read-side sibling of the no-untracked-skips / no-test-deletion / plugin-typecheck guards.
-- Playwright `e2e/**/*.spec.ts` is intentionally out of this gate (separate Playwright type context).
+- Never skip a test (`.skip`, `.todo`, `.fixme`, `xit`, `xdescribe`) without a `#NNN` tracking issue next to it, remove tests on net without `Allow-test-deletion: #NNN`, or weaken a test to make reduced code pass. → `testing.md`
+- Never call `page.waitForTimeout` in `e2e/**` without a `#NNN` comment directly above it. → `testing.md`
+- Never edit a released `## Upgrading from …` section of `upgrading.mdx`. → `release.md`
+- Never put `paths-ignore`/`paths` on `ci.yml`'s triggers, a matrix on a required job (`quality`, `vitest-integration`, `e2e`), or `timeout-minutes` on a job that calls a reusable workflow. Every other job sets `timeout-minutes`. → `ci.md`
+- Never put a session-authed route under `/api/internal/`, or send a mutating `fetch` from client code instead of `api-client.ts`. → `web-routes.md`
+- Never put a third-party credential, or a SecretRef to one, into a plugin's config block in `openclaw.json`. → `secrets.md`
+- Never ship a plugin `fetch()` without a `signal`, or a failing tool result without `details.error`. → `plugins.md`
+- Never change a user-visible surface without touching `docs/` or adding a `Docs-not-needed:` trailer. → `docs.md`
 
 ## Commands
 
@@ -112,11 +91,18 @@ Development should use Docker Compose because the app depends on PostgreSQL, Ope
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 ```
 
-With a development enterprise key:
+That stack is **already** an enterprise install: `docker-compose.dev.yml` defaults `PINCHY_ENTERPRISE_KEY` to the development license (`DEV_LICENSE_TOKEN`, `packages/web/src/lib/license-keys.ts`). It is signed by a key only a non-production build trusts, so committing it unlocks nothing on anyone's install — which is the point, and the fix for #1083. The production-signed token that used to sit there did unlock every install, and no test could see it, because a valid key makes every test pass.
+
+To see the community experience instead, set the variable to something empty — Compose only substitutes its default when the variable is **unset**, not when it is empty:
 
 ```bash
-PINCHY_ENTERPRISE_KEY=dev-enterprise docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+PINCHY_ENTERPRISE_KEY= docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 ```
+
+Two rules keep this honest, both guarded by `packages/web/src/__tests__/security/committed-license-tokens.test.ts`:
+
+- **No token in the tracked tree may verify against the production key.** The guard asks jose directly rather than going through `validateLicense`, so it fires even on a token our own policy would reject — the question is whether we signed it, not whether we would grant it.
+- **The development subject is never honoured under the production key** (`DEV_LICENSE_SUBJECT`, `packages/web/src/lib/license.ts`). That rule, not the rotation of any key, is what revokes the token in this repository's history — it is in every clone and every fork and cannot be un-published. Changing the string un-revokes it; a test pins the value for exactly that reason.
 
 Production-style run:
 
@@ -128,29 +114,21 @@ Common host commands from the repository root:
 
 ```bash
 pnpm test
+pnpm test:related
+pnpm test:libreoffice
 pnpm build
 pnpm test:scripts
 pnpm typecheck:plugins
 pnpm test:plugins
-```
-
-Lint, format, and Drizzle live in `packages/web`, not the root. There is no
-root script for them, and `pnpm lint` / `pnpm format` / `pnpm db:generate` from
-the root do NOT fall back to it — pnpm tries every workspace package and fails
-on the first plugin, which has no such script. Use the same commands CI does:
-
-```bash
-pnpm --filter @pinchy/web lint
-pnpm --filter @pinchy/web format:check
-pnpm --filter @pinchy/web format          # writes
-pnpm -C packages/web db:generate
-# docs + workflow YAML are checked separately (docs-format.yml):
-pnpm -C packages/web exec prettier --check "../../docs/src/**/*.{mdx,md}" "../../.github/**/*.yml"
+pnpm format
+pnpm format:check
 ```
 
 Useful web package commands:
 
 ```bash
+pnpm -C packages/web lint
+pnpm -C packages/web db:generate
 pnpm -C packages/web test
 pnpm -C packages/web test:db
 pnpm -C packages/web test:e2e
@@ -169,6 +147,10 @@ cd docs && pnpm install && pnpm dev
 cd docs && pnpm build
 ```
 
+`scripts/lib/agents-md-commands.test.mjs` (run by `pnpm test:scripts`) keeps these blocks honest: it walks every `pnpm` command in this file and in `agent-rules/`, resolves each to the package it runs in — handling `-C`/`--dir`/`--filter`, `cd x && pnpm y` chains, `pnpm run <script>`, and pnpm builtins like `install` — and fails if the script isn't declared there. That drift is how `pnpm lint`, `pnpm format` and `pnpm db:generate` sat here for months as root commands that never existed. Nothing else in CI reads this file.
+
+The same guard reads CONTRIBUTING.md, which drifted the same way (`pnpm db:migrate` and `pnpm test:db` documented as root scripts). It reads fenced `bash` blocks **only**, in both files: a command written inline in prose is not checked, because both files also quote commands historically (`pnpm --filter @pinchy/web format:check`, the gate as it was until 2026-07) and with placeholders (`pnpm test:e2e:<suffix>`), and a guard that flagged those would be switched off within a week. So an inline `pnpm …` is review's job — a fenced one is the guard's.
+
 Important: do not run the app with plain `pnpm dev` as the primary development path unless a task explicitly requires it. Direct local app startup can miss Docker-managed infrastructure and migrations.
 
 ## API Routes And Audit Trail
@@ -180,16 +162,18 @@ For request bodies, use `parseRequestBody(schema, request)` from `@/lib/api-vali
 Audit logging rules:
 
 - Every `appendAuditLog` call must include `outcome: "success" | "failure"`.
-- Prefer `await appendAuditLog(...)` for idempotent state changes.
+- `await appendAuditLog(...)` only when the audit runs before the commit or a retry would write the same row. A row that is a diff of already-committed state is not retry-safe: use `deferAuditLog`. Where a restart or `process.exit` is armed afterwards, use `try { await appendAuditLog(e) } catch (err) { recordAuditFailure(err, e) }` before arming it (`after()` would race it).
 - Use `deferAuditLog(...)` from `@/lib/audit-deferred` for non-rollbackable side effects that already happened in a request context.
 - Use `try { await appendAuditLog(...) } catch (err) { recordAuditFailure(err, entry) }` in WebSocket, cron, or non-request contexts.
 - Never fire-and-forget audit writes with `.catch(console.error)`.
+- Never write `after(() => appendAuditLog(...))`: a failure there is dropped and never reaches `recordAuditFailure`. `require-audit-log` rejects it; use `deferAuditLog` or an awaited write per the rule above.
 - Snapshot human-readable names beside IDs with `{ id, name }` pairs.
 - Log what changed, not only that something changed.
 - For membership changes, log added/removed diffs rather than final counts alone.
 - Include resource names in delete-event details because deleted rows may no longer be queryable.
 - Keep audit `detail` under 2048 bytes. Summarize bulk operations.
 - Never write plaintext email addresses or other PII into audit `detail`. Use `redactEmail()` from `@/lib/audit` when email identity is required.
+- Never mirror the **acting** user's raw `users.id` into `detail`. `appendAuditLog` pseudonymizes the `actorId` **column** (`resolveActorId`) so GDPR crypto-erasure can reach it, while `detail` is stored verbatim in an immutable, HMAC-chained row that cannot be rewritten. The actor is already on the row; to filter audit rows by a known user, resolve `actorId` through `resolveActorIdMatchSet` on the read side (#824).
 - For batched maintenance operations (e.g. GC sweeps), include a `sweepId` UUID in every emitted audit row so analysts can correlate the full sweep from one drill-down query.
 
 Checklist for state-changing routes:
@@ -202,127 +186,7 @@ Checklist for state-changing routes:
 6. Referenced entities are snapshotted as `{ id, name }`.
 7. A test verifies the audit call and payload.
 8. `outcome` is set correctly.
-9. No plaintext PII appears in audit `detail`.
-
-## Shared Schemas And Typed Client
-
-For state-changing API routes, define request schemas in `packages/web/src/lib/schemas/<feature>.ts` and import them from BOTH the route handler (for `parseRequestBody`) and the client component (for typed request bodies via `z.infer`).
-
-Use the typed helpers in `packages/web/src/lib/api-client.ts` (`apiPost`, `apiPatch`, `apiPut`, `apiDelete`, `apiGet`) instead of raw `fetch` in client components. They throw `ApiError` on non-2xx responses, which components catch and surface via `toast.error(e.message)`.
-
-This makes contract drift between client payload and server schema a compile-time error rather than a runtime 400.
-
-## Error And Notification UI
-
-Use inline form errors when the error is tied to a field, the user can correct the input, and the form/dialog stays open.
-
-Use toast notifications for completed actions, background/system errors, and transient errors the user can simply retry.
-
-Use a persistent, dismissible inline banner (not an auto-expiring toast) for a permanent, actionable error that lands after a full-page redirect — e.g. an OAuth connect failure surfaced via a `?error=` query param. "The action navigated away" does NOT by itself justify a toast: after a redirect the user's attention is on the provider, so a few-second toast is gone before they read it, and the error needs a configuration fix that outlives a toast. Classify by whether the error is transient-and-retryable (toast) or permanent-and-actionable (persistent inline banner), not by whether the flow navigated.
-
-Do not mix inline errors and toast errors for the same action. Success confirmations should be toasts unless a multi-step flow intentionally shows a success screen.
-
-## Secret Handling
-
-Pick the secret-handling pattern based on who consumes the secret at runtime.
-
-### Pattern A: OpenClaw built-in resolves SecretRef
-
-Use `secretRef(pointer)` from `packages/web/src/lib/openclaw-secrets.ts` for paths OpenClaw itself walks at runtime:
-
-- `models.providers.<name>.apiKey`
-- `env.<VAR>` templates resolved against process env
-
-Add the value to the `SecretsBundle`, write the reference into `openclaw.json`, and test both halves.
-
-### Pattern B: Pinchy plugins fetch credentials through the API
-
-Preferred for credentials consumed by `packages/plugins/pinchy-*` plugins.
-
-Do not put third-party credentials, or even a SecretRef pointer, into arbitrary plugin config blocks in `openclaw.json`. OpenClaw 2026.4.x does not resolve SecretRefs in arbitrary plugin config trees, so plugins can receive unresolved objects.
-
-Instead:
-
-- `regenerateOpenClawConfig()` writes only `apiBaseUrl`, `gatewayToken`, and an opaque `connectionId` into plugin config.
-- The plugin lazily fetches credentials from `GET /api/internal/integrations/:connectionId/credentials` using the gateway token as Bearer auth.
-- Cache credentials in the plugin, usually with a 5-minute TTL, and invalidate on 401 for rotation.
-- Validate credential shapes at the plugin edge with clear type errors.
-- Test web config emission, plugin cache/refetch behavior, plugin integration against mocks, and manual staging behavior when relevant.
-
-Every Pinchy plugin manifest must declare every config field emitted by `regenerateOpenClawConfig()` and use `additionalProperties: false`. Keep these in sync when adding or changing a plugin:
-
-- `KNOWN_PINCHY_PLUGINS` in `packages/web/src/lib/openclaw-config/plugin-manifest-loader.ts`
-- The plugin's `openclaw.plugin.json#configSchema`
-- The plugin's `config-schema.test.ts`
-
-### Pattern C: Bootstrap credentials
-
-`gateway.auth.token` and `plugins.entries.pinchy-*.config.gatewayToken` are plaintext bootstrap credentials in `openclaw.json`. They are the trust root for the OpenClaw container and cannot be fetched through Pinchy's API. Rotate by regenerating config and restarting OpenClaw.
-
-Defense in depth:
-
-- `packages/web/src/lib/openclaw-plaintext-scanner.ts` checks generated `openclaw.json` for known provider key prefixes. Add patterns when onboarding providers with recognizable secret prefixes.
-- `packages/web/src/lib/openclaw-config/validate-built-config.ts` validates emitted plugin entries against manifests before writing config.
-
-## Plugin Integration Contract
-
-Every plugin in `KNOWN_PINCHY_PLUGINS` must be classified as external or internal and have matching test/plumbing coverage.
-
-External-integration plugins, such as web search, email, Odoo, and future third-party services, must have:
-
-- Entry in `EXTERNAL_INTEGRATION_PLUGINS`.
-- Mock server in `config/<suffix>-mock/` with third-party API surface and `/control/{health,reset,seed,...}` endpoints.
-- `docker-compose.<suffix>-test.yml` overlay.
-- Playwright config at `packages/web/playwright.<suffix>.config.ts`.
-- E2E spec at `packages/web/e2e/<suffix>/<suffix>.spec.ts` covering plugin load, at least one tool round trip, audit log entries, and permission/filter behavior where relevant.
-- `pnpm test:e2e:<suffix>` script in `packages/web/package.json`.
-- `<suffix>-e2e` job in `.github/workflows/ci.yml` using the production `Dockerfile.pinchy` image.
-
-Internal plugins, such as files, context, docs, and audit, must be listed in `INTERNAL_PLUGINS` and exercised by `packages/web/e2e/integration/agent-chat.spec.ts` or another E2E spec with a clear assertion comment mentioning the plugin id.
-
-Not every native integration is a plugin. MCP, for example, is OpenClaw speaking the MCP protocol natively — there is no `packages/plugins/pinchy-mcp`, so it cannot appear in `KNOWN_PINCHY_PLUGINS` and none of the three drift guards below (manifest/tools, unit-test coverage, tool-dispatch coverage) run against it. A native, non-plugin integration like this still owes the same coverage in spirit — mock server, compose overlay, Playwright config, an E2E spec with a tool round trip and an audit assertion, a `test:e2e:<suffix>` script, and a CI job — but enforcing it is a manual review responsibility, not an automated gate. Treat its E2E spec as load-bearing: nothing currently flags its deletion except the generic net-test-count guard (`scripts/check-test-deletions.mjs`).
-
-### Typecheck gate
-
-Plugins run via `tsx` at runtime with no ahead-of-time type checking elsewhere in CI (root `pnpm build` is `next build`, which only typechecks `packages/web`; `Dockerfile.openclaw` only installs plugin deps). `pnpm typecheck:plugins` (`scripts/typecheck-plugins.mjs`, wired into the `quality` job) runs `tsc --noEmit` against every `packages/plugins/pinchy-*` plugin's own tsconfig.
-
-Each plugin's `tsconfig.json` must be uniform so the gate is meaningful:
-
-- `"include": ["**/*.ts"]` with **no** `exclude` — typechecks production **and** `__tests__/*.test.ts`, so vitest `expectTypeOf` contract tests are real compile-time checks instead of runtime no-ops (the earlier root-only `include: ["*.ts"]` / `exclude: ["*.test.ts"]` silently skipped every test file).
-- `"compilerOptions"`: `skipLibCheck: true` (third-party `.d.ts` files otherwise break the gate) and `types: ["node", "vitest"]`, backed by an `@types/node` devDependency (`types: ["node"]` throws TS2688 without it).
-
-The drift guard `scripts/lib/plugin-typecheck.test.mjs` (pure logic in `scripts/lib/plugin-typecheck.mjs`, run by `pnpm test:scripts`) fails fast if any plugin isn't wired this way, so a new plugin can't silently escape the gate — the read-side sibling of the no-untracked-skips / no-test-deletion guards.
-
-### Unit test gate
-
-Every plugin package must ship vitest unit tests and declare `"test": "vitest run"` in its package.json. The test files run twice in the CI quality job, deliberately: once inside `pnpm test` via the `../plugins/pinchy-*` include in `packages/web/vitest.config.ts` (web config), and once per package via `pnpm test:plugins` (each plugin's own config and dependencies, as run locally). Two drift guards in `packages/web/src/__tests__/lib/plugin-test-coverage.test.ts` enforce this: every plugin test file must match the include globs, and every plugin package must declare a `test` script (pnpm recursive runs silently skip packages without one).
-
-### Tool dispatch coverage
-
-Every plugin tool must be covered at three layers:
-
-1. **`openclaw.plugin.json#contracts.tools`** — list every tool name. OpenClaw 5.3+ silently ignores `registerTool()` calls that are not declared here. The bidirectional drift guard (`manifest-tools-drift.test.ts`) enforces that this list matches the `registerTool()` calls in `index.ts`.
-
-2. **Drift guard** — `packages/web/src/__tests__/lib/manifest-tools-drift.test.ts` checks that `contracts.tools` and `registerTool()` are in sync. Runs in `pnpm test`.
-
-3. **Behavior test** — at least one tool per plugin must have an E2E test that:
-   a. Sends a chat message containing a trigger string handled by `fake-ollama-server.ts`.
-   b. The fake LLM returns a deterministic `tool_calls` response for that tool.
-   c. The test asserts the audit entry appears, either via a literal `/api/audit?eventType=tool.<toolName>&limit=10` query or via the shared `pollAuditForTool({ toolName, agentId })` helper in `packages/web/e2e/shared/dispatch-probe.ts`.
-
-   The coverage guard (`plugin-tool-coverage.test.ts`) scans all `*.spec.ts` files for both `eventType=tool.<toolName>` and `pollAuditForTool(... toolName: "<toolName>" ...)` patterns. If a plugin has tools but no matching E2E assertion, CI fails there.
-
-**Recipe for adding a new tool to an existing plugin:**
-
-1. Add `registerTool(api, schema, { name: "new_tool" }, handler)` in `index.ts`.
-2. Add `"new_tool"` to `contracts.tools` in `openclaw.plugin.json`.
-3. Add a `TriggerConfig` entry in `packages/web/e2e/shared/fake-ollama/fake-ollama-server.ts`.
-4. Export the trigger constant from `fake-ollama-server.ts`.
-5. Add a `test.describe` block (or extend an existing one) in the relevant E2E spec that sends the trigger and calls `pollAuditForTool(page, { toolName: "new_tool", agentId })` (or polls the literal `/api/audit?eventType=tool.new_tool` URL).
-
-**Recipe for adding a brand-new plugin:**
-
-Follow the Plugin Integration Contract above, then apply the tool dispatch coverage recipe for each tool the plugin registers.
+9. No plaintext PII appears in audit `detail`, and the acting user's raw id is carried by `actorId` alone.
 
 ## Documentation
 
@@ -354,4 +218,5 @@ Useful external references:
 
 - This file is the canonical repository instruction file for coding agents.
 - Keep instructions concise enough for Codex to load comfortably. If a package needs detailed local rules, add a nested `AGENTS.md` or `AGENTS.override.md` near that package.
+- Keep this file lean: it is loaded into every session and every subagent. A rule that matters only when touching one area belongs in `agent-rules/`, linked from § "Topic Rules" with the trigger for reading it. `scripts/lib/agents-md-topics.test.mjs` fails on an unlinked topic file, a link to a missing one, and this file growing past its size budget.
 - `CLAUDE.md` is only a compatibility pointer for Claude-style tools. Do not maintain a second copy of these instructions there.

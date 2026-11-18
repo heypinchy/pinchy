@@ -1,0 +1,304 @@
+import { describe, it, expect } from "vitest";
+
+import {
+  DEFAULT_INDEX_SCHEDULE,
+  grantedKnowledgePaths,
+  isScheduledIndexAgent,
+  isSlotDue,
+  latestPassedSlot,
+  localClock,
+  nextIndexRun,
+  parseIndexSchedule,
+  slotInstant,
+  type IndexSchedule,
+} from "@/lib/knowledge/index-schedule";
+
+const NIGHTLY: IndexSchedule = { enabled: true, time: "02:00" };
+
+describe("localClock", () => {
+  it("reads the wall clock in the org timezone, not the server's", () => {
+    // 23:30 UTC on Oct 16 is already 01:30 on Oct 17 in Vienna (CEST, UTC+2).
+    const clock = localClock(new Date("2026-10-16T23:30:00Z"), "Europe/Vienna");
+    expect(clock).toEqual({ date: "2026-10-17", minutes: 90 });
+  });
+
+  // Some runtimes format midnight as hour "24" when asked for a 24-hour clock.
+  // Read naively, that is minute 1440 of the PREVIOUS day — a slot that would
+  // never be due again, or one due a day early.
+  it("reports midnight as minute 0 of the new day", () => {
+    const clock = localClock(new Date("2026-10-16T00:00:00Z"), "UTC");
+    expect(clock).toEqual({ date: "2026-10-16", minutes: 0 });
+  });
+});
+
+describe("latestPassedSlot", () => {
+  it("is today once the scheduled time has been reached", () => {
+    expect(latestPassedSlot({ date: "2026-10-17", minutes: 120 }, NIGHTLY)).toBe("2026-10-17");
+  });
+
+  it("is yesterday before the scheduled time", () => {
+    expect(latestPassedSlot({ date: "2026-10-17", minutes: 119 }, NIGHTLY)).toBe("2026-10-16");
+  });
+
+  it("crosses month and year boundaries", () => {
+    expect(latestPassedSlot({ date: "2027-01-01", minutes: 0 }, NIGHTLY)).toBe("2026-12-31");
+    expect(latestPassedSlot({ date: "2028-03-01", minutes: 0 }, NIGHTLY)).toBe("2028-02-29");
+  });
+});
+
+describe("isSlotDue", () => {
+  it("is due once the time is reached on a day not yet taken", () => {
+    expect(isSlotDue({ date: "2026-10-17", minutes: 125 }, NIGHTLY, "2026-10-16")).toBe(true);
+  });
+
+  it("is not due before the time", () => {
+    expect(isSlotDue({ date: "2026-10-17", minutes: 60 }, NIGHTLY, "2026-10-16")).toBe(false);
+  });
+
+  it("runs a day's slot once, however many ticks follow it", () => {
+    expect(isSlotDue({ date: "2026-10-17", minutes: 900 }, NIGHTLY, "2026-10-17")).toBe(false);
+  });
+
+  // Pinchy was not running at 02:00. The slot is still the latest one that
+  // passed, so it runs when Pinchy comes back — once, not once per missed night.
+  it("catches up a missed night when the process comes back", () => {
+    expect(isSlotDue({ date: "2026-10-20", minutes: 420 }, NIGHTLY, "2026-10-17")).toBe(true);
+  });
+
+  it("is never due while the schedule is off", () => {
+    expect(
+      isSlotDue({ date: "2026-10-17", minutes: 125 }, { ...NIGHTLY, enabled: false }, "2026-10-16")
+    ).toBe(false);
+  });
+
+  // Slots are local calendar dates, so the clock changes are non-events rather
+  // than arithmetic: there is no instant to convert and get wrong.
+  describe("across daylight-saving changes (Europe/Vienna)", () => {
+    it("still runs on the spring-forward night, when 02:00 never happens", () => {
+      // 2026-03-29: clocks jump from 02:00 straight to 03:00.
+      const before = localClock(new Date("2026-03-29T00:59:00Z"), "Europe/Vienna");
+      const after = localClock(new Date("2026-03-29T01:00:00Z"), "Europe/Vienna");
+      expect(before).toEqual({ date: "2026-03-29", minutes: 119 });
+      expect(after).toEqual({ date: "2026-03-29", minutes: 180 });
+      expect(isSlotDue(before, NIGHTLY, "2026-03-28")).toBe(false);
+      expect(isSlotDue(after, NIGHTLY, "2026-03-28")).toBe(true);
+    });
+
+    it("runs once on the fall-back night, when 02:00 happens twice", () => {
+      // 2026-10-25: 03:00 CEST becomes 02:00 CET again.
+      const first = localClock(new Date("2026-10-25T00:00:00Z"), "Europe/Vienna");
+      const second = localClock(new Date("2026-10-25T01:00:00Z"), "Europe/Vienna");
+      expect(first).toEqual({ date: "2026-10-25", minutes: 120 });
+      expect(second).toEqual({ date: "2026-10-25", minutes: 120 });
+      expect(isSlotDue(first, NIGHTLY, "2026-10-24")).toBe(true);
+      // The scheduler records the slot when it takes it.
+      expect(isSlotDue(second, NIGHTLY, "2026-10-25")).toBe(false);
+    });
+  });
+});
+
+describe("nextIndexRun", () => {
+  it("is tonight while today's slot is still ahead", () => {
+    expect(
+      nextIndexRun({ date: "2026-10-17", minutes: 60 }, NIGHTLY, "UTC", "2026-10-16")
+    ).toMatchObject({
+      date: "2026-10-17",
+      time: "02:00",
+      day: "today",
+      at: "2026-10-17T02:00:00.000Z",
+    });
+  });
+
+  it("is tomorrow once today's slot has passed", () => {
+    expect(
+      nextIndexRun({ date: "2026-10-17", minutes: 600 }, NIGHTLY, "UTC", "2026-10-17")
+    ).toMatchObject({
+      date: "2026-10-18",
+      time: "02:00",
+      day: "tomorrow",
+      at: "2026-10-18T02:00:00.000Z",
+    });
+  });
+
+  // The fall-back night: a 02:30 slot in Vienna ran at the first 02:30, then
+  // the clock went back to 02:00. The local time is before 02:30 again, but
+  // tonight's slot is taken — the next run is tomorrow's, not one that
+  // already happened.
+  it("is tomorrow when the clock went back past a slot already taken today", () => {
+    const halfHourly: IndexSchedule = { enabled: true, time: "02:30" };
+    const clock = localClock(new Date("2026-10-25T01:10:00Z"), "Europe/Vienna");
+    expect(clock).toEqual({ date: "2026-10-25", minutes: 130 });
+    expect(nextIndexRun(clock, halfHourly, "Europe/Vienna", "2026-10-25")).toEqual({
+      date: "2026-10-26",
+      time: "02:30",
+      day: "tomorrow",
+      at: "2026-10-26T01:30:00.000Z",
+    });
+  });
+
+  // No state yet, or one the scheduler is about to re-take: today's slot
+  // still lies ahead.
+  it.each([null, "corrupt", "2027-01-01"])(
+    "is tonight while today's slot is ahead and the last slot is %s",
+    (lastSlot) => {
+      expect(
+        nextIndexRun({ date: "2026-10-17", minutes: 60 }, NIGHTLY, "UTC", lastSlot)
+      ).toMatchObject({
+        date: "2026-10-17",
+        time: "02:00",
+        day: "today",
+      });
+    }
+  );
+
+  // The instant is what lets a viewer in another zone read the run in their
+  // own time: 02:00 in Vienna is 00:00 UTC in summer and 01:00 UTC in winter.
+  it("carries the instant of the run, read in the org timezone", () => {
+    expect(
+      nextIndexRun({ date: "2026-07-17", minutes: 60 }, NIGHTLY, "Europe/Vienna", null)?.at
+    ).toBe("2026-07-17T00:00:00.000Z");
+    expect(
+      nextIndexRun({ date: "2026-12-17", minutes: 60 }, NIGHTLY, "Europe/Vienna", null)?.at
+    ).toBe("2026-12-17T01:00:00.000Z");
+  });
+
+  it("is nothing while the schedule is off", () => {
+    expect(
+      nextIndexRun({ date: "2026-10-17", minutes: 60 }, { ...NIGHTLY, enabled: false }, "UTC", null)
+    ).toBe(null);
+  });
+});
+
+// The instant a slot is taken at — the first moment the org-local clock on
+// that date reaches the scheduled time. That is the same rule isSlotDue
+// applies, so the two cannot disagree on the nights the clock changes.
+describe("slotInstant", () => {
+  it("reads the time in the org timezone", () => {
+    expect(slotInstant("2026-10-17", "02:00", "UTC").toISOString()).toBe(
+      "2026-10-17T02:00:00.000Z"
+    );
+    expect(slotInstant("2026-10-17", "02:00", "America/New_York").toISOString()).toBe(
+      "2026-10-17T06:00:00.000Z"
+    );
+    expect(slotInstant("2026-10-17", "23:30", "Asia/Kolkata").toISOString()).toBe(
+      "2026-10-17T18:00:00.000Z"
+    );
+  });
+
+  it("is the first minute after the gap on the spring-forward night", () => {
+    // 2026-03-29 in Vienna: 02:00 never happens; the slot is due at 03:00 CEST.
+    const halfPast: IndexSchedule = { enabled: true, time: "02:30" };
+    const at = slotInstant("2026-03-29", "02:30", "Europe/Vienna");
+    expect(at.toISOString()).toBe("2026-03-29T01:00:00.000Z");
+    expect(isSlotDue(localClock(at, "Europe/Vienna"), halfPast, "2026-03-28")).toBe(true);
+    expect(
+      isSlotDue(
+        localClock(new Date(at.getTime() - 60_000), "Europe/Vienna"),
+        halfPast,
+        "2026-03-28"
+      )
+    ).toBe(false);
+  });
+
+  it("is the first of the two on the fall-back night", () => {
+    // 2026-10-25 in Vienna: 02:00 happens at 00:00 UTC (CEST) and again at 01:00 UTC (CET).
+    expect(slotInstant("2026-10-25", "02:00", "Europe/Vienna").toISOString()).toBe(
+      "2026-10-25T00:00:00.000Z"
+    );
+    expect(slotInstant("2026-10-25", "02:30", "Europe/Vienna").toISOString()).toBe(
+      "2026-10-25T00:30:00.000Z"
+    );
+  });
+});
+
+describe("parseIndexSchedule", () => {
+  // On by default: the promise is that new documents become searchable with
+  // nobody doing anything, and an opt-in would be one more thing to do.
+  it("defaults to on, nightly at 02:00, when nothing has been saved", () => {
+    expect(parseIndexSchedule(null)).toEqual({ enabled: true, time: "02:00" });
+    expect(DEFAULT_INDEX_SCHEDULE).toEqual({ enabled: true, time: "02:00" });
+  });
+
+  it("reads a saved schedule", () => {
+    expect(parseIndexSchedule(JSON.stringify({ enabled: false, time: "23:30" }))).toEqual({
+      enabled: false,
+      time: "23:30",
+    });
+  });
+
+  // A broken value must not quietly switch the schedule off: that is the one
+  // failure nobody would notice until a document goes missing from an answer.
+  it("falls back to the default for a value it cannot read", () => {
+    expect(parseIndexSchedule("{not json")).toEqual(DEFAULT_INDEX_SCHEDULE);
+    expect(parseIndexSchedule(JSON.stringify({ enabled: true, time: "25:00" }))).toEqual(
+      DEFAULT_INDEX_SCHEDULE
+    );
+    expect(parseIndexSchedule(JSON.stringify({ time: "03:00" }))).toEqual(DEFAULT_INDEX_SCHEDULE);
+  });
+});
+
+describe("isScheduledIndexAgent", () => {
+  const kbAgent = {
+    deletedAt: null,
+    isPersonal: false,
+    allowedTools: ["knowledge_search"],
+    pluginConfig: { "pinchy-files": { allowed_paths: ["/data/handbook"] } },
+  };
+
+  it("includes a shared agent that searches the index and has folders granted", () => {
+    expect(isScheduledIndexAgent(kbAgent)).toBe(true);
+  });
+
+  // It never reads the index, so keeping the index current for it is work
+  // nobody uses — the folders it can read are reindexed on demand only.
+  it("leaves out an agent that reads files but never searches", () => {
+    expect(isScheduledIndexAgent({ ...kbAgent, allowedTools: ["pinchy_read"] })).toBe(false);
+  });
+
+  it("leaves out an agent with nothing granted", () => {
+    expect(isScheduledIndexAgent({ ...kbAgent, pluginConfig: null })).toBe(false);
+    expect(
+      isScheduledIndexAgent({ ...kbAgent, pluginConfig: { "pinchy-files": { allowed_paths: [] } } })
+    ).toBe(false);
+  });
+
+  // What decides it is whether the agent's answers come from the index.
+  // Personal or shared makes no difference to that, and a special case for
+  // it would only be one more rule for the UI to explain.
+  it("covers a personal agent like any other", () => {
+    const personal = { ...kbAgent, isPersonal: true };
+    expect(isScheduledIndexAgent(personal)).toBe(true);
+  });
+
+  it("leaves out a deleted agent", () => {
+    expect(isScheduledIndexAgent({ ...kbAgent, deletedAt: new Date() })).toBe(false);
+  });
+
+  // A row written before v0.9.0 confined allowed_paths to /data can still
+  // carry a folder outside it (#1272). That entry grants nothing, so an agent
+  // holding only such entries has nothing for the nightly run to index.
+  it("leaves out an agent whose only grants are pre-lockdown paths outside /data", () => {
+    const preLockdown = {
+      ...kbAgent,
+      pluginConfig: { "pinchy-files": { allowed_paths: ["/root/.openclaw/workspaces", "/"] } },
+    };
+    expect(isScheduledIndexAgent(preLockdown)).toBe(false);
+  });
+});
+
+describe("grantedKnowledgePaths", () => {
+  it("drops pre-lockdown entries outside /data and keeps the ones under it (#1272)", () => {
+    expect(
+      grantedKnowledgePaths({
+        "pinchy-files": {
+          allowed_paths: [
+            "/data/handbook",
+            "/root/.openclaw/workspaces",
+            "/database",
+            "/data/../etc",
+          ],
+        },
+      })
+    ).toEqual(["/data/handbook"]);
+  });
+});

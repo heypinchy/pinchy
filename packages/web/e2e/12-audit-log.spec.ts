@@ -1,11 +1,13 @@
 import { test, expect } from "@playwright/test";
 import {
   seedProviderConfig,
+  apiSignInAsAdmin,
   loginAsAdmin,
   loginAs,
   createSecondUserViaInvite,
   SECOND_USER,
 } from "./helpers";
+import { pollAuditForEvent } from "./shared/dispatch-probe";
 
 // Unique group name per run so retries don't collide with prior runs
 const AUDIT_TEST_GROUP = `AuditTestGroup-${Date.now()}`;
@@ -13,21 +15,27 @@ const AUDIT_TEST_GROUP = `AuditTestGroup-${Date.now()}`;
 test.describe.serial("Audit log", () => {
   test.beforeAll(async ({ browser }) => {
     await seedProviderConfig();
-    const page = await browser.newPage();
-    await loginAsAdmin(page);
+
+    // Pure data-setup hook — only uses the request context, never the page UI.
+    // Authenticate over the API (not the UI `loginAsAdmin`, which waits up to
+    // 15 s for hydration) so the hook stays inside its 30 s budget under CI
+    // load. See `apiSignIn`.
+    const context = await browser.newContext();
+    const request = context.request;
+    await apiSignInAsAdmin(request);
 
     // Enable enterprise mode so group routes are accessible (idempotent)
-    const status = await page.request.get("/api/enterprise/status");
+    const status = await request.get("/api/enterprise/status");
     const statusJson = await status.json();
     if (!statusJson.enterprise) {
-      await page.request.post("/api/dev/enterprise-toggle");
+      await request.post("/api/dev/enterprise-toggle");
     }
 
-    await createSecondUserViaInvite(page.context().request).catch(() => {
+    await createSecondUserViaInvite(request).catch(() => {
       // Idempotent: ignore if already created by an earlier spec
     });
 
-    await page.close();
+    await context.close();
   });
 
   test.beforeEach(async ({ page }) => {
@@ -55,28 +63,20 @@ test.describe.serial("Audit log", () => {
     // Poll the audit API until the group.created entry appears.
     // The audit write is deferred via after(), which runs after the response
     // returns. Under CI load the deferred work can take several seconds, so the
-    // window is generous (20 × 500ms = 10s). Locally the loop almost always
-    // exits on the first or second attempt.
-    let entry: Record<string, unknown> | undefined;
-    for (let attempt = 0; attempt < 20; attempt++) {
-      const res = await page.context().request.get(`/api/audit?eventType=group.created&limit=100`);
-      expect(res.ok()).toBe(true);
-      const body = await res.json();
-      entry = (body.entries as Array<Record<string, unknown>>).find(
-        (e) => (e.detail as Record<string, unknown>)?.name === AUDIT_TEST_GROUP
-      );
-      if (entry) break;
-      await page.waitForTimeout(500);
-    }
+    // window is generous (10s). Locally it resolves on the first or second
+    // attempt. The predicate is the same identity the assertions below check,
+    // so the loop cannot exit on a weaker condition and then race them.
+    const entry = await pollAuditForEvent(page, {
+      eventType: "group.created",
+      predicate: (e) => e.detail?.name === AUDIT_TEST_GROUP,
+      deadlineMs: 10_000,
+      limit: 100,
+    });
 
-    expect(
-      entry,
-      `group.created entry for "${AUDIT_TEST_GROUP}" not found in audit log`
-    ).toBeDefined();
-    expect(entry!.eventType).toBe("group.created");
-    expect(entry!.outcome).toBe("success");
-    expect(entry!.actorType).toBe("user");
-    expect((entry!.detail as Record<string, unknown>).name).toBe(AUDIT_TEST_GROUP);
+    expect(entry.eventType).toBe("group.created");
+    expect(entry.outcome).toBe("success");
+    expect(entry.actorType).toBe("user");
+    expect(entry.detail!.name).toBe(AUDIT_TEST_GROUP);
   });
 
   test("audit log UI shows the group.created entry to admin", async ({ page }) => {

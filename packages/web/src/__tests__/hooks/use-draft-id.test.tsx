@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { renderHook } from "@testing-library/react";
 import { useDraftId } from "@/hooks/use-draft-id";
 

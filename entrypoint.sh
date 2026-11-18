@@ -1,15 +1,18 @@
 #!/bin/sh
 set -e
 
-# Fix permissions on shared OpenClaw config volume.
+# Fix permissions on the shared OpenClaw config volume.
 # OpenClaw runs as root and owns these files; Pinchy needs write access
 # to update openclaw.json when providers or agents change.
-chown -R pinchy:pinchy /openclaw-config
-# Belt-and-suspenders: ensure pinchy can stat AND write the directory itself.
-# The Dockerfile mkdir -p creates /openclaw-config as root:0755; chown -R fixes
-# ownership but the directory mode is not always 0755 in fresh CI volumes.
-chmod 0755 /openclaw-config
-echo "[entrypoint] /openclaw-config: $(stat -c '%U:%G %a' /openclaw-config)"
+#
+# Extracted to config/fix-volume-ownership.sh (same pattern as
+# config/sync-plugins.sh) so the one path it must NOT repair is unit-testable:
+# /openclaw-config/npm is OpenClaw's plugin store, and a plugin candidate that
+# is not root-owned is blocked as "suspicious ownership" — which is how the
+# blanket `chown -R pinchy:pinchy /openclaw-config` that used to live here took
+# the bundled embedding provider down on production (#1196). See the reasoning
+# in that file.
+sh /fix-volume-ownership.sh
 
 # Seed a minimal openclaw.json if the volume doesn't have one yet.
 # On main, openclaw started first and Docker copied the seed from the image.
@@ -27,6 +30,29 @@ fi
 # it can enter the directory and rename files atomically.
 chown pinchy:pinchy /openclaw-secrets 2>/dev/null || true
 
+# Converted-Office-PDF artifact store (#936). Docker creates a fresh named
+# volume owned by root, so the unprivileged pinchy user could not write it —
+# and every Office document would fail conversion with EACCES, which reads like
+# a broken corpus rather than a permissions problem.
+chown -R pinchy:pinchy /var/cache/pinchy-kb-artifacts 2>/dev/null || true
+
+# Spool shared with the office-converter sidecar, which runs as its own user
+# (pinchy-office) in the pinchy group. Owned by pinchy, group-writable so the
+# converter can create its socket, and sticky so it cannot rename or remove
+# what it did not create — the batches pinchy stages here. Docker seeds a new
+# volume with the image's ownership and mode; this repairs one that already
+# existed (it was 755 before the converter had a user of its own) or came from
+# somewhere else, on every start. The converter
+# has no capabilities and cannot fix any of it itself. Only the top level:
+# batches inside are short-lived and pinchy's.
+chown pinchy:pinchy /var/spool/pinchy-office 2>/dev/null || true
+chmod 1770 /var/spool/pinchy-office 2>/dev/null || true
+# A socket from a converter that ran as another user (builds before it had a
+# user of its own) is one the converter can no longer replace in a sticky
+# directory, so it would fail to start. Removing it costs nothing: the
+# converter creates a new one when it starts.
+find /var/spool/pinchy-office -maxdepth 1 -name converter.sock -type s ! -user pinchy-office -delete 2>/dev/null || true
+
 # Refresh plugin SOURCE in the shared openclaw-extensions volume on every
 # startup (the named volume is only seeded from the image on first creation;
 # upgrades otherwise keep stale content from the previous image). The sync
@@ -43,7 +69,7 @@ sh /sync-plugins.sh
 # we fail loud here instead. List MUST stay in sync with KNOWN_PINCHY_PLUGINS
 # in packages/web/src/lib/openclaw-config/plugin-manifest-loader.ts; drift is
 # caught by entrypoint-runtime-check.test.ts.
-EXPECTED_PLUGINS="pinchy-files pinchy-context pinchy-audit pinchy-transcript pinchy-docs pinchy-email pinchy-odoo pinchy-web"
+EXPECTED_PLUGINS="pinchy-files pinchy-context pinchy-audit pinchy-transcript pinchy-docs pinchy-email pinchy-odoo pinchy-web pinchy-knowledge pinchy-approvals"
 MISSING=""
 for plugin in $EXPECTED_PLUGINS; do
   if [ ! -d "/openclaw-extensions/$plugin" ]; then
@@ -60,7 +86,7 @@ echo "[entrypoint] all Pinchy plugins present in /openclaw-extensions/"
 # Issue #156: migrate the database off the public default password before
 # anything connects. The resolver prints the effective DATABASE_URL on stdout
 # (empty when unchanged, diagnostics on stderr) and never fails the boot —
-# drizzle-kit and the server below both consume the exported value.
+# the migrate runner and the server below both consume the exported value.
 echo '[pinchy] Resolving database credentials...'
 RESOLVED_DATABASE_URL=$(su -s /bin/sh pinchy -c 'cd /app/packages/web && node scripts/resolve-db-password.mjs' || true)
 if [ -n "$RESOLVED_DATABASE_URL" ]; then

@@ -17,6 +17,7 @@ import { validateGatewayToken } from "@/lib/gateway-auth";
 import { setSetting } from "@/lib/settings";
 import { syncOrgContextToWorkspaces } from "@/lib/context-sync";
 import { PUT } from "@/app/api/internal/settings/context/route";
+import { CONTEXT_CONTENT_MAX_LENGTH } from "@/lib/schemas/context";
 
 function makePutRequest(body: Record<string, unknown>) {
   return new NextRequest("http://localhost/api/internal/settings/context", {
@@ -60,5 +61,18 @@ describe("PUT /api/internal/settings/context", () => {
   it("returns 400 when content is not a string", async () => {
     const res = await PUT(makePutRequest({ content: 42 }));
     expect(res.status).toBe(400);
+  });
+
+  it("returns 400 when content exceeds the max length", async () => {
+    const tooLong = "a".repeat(CONTEXT_CONTENT_MAX_LENGTH + 1);
+    const res = await PUT(makePutRequest({ content: tooLong }));
+    expect(res.status).toBe(400);
+    expect(setSetting).not.toHaveBeenCalled();
+  });
+
+  it("accepts content at exactly the max length", async () => {
+    const maxLength = "a".repeat(CONTEXT_CONTENT_MAX_LENGTH);
+    const res = await PUT(makePutRequest({ content: maxLength }));
+    expect(res.status).toBe(200);
   });
 });

@@ -78,13 +78,9 @@ describe("buildPayload", () => {
 
   it("falls back to a deterministic surrogate externalId when messageId is absent", () => {
     const p = buildPayload({ ...base, messageId: undefined });
-    expect(p?.externalId).toBe(
-      surrogateId("inbound", "Hello over Telegram", 1700000000000),
-    );
+    expect(p?.externalId).toBe(surrogateId("inbound", "Hello over Telegram", 1700000000000));
     // Stable across calls so retries dedup.
-    expect(buildPayload({ ...base, messageId: undefined })?.externalId).toBe(
-      p?.externalId,
-    );
+    expect(buildPayload({ ...base, messageId: undefined })?.externalId).toBe(p?.externalId);
   });
 
   it("skips non-mirrored channels", () => {
@@ -148,9 +144,7 @@ describe("buildPayload", () => {
 
   it("empty content AND no media still returns null (unchanged)", () => {
     expect(buildPayload({ ...base, content: "" })).toBeNull();
-    expect(
-      buildPayload({ ...base, content: "   ", media: undefined }),
-    ).toBeNull();
+    expect(buildPayload({ ...base, content: "   ", media: undefined })).toBeNull();
   });
 });
 
@@ -162,10 +156,8 @@ describe("extractMedia", () => {
           mediaPaths: ["/root/.openclaw/media/inbound/x.jpg"],
           mediaTypes: ["image/jpeg"],
         },
-      }),
-    ).toEqual([
-      { path: "/root/.openclaw/media/inbound/x.jpg", mimeType: "image/jpeg" },
-    ]);
+      })
+    ).toEqual([{ path: "/root/.openclaw/media/inbound/x.jpg", mimeType: "image/jpeg" }]);
   });
 
   it("tolerates a short/missing mediaTypes array (no mimeType key for the missing entry)", () => {
@@ -175,10 +167,7 @@ describe("extractMedia", () => {
         mediaTypes: ["image/jpeg"],
       },
     });
-    expect(result).toEqual([
-      { path: "/a.jpg", mimeType: "image/jpeg" },
-      { path: "/b.png" },
-    ]);
+    expect(result).toEqual([{ path: "/a.jpg", mimeType: "image/jpeg" }, { path: "/b.png" }]);
     expect(result?.[1]).not.toHaveProperty("mimeType");
   });
 
@@ -193,9 +182,7 @@ describe("extractMedia", () => {
     expect(extractMedia({})).toBeUndefined();
     expect(extractMedia({ metadata: {} })).toBeUndefined();
     expect(extractMedia({ metadata: { mediaPaths: [] } })).toBeUndefined();
-    expect(
-      extractMedia({ metadata: { mediaPaths: ["", null] } }),
-    ).toBeUndefined();
+    expect(extractMedia({ metadata: { mediaPaths: ["", null] } })).toBeUndefined();
     expect(extractMedia({ metadata: undefined })).toBeUndefined();
   });
 
@@ -292,7 +279,7 @@ describe("mirrorMedia", () => {
 
     // No files created in uploads
     await expect(readdir(join(workspaceRoot, agentId, "uploads")).catch(() => [])).resolves.toEqual(
-      [],
+      []
     );
   });
 
@@ -304,11 +291,15 @@ describe("mirrorMedia", () => {
     const symlinkPath = join(inboundDir, "evil.jpg");
     await symlink(outsideFile, symlinkPath);
 
-    const results = await mirrorMedia([{ path: "evil.jpg" }], { agentId, inboundDir, workspaceRoot });
+    const results = await mirrorMedia([{ path: "evil.jpg" }], {
+      agentId,
+      inboundDir,
+      workspaceRoot,
+    });
 
     expect(results[0].outcome).toBe("failure");
     await expect(readdir(join(workspaceRoot, agentId, "uploads")).catch(() => [])).resolves.toEqual(
-      [],
+      []
     );
   });
 
@@ -321,7 +312,7 @@ describe("mirrorMedia", () => {
 
     expect(results[0].outcome).toBe("failure");
     await expect(readdir(join(workspaceRoot, agentId, "uploads")).catch(() => [])).resolves.toEqual(
-      [],
+      []
     );
   });
 
@@ -331,7 +322,7 @@ describe("mirrorMedia", () => {
 
     const results = await mirrorMedia(
       [{ path: join(inboundDir, "missing.jpg") }, { path: presentSource }],
-      { agentId, inboundDir, workspaceRoot },
+      { agentId, inboundDir, workspaceRoot }
     );
 
     expect(results.map((r) => r.outcome)).toEqual(["failure", "success"]);
@@ -345,10 +336,11 @@ describe("mirrorMedia", () => {
     const source = join(inboundDir, "photo.jpg");
     await writeFile(source, "content");
 
-    const results = await mirrorMedia(
-      [{ path: source }, { path: join(inboundDir, "other.jpg") }],
-      { agentId: "../escape", inboundDir, workspaceRoot },
-    );
+    const results = await mirrorMedia([{ path: source }, { path: join(inboundDir, "other.jpg") }], {
+      agentId: "../escape",
+      inboundDir,
+      workspaceRoot,
+    });
 
     expect(results).toEqual([
       { path: source, outcome: "failure", error: "invalid agentId" },
@@ -447,9 +439,7 @@ describe("postChannelMessage", () => {
     // Trailing slash on apiBaseUrl is normalized away.
     expect(url).toBe("http://pinchy:7777/api/internal/channel-messages");
     expect((init as RequestInit).method).toBe("POST");
-    expect(
-      (init as { headers: Record<string, string> }).headers.Authorization,
-    ).toBe("Bearer tok");
+    expect((init as { headers: Record<string, string> }).headers.Authorization).toBe("Bearer tok");
     expect(JSON.parse((init as { body: string }).body)).toEqual(payload);
   });
 
@@ -460,11 +450,100 @@ describe("postChannelMessage", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  // #599: the drop line said "capture rejected (403)" and nothing else, while
+  // the response body named the cause outright ("request host does not match
+  // the configured domain"). Reading it turns an afternoon of guessing into a
+  // log line that says what to fix.
+  it("quotes the rejection body in the drop warning", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 403,
+      text: async () => '{"error":"Forbidden: request host does not match the configured domain"}',
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const logger = { warn: vi.fn() };
+
+    await postChannelMessage(cfg, logger, payload);
+
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    const line = logger.warn.mock.calls[0][0] as string;
+    expect(line).toContain("403");
+    expect(line).toContain("request host does not match the configured domain");
+  });
+
+  it("keeps the warning on one line when the body is an HTML error page", async () => {
+    // A proxy answers with a multi-line document. Sliced but not collapsed, it
+    // turns one warning into a dozen orphaned log lines, and whatever ships
+    // these logs onward indexes the fragments as separate entries.
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 413,
+      text: async () =>
+        "<!DOCTYPE html>\n<html>\n<head><title>413 Request Entity Too Large</title>",
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const logger = { warn: vi.fn() };
+
+    await postChannelMessage(cfg, logger, payload);
+
+    const line = logger.warn.mock.calls[0][0] as string;
+    expect(line).not.toContain("\n");
+    expect(line).toContain("413 Request Entity Too Large");
+  });
+
+  it("still warns when the rejection body cannot be read", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 403,
+      text: async () => {
+        throw new Error("stream already consumed");
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const logger = { warn: vi.fn() };
+
+    await postChannelMessage(cfg, logger, payload);
+
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn.mock.calls[0][0]).toContain("403");
+  });
+
   it("retries a 5xx and throws after exhausting retries", async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 503 });
     vi.stubGlobal("fetch", fetchMock);
     await expect(postChannelMessage(cfg, undefined, payload)).rejects.toThrow();
     expect(fetchMock).toHaveBeenCalledTimes(3); // 1 + MAX_RETRIES(2)
+  });
+
+  it("aborts a hung capture POST via AbortSignal.timeout(10_000) instead of blocking message capture forever", async () => {
+    // Simulates a Pinchy container that never answers and never resets the
+    // connection (mid-deploy, network blackhole) — the mock fetch only ever
+    // settles via the AbortSignal the plugin passes in, exactly like a real
+    // hung `fetch` would once the signal fires.
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockImplementation((_ms: number) => {
+      const controller = new AbortController();
+      setTimeout(
+        () => controller.abort(new DOMException("The operation timed out.", "TimeoutError")),
+        1
+      );
+      return controller.signal;
+    });
+
+    const fetchMock = vi.fn((_url: string | URL, init?: RequestInit) => {
+      return new Promise((_resolve, reject) => {
+        const signal = init?.signal;
+        signal?.addEventListener("abort", () => {
+          reject(signal.reason ?? new Error("The operation was aborted"));
+        });
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(postChannelMessage(cfg, undefined, payload)).rejects.toThrow();
+
+    expect(fetchMock).toHaveBeenCalledTimes(3); // 1 + MAX_RETRIES(2)
+    expect(timeoutSpy).toHaveBeenCalledWith(10_000);
+    timeoutSpy.mockRestore();
   });
 });
 
@@ -472,17 +551,11 @@ describe("plugin.register", () => {
   const cfg = { apiBaseUrl: "http://pinchy:7777", gatewayToken: "tok" };
 
   function fakeApi() {
-    const handlers: Record<
-      string,
-      (e: unknown, c: unknown) => Promise<void> | void
-    > = {};
+    const handlers: Record<string, (e: unknown, c: unknown) => Promise<void> | void> = {};
     return {
       pluginConfig: cfg,
       logger: { warn: vi.fn() },
-      on: (
-        name: string,
-        h: (e: unknown, c: unknown) => Promise<void> | void,
-      ) => {
+      on: (name: string, h: (e: unknown, c: unknown) => Promise<void> | void) => {
         handlers[name] = h;
       },
       handlers,
@@ -504,7 +577,7 @@ describe("plugin.register", () => {
         sessionKey: SK,
         timestamp: 1700000000000,
       },
-      { channelId: "telegram" },
+      { channelId: "telegram" }
     );
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -533,7 +606,7 @@ describe("plugin.register", () => {
           mediaTypes: ["image/jpeg"],
         },
       },
-      { channelId: "telegram" },
+      { channelId: "telegram" }
     );
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -570,7 +643,7 @@ describe("plugin.register", () => {
           mediaTypes: ["image/jpeg"],
         },
       },
-      { channelId: "slack" },
+      { channelId: "slack" }
     );
 
     expect(fetchMock).not.toHaveBeenCalled();
@@ -590,7 +663,7 @@ describe("plugin.register", () => {
         success: true,
         metadata: { mediaPaths: ["/should-be-ignored.jpg"] },
       },
-      { channelId: "telegram" },
+      { channelId: "telegram" }
     );
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -606,7 +679,7 @@ describe("plugin.register", () => {
 
     await api.handlers["message_sent"](
       { content: "reply", messageId: "m2", sessionKey: SK, success: true },
-      { channelId: "telegram" },
+      { channelId: "telegram" }
     );
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
@@ -621,7 +694,7 @@ describe("plugin.register", () => {
         sessionKey: SK,
         success: false,
       },
-      { channelId: "telegram" },
+      { channelId: "telegram" }
     );
     expect(fetchMock).not.toHaveBeenCalled();
   });

@@ -1,18 +1,19 @@
 import { NextRequest, NextResponse, after } from "next/server";
-import { z } from "zod";
 import { requireAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
 import { users, agents, sessions } from "@/db/schema";
-import { eq, and, count } from "drizzle-orm";
+import { eq, and, count, inArray } from "drizzle-orm";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { deleteWorkspace } from "@/lib/workspace";
-import { appendAuditLog } from "@/lib/audit";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 import { parseRequestBody } from "@/lib/api-validation";
-
-const updateUserSchema = z.object({
-  role: z.enum(["admin", "member"]),
-});
+import { updateUserSchema } from "@/lib/schemas/users";
+import { getUserSocketRegistry } from "@/server/user-sockets";
+import { getActiveRunsSingleton } from "@/server/active-runs-singleton";
+import { getOpenClawClient } from "@/server/openclaw-client";
+import { abortRunsOfUser, followUpDepsFor } from "@/server/abort-runs";
+import { deferAuditLog } from "@/lib/audit-deferred";
+import { auditChatId } from "@/lib/session-key";
 
 export async function PATCH(
   request: NextRequest,
@@ -57,17 +58,20 @@ export async function PATCH(
   // Update role
   await db.update(users).set({ role }).where(eq(users.id, userId));
 
-  after(() =>
-    appendAuditLog({
-      actorType: "user",
-      actorId: session.user.id!,
-      eventType: "user.role_updated",
-      resource: `user:${userId}`,
-      detail: { changes: { role: { from: user.role, to: role } }, userName: user.name },
-      outcome: "success",
-    })
-  );
+  deferAuditLog({
+    actorType: "user",
+    actorId: session.user.id!,
+    eventType: "user.role_updated",
+    resource: `user:${userId}`,
+    detail: { changes: { role: { from: user.role, to: role } }, userName: user.name },
+    outcome: "success",
+  });
 
+  // Telegram routing depends on the role while members may not use a personal
+  // agent: a member gets no peer binding (openclaw-config/build.ts). Rebuild
+  // the bindings with the allow stores, or a promoted member is allowed in
+  // with no binding and lands on whatever agent OpenClaw picks for them.
+  await regenerateOpenClawConfig();
   await recalculateTelegramAllowStores();
 
   return NextResponse.json({ success: true });
@@ -93,42 +97,130 @@ export async function DELETE(
     .from(agents)
     .where(and(eq(agents.ownerId, userId), eq(agents.isPersonal, true)));
 
-  const [deactivated] = await db
-    .update(users)
-    .set({ banned: true, banReason: "Deactivated by admin" })
-    .where(eq(users.id, userId))
-    .returning();
+  // Atomic deactivation: the ban, the session revocation, and the personal-
+  // agent soft-delete must commit or roll back together. As standalone
+  // statements, a failure partway through (e.g. the session delete) would
+  // leave the user already banned with sessions and agents untouched, or vice
+  // versa — an inconsistent, partially-deactivated account. The filesystem
+  // workspace cleanup below stays OUTSIDE the transaction on purpose: an rm()
+  // has no place in a DB rollback.
+  const deactivated = await db.transaction(async (tx) => {
+    const [row] = await tx
+      .update(users)
+      .set({ banned: true, banReason: "Deactivated by admin" })
+      .where(eq(users.id, userId))
+      .returning();
+
+    if (!row) return undefined;
+
+    // Revoke the user's active sessions immediately. Better Auth only
+    // enforces the `banned` flag at session-creation time, not on session
+    // reads, so an already-issued cookie would otherwise keep full access
+    // (incl. admin) until natural expiry. This mirrors the official
+    // admin.banUser behavior and the invite/claim reset flow, which both
+    // delete sessions.
+    await tx.delete(sessions).where(eq(sessions.userId, userId));
+
+    // Soft-delete every personal agent in one batched update instead of one
+    // per agent.
+    if (personalAgents.length > 0) {
+      await tx
+        .update(agents)
+        .set({ deletedAt: new Date() })
+        .where(
+          inArray(
+            agents.id,
+            personalAgents.map((a) => a.id)
+          )
+        );
+    }
+
+    return row;
+  });
 
   if (!deactivated) {
     return NextResponse.json({ error: "User not found" }, { status: 404 });
   }
 
-  // Revoke the user's active sessions immediately. Better Auth only enforces
-  // the `banned` flag at session-creation time, not on session reads, so an
-  // already-issued cookie would otherwise keep full access (incl. admin) until
-  // natural expiry. This mirrors the official admin.banUser behavior and the
-  // invite/claim reset flow, which both delete sessions.
-  await db.delete(sessions).where(eq(sessions.userId, userId));
+  // Deleting the session rows refuses the next WebSocket upgrade, but a chat
+  // the user already has open was authenticated once, at its upgrade, and
+  // would keep working — agent tools included. Close those sockets now; the
+  // registry also makes ClientRouter refuse a frame still in flight.
+  getUserSocketRegistry().revoke(userId);
 
-  after(() =>
-    appendAuditLog({
+  // Closing a socket only detaches it from the run it was listening to:
+  // OpenClaw keeps executing a run it already accepted — tools included —
+  // until it ends on its own. Stop every chat run of theirs the way the stop
+  // button does. Awaited, so the admin's "done" means the aborts went out.
+  // A gateway that can't be reached shows up as a `failure` row, not as a
+  // failed deactivation: the account is deactivated either way. An abort that
+  // stopped nothing is followed up after the response, as this admin
+  // (`abort-runs.ts`): a run OpenClaw had not accepted yet can still start.
+  const abortedRuns = await abortRunsOfUser(userId, {
+    activeRuns: getActiveRunsSingleton(),
+    chatAbort: (sessionKey, runId) => getOpenClawClient().chatAbort(sessionKey, runId),
+    requestedBy: session.user.id!,
+    followUp: followUpDepsFor(() => getOpenClawClient()),
+  });
+  for (const aborted of abortedRuns) {
+    deferAuditLog({
       actorType: "user",
       actorId: session.user.id!,
-      eventType: "user.deleted",
-      resource: `user:${userId}`,
-      // GDPR Art. 17: never record the email here. The audit log is
-      // HMAC-signed and append-only, so we cannot redact later. userId
-      // is in `resource`; name is enough for human-readable diffing.
-      detail: { name: deactivated.name },
-      outcome: "success",
-    })
-  );
-
-  // Soft-delete personal agents + cleanup workspaces
-  for (const agent of personalAgents) {
-    await db.update(agents).set({ deletedAt: new Date() }).where(eq(agents.id, agent.id));
-    deleteWorkspace(agent.id); // synchronous (uses rmSync)
+      eventType: "chat.run_aborted",
+      resource: `agent:${aborted.agent.id}`,
+      // No `sessionKey`: a web-chat key is `agent:<id>:direct:<userId>`, the
+      // deactivated user's raw id, and `detail` is out of crypto-erasure's
+      // reach (#824). The agent, the chat and the runId identify the run; the
+      // user is the `resource` of this request's `user.deleted` row.
+      detail: {
+        agent: aborted.agent,
+        chatId: auditChatId(aborted.sessionKey),
+        // Null while pending: the trail must not point at a runId the gateway
+        // never issued.
+        runId: aborted.runId ?? null,
+        reason: "account_deactivated",
+      },
+      outcome: aborted.outcome,
+    });
   }
+
+  deferAuditLog({
+    actorType: "user",
+    actorId: session.user.id!,
+    eventType: "user.deleted",
+    resource: `user:${userId}`,
+    // GDPR Art. 17: never record the email here. The audit log is
+    // HMAC-signed and append-only, so we cannot redact later. userId
+    // is in `resource`; name is enough for human-readable diffing.
+    detail: { name: deactivated.name },
+    outcome: "success",
+  });
+
+  // Cleanup workspaces (filesystem, not DB — deliberately outside the
+  // transaction above).
+  //
+  // A personal agent's workspace (KB corpora especially) can be GB-sized.
+  // deleteWorkspace() itself now uses fs.promises.rm rather than rmSync, so it
+  // no longer blocks the Node event loop while it walks the directory — but
+  // awaiting it here would still hold this response open for however long
+  // that takes. The ban and soft-delete above already committed, so the
+  // user's deactivation is complete and auditable regardless of how long
+  // cleanup takes.
+  //
+  // RETURN the promise rather than discarding it: after() awaits what its
+  // callback returns, which costs nothing here (the response is already on
+  // its way) and is what keeps the request lifecycle open until cleanup
+  // finishes. A discarded promise also puts any rejection outside anyone's
+  // reach — deleteWorkspace() swallows rm() failures, but its agent-id
+  // validation throws before that catch, and Node answers an unhandled
+  // rejection by killing the process.
+  //
+  // Residual risk, stated rather than papered over: this is best-effort. A
+  // hard crash between the response and the rm() completing leaves the
+  // directory on disk, and nothing sweeps for orphaned workspaces. That costs
+  // disk, never correctness — deleteWorkspace() is idempotent (force: true)
+  // and logs its own failures.
+  after(() => Promise.all(personalAgents.map((agent) => deleteWorkspace(agent.id))));
 
   await regenerateOpenClawConfig();
   await recalculateTelegramAllowStores();

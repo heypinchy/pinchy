@@ -1,0 +1,52 @@
+diff --git a/dist/index.d.mts b/dist/index.d.mts
+index cc2db51228bf2fe8676e06c028d17d4d2447c2a2..fa924322c8e24dc8767288c41e4bc097d98d22a2 100644
+--- a/dist/index.d.mts
++++ b/dist/index.d.mts
+@@ -243,6 +243,8 @@ interface OpenClawClientOptions {
+     role?: ClientRole;
+     /** Requested scopes (default: operator read+write) */
+     scopes?: string[];
++    /** Client capabilities announced in the connect handshake (default: none) */
++    caps?: string[];
+     /** Client identifier string */
+     clientId?: string;
+     /** Client version string */
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+index cc2db51228bf2fe8676e06c028d17d4d2447c2a2..fa924322c8e24dc8767288c41e4bc097d98d22a2 100644
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -243,6 +243,8 @@ interface OpenClawClientOptions {
+     role?: ClientRole;
+     /** Requested scopes (default: operator read+write) */
+     scopes?: string[];
++    /** Client capabilities announced in the connect handshake (default: none) */
++    caps?: string[];
+     /** Client identifier string */
+     clientId?: string;
+     /** Client version string */
+diff --git a/dist/index.js b/dist/index.js
+index 25e3fd4a05375a2d26b00defa4159795c793e58d..c833d18f35d6c7692c782026636861637cae07e9 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -868,7 +868,7 @@ var OpenClawClient = class extends import_events.EventEmitter {
+       },
+       role,
+       scopes,
+-      caps: [],
++      caps: this.options.caps || [],
+       commands: [],
+       permissions: {},
+       auth: {
+diff --git a/dist/index.mjs b/dist/index.mjs
+index b0108b7d26702f703024cf2f1b7e3724ee964409..9571bdcf4c74c2a6f1aea23c5e3bab3668186dec 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -837,7 +837,7 @@ var OpenClawClient = class extends EventEmitter {
+       },
+       role,
+       scopes,
+-      caps: [],
++      caps: this.options.caps || [],
+       commands: [],
+       permissions: {},
+       auth: {

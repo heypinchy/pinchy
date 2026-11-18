@@ -11,6 +11,7 @@ import { AttachmentPreview } from "@/components/assistant-ui/attachment-preview"
 import { ChatImage } from "@/components/assistant-ui/chat-image";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
+import { ThreadApprovals } from "@/components/thread-approvals";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -28,6 +29,7 @@ import {
   AlertCircle,
   ArrowDownIcon,
   ArrowUpIcon,
+  BookmarkIcon,
   BugIcon,
   CheckCircle,
   CheckIcon,
@@ -45,6 +47,7 @@ import {
   AgentIdContext,
   ChatIdContext,
   AgentNameContext,
+  CanEditAgentContext,
   RetryResendContext,
   RetryContinueContext,
   ChatStatusContext,
@@ -52,17 +55,27 @@ import {
   AddPendingUploadContext,
   RemovePendingUploadContext,
   RetryPendingUploadContext,
+  FileSourceContext,
 } from "@/components/chat";
+import { useChatSessionRetryHistory } from "@/components/chat-session-provider";
 import { DiagnosticsExportDialog } from "@/components/diagnostics-export-dialog";
 import { useAgentsContext } from "@/components/agents-provider";
 import { normalizeStarterPrompts } from "@/lib/schemas/starter-prompts";
+import {
+  NewConversationPrompts,
+  StarterPromptChips,
+} from "@/components/assistant-ui/new-conversation";
 import { Progress } from "@/components/ui/progress";
 import type { PendingUpload } from "@/hooks/use-ws-runtime";
 import { RetryButton } from "@/components/chat/retry-button";
-import { DuplicateRetryConfirm } from "@/components/chat/duplicate-retry-confirm";
+import { GatedRetry } from "@/components/chat/gated-retry";
 import { useComposerRuntime } from "@assistant-ui/react";
 import { getDraft, saveDraft, draftKey } from "@/lib/draft-store";
 import { useShareIntake } from "@/components/share/use-share-intake";
+import { useRouter } from "next/navigation";
+import { toast } from "sonner";
+import { canOfferInstructionHandoff, stashInstructionDraft } from "@/lib/instruction-handoff";
+import { KnowledgeFirstIndexNotice } from "@/components/chat/knowledge-first-index-notice";
 
 function formatTimestamp(iso: string): string {
   const date = new Date(iso);
@@ -86,10 +99,11 @@ function formatTimestamp(iso: string): string {
 const MessageTimestamp: FC = () => {
   const timestamp = useMessage((s) => s.metadata?.custom?.timestamp as string | undefined);
   if (!timestamp) return null;
-  return <span className="text-xs text-muted-foreground/60">{formatTimestamp(timestamp)}</span>;
+  return <span className="text-xs text-muted-foreground">{formatTimestamp(timestamp)}</span>;
 };
 
 const ThreadInner: FC<{ isReconcilingMessages: boolean }> = ({ isReconcilingMessages }) => {
+  const agentId = useContext(AgentIdContext);
   return (
     <ThreadPrimitive.Viewport className="aui-thread-viewport relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth px-4 pt-4">
       {!isReconcilingMessages && (
@@ -104,11 +118,21 @@ const ThreadInner: FC<{ isReconcilingMessages: boolean }> = ({ isReconcilingMess
               AssistantMessage,
             }}
           />
+
+          <NewConversationPrompts />
+
+          {/* At the end of the conversation, because that is where the parked
+              run stands (#1132). Inside the viewport rather than the sticky
+              footer, so it scrolls with the thread like any other turn. */}
+          <ThreadApprovals />
         </>
       )}
 
       <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mx-auto mt-auto flex w-full max-w-(--thread-max-width) flex-col gap-4 overflow-visible rounded-t-3xl bg-background pb-4 md:pb-6">
         <ThreadScrollToBottom />
+        {/* Above the composer, where it is read before the question it would
+            otherwise answer "nothing found" to (#1280). */}
+        {agentId && <KnowledgeFirstIndexNotice agentId={agentId} />}
         <Composer />
       </ThreadPrimitive.ViewportFooter>
     </ThreadPrimitive.Viewport>
@@ -162,6 +186,8 @@ const ROTATION_INTERVAL_MS = 3000;
 export const ThreadWelcome: FC = () => {
   const chatStatus = useContext(ChatStatusContext);
   const agentId = useContext(AgentIdContext);
+  const chatId = useContext(ChatIdContext);
+  const retryHistory = useChatSessionRetryHistory(agentId ?? "", chatId ?? undefined);
   const { getAgent } = useAgentsContext();
   const agent = agentId ? getAgent(agentId) : undefined;
   // Normalize (trim, drop blanks, de-duplicate) so `key={prompt}` chips never
@@ -194,24 +220,14 @@ export const ThreadWelcome: FC = () => {
     // Every agent has a greetingMessage at the schema level, so the server
     // always sends an opening assistant bubble — that's the welcome. A second
     // hardcoded "How can I help you today?" would be redundant and would flash
-    // briefly during the React-state ↔ assistant-ui store sync window. So we
-    // only render the per-agent starter prompts (#570) as clickable chips when
-    // configured; with none set, this stays null as before.
+    // briefly during the React-state ↔ assistant-ui store sync window.
+    // Normally the greeting lands, the thread is no longer empty, and the
+    // starter prompts render below it (NewConversationPrompts, #1275). This
+    // branch only covers a ready thread with no greeting at all.
     if (starterPrompts.length === 0) return null;
     return (
       <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col items-center justify-center gap-4">
-        <div className="flex flex-wrap items-center justify-center gap-2 px-4">
-          {starterPrompts.map((prompt) => (
-            <ThreadPrimitive.Suggestion
-              key={prompt}
-              prompt={prompt}
-              send
-              className="max-w-full rounded-2xl border px-4 py-1.5 text-sm break-words text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            >
-              {prompt}
-            </ThreadPrimitive.Suggestion>
-          ))}
-        </div>
+        <StarterPromptChips prompts={starterPrompts} />
       </div>
     );
   }
@@ -228,20 +244,53 @@ export const ThreadWelcome: FC = () => {
     );
   }
 
+  if (chatStatus.kind === "unavailable" && chatStatus.reason === "historyTimeout") {
+    // Issue #956: the wait for the initial history frame ran out. Say so and
+    // offer the way out — the chat used to sit on the loading indicator
+    // indefinitely, and only a page reload got the user unstuck.
+    return (
+      <div
+        data-testid="history-timeout"
+        className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col"
+      >
+        <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-center">
+          <div className="flex flex-col items-center gap-3 px-4 text-center">
+            <p className="text-sm font-medium text-muted-foreground">
+              This chat didn&apos;t load. The connection may have dropped.
+            </p>
+            <Button variant="outline" size="sm" onClick={retryHistory}>
+              <RotateCw className="size-4" />
+              Try again
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (chatStatus.kind === "unavailable") {
     const { reason } = chatStatus;
+    // The banner under the thread carries the detail and the buttons; this is
+    // the headline for an empty thread. Nothing here asks for a reload — we
+    // keep retrying (#1422).
     const message =
       reason === "disconnected"
         ? "Reconnecting to the agent..."
-        : reason === "configuring"
-          ? "Just a moment — getting things ready..."
-          : "We couldn't reconnect. Please reload to continue.";
+        : reason === "offline"
+          ? "You're offline."
+          : reason === "rejected"
+            ? "Waiting for a free connection..."
+            : reason === "upstreamDown"
+              ? "Waiting for the agent to come back..."
+              : reason === "unreachable"
+                ? "Still trying to reach Pinchy..."
+                : "Just a moment — getting things ready...";
 
     return (
       <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
         <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-center">
           <div className="flex flex-col items-center gap-3">
-            {reason === "disconnected" && (
+            {reason !== "configuring" && reason !== "offline" && (
               <div
                 data-testid="loading-spinner"
                 className="size-8 animate-spin rounded-full border-2 border-muted-foreground/20 border-t-muted-foreground"
@@ -269,7 +318,7 @@ export const ThreadWelcome: FC = () => {
           <p className="text-sm font-medium text-muted-foreground">Starting agent...</p>
           <p
             data-testid="startup-message"
-            className="text-xs text-muted-foreground/60 transition-opacity duration-300"
+            className="text-xs text-muted-foreground transition-opacity duration-300"
           >
             {STARTUP_MESSAGES[messageIndex]}
           </p>
@@ -461,6 +510,27 @@ export function PendingUploadChips() {
   );
 }
 
+/**
+ * True when the device's primary input is a pointing device (mouse, trackpad).
+ *
+ * Read once, lazily, rather than tracked: React only honours `autoFocus` when
+ * the DOM node first mounts, so a value arriving later from an effect would
+ * never focus anything.
+ *
+ * `pointer`, not `any-pointer`: the latter matches a phone with a stylus (an
+ * S-Pen counts as a fine pointer), which is the device this exists to spare.
+ * Measured in Playwright's Chromium: a default context reports `fine`, a
+ * `hasTouch` or device-emulated one reports `coarse` — so the e2e suite keeps
+ * the autofocus it has always had, and a future mobile-emulating project would
+ * legitimately not.
+ */
+function useFinePointer(): boolean {
+  const [finePointer] = useState(
+    () => typeof window !== "undefined" && window.matchMedia("(pointer: fine)").matches
+  );
+  return finePointer;
+}
+
 export const Composer: FC = () => {
   // Capability gating used to live here: a text-only model would block an image
   // send and pop the recovery dialog. That's gone — the WebSocket chat router
@@ -473,6 +543,11 @@ export const Composer: FC = () => {
   // key handler sits on the Root form element so it can intercept Enter/↑/↓
   // before the form submits when the menu is open.
   const slashMenu = useSlashCommandMenu();
+  // Autofocus is a desktop convenience and a mobile annoyance: on a touch
+  // device it forces the on-screen keyboard open on every chat entry, before
+  // the user has decided to type — hiding the composer, and with it whatever a
+  // share just pre-filled into it (#955).
+  const autoFocus = useFinePointer();
   return (
     <ComposerPrimitive.Root
       className="aui-composer-root relative flex w-full flex-col"
@@ -489,7 +564,7 @@ export const Composer: FC = () => {
           placeholder="Send a message, or type / for commands"
           className="aui-composer-input mb-0.5 md:mb-1 max-h-32 min-h-10 md:min-h-14 w-full resize-none bg-transparent px-4 pt-2 pb-1 md:pb-3 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-0"
           rows={1}
-          autoFocus
+          autoFocus={autoFocus}
           aria-label="Message input"
           {...slashMenu.inputAriaProps}
         />
@@ -562,12 +637,19 @@ const AssistantErrorOrContent: FC<{ actionSlot?: React.ReactNode }> = ({ actionS
 
   return (
     <>
-      <MessagePrimitive.Parts
-        components={{
-          Text: MarkdownText,
-          tools: { Fallback: ToolFallback },
-        }}
-      />
+      {/* Agent-delivered files (#703) render with the same chip/preview
+          component as user uploads, but fetch from the grant-authorized
+          `artifacts` route instead of `uploads`. */}
+      <FileSourceContext.Provider value="artifacts">
+        <MessagePrimitive.Parts
+          components={{
+            Text: MarkdownText,
+            Image: ChatImage,
+            File: AttachmentPreview,
+            tools: { Fallback: ToolFallback },
+          }}
+        />
+      </FileSourceContext.Provider>
       <MessageError />
     </>
   );
@@ -602,9 +684,11 @@ export const AssistantMessage: FC = () => {
       "partial_stream_failure"
   );
   const isLast = useMessage((s) => s.isLast);
-  // The failed run already ran a tool → gate retry behind a duplicate-write
-  // confirm, matching the durable banner (the live retry is the most common
-  // retry moment, so it must be gated too).
+  // What the error frame claimed about tool use. Provisional: the flag is
+  // derived from an audit row that OpenClaw's unawaited `after_tool_call` hook
+  // may not have written yet (#1013), so `false` here means "not proven", not
+  // "read-only". GatedRetry re-asks the server on click, where the answer has
+  // had time to settle. `true` short-circuits — the gate never re-opens.
   const sideEffects = useMessage(
     (s) => !!(s.metadata?.custom?.error as ChatError | undefined)?.sideEffects
   );
@@ -612,19 +696,20 @@ export const AssistantMessage: FC = () => {
     (s) => (s.metadata?.custom?.error as ChatError | undefined)?.agentName
   );
   const onRetryContinue = useContext(RetryContinueContext);
+  const retryAgentId = useContext(AgentIdContext);
+  const retryChatId = useContext(ChatIdContext);
 
   const showRetry = isRetryable && isLast;
   const retryButton = showRetry ? (
-    sideEffects ? (
-      <DuplicateRetryConfirm
-        agentName={errorAgentName}
-        onConfirm={() => onRetryContinue(retryReason)}
-      >
-        {(open) => <RetryButton onClick={open} />}
-      </DuplicateRetryConfirm>
-    ) : (
-      <RetryButton onClick={() => onRetryContinue(retryReason)} />
-    )
+    <GatedRetry
+      agentId={retryAgentId ?? undefined}
+      chatId={retryChatId}
+      agentName={errorAgentName}
+      sideEffects={sideEffects}
+      onRetry={() => onRetryContinue(retryReason)}
+    >
+      {(start, pending) => <RetryButton onClick={start} checking={pending} />}
+    </GatedRetry>
   ) : null;
 
   return (
@@ -647,6 +732,22 @@ const AssistantActionBar: FC = () => {
   const messageId = useMessage((s) => s.id);
   const agentId = useContext(AgentIdContext) ?? "";
   const agentName = useContext(AgentNameContext) ?? "Unknown";
+  // Only offered to someone who may actually save it — `canWriteAgent`,
+  // resolved server-side. The route enforces the same rule; this keeps the menu
+  // from advertising an action that would come back 403.
+  const canEditAgent = useContext(CanEditAgentContext);
+  // `?? []` rather than trusting the type: this selector runs inside the action
+  // bar of every assistant message, so throwing here blanks the whole message
+  // for a field it only ever reads to decide whether to show a menu item. A
+  // message with no text parts is a tool-call or image turn — nothing to
+  // promote, which `canOfferInstructionHandoff` already treats as "don't offer".
+  const messageText = useMessage((s) =>
+    (s.content ?? [])
+      .filter((part): part is { type: "text"; text: string } => part.type === "text")
+      .map((part) => part.text)
+      .join("\n\n")
+  );
+  const router = useRouter();
   // The active chat (null = default/legacy) so the export dialog preselects the
   // chat the user is actually looking at, not the default one (#639).
   const chatId = useContext(ChatIdContext);
@@ -690,6 +791,27 @@ const AssistantActionBar: FC = () => {
               Export as Markdown
             </ActionBarMorePrimitive.Item>
           </ActionBarPrimitive.ExportMarkdown>
+          {canOfferInstructionHandoff(canEditAgent, agentId, messageText) && (
+            <ActionBarMorePrimitive.Item
+              onSelect={() => {
+                // Stash first, navigate second: a browser that refuses storage
+                // must not drop the user on a settings page with nothing in it.
+                if (!stashInstructionDraft(agentId, messageText)) {
+                  toast.error("Couldn't carry the draft over — copy the message instead.");
+                  return;
+                }
+                // `/chat/<id>/settings` — the same page the header's gear icon
+                // opens. It shipped as `/agents/<id>/settings`, a route this app
+                // has never served, and every test agreed with the typo.
+                router.push(`/chat/${agentId}/settings?tab=instructions`);
+              }}
+              data-testid="save-as-instruction-menu-item"
+              className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
+            >
+              <BookmarkIcon className="size-4" />
+              Save as instruction
+            </ActionBarMorePrimitive.Item>
+          )}
           <ActionBarMorePrimitive.Item
             onSelect={() => setReportIssueOpen(true)}
             data-testid="report-issue-menu-item"

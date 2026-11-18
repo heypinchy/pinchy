@@ -1,11 +1,20 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { toast } from "sonner";
 import { AuditLogTable } from "@/components/audit-log-table";
+import { jsonResponse } from "@/test-helpers/fetch";
 
-vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+// The list and the event-type loads go through apiGet with an abort signal
+// (#1216), so fetch sees the init object as well as the URL.
+const CANCELLABLE_GET = expect.objectContaining({
+  method: "GET",
+  signal: expect.any(AbortSignal),
+});
+
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() } }));
 
 // Radix UI Select uses pointer capture and scrollIntoView which jsdom doesn't support
 if (!Element.prototype.hasPointerCapture) {
@@ -95,14 +104,12 @@ describe("AuditLogTable", () => {
    *   2. GET /api/audit?...          (useEffect depending on fetchEntries)
    */
   function mockEventTypesThenEntries(eventTypesOverride?: object, entriesOverride?: object) {
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => eventTypesOverride ?? mockEventTypesResponse,
-    } as Response);
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => entriesOverride ?? mockAuditResponse,
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse(eventTypesOverride ?? mockEventTypesResponse)
+    );
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse(entriesOverride ?? mockAuditResponse)
+    );
   }
 
   function renderWithEntriesLoaded() {
@@ -180,6 +187,74 @@ describe("AuditLogTable", () => {
     revokeObjectURLSpy.mockRestore();
   });
 
+  it("warns when the export response signals truncation (X-Audit-Export-Truncated)", async () => {
+    renderWithEntriesLoaded();
+
+    await waitFor(() => {
+      expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
+    });
+
+    const csvContent = "id,timestamp,eventType\n1,2026-02-21,auth.login";
+    vi.mocked(global.fetch).mockResolvedValueOnce({
+      ok: true,
+      blob: async () => new Blob([csvContent], { type: "text/csv" }),
+      headers: new Headers({
+        "content-disposition": 'attachment; filename="audit-log.csv"',
+        "X-Audit-Export-Truncated": "true",
+      }),
+    } as Response);
+
+    const createObjectURLSpy = vi
+      .spyOn(URL, "createObjectURL")
+      .mockReturnValue("blob:http://localhost/fake");
+    const revokeObjectURLSpy = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /export/i }));
+    await user.click(screen.getByRole("menuitem", { name: /csv/i }));
+
+    await waitFor(() => {
+      expect(toast.warning).toHaveBeenCalledWith(expect.stringContaining("truncated"));
+    });
+
+    createObjectURLSpy.mockRestore();
+    revokeObjectURLSpy.mockRestore();
+  });
+
+  it("does not warn when the export is not truncated", async () => {
+    renderWithEntriesLoaded();
+
+    await waitFor(() => {
+      expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
+    });
+
+    const csvContent = "id,timestamp,eventType\n1,2026-02-21,auth.login";
+    vi.mocked(global.fetch).mockResolvedValueOnce({
+      ok: true,
+      blob: async () => new Blob([csvContent], { type: "text/csv" }),
+      headers: new Headers({
+        "content-disposition": 'attachment; filename="audit-log.csv"',
+      }),
+    } as Response);
+
+    const createObjectURLSpy = vi
+      .spyOn(URL, "createObjectURL")
+      .mockReturnValue("blob:http://localhost/fake");
+    const revokeObjectURLSpy = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /export/i }));
+    await user.click(screen.getByRole("menuitem", { name: /csv/i }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("/api/audit/export"));
+    });
+    expect(toast.warning).not.toHaveBeenCalled();
+
+    createObjectURLSpy.mockRestore();
+    revokeObjectURLSpy.mockRestore();
+  });
+
   it("should trigger PDF download via Export menu → PDF", async () => {
     renderWithEntriesLoaded();
 
@@ -222,16 +297,16 @@ describe("AuditLogTable", () => {
       expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
     });
 
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => mockAuditResponse,
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse(mockAuditResponse));
 
     const user = userEvent.setup();
     await user.type(screen.getByLabelText("From"), "2026-02-01");
 
     await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("from=2026-02-01"));
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringContaining("from=2026-02-01"),
+        CANCELLABLE_GET
+      );
     });
 
     vi.mocked(global.fetch).mockResolvedValueOnce({
@@ -240,6 +315,7 @@ describe("AuditLogTable", () => {
         new Blob([new Uint8Array([0x25, 0x50, 0x44, 0x46])], {
           type: "application/pdf",
         }),
+      headers: new Headers(),
     } as Response);
 
     const createObjectURLSpy = vi
@@ -268,10 +344,9 @@ describe("AuditLogTable", () => {
       expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
     });
 
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ valid: true, totalChecked: 3, invalidIds: [] }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse({ valid: true, totalChecked: 3, invalidIds: [] })
+    );
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Verify Integrity" }));
@@ -285,6 +360,37 @@ describe("AuditLogTable", () => {
     });
   });
 
+  it("should name a signing-secret change instead of reporting it as tampering", async () => {
+    // The whole point of previousKeyIds: rows signed before the operator pinned
+    // AUDIT_HMAC_SECRET are authentic, so the banner stays green — but it must
+    // say why some rows verified against a different key rather than staying
+    // silent about a rotation.
+    renderWithEntriesLoaded();
+
+    await waitFor(() => {
+      expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
+    });
+
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse({
+        valid: true,
+        totalChecked: 3,
+        invalidIds: [],
+        chainBreakIds: [],
+        previousKeyIds: [1, 2],
+      })
+    );
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Verify Integrity" }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/All 3 entries verified/)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/2 were signed with an earlier audit secret/)).toBeInTheDocument();
+    expect(screen.queryByText(/tampered/)).not.toBeInTheDocument();
+  });
+
   it("should show red result when integrity check finds tampered entries", async () => {
     renderWithEntriesLoaded();
 
@@ -292,10 +398,9 @@ describe("AuditLogTable", () => {
       expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
     });
 
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ valid: false, totalChecked: 3, invalidIds: [3, 17] }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse({ valid: false, totalChecked: 3, invalidIds: [3, 17] })
+    );
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Verify Integrity" }));
@@ -303,6 +408,36 @@ describe("AuditLogTable", () => {
     await waitFor(() => {
       expect(screen.getByText(/2 tampered entries/)).toBeInTheDocument();
     });
+  });
+
+  it("should still name the signing-secret change when tampering is also found", async () => {
+    // The rotation note belongs in BOTH banners. A partly-rotated log with a
+    // real violation in it is exactly the moment an investigator needs to know
+    // which rows verify under which key — showing it only on the green banner
+    // hides it from the one reader who has to act on it.
+    renderWithEntriesLoaded();
+
+    await waitFor(() => {
+      expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
+    });
+
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse({
+        valid: false,
+        totalChecked: 9,
+        invalidIds: [3],
+        chainBreakIds: [],
+        previousKeyIds: [1, 2],
+      })
+    );
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Verify Integrity" }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/1 tampered entries/)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/2 were signed with an earlier audit secret/)).toBeInTheDocument();
   });
 
   it("should show secondary badge for all event types including deleted/failed", async () => {
@@ -353,22 +488,60 @@ describe("AuditLogTable", () => {
     expect(nextButton).not.toBeDisabled();
 
     // Click Next
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse({
         entries: mockEntries,
         total: 120,
         page: 2,
         limit: 50,
-      }),
-    } as Response);
+      })
+    );
 
     const user = userEvent.setup();
     await user.click(nextButton);
 
     await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("page=2"));
+      expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("page=2"), CANCELLABLE_GET);
     });
+  });
+
+  it("keeps the page-1 total when a later page's response omits it", async () => {
+    // The server only (re)computes `total` on page 1 (see app/api/audit's
+    // rawTotalForPage1) — a page > 1 response has no `total` key at all.
+    // The component must keep showing the total from the page-1 fetch
+    // instead of losing it (e.g. falling back to 0 → "Page 1 of 1").
+    mockEventTypesThenEntries(undefined, {
+      entries: mockEntries,
+      total: 120,
+      page: 1,
+      limit: 50,
+    });
+
+    render(<AuditLogTable />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Page 1 of 3")).toBeInTheDocument();
+    });
+
+    const nextButton = screen.getByRole("button", { name: "Next" });
+
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse({
+        entries: mockEntries,
+        // No `total` field — the page > 1 contract.
+        page: 2,
+        limit: 50,
+      })
+    );
+
+    const user = userEvent.setup();
+    await user.click(nextButton);
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("page=2"), CANCELLABLE_GET);
+    });
+    // Still "of 3" — the total from page 1 was retained, not reset.
+    expect(screen.getByText("Page 2 of 3")).toBeInTheDocument();
   });
 
   it("should have an event type filter with combobox role", async () => {
@@ -393,7 +566,7 @@ describe("AuditLogTable", () => {
     render(<AuditLogTable />);
 
     await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith("/api/audit/event-types");
+      expect(global.fetch).toHaveBeenCalledWith("/api/audit/event-types", CANCELLABLE_GET);
     });
   });
 
@@ -428,7 +601,7 @@ describe("AuditLogTable", () => {
     renderWithEntriesLoaded();
 
     await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith("/api/audit?page=1&limit=50");
+      expect(global.fetch).toHaveBeenCalledWith("/api/audit?page=1&limit=50", CANCELLABLE_GET);
     });
   });
 
@@ -440,10 +613,7 @@ describe("AuditLogTable", () => {
     });
 
     // Mock the next fetch that will be triggered by changing the date inputs
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => mockAuditResponse,
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse(mockAuditResponse));
 
     const user = userEvent.setup();
     const fromInput = screen.getByLabelText("From");
@@ -454,21 +624,24 @@ describe("AuditLogTable", () => {
     await user.type(fromInput, "2026-02-01");
 
     await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("from=2026-02-01"));
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringContaining("from=2026-02-01"),
+        CANCELLABLE_GET
+      );
     });
 
     // Mock the next fetch for the "To" date change
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => mockAuditResponse,
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse(mockAuditResponse));
 
     // Set the "To" date
     await user.clear(toInput);
     await user.type(toInput, "2026-02-28");
 
     await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("to=2026-02-28"));
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringContaining("to=2026-02-28"),
+        CANCELLABLE_GET
+      );
     });
   });
 
@@ -517,6 +690,39 @@ describe("AuditLogTable", () => {
     });
   });
 
+  it("should show 'deleted' (not 'deactivated') for a deleted agent actor", async () => {
+    mockEventTypesThenEntries(undefined, {
+      entries: [
+        {
+          id: 12,
+          timestamp: "2026-02-21T10:00:00.000Z",
+          actorType: "agent",
+          actorId: "711ed709-agent",
+          actorName: "Old Archivist",
+          actorDeleted: true,
+          eventType: "retrieval.query",
+          resource: null,
+          resourceName: null,
+          resourceDeleted: false,
+          detail: {},
+          rowHmac: "hmac-agent-deleted",
+        },
+      ],
+      total: 1,
+      page: 1,
+      limit: 50,
+    });
+
+    render(<AuditLogTable />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Old Archivist").length).toBeGreaterThan(0);
+    });
+    expect(screen.getAllByText("deleted").length).toBeGreaterThan(0);
+    expect(screen.queryByText("deactivated")).not.toBeInTheDocument();
+    expect(screen.queryByText(/711ed709/)).not.toBeInTheDocument();
+  });
+
   it("should show 'deleted' badge for deleted resource", async () => {
     const entriesWithDeletedResource = [
       {
@@ -561,6 +767,32 @@ describe("AuditLogTable", () => {
     // rows[0] is the header; rows[1] is the first data row
     const firstDataRow = rows[1];
     fireEvent.keyUp(firstDataRow, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(screen.getByText("Entry Detail")).toBeInTheDocument();
+    });
+  });
+
+  it("mobile cards open their detail through a real button, not a button-role wrapper (#1300)", async () => {
+    // A card with role="button" that contains the actor/resource links is a
+    // nested interactive control (axe `nested-interactive`): screen readers
+    // flatten the links into the button's name and can't reach them.
+    renderWithEntriesLoaded();
+
+    await waitFor(() => {
+      expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
+    });
+
+    const cards = document.querySelectorAll("[data-audit-card]");
+    expect(cards.length).toBeGreaterThan(0);
+    for (const card of cards) {
+      expect(card).not.toHaveAttribute("role");
+      expect(card).not.toHaveAttribute("tabindex");
+    }
+
+    const user = userEvent.setup();
+    const detailButtons = screen.getAllByRole("button", { name: "auth.login details" });
+    await user.click(detailButtons[0]);
 
     await waitFor(() => {
       expect(screen.getByText("Entry Detail")).toBeInTheDocument();
@@ -634,30 +866,41 @@ describe("AuditLogTable", () => {
     renderWithEntriesLoaded();
     await openFirstEntryDetail();
 
-    // Install the clipboard mock AFTER openFirstEntryDetail: userEvent.setup()
-    // attaches its own navigator.clipboard stub and would otherwise shadow ours.
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", {
-      value: { writeText },
-      writable: true,
-      configurable: true,
-    });
+    // Spy AFTER openFirstEntryDetail, whose userEvent.setup() is what defines
+    // `navigator.clipboard` in the first place (Clipboard.js:
+    // `attachClipboardStubToView`) — there is nothing to spy on before it.
+    //
+    // A spy rather than a wholesale Object.defineProperty: redefining the
+    // property shadows the stub user-event will later look for, so its per-test
+    // `resetClipboardStubOnView` silently does nothing and this mock leaks into
+    // every later test in the file.
+    const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
 
-    // fireEvent (not userEvent) — the button lives inside the Radix Sheet, whose
-    // open state sets pointer-events:none on body, which userEvent rejects.
-    fireEvent.click(screen.getByRole("button", { name: /copy json/i }));
+    try {
+      // fireEvent (not userEvent) — the button lives inside the Radix Sheet, whose
+      // open state sets pointer-events:none on body, which userEvent rejects.
+      fireEvent.click(screen.getByRole("button", { name: /copy json/i }));
 
-    // entry 1 detail is { email: "admin@example.com" }, pretty-printed.
-    await waitFor(() => {
-      expect(writeText).toHaveBeenCalledWith(
-        JSON.stringify({ email: "admin@example.com" }, null, 2)
-      );
-    });
+      // entry 1 detail is { email: "admin@example.com" }, pretty-printed.
+      await waitFor(() => {
+        expect(writeText).toHaveBeenCalledWith(
+          JSON.stringify({ email: "admin@example.com" }, null, 2)
+        );
+      });
+    } finally {
+      // In a `finally` so a failing assertion above still restores the spy —
+      // otherwise one red test leaves it in place for the rest of the file.
+      writeText.mockRestore();
+    }
   });
 
   it("surfaces a toast.error when copying the JSON detail fails", async () => {
     const originalExec = document.execCommand;
     document.execCommand = vi.fn().mockReturnValue(false);
+    // Assigned inside the try, immediately before the property is redefined, so
+    // the `finally` restores only if the redefinition actually happened — a
+    // throw earlier in the try must not touch a clipboard this test never took.
+    let restoreClipboard: (() => void) | undefined;
 
     try {
       renderWithEntriesLoaded();
@@ -665,6 +908,25 @@ describe("AuditLogTable", () => {
 
       // After openFirstEntryDetail (userEvent.setup attaches a working clipboard
       // stub) simulate a non-secure context: no clipboard API, execCommand fails.
+      //
+      // This is the one clipboard test in the tree that cannot use a spy: the
+      // branch under test is `navigator.clipboard` being ABSENT, and a spy can
+      // only change what an existing method does. So the property is redefined
+      // here — and handed back in the `finally`, because leaving the
+      // redefinition in place shadows the stub user-event tracks, which makes
+      // its per-test `resetClipboardStubOnView` a silent no-op and leaks an
+      // undefined clipboard into every later test in the file.
+      //
+      // Both restore branches are spelled out rather than guarded with an `if`:
+      // "no descriptor" is not a reason to skip the restore, it is a different
+      // restore — skipping it would leave `clipboard: undefined` behind, which
+      // is the very leak this whole change removes.
+      const previousClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+      restoreClipboard = previousClipboard
+        ? () => Object.defineProperty(navigator, "clipboard", previousClipboard)
+        : () => {
+            delete (navigator as { clipboard?: unknown }).clipboard;
+          };
       Object.defineProperty(navigator, "clipboard", {
         value: undefined,
         writable: true,
@@ -678,6 +940,53 @@ describe("AuditLogTable", () => {
       });
     } finally {
       document.execCommand = originalExec;
+      restoreClipboard?.();
+    }
+  });
+
+  it("copies the JSON detail through the fallback from inside the sheet's focus trap", async () => {
+    // Plain-HTTP install: no Clipboard API, so the hook copies from a hidden
+    // textarea via execCommand, which only works while that textarea holds
+    // focus. The detail sheet traps focus, and Radix portals it straight into
+    // <body>. Safari and Firefox on macOS leave focus on the sheet when the
+    // button is clicked, so a textarea placed by focus landed on <body>, the
+    // trap pulled focus back, nothing was copied and the button said "Copied".
+    let copiedText: string | null = null;
+    const originalExec = document.execCommand;
+    document.execCommand = vi.fn(() => {
+      const active = document.activeElement;
+      copiedText = active instanceof HTMLTextAreaElement ? active.value : null;
+      return true;
+    });
+    let restoreClipboard: (() => void) | undefined;
+
+    try {
+      renderWithEntriesLoaded();
+      await openFirstEntryDetail();
+
+      // Same restore contract as the toast test above.
+      const previousClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+      restoreClipboard = previousClipboard
+        ? () => Object.defineProperty(navigator, "clipboard", previousClipboard)
+        : () => {
+            delete (navigator as { clipboard?: unknown }).clipboard;
+          };
+      Object.defineProperty(navigator, "clipboard", {
+        value: undefined,
+        writable: true,
+        configurable: true,
+      });
+
+      const sheet = screen.getByRole("dialog");
+      sheet.focus();
+      // fireEvent.click doesn't move focus — what a mouse click does there.
+      fireEvent.click(screen.getByRole("button", { name: /copy json/i }));
+
+      expect(copiedText).toBe(JSON.stringify({ email: "admin@example.com" }, null, 2));
+      expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
+    } finally {
+      document.execCommand = originalExec;
+      restoreClipboard?.();
     }
   });
 
@@ -688,10 +997,9 @@ describe("AuditLogTable", () => {
       expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
     });
 
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ valid: false, totalChecked: 3, invalidIds: [1, 3] }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse({ valid: false, totalChecked: 3, invalidIds: [1, 3] })
+    );
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Verify Integrity" }));
@@ -714,10 +1022,9 @@ describe("AuditLogTable", () => {
       expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
     });
 
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ valid: false, totalChecked: 3, invalidIds: [1, 3] }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse({ valid: false, totalChecked: 3, invalidIds: [1, 3] })
+    );
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Verify Integrity" }));
@@ -756,10 +1063,9 @@ describe("AuditLogTable", () => {
       expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
     });
 
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ valid: false, totalChecked: 3, invalidIds: [1, 3] }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse({ valid: false, totalChecked: 3, invalidIds: [1, 3] })
+    );
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Verify Integrity" }));
@@ -897,17 +1203,17 @@ describe("AuditLogTable", () => {
       expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
     });
 
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => mockAuditResponse,
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse(mockAuditResponse));
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("combobox", { name: "Status" }));
     await user.click(await screen.findByRole("option", { name: "Failures only" }));
 
     await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("status=failure"));
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringContaining("status=failure"),
+        CANCELLABLE_GET
+      );
     });
   });
 
@@ -975,4 +1281,204 @@ describe("AuditLogTable", () => {
       expect(screen.getAllByText("user-abc…").length).toBeGreaterThan(0);
     });
   });
+});
+
+// #1216: both loaders used to run without a catch and without an abort, so a
+// failed audit query rendered "No entries found." — a failed lookup reading as
+// "nothing was logged" on the compliance surface — and a rejection that landed
+// after the test's fetch mock was restored ended the suite with exit 1.
+describe("AuditLogTable background loads (#1216)", () => {
+  const LIST = /^\/api\/audit\?/;
+  const EVENT_TYPES = "/api/audit/event-types";
+  type Route = "list" | "eventTypes";
+  let signals: Record<Route, Array<AbortSignal | undefined>>;
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
+
+  function routeOf(url: string): Route | null {
+    if (url === EVENT_TYPES) return "eventTypes";
+    if (LIST.test(url)) return "list";
+    return null;
+  }
+
+  // Settles only by rejecting on abort, the way a real fetch does — so an
+  // unmount mid-flight exercises the abort path, not a hang.
+  function pendingUntilAbort(init?: RequestInit) {
+    return new Promise<Response>((_, reject) => {
+      init?.signal?.addEventListener("abort", () =>
+        reject(new DOMException("The operation was aborted.", "AbortError"))
+      );
+    });
+  }
+
+  function stubFetch(
+    overrides: Partial<Record<Route, "pending" | ((init?: RequestInit) => Promise<Response>)>> = {}
+  ) {
+    signals = { list: [], eventTypes: [] };
+    fetchSpy = vi.spyOn(global, "fetch").mockImplementation(((
+      input: string,
+      init?: RequestInit
+    ) => {
+      const route = routeOf(String(input));
+      if (!route) return Promise.resolve(jsonResponse({}));
+      signals[route].push(init?.signal ?? undefined);
+      const override = overrides[route];
+      if (override === "pending") return pendingUntilAbort(init);
+      if (override) return override(init);
+      return Promise.resolve(
+        jsonResponse(
+          route === "eventTypes"
+            ? { eventTypes: ["auth.login"] }
+            : { entries: [], total: 0, page: 1, limit: 50 }
+        )
+      );
+    }) as typeof fetch);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+  });
+
+  it("aborts both loads when the table unmounts", async () => {
+    stubFetch();
+    const { unmount } = render(<AuditLogTable />);
+    await waitFor(() => {
+      expect(signals.list).toHaveLength(1);
+      expect(signals.eventTypes).toHaveLength(1);
+    });
+    unmount();
+    expect(signals.list[0]?.aborted).toBe(true);
+    expect(signals.eventTypes[0]?.aborted).toBe(true);
+  });
+
+  it("says nothing when it unmounts mid-flight", async () => {
+    stubFetch({ list: "pending", eventTypes: "pending" });
+    const { unmount } = render(<AuditLogTable />);
+    await waitFor(() => expect(signals.list).toHaveLength(1));
+    unmount();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it("aborts the previous query when a filter changes", async () => {
+    let calls = 0;
+    stubFetch({
+      list: (init) => {
+        calls += 1;
+        // The first query lands so the filters render; every later one hangs
+        // until it is superseded.
+        return calls === 1
+          ? Promise.resolve(jsonResponse({ entries: [makeEntry()], total: 1, page: 1, limit: 50 }))
+          : pendingUntilAbort(init);
+      },
+    });
+    render(<AuditLogTable />);
+    await waitFor(() => expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0));
+
+    const user = userEvent.setup();
+    const status = screen.getByRole("combobox", { name: "Status" });
+    await user.click(status);
+    await user.click(await screen.findByRole("option", { name: "Failures only" }));
+    await waitFor(() => expect(signals.list).toHaveLength(2));
+
+    await user.click(status);
+    await user.click(await screen.findByRole("option", { name: "Success only" }));
+    await waitFor(() => expect(signals.list).toHaveLength(3));
+
+    expect(signals.list[1]?.aborted).toBe(true);
+    expect(signals.list[2]?.aborted).toBe(false);
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it("reports a rejected audit query instead of claiming nothing was logged", async () => {
+    stubFetch({ list: () => Promise.reject(new TypeError("Failed to fetch")) });
+    render(<AuditLogTable />);
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(
+        "Couldn't load the audit log. Try refreshing the page."
+      );
+    });
+    expect(screen.queryByText("No entries found.")).not.toBeInTheDocument();
+    expect(screen.getByText("The audit log could not be loaded.")).toBeInTheDocument();
+  });
+
+  it("reports a 500 from the audit query with the server's own wording", async () => {
+    stubFetch({
+      list: () =>
+        Promise.resolve(jsonResponse({ error: "Audit query timed out" }, { status: 500 })),
+    });
+    render(<AuditLogTable />);
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith("Audit query timed out");
+    });
+    expect(screen.queryByText("No entries found.")).not.toBeInTheDocument();
+  });
+
+  it("drops the previous page's entries when a later query fails", async () => {
+    let calls = 0;
+    stubFetch({
+      list: () => {
+        calls += 1;
+        return calls === 1
+          ? Promise.resolve(jsonResponse({ entries: [makeEntry()], total: 1, page: 1, limit: 50 }))
+          : Promise.resolve(jsonResponse({ error: "Audit query timed out" }, { status: 500 }));
+      },
+    });
+    render(<AuditLogTable />);
+    await waitFor(() => expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0));
+
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText("From"), "2026-02-01");
+
+    await waitFor(() => {
+      expect(screen.getByText("The audit log could not be loaded.")).toBeInTheDocument();
+    });
+    // The rows still on screen would belong to a different filter than the one
+    // the admin just set — stale evidence is worse than none.
+    expect(screen.queryAllByText("Alice Admin")).toHaveLength(0);
+  });
+
+  it("reports a failed event-type load for the filter", async () => {
+    stubFetch({
+      eventTypes: () => Promise.resolve(jsonResponse({ error: "Forbidden" }, { status: 403 })),
+    });
+    render(<AuditLogTable />);
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith("Forbidden");
+    });
+  });
+
+  it("reports a rejected event-type load with the fallback wording", async () => {
+    stubFetch({ eventTypes: () => Promise.reject(new TypeError("Failed to fetch")) });
+    render(<AuditLogTable />);
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(
+        "Couldn't load the event types for the filter. Try refreshing the page."
+      );
+    });
+  });
+
+  function makeEntry() {
+    return {
+      id: 1,
+      timestamp: "2026-02-21T10:00:00.000Z",
+      actorType: "user",
+      actorId: "user-1",
+      actorName: "Alice Admin",
+      actorDeleted: false,
+      eventType: "auth.login",
+      resource: null,
+      resourceName: null,
+      resourceDeleted: false,
+      detail: {},
+      rowHmac: "abc123",
+    };
+  }
 });

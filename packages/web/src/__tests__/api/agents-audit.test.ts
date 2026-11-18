@@ -46,8 +46,8 @@ vi.mock("@/lib/openclaw-config", () => ({
   regenerateOpenClawConfig: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("@/db", () => ({
-  db: {
+vi.mock("@/db", () => {
+  const db: Record<string, unknown> = {
     insert: vi.fn().mockReturnValue({
       values: vi.fn().mockReturnValue({
         returning: vi.fn().mockResolvedValue([
@@ -70,8 +70,13 @@ vi.mock("@/db", () => ({
         where: vi.fn().mockResolvedValue([]),
       }),
     })),
-  },
-}));
+  };
+  // Default: run the callback against the SAME db object, so tx.delete /
+  // tx.insert are the exact mocks above and existing per-test overrides via
+  // db.delete/db.insert.mockReturnValueOnce keep working unchanged.
+  db.transaction = vi.fn((cb: (tx: unknown) => unknown) => cb(db));
+  return { db };
+});
 
 vi.mock("@/db/schema", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/db/schema")>();
@@ -103,6 +108,8 @@ vi.mock("@/lib/settings", () => ({
   // recalculateTelegramAllowStores (triggered as a side effect) batches
   // bot-token lookups via getSettingsByPrefix now — no bots in this test (#261).
   getSettingsByPrefix: vi.fn().mockResolvedValue(new Map()),
+  // The member-access policy reads its keys by name; nothing stored = on.
+  getSettingsByKeys: vi.fn().mockResolvedValue(new Map()),
 }));
 
 vi.mock("@/lib/provider-models", () => ({
@@ -191,6 +198,33 @@ describe("POST /api/agents audit logging", () => {
         },
       },
     });
+  });
+
+  it("audits a runtime-apply failure event when regeneration fails, keeping create success (#880)", async () => {
+    vi.mocked(regenerateOpenClawConfig).mockRejectedValueOnce(
+      new Error("EACCES: permission denied, open '/config/openclaw.json'")
+    );
+
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({ name: "Test Agent", templateId: "custom" }),
+    });
+
+    const response = await POST(request, routeContext());
+    // The agent row committed, so the create still succeeds...
+    expect(response.status).toBe(201);
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "agent.created", outcome: "success" })
+    );
+    // ...but the trail also records that it never reached the runtime.
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "config.changed",
+        resource: "agent:new-agent-id",
+        outcome: "failure",
+        detail: expect.objectContaining({ action: "runtime_apply_failed" }),
+      })
+    );
   });
 });
 
@@ -433,6 +467,107 @@ describe("PATCH /api/agents/[agentId] audit logging", () => {
     });
   });
 
+  it("wraps the group delete+insert in a single transaction (atomic replace)", async () => {
+    // As two standalone statements, an insert failure between them would strip
+    // a restricted agent of every group with none re-added — silent access
+    // loss. Mirrors the same assertion for user-groups and group-members.
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "user-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    mockAgent({
+      id: "agent-1",
+      name: "Test Agent",
+      model: "anthropic/claude-sonnet-4-6",
+      isPersonal: false,
+      ownerId: null,
+    });
+
+    vi.mocked(getAgentGroupIds).mockResolvedValueOnce(["group-keep"]);
+    vi.mocked(db.delete).mockReturnValueOnce({
+      where: vi.fn().mockResolvedValue(undefined),
+    } as never);
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn().mockResolvedValue(undefined),
+    } as never);
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ id: "group-keep", name: "Keep" }]),
+      }),
+    } as never);
+
+    const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({ groupIds: ["group-keep"] }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const response = await PATCH(request, {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+    expect(response.status).toBe(200);
+
+    expect(db.transaction).toHaveBeenCalledTimes(1);
+    expect(db.delete).toHaveBeenCalled();
+    expect(db.insert).toHaveBeenCalled();
+  });
+
+  it("rolls back the group delete when the insert fails, leaving previous groups intact", async () => {
+    // Simulates a real transaction's rollback semantics with a stateful fake
+    // store: the delete only takes effect once the whole callback commits.
+    // Pre-fix, the route calls db.delete/db.insert directly (never touching
+    // db.transaction), so this test's fake store never rejects and the PATCH
+    // resolves 200 instead of rejecting — the red state this test starts from.
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "user-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    mockAgent({
+      id: "agent-1",
+      name: "Test Agent",
+      model: "anthropic/claude-sonnet-4-6",
+      isPersonal: false,
+      ownerId: null,
+    });
+
+    vi.mocked(getAgentGroupIds).mockResolvedValueOnce(["group-keep"]);
+
+    let committedGroupIds = ["group-keep"];
+    vi.mocked(db.transaction).mockImplementationOnce((async (cb: (tx: unknown) => unknown) => {
+      let pendingGroupIds = committedGroupIds;
+      const tx = {
+        delete: vi.fn().mockReturnValue({
+          where: vi.fn().mockImplementation(async () => {
+            pendingGroupIds = [];
+          }),
+        }),
+        insert: vi.fn().mockReturnValue({
+          values: vi.fn().mockImplementation(async () => {
+            throw new Error("insert failed");
+          }),
+        }),
+      };
+      await cb(tx);
+      // Only reached if cb() didn't throw — a real transaction rolls back on
+      // any error inside the callback, so a thrown error must skip this line.
+      committedGroupIds = pendingGroupIds;
+    }) as never);
+
+    const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({ groupIds: ["group-keep", "group-new"] }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    await expect(
+      PATCH(request, { params: Promise.resolve({ agentId: "agent-1" }) })
+    ).rejects.toThrow("insert failed");
+
+    expect(committedGroupIds).toEqual(["group-keep"]);
+  });
+
   it("PATCH with model-only change writes audit entry with before/after snapshot", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "user-1", role: "admin" },
@@ -524,6 +659,126 @@ describe("PATCH /api/agents/[agentId] audit logging", () => {
       })
     );
   });
+
+  // Folder grants can name a person (`/data/hr/personnel/<name>` since
+  // subfolder grants, #1269) and the audit row is immutable and HMAC-chained,
+  // so GDPR erasure cannot reach it. The row records what changed — how many
+  // grants were added and removed — never the paths themselves.
+  it("logs folder grant changes as added/removed counts, never the paths", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "user-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    const oldConfig = {
+      "pinchy-files": { allowed_paths: ["/data/hr", "/data/hr/personnel/Alice Example"] },
+    };
+    const newConfig = {
+      "pinchy-files": {
+        allowed_paths: [
+          "/data/hr",
+          "/data/hr/personnel/Maria Musterfrau",
+          "/data/hr/personnel/Maria Musterfrau/reviews",
+        ],
+        write_paths: ["/data/hr/personnel/Maria Musterfrau"],
+      },
+    };
+
+    mockAgent({
+      id: "agent-1",
+      name: "Test Agent",
+      model: "anthropic/claude-sonnet-4-6",
+      isPersonal: false,
+      ownerId: null,
+      pluginConfig: oldConfig,
+    });
+
+    vi.mocked(updateAgent).mockResolvedValueOnce({
+      id: "agent-1",
+      name: "Test Agent",
+      model: "anthropic/claude-sonnet-4-6",
+      pluginConfig: newConfig,
+    } as never);
+
+    const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({ pluginConfig: newConfig }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const response = await PATCH(request, {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+    expect(response.status).toBe(200);
+
+    expect(appendAuditLog).toHaveBeenCalledTimes(1);
+    const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+    const serialized = JSON.stringify(entry.detail);
+    expect(serialized).not.toContain("/data");
+    expect(serialized).not.toContain("Alice");
+    expect(serialized).not.toContain("Musterfrau");
+
+    expect(entry).toMatchObject({
+      eventType: "agent.updated",
+      outcome: "success",
+      detail: {
+        changes: {
+          pluginConfig: {
+            from: { "pinchy-files": { allowedPathCount: 2 } },
+            to: { "pinchy-files": { allowedPathCount: 3 } },
+          },
+        },
+        folderAccess: { added: 2, removed: 1, count: 3 },
+      },
+    });
+  });
+
+  it("audits a folder swap even though the redacted from/to look the same", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "user-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    const oldConfig = { "pinchy-files": { allowed_paths: ["/data/hr/alice"] } };
+    const newConfig = { "pinchy-files": { allowed_paths: ["/data/hr/bob"] } };
+
+    mockAgent({
+      id: "agent-1",
+      name: "Test Agent",
+      model: "anthropic/claude-sonnet-4-6",
+      isPersonal: false,
+      ownerId: null,
+      pluginConfig: oldConfig,
+    });
+
+    vi.mocked(updateAgent).mockResolvedValueOnce({
+      id: "agent-1",
+      name: "Test Agent",
+      model: "anthropic/claude-sonnet-4-6",
+      pluginConfig: newConfig,
+    } as never);
+
+    const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({ pluginConfig: newConfig }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const response = await PATCH(request, {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+    expect(response.status).toBe(200);
+
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "agent.updated",
+        detail: {
+          changes: {},
+          folderAccess: { added: 1, removed: 1, count: 1 },
+        },
+      })
+    );
+  });
 });
 
 // ── DELETE /api/agents/[agentId] — agent.deleted audit ──────────────────
@@ -549,10 +804,16 @@ describe("DELETE /api/agents/[agentId] audit logging", () => {
       isPersonal: false,
     });
 
-    vi.mocked(deleteAgent).mockResolvedValueOnce({
-      id: "agent-1",
-      name: "Shared Agent",
-    } as never);
+    // Fires onDeleted — the route registers its audit from that callback the
+    // moment the soft-delete commits, so a mock that skips it proves nothing.
+    vi.mocked(deleteAgent).mockImplementationOnce((async (
+      _id: unknown,
+      onDeleted?: (agent: unknown) => void
+    ) => {
+      const row = { id: "agent-1", name: "Shared Agent" };
+      onDeleted?.(row);
+      return row;
+    }) as never);
 
     const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
       method: "DELETE",

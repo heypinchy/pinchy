@@ -3,9 +3,7 @@ import { describe, it, expect, beforeAll } from "vitest";
 const OLLAMA_URL = process.env.OLLAMA_URL;
 
 // Skip all tests when Ollama is not available (normal unit test runs)
-const describeOllama = OLLAMA_URL ? describe : describe.skip;
-
-describeOllama("Ollama integration (requires running Ollama)", () => {
+describe.skipIf(!OLLAMA_URL)("Ollama integration (requires running Ollama)", () => {
   beforeAll(async () => {
     // Verify Ollama is reachable
     const response = await fetch(`${OLLAMA_URL}/api/tags`);

@@ -129,7 +129,7 @@ export async function listMcpTools(
   timeoutMs: number = DEFAULT_TIMEOUT_MS
 ): Promise<McpTool[]> {
   // SSRF protection — must happen before any network activity
-  const validation = validateExternalUrl(opts.url);
+  const validation = await validateExternalUrl(opts.url);
   if (!validation.valid) {
     throw new Error(`Invalid MCP server URL: ${validation.error}`);
   }

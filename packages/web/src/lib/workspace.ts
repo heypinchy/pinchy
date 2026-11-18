@@ -1,5 +1,14 @@
-import { writeFileSync, readFileSync, existsSync, mkdirSync, rmSync, readdirSync } from "fs";
-import { join } from "path";
+import {
+  writeFileSync,
+  readFileSync,
+  existsSync,
+  mkdirSync,
+  rmSync,
+  renameSync,
+  readdirSync,
+} from "fs";
+import { rm } from "fs/promises";
+import { join, dirname, basename } from "path";
 
 // =============================================================================
 // Agent on-disk layout — READ THIS before touching any code that resolves an
@@ -92,6 +101,72 @@ export function getWorkspacePath(agentId: string): string {
   return join(getWorkspaceBasePath(), agentId);
 }
 
+/**
+ * Writes a workspace file, reclaiming it when Pinchy no longer owns it.
+ *
+ * The workspace volume is shared with the OpenClaw container, which runs as
+ * root and creates any missing bootstrap file from its own template. Pinchy
+ * runs as uid 999, so a file OpenClaw created is 0644 root-owned: readable,
+ * and permanently un-overwritable. That is #1095 — it denied every agent save
+ * on production for two days, because the EACCES aborts
+ * regenerateOpenClawConfig() before it pushes openclaw.json.
+ *
+ * Replacing the DIRECTORY ENTRY, though, is authorized by write permission on
+ * the DIRECTORY rather than on the file — and the workspace directory is
+ * Pinchy's. Measured in the production container, and locally against the
+ * mode-based equivalent:
+ *
+ *   file owner: 0, dir owner: 999
+ *     overwrite: DENIED (EACCES)   unlink: OK   rename over it: OK (owner 999)
+ *
+ * So Pinchy repairs this itself, at the moment of the write — no root, and no
+ * dependency on the OpenClaw-side repair tick, which only reaches an instance
+ * when its OpenClaw image is upgraded. The replacement is created by Pinchy, so
+ * the reclaim happens once rather than on every save.
+ *
+ * It goes through a temp file and `rename(2)` rather than unlink-then-write,
+ * and that choice is load-bearing rather than stylistic. AGENTS.md and SOUL.md
+ * have NO copy in the database — `GET /api/agents/:id/files/:filename` serves
+ * the file itself, so the file is the user's instructions. Unlinking first
+ * means that between the two calls the only copy does not exist, and a failed
+ * second write (a full disk; the OpenClaw container recreating the bootstrap
+ * file root-owned in exactly that gap) destroys it. `rename` is atomic: the
+ * target is never absent, and when it cannot proceed the original is untouched.
+ *
+ * The temp file is a sibling, because rename cannot cross filesystems.
+ *
+ * When the DIRECTORY is what Pinchy cannot write, the temp write is denied too
+ * and the error propagates — nothing here may turn a failed write into a silent
+ * no-op. That case needs root, and belongs to config/fix-config-permissions.sh.
+ */
+let reclaimCounter = 0;
+
+function writeFileReclaiming(filePath: string, content: string): void {
+  try {
+    writeFileSync(filePath, content, "utf-8");
+    return;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EACCES") throw err;
+  }
+
+  const tmpPath = join(
+    dirname(filePath),
+    `.${basename(filePath)}.${process.pid}.${++reclaimCounter}.tmp`
+  );
+  try {
+    writeFileSync(tmpPath, content, "utf-8");
+    renameSync(tmpPath, filePath);
+  } catch (err) {
+    try {
+      rmSync(tmpPath, { force: true });
+    } catch {
+      // Best-effort: the write's own error is the one worth reporting, and a
+      // cleanup failure masking it would be #1095's core problem again.
+    }
+    throw err;
+  }
+}
+
 // Canonical OpenClaw-side path resolver — the path OpenClaw itself sees and
 // the value written into openclaw.json's `agents[].workspace`. OpenClaw
 // resolves MEMORY.md / memory/ relative to this. See the top-of-file layout
@@ -114,6 +189,20 @@ export function ensureWorkspace(agentId: string): void {
   // left pinchy_write ENOENT'ing on fresh workspaces.
   mkdirSync(join(workspacePath, "uploads"), { recursive: true });
   mkdirSync(join(workspacePath, "workbench"), { recursive: true });
+  // memory/ holds OpenClaw's daily memory logs. build.ts grants it to every
+  // write-capable agent and pinchy-files/memory-prompt.ts promises it by name, so it exists
+  // on spawn for the same reason workbench/ does (#418), and so the
+  // memory-audit watcher has it in its tree from the start rather than having
+  // to discover it later.
+  //
+  // MEMORY.md is deliberately NOT created here. It is the agent's own file, and
+  // an empty one we create still trips the watcher into an `agent.memory_changed`
+  // audit entry attributed to the agent — a claim that it changed its memory,
+  // for a file Pinchy wrote and with a zero-line diff. The agent creates it on
+  // first write instead; pinchy-files allows that even though the file does not
+  // exist yet, because a missing write root resolves rather than reading as a
+  // sandbox escape (#761).
+  mkdirSync(join(workspacePath, "memory"), { recursive: true });
 
   for (const file of ALLOWED_FILES) {
     const filePath = join(workspacePath, file);
@@ -123,13 +212,33 @@ export function ensureWorkspace(agentId: string): void {
   }
 }
 
-export function deleteWorkspace(agentId: string): void {
+/**
+ * Recursively removes an agent's workspace. Uses `fs.promises.rm` rather than
+ * `rmSync` — a knowledge-base agent's workspace can be GB-sized, and the sync
+ * form blocks the whole Node event loop (every other request, every WS
+ * heartbeat) for as long as the recursive delete takes. The promise form
+ * still runs the actual directory walk off the JS thread via libuv's thread
+ * pool, but callers that need the response to go out before cleanup finishes
+ * should schedule this rather than await it (see the `after()` use in
+ * DELETE /api/users/[userId]).
+ */
+export async function deleteWorkspace(agentId: string): Promise<void> {
   assertValidAgentId(agentId);
   const workspacePath = getWorkspacePath(agentId);
   try {
-    rmSync(workspacePath, { recursive: true, force: true });
-  } catch {
-    // Workspace may not exist, that's fine
+    await rm(workspacePath, { recursive: true, force: true });
+  } catch (err) {
+    // `force: true` already no-ops a missing workspace, so reaching this
+    // catch means something else went wrong (permissions, disk error) —
+    // worth a structured log rather than a silent swallow.
+    console.error(
+      JSON.stringify({
+        level: "error",
+        event: "workspace_delete_failed",
+        agentId,
+        error: { message: err instanceof Error ? err.message : String(err) },
+      })
+    );
   }
 }
 
@@ -156,7 +265,7 @@ export function writeWorkspaceFile(agentId: string, filename: string, content: s
     mkdirSync(workspacePath, { recursive: true });
   }
 
-  writeFileSync(join(workspacePath, filename), content, "utf-8");
+  writeFileReclaiming(join(workspacePath, filename), content);
 }
 
 export function writeWorkspaceFileInternal(
@@ -172,7 +281,7 @@ export function writeWorkspaceFileInternal(
     mkdirSync(workspacePath, { recursive: true });
   }
 
-  writeFileSync(join(workspacePath, filename), content, "utf-8");
+  writeFileReclaiming(join(workspacePath, filename), content);
 }
 
 // =============================================================================
@@ -199,7 +308,7 @@ export function writeWorkspaceSkill(agentId: string, skillId: string, content: s
 
   const dir = join(getWorkspacePath(agentId), "skills", skillId);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "SKILL.md"), content, "utf-8");
+  writeFileReclaiming(join(dir, "SKILL.md"), content);
 }
 
 export function removeWorkspaceSkill(agentId: string, skillId: string): void {
@@ -233,19 +342,32 @@ export function listWorkspaceSkillIds(agentId: string): string[] {
 }
 
 // The files OpenClaw loads as prompt-bootstrap context for an agent
-// (loadWorkspaceBootstrapFiles in openclaw@2026.5.x). Each is subject to the
-// per-file `bootstrapMaxChars` cap and the shared `bootstrapTotalMaxChars`
-// budget. Pinchy writes AGENTS.md/SOUL.md/TOOLS.md/IDENTITY.md/USER.md; the
-// rest are included so the sizing stays correct if a fork or future feature
-// adds them.
-const BOOTSTRAP_FILENAMES = [
+// (loadWorkspaceBootstrapFiles). Each is subject to the per-file
+// `bootstrapMaxChars` cap and the shared `bootstrapTotalMaxChars` budget.
+// Pinchy writes AGENTS.md/SOUL.md/IDENTITY.md/USER.md; BOOTSTRAP.md is
+// OpenClaw's first-run file and is measured so the sizing stays correct when
+// it is present. OpenClaw 2026.9 dropped TOOLS.md and HEARTBEAT.md from this
+// set — which is why the mailbox context moved into IDENTITY.md (see
+// writeMailboxContext).
+//
+// MEMORY.md is here even though the AGENT writes it, not Pinchy — omitting it
+// was a real bug. OpenClaw loads it LAST, so it is the first file the total
+// budget squeezes out, and it is also the one file that grows on its own after
+// the caps were computed. Two silent failures came out of that: a MEMORY.md
+// past OpenClaw's 12k per-file default was truncated because nothing here ever
+// reported a file that large, and once Pinchy emits a `bootstrapTotalMaxChars`
+// of `sum + headroom` there is no room left for it at all. Measuring it is what
+// keeps the agent's memory in the session it is supposed to open with.
+//
+// Kept honest by `__tests__/lib/bootstrap-filenames-drift.test.ts`, which reads
+// the pinned OpenClaw bundle instead of a second hand-written copy.
+export const BOOTSTRAP_FILENAMES = [
   "AGENTS.md",
   "SOUL.md",
-  "TOOLS.md",
   "IDENTITY.md",
   "USER.md",
-  "HEARTBEAT.md",
   "BOOTSTRAP.md",
+  "MEMORY.md",
 ] as const;
 
 /**
@@ -280,7 +402,7 @@ export function getAgentBootstrapSizes(agentId: string): number[] {
 }
 
 /**
- * A mailbox connected to an agent, rendered into the agent's TOOLS.md
+ * A mailbox connected to an agent, rendered into the agent's IDENTITY.md
  * bootstrap file so the agent knows the identity of the account it operates
  * on. `operations` are the granted email operations (subset of
  * read/search/list/draft/send).
@@ -308,17 +430,19 @@ const EMAIL_OPERATION_LABELS = new Map<string, string>([
   ["send", "send email"],
 ]);
 
+const MAILBOX_SECTION_HEADING = "## Connected Email";
+
 /**
- * Renders TOOLS.md content from the agent's connected mailboxes. Returns ""
- * for an empty list so callers (writeToolsFile) remove the file instead of
+ * Renders the agent's mailbox section from its connected mailboxes. Returns ""
+ * for an empty list so writeMailboxContext drops the section instead of
  * leaving stale mailbox context behind. Loops over ALL entries — correct for
  * one and for N mailboxes, no single-entry assumption.
  */
-export function generateToolsContent(mailboxes: MailboxContext[]): string {
+export function generateMailboxContent(mailboxes: MailboxContext[]): string {
   if (mailboxes.length === 0) return "";
 
   const lines = [
-    "## Connected Email",
+    MAILBOX_SECTION_HEADING,
     "",
     "Each mailbox below is the identity of an email account this agent " +
       "operates on. It is not necessarily the personal address of the user " +
@@ -340,27 +464,80 @@ export function generateToolsContent(mailboxes: MailboxContext[]): string {
 }
 
 /**
- * Materializes the generated TOOLS.md into the agent workspace, or removes it
- * when there is nothing to say. Deleting (rather than writing an empty file)
- * is the simpler no-stale-content guarantee: both getAgentBootstrapSizes and
- * OpenClaw's loadWorkspaceBootstrapFiles skip missing files, and a file that
- * does not exist can never inject a revoked mailbox identity.
+ * IDENTITY.md has two writers, each owning one half: writeIdentityFile the
+ * name/tagline header, writeMailboxContext the mailbox section below it. Each
+ * rewrites its own half and carries the other one over, so neither order of
+ * writes can lose the other's content. Pinchy owns the whole file — the agent
+ * cannot write it (build.ts keeps it out of the agent's paths) — and the
+ * header can never contain the section heading on a line of its own (it is
+ * `# name` and `> tagline`), so the split is unambiguous.
  */
-export function writeToolsFile(agentId: string, mailboxes: MailboxContext[]): void {
+function splitIdentityFile(content: string): { header: string; mailboxSection: string } {
+  const match = new RegExp(`^${MAILBOX_SECTION_HEADING}$`, "m").exec(content);
+  if (!match) return { header: content, mailboxSection: "" };
+  return {
+    header: content.slice(0, match.index).trimEnd(),
+    mailboxSection: content.slice(match.index),
+  };
+}
+
+/**
+ * Any read failure counts as "no file", like getAgentBootstrapSizes: a write
+ * must still go through on an IDENTITY.md Pinchy can no longer read, because
+ * writeFileReclaiming is what repairs it. The half that could not be carried
+ * over comes back with the next write of that half — every config
+ * regeneration rewrites the mailbox section.
+ */
+function readIdentityFile(workspacePath: string): string | null {
+  try {
+    return readFileSync(join(workspacePath, "IDENTITY.md"), "utf-8");
+  } catch {
+    return null;
+  }
+}
+
+function joinIdentityFile(header: string, mailboxSection: string): string {
+  if (!mailboxSection) return header;
+  return header ? `${header}\n\n${mailboxSection}` : mailboxSection;
+}
+
+/**
+ * Materializes the agent's mailbox context into its IDENTITY.md, or drops the
+ * section when there is nothing to say, so no stale mailbox identity survives
+ * a permission revocation.
+ *
+ * Why IDENTITY.md: OpenClaw 2026.9 no longer loads TOOLS.md, where this used
+ * to live (#1095); the files it does load are AGENTS.md and SOUL.md (the
+ * user's), USER.md (user context), MEMORY.md (the agent's), BOOTSTRAP.md
+ * (OpenClaw's first-run ritual) and IDENTITY.md — the one Pinchy generates and
+ * the agent cannot touch. It also reaches cron sessions, which TOOLS.md never
+ * did.
+ *
+ * The TOOLS.md an earlier Pinchy wrote is removed here: nothing loads it any
+ * more, and `openclaw doctor --fix` would merge its stale mailbox identity into
+ * the user's AGENTS.md, from where nothing ever removes it.
+ */
+export function writeMailboxContext(agentId: string, mailboxes: MailboxContext[]): void {
   assertValidAgentId(agentId);
   const workspacePath = getWorkspacePath(agentId);
-  const filePath = join(workspacePath, "TOOLS.md");
 
-  const content = generateToolsContent(mailboxes);
-  if (!content) {
-    rmSync(filePath, { force: true });
-    return;
+  const mailboxSection = generateMailboxContent(mailboxes);
+  const { header, mailboxSection: previous } = splitIdentityFile(
+    readIdentityFile(workspacePath) ?? ""
+  );
+  if (previous !== mailboxSection) {
+    if (!existsSync(workspacePath)) {
+      mkdirSync(workspacePath, { recursive: true });
+    }
+    writeFileReclaiming(
+      join(workspacePath, "IDENTITY.md"),
+      joinIdentityFile(header, mailboxSection)
+    );
   }
 
-  if (!existsSync(workspacePath)) {
-    mkdirSync(workspacePath, { recursive: true });
-  }
-  writeFileSync(filePath, content, "utf-8");
+  // After the write, so a TOOLS.md Pinchy cannot remove never costs the agent
+  // its current mailbox context.
+  rmSync(join(workspacePath, "TOOLS.md"), { force: true });
 }
 
 export function generateIdentityContent(agent: { name: string; tagline: string | null }): string {
@@ -378,5 +555,10 @@ export function writeIdentityFile(
   if (!existsSync(workspacePath)) {
     mkdirSync(workspacePath, { recursive: true });
   }
-  writeFileSync(join(workspacePath, "IDENTITY.md"), generateIdentityContent(agent), "utf-8");
+  // Carry the mailbox section over — see splitIdentityFile.
+  const { mailboxSection } = splitIdentityFile(readIdentityFile(workspacePath) ?? "");
+  writeFileReclaiming(
+    join(workspacePath, "IDENTITY.md"),
+    joinIdentityFile(generateIdentityContent(agent), mailboxSection)
+  );
 }

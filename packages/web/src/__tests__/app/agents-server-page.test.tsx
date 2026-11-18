@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("next/navigation", () => ({
@@ -44,6 +45,12 @@ vi.mock("@/lib/groups", () => ({
   getAllAgentGroupIds: vi.fn().mockResolvedValue(new Map()),
 }));
 
+const { mockGetInstancePolicy } = vi.hoisted(() => ({ mockGetInstancePolicy: vi.fn() }));
+vi.mock("@/lib/instance-policy", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/instance-policy")>()),
+  getInstancePolicy: mockGetInstancePolicy,
+}));
+
 import { requireAuth } from "@/lib/require-auth";
 import AgentsPage from "@/app/(app)/agents/page";
 
@@ -58,6 +65,38 @@ describe("AgentsPage (server component)", () => {
     mockGetVisibleAgents.mockResolvedValue([
       { id: "visible-agent", isPersonal: true, ownerId: "user-1", visibility: "all" },
     ]);
+    mockGetInstancePolicy.mockResolvedValue({
+      memberPersonalAgents: true,
+      memberAutomations: true,
+    });
+  });
+
+  describe("while members may not use a personal agent", () => {
+    const desktop = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36";
+
+    beforeEach(() => {
+      mockGetInstancePolicy.mockResolvedValue({
+        memberPersonalAgents: false,
+        memberAutomations: true,
+      });
+      mockGetVisibleAgents.mockResolvedValue([
+        { id: "shared-agent", isPersonal: false, ownerId: null, visibility: "all" },
+      ]);
+      mockHeadersGet.mockReturnValue(desktop);
+    });
+
+    it("stays on the page for a member and tells them why Smithers is gone", async () => {
+      // A paused owner is sent here from their Smithers' chat URL; jumping
+      // straight on to a shared agent would leave the vanished agent unexplained.
+      const result = (await AgentsPage()) as { props: { personalAgentsOff?: boolean } };
+      expect(result.props.personalAgentsOff).toBe(true);
+    });
+
+    it("still redirects an admin, whose Smithers is unaffected", async () => {
+      mockRequireAuth.mockResolvedValue({ user: { id: "admin-1", role: "admin" } });
+      await expect(AgentsPage()).rejects.toThrow("REDIRECT:/chat/shared-agent");
+      expect(mockGetInstancePolicy).not.toHaveBeenCalled();
+    });
   });
 
   it("redirects to first visible agent on desktop", async () => {
@@ -86,5 +125,35 @@ describe("AgentsPage (server component)", () => {
     );
 
     await expect(AgentsPage()).rejects.toThrow("REDIRECT:/chat/my-smithers");
+  });
+
+  describe("first landing order", () => {
+    const desktop = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36";
+
+    it("lands on the personal agent even when a shared agent comes first from the DB", async () => {
+      mockGetVisibleAgents.mockResolvedValue([
+        { id: "alpha-files", name: "Alpha Files", isPersonal: false, visibility: "all" },
+        {
+          id: "my-smithers",
+          name: "Smithers",
+          isPersonal: true,
+          ownerId: "user-1",
+          visibility: "all",
+        },
+      ]);
+      mockHeadersGet.mockReturnValue(desktop);
+
+      await expect(AgentsPage()).rejects.toThrow("REDIRECT:/chat/my-smithers");
+    });
+
+    it("lands on the alphabetically first agent when only shared agents are visible", async () => {
+      mockGetVisibleAgents.mockResolvedValue([
+        { id: "zeta", name: "Zeta", isPersonal: false, visibility: "all" },
+        { id: "alpha", name: "Alpha", isPersonal: false, visibility: "all" },
+      ]);
+      mockHeadersGet.mockReturnValue(desktop);
+
+      await expect(AgentsPage()).rejects.toThrow("REDIRECT:/chat/alpha");
+    });
   });
 });

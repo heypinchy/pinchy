@@ -1,4 +1,5 @@
 const REDACTED = "[REDACTED]";
+const TRUNCATED = "[TRUNCATED]";
 const MAX_DEPTH = 10;
 
 // SYNC: This sanitization logic is duplicated in packages/plugins/pinchy-audit/index.ts
@@ -71,7 +72,22 @@ function redactPatterns(value: string): string {
 
 function sanitizeValue(value: unknown, depth: number): unknown {
   if (value === null || value === undefined) return value;
-  if (depth >= MAX_DEPTH) return value;
+  // The depth cap exists to stop unbounded recursion (a cyclic or
+  // pathologically deep structure), not to grant an escape hatch from
+  // redaction. Returning the container here would forward every key inside it
+  // UNREDACTED into an append-only, HMAC-chained audit row that can never be
+  // rewritten — a real Odoo command tuple nests to depth ~6, well within reach
+  // of a secret this cap would otherwise pass through verbatim.
+  //
+  // Only containers are truncated, because only containers are what the cap
+  // stops us from inspecting. A leaf at this depth was handed down by an object
+  // at depth < MAX_DEPTH, which already applied the sensitive-key check to it,
+  // and pattern redaction below is depth-independent — so a deep scalar is
+  // exactly as sanitized as a shallow one. Replacing it too would cost
+  // diagnostics bundles their deepest tool arguments for no gain.
+  if (depth >= MAX_DEPTH && typeof value === "object" && !(value instanceof Date)) {
+    return TRUNCATED;
+  }
 
   if (Array.isArray(value)) {
     return value.map((item) => sanitizeValue(item, depth + 1));
@@ -111,4 +127,19 @@ function sanitizeValue(value: unknown, depth: number): unknown {
 export function sanitizeDetail<T>(detail: T): T {
   if (detail === null || detail === undefined) return detail;
   return sanitizeValue(detail, 0) as T;
+}
+
+const AUDIT_ID_MAX_LENGTH = 128;
+
+/**
+ * Clamps a caller-supplied agent or user id before it is written into an audit row
+ * (`actorId`, `resource: agent:<id>`, `{ id, name }` snapshots). Clamps,
+ * never rejects: on the sink routes a 400 would drop the row, and on the
+ * budget check the plugin reads any error as "let the run through".
+ * Only for audit write sites — lookups and responses keep the raw value, and
+ * an id read back from the database is ours and is never clamped.
+ */
+export function boundIdForAudit(id: string): string {
+  const bounded = id.slice(0, AUDIT_ID_MAX_LENGTH).replace(/[^A-Za-z0-9_-]/g, "_");
+  return bounded || "unknown";
 }

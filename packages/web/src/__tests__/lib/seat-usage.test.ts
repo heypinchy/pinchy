@@ -5,7 +5,6 @@ import { users, invites } from "@/db/schema";
 import { makeLicense } from "../helpers/license-fixtures";
 
 const url = process.env.DATABASE_URL;
-const describeIf = url ? describe : describe.skip;
 
 async function clearTables() {
   await db.delete(invites);
@@ -42,7 +41,7 @@ async function seedInvite(opts: {
   });
 }
 
-describeIf("getSeatUsage", () => {
+describe.skipIf(!url)("getSeatUsage", () => {
   beforeEach(clearTables);
 
   it("returns unlimited when license has maxUsers=0", async () => {

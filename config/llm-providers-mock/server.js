@@ -14,14 +14,17 @@ function requireBearer(req, res) {
 
 function requireXApiKey(req, res) {
   if (req.headers["x-api-key"]) return true;
-  res.status(401).json({ type: "error", error: { type: "authentication_error", message: "missing api key" } });
+  res.status(401).json({
+    type: "error",
+    error: { type: "authentication_error", message: "missing api key" },
+  });
   return false;
 }
 
 function requireQueryKey(req, res) {
   // pi-ai's @google/genai SDK passes the key via header at chat time
-  // (x-goog-api-key); validateProviderKey uses ?key= query param. Accept
-  // both so the same handler covers the wizard probe and chat dispatch.
+  // (x-goog-api-key), and so do validateProviderKey and the model listing.
+  // The legacy ?key= query param is still accepted for older callers.
   if (req.query.key || req.headers["x-goog-api-key"]) return true;
   res.status(403).json({ error: { code: 403, message: "missing key" } });
   return false;
@@ -35,7 +38,8 @@ const MOCK_CREATED_AT = 1700000000;
 // Frozen assistant reply for response determinism. Shared across all
 // provider handlers so E2E specs can assert one canonical message in
 // Pinchy's chat surface. Never replace with a dynamic string.
-const MOCK_ASSISTANT_REPLY = "Sure, happy to help! What would you like to work on?";
+const MOCK_ASSISTANT_REPLY =
+  "Sure, happy to help! What would you like to work on?";
 
 const PORT = process.env.PORT || 9100;
 
@@ -48,10 +52,30 @@ app.get("/openai/v1/models", (req, res) => {
   res.json({
     object: "list",
     data: [
-      { id: "gpt-5.5-2026-04-23", object: "model", created: MOCK_CREATED_AT, owned_by: "openai" },
-      { id: "gpt-5.5", object: "model", created: MOCK_CREATED_AT, owned_by: "openai" },
-      { id: "gpt-5.4", object: "model", created: MOCK_CREATED_AT, owned_by: "openai" },
-      { id: "gpt-5.4-mini", object: "model", created: MOCK_CREATED_AT, owned_by: "openai" },
+      {
+        id: "gpt-5.5-2026-04-23",
+        object: "model",
+        created: MOCK_CREATED_AT,
+        owned_by: "openai",
+      },
+      {
+        id: "gpt-5.5",
+        object: "model",
+        created: MOCK_CREATED_AT,
+        owned_by: "openai",
+      },
+      {
+        id: "gpt-5.4",
+        object: "model",
+        created: MOCK_CREATED_AT,
+        owned_by: "openai",
+      },
+      {
+        id: "gpt-5.4-mini",
+        object: "model",
+        created: MOCK_CREATED_AT,
+        owned_by: "openai",
+      },
     ],
   });
 });
@@ -69,7 +93,8 @@ app.post("/openai/v1/responses", (req, res) => {
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
-  const sse = (event, data) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  const sse = (event, data) =>
+    `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
   const responseId = "resp_mock_1";
   const itemId = "item_mock_1";
   const messageItem = {
@@ -89,13 +114,18 @@ app.post("/openai/v1/responses", (req, res) => {
     output: [],
     usage: null,
   };
-  res.write(sse("response.created", { type: "response.created", response: baseResponse }));
+  res.write(
+    sse("response.created", {
+      type: "response.created",
+      response: baseResponse,
+    }),
+  );
   res.write(
     sse("response.output_item.added", {
       type: "response.output_item.added",
       output_index: 0,
       item: messageItem,
-    })
+    }),
   );
   res.write(
     sse("response.content_part.added", {
@@ -104,7 +134,7 @@ app.post("/openai/v1/responses", (req, res) => {
       output_index: 0,
       content_index: 0,
       part: outputTextPart,
-    })
+    }),
   );
   res.write(
     sse("response.output_text.delta", {
@@ -113,7 +143,7 @@ app.post("/openai/v1/responses", (req, res) => {
       output_index: 0,
       content_index: 0,
       delta: MOCK_ASSISTANT_REPLY,
-    })
+    }),
   );
   res.write(
     sse("response.completed", {
@@ -125,12 +155,18 @@ app.post("/openai/v1/responses", (req, res) => {
           {
             ...messageItem,
             status: "completed",
-            content: [{ type: "output_text", text: MOCK_ASSISTANT_REPLY, annotations: [] }],
+            content: [
+              {
+                type: "output_text",
+                text: MOCK_ASSISTANT_REPLY,
+                annotations: [],
+              },
+            ],
           },
         ],
         usage: { input_tokens: 10, output_tokens: 12, total_tokens: 22 },
       },
-    })
+    }),
   );
   res.end();
 });
@@ -143,19 +179,53 @@ app.post("/openai/v1/chat/completions", (req, res) => {
     created: MOCK_CREATED_AT,
     model: req.body?.model ?? "gpt-5.5",
     choices: [
-      { index: 0, message: { role: "assistant", content: MOCK_ASSISTANT_REPLY }, finish_reason: "stop" },
+      {
+        index: 0,
+        message: { role: "assistant", content: MOCK_ASSISTANT_REPLY },
+        finish_reason: "stop",
+      },
     ],
     usage: { prompt_tokens: 10, completion_tokens: 12, total_tokens: 22 },
   });
 });
 
 // ---- Anthropic ----
+// Shaped like the real list (October 2026), because Pinchy picks its default
+// from it: models newer than Pinchy's curated catalog (Opus and Sonnet 5.5), and an
+// older dated snapshot that a date-first sort used to promote over every
+// dateless id. A list holding only curated models cannot catch either.
 app.get("/anthropic/v1/models", (req, res) => {
   if (!requireXApiKey(req, res)) return;
   res.json({
     data: [
-      { id: "claude-sonnet-4-6", type: "model", display_name: "Claude Sonnet 4.6" },
-      { id: "claude-haiku-4-5-20251001", type: "model", display_name: "Claude Haiku 4.5" },
+      {
+        id: "claude-haiku-5-5",
+        type: "model",
+        display_name: "Claude Haiku 5.5",
+      },
+      {
+        id: "claude-sonnet-5-5",
+        type: "model",
+        display_name: "Claude Sonnet 5.5",
+      },
+      { id: "claude-opus-5-5", type: "model", display_name: "Claude Opus 5.5" },
+      { id: "claude-sonnet-5", type: "model", display_name: "Claude Sonnet 5" },
+      { id: "claude-opus-4-7", type: "model", display_name: "Claude Opus 4.7" },
+      {
+        id: "claude-sonnet-4-6",
+        type: "model",
+        display_name: "Claude Sonnet 4.6",
+      },
+      {
+        id: "claude-sonnet-4-5-20250929",
+        type: "model",
+        display_name: "Claude Sonnet 4.5",
+      },
+      {
+        id: "claude-haiku-4-5-20251001",
+        type: "model",
+        display_name: "Claude Haiku 4.5",
+      },
     ],
   });
 });
@@ -174,7 +244,8 @@ app.post("/anthropic/v1/messages", (req, res) => {
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
-    const sse = (event, data) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+    const sse = (event, data) =>
+      `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
     res.write(
       sse("message_start", {
         type: "message_start",
@@ -188,29 +259,31 @@ app.post("/anthropic/v1/messages", (req, res) => {
           stop_sequence: null,
           usage: { input_tokens: 10, output_tokens: 0 },
         },
-      })
+      }),
     );
     res.write(
       sse("content_block_start", {
         type: "content_block_start",
         index: 0,
         content_block: { type: "text", text: "" },
-      })
+      }),
     );
     res.write(
       sse("content_block_delta", {
         type: "content_block_delta",
         index: 0,
         delta: { type: "text_delta", text: MOCK_ASSISTANT_REPLY },
-      })
+      }),
     );
-    res.write(sse("content_block_stop", { type: "content_block_stop", index: 0 }));
+    res.write(
+      sse("content_block_stop", { type: "content_block_stop", index: 0 }),
+    );
     res.write(
       sse("message_delta", {
         type: "message_delta",
         delta: { stop_reason: "end_turn", stop_sequence: null },
         usage: { output_tokens: 12 },
-      })
+      }),
     );
     res.write(sse("message_stop", { type: "message_stop" }));
     res.end();
@@ -245,9 +318,16 @@ app.post("/google/v1beta/models/:model\\:generateContent", (req, res) => {
   if (!requireQueryKey(req, res)) return;
   res.json({
     candidates: [
-      { content: { role: "model", parts: [{ text: MOCK_ASSISTANT_REPLY }] }, finishReason: "STOP" },
+      {
+        content: { role: "model", parts: [{ text: MOCK_ASSISTANT_REPLY }] },
+        finishReason: "STOP",
+      },
     ],
-    usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 8, totalTokenCount: 13 },
+    usageMetadata: {
+      promptTokenCount: 5,
+      candidatesTokenCount: 8,
+      totalTokenCount: 13,
+    },
   });
 });
 
@@ -268,8 +348,12 @@ app.post("/google/v1beta/models/:model\\:streamGenerateContent", (req, res) => {
           finishReason: "STOP",
         },
       ],
-      usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 8, totalTokenCount: 13 },
-    })}\n\n`
+      usageMetadata: {
+        promptTokenCount: 5,
+        candidatesTokenCount: 8,
+        totalTokenCount: 13,
+      },
+    })}\n\n`,
   );
   res.end();
 });
@@ -286,10 +370,30 @@ app.get("/ollama-cloud/v1/models", (req, res) => {
       // reasoning addition. qwen3-next:80b is still returned by the real API
       // but Pinchy filters it out (no working tool calls), so it stays here to
       // exercise the allowlist filter.
-      { id: "glm-4.7", object: "model", created: MOCK_CREATED_AT, owned_by: "ollama" },
-      { id: "minimax-m3", object: "model", created: MOCK_CREATED_AT, owned_by: "ollama" },
-      { id: "qwen3-next:80b", object: "model", created: MOCK_CREATED_AT, owned_by: "ollama" },
-      { id: "qwen3-coder:480b", object: "model", created: MOCK_CREATED_AT, owned_by: "ollama" },
+      {
+        id: "glm-4.7",
+        object: "model",
+        created: MOCK_CREATED_AT,
+        owned_by: "ollama",
+      },
+      {
+        id: "minimax-m3",
+        object: "model",
+        created: MOCK_CREATED_AT,
+        owned_by: "ollama",
+      },
+      {
+        id: "qwen3-next:80b",
+        object: "model",
+        created: MOCK_CREATED_AT,
+        owned_by: "ollama",
+      },
+      {
+        id: "qwen3-coder:480b",
+        object: "model",
+        created: MOCK_CREATED_AT,
+        owned_by: "ollama",
+      },
     ],
   });
 });
@@ -301,7 +405,9 @@ app.post("/ollama-cloud/v1/chat/completions", (req, res) => {
   // case (auth passed, body rejected) and providers.ts:141 treats 400 as
   // "key is valid". We replicate that: missing `messages` → 400.
   if (!Array.isArray(req.body?.messages) || req.body.messages.length === 0) {
-    return res.status(400).json({ error: { message: "messages: array required" } });
+    return res
+      .status(400)
+      .json({ error: { message: "messages: array required" } });
   }
   res.json({
     id: "chatcmpl-mock-ollama-1",
@@ -309,7 +415,66 @@ app.post("/ollama-cloud/v1/chat/completions", (req, res) => {
     created: MOCK_CREATED_AT,
     model: req.body?.model ?? "glm-4.7",
     choices: [
-      { index: 0, message: { role: "assistant", content: MOCK_ASSISTANT_REPLY }, finish_reason: "stop" },
+      {
+        index: 0,
+        message: { role: "assistant", content: MOCK_ASSISTANT_REPLY },
+        finish_reason: "stop",
+      },
+    ],
+    usage: { prompt_tokens: 10, completion_tokens: 12, total_tokens: 22 },
+  });
+});
+
+// ---- Generic OpenAI-compatible provider (#894) ----
+// Exercised by the setup-wizard E2E (openai-compatible.spec.ts): the admin
+// types this mount's base URL — http://llm-providers-mock:9100/openai-compatible/v1 —
+// into the custom-provider form. Two surfaces are hit:
+//   1. Discovery + validation (Pinchy server → GET /models, Bearer): the
+//      openai-compatible discover route validates the key AND lists models off
+//      the SAME `/models` endpoint (see openai-compatible-discovery.ts), so no
+//      separate validation-probe branch is needed here.
+//   2. Runtime chat (OpenClaw → POST /chat/completions, Bearer): the provider is
+//      emitted with `api: "openai-completions"` (build.ts), so pi-ai appends
+//      `/chat/completions` to the verbatim base URL. A plain non-streaming JSON
+//      body is accepted — mirrors the ollama-cloud handler, which the green
+//      ollama-cloud setup-wizard spec proves works at runtime.
+// `mock-large` is listed FIRST so the custom-provider model resolver
+// (resolveCustomProvider → models[0].id) picks it as the agent's default,
+// yielding the `<slug>/mock-large` assignment the spec asserts a chat against.
+app.get("/openai-compatible/v1/models", (req, res) => {
+  if (!requireBearer(req, res)) return;
+  res.json({
+    object: "list",
+    data: [
+      {
+        id: "mock-large",
+        object: "model",
+        created: MOCK_CREATED_AT,
+        owned_by: "mock",
+      },
+      {
+        id: "mock-small",
+        object: "model",
+        created: MOCK_CREATED_AT,
+        owned_by: "mock",
+      },
+    ],
+  });
+});
+
+app.post("/openai-compatible/v1/chat/completions", (req, res) => {
+  if (!requireBearer(req, res)) return;
+  res.json({
+    id: "chatcmpl-mock-oai-compat-1",
+    object: "chat.completion",
+    created: MOCK_CREATED_AT,
+    model: req.body?.model ?? "mock-large",
+    choices: [
+      {
+        index: 0,
+        message: { role: "assistant", content: MOCK_ASSISTANT_REPLY },
+        finish_reason: "stop",
+      },
     ],
     usage: { prompt_tokens: 10, completion_tokens: 12, total_tokens: 22 },
   });

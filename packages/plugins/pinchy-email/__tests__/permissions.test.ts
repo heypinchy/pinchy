@@ -1,10 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect } from "vitest";
-import {
-  checkPermission,
-  getPermittedOperations,
-  type Permissions,
-} from "../permissions";
+import { checkPermission, getPermittedOperations, type Permissions } from "../permissions";
 
 describe("checkPermission", () => {
   const permissions: Permissions = { email: ["read", "draft"] };
@@ -26,7 +22,7 @@ describe("checkPermission", () => {
     expect(checkPermission({}, "email", "read")).toBe(false);
   });
 
-  // MIGRATION TEST (AGENTS.md § "Test Migrations Against Pre-Existing Data"):
+  // MIGRATION TEST (agent-rules/testing.md § "Test Migrations Against Pre-Existing Data"):
   // pre-#328 agent template creation could persist a standalone (email,
   // "search") permission row with NO accompanying "read" row (see
   // packages/web/src/lib/tool-registry.ts EMAIL_OPERATIONS comment for the
@@ -59,13 +55,11 @@ describe("checkPermission", () => {
       // gate), but pin the literal behavior anyway: "search" is only an
       // alias INTO "read", not a general wildcard.
       const readOnlyPermissions: Permissions = { email: ["read"] };
-      expect(checkPermission(readOnlyPermissions, "email", "search")).toBe(
-        false,
-      );
+      expect(checkPermission(readOnlyPermissions, "email", "search")).toBe(false);
     });
   });
 
-  // MIGRATION TEST (AGENTS.md § "Test Migrations Against Pre-Existing Data"):
+  // MIGRATION TEST (agent-rules/testing.md § "Test Migrations Against Pre-Existing Data"):
   // "list" is the OTHER legacy per-tool operation pre-#328 template creation
   // could persist (alongside "search" above), and unlike "search" it had NO
   // alias at all until now — a standalone (email, "list") row denied every
@@ -92,9 +86,7 @@ describe("checkPermission", () => {
 
     it("does not itself answer true for a 'list' operation check unless explicitly granted", () => {
       const readOnlyPermissions: Permissions = { email: ["read"] };
-      expect(checkPermission(readOnlyPermissions, "email", "list")).toBe(
-        false,
-      );
+      expect(checkPermission(readOnlyPermissions, "email", "list")).toBe(false);
     });
   });
 });
@@ -102,11 +94,7 @@ describe("checkPermission", () => {
 describe("getPermittedOperations", () => {
   it("returns operations for a model", () => {
     const permissions: Permissions = { email: ["read", "draft", "send"] };
-    expect(getPermittedOperations(permissions, "email")).toEqual([
-      "read",
-      "draft",
-      "send",
-    ]);
+    expect(getPermittedOperations(permissions, "email")).toEqual(["read", "draft", "send"]);
   });
 
   it("returns empty array for unknown model", () => {

@@ -8,9 +8,15 @@ services:
     build:
       context: config/brave-mock
     ports:
-      - "9003:9003"
+      - "127.0.0.1:9003:9003"
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://localhost:9003/control/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://localhost:9003/control/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))",
+        ]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -20,12 +26,12 @@ services:
       # Emit a dummy API-key SecretRef for the local Ollama provider so OpenClaw
       # authenticates when routing to host.docker.internal (not treated as local).
       - PINCHY_E2E_OLLAMA_LOCAL_API_KEY=1
-    extra_hosts:
-      # Allows Pinchy (Docker) to fetch the Ollama model list from fake-Ollama on
-      # the host during regenerateOpenClawConfig(). OpenClaw already has this
-      # mapping via the base docker-compose.yml extra_hosts block.
-      - "ollama.local:host-gateway"
 
   openclaw:
     environment:
       - BRAVE_API_BASE_URL=http://brave-mock:9003
+      # BRAVE_API_BASE_URL above only takes effect alongside this explicit
+      # flag (brave-search.ts), so a stray override left over in production
+      # can never silently redirect the Brave API key. Same convention as
+      # docker-compose.imap-test.yml's PINCHY_INSECURE_MAIL_MOCK.
+      - PINCHY_INSECURE_WEB_MOCK=1

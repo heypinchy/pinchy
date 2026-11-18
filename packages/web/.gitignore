@@ -42,3 +42,7 @@ next-env.d.ts
 
 # Eval-v1 scorecard outputs (regenerable; scorecards that drive a decision are cited in the PR, not committed)
 eval/results/
+
+# KB eval harness scorecard outputs (Task 3.4 runner writes here; regenerable
+# from eval/kb/data/ via export-kb-scorecard.ts, same policy as eval/results/ above)
+eval/kb/results/

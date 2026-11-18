@@ -1,9 +1,11 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { UserDetailSheet } from "@/components/user-detail-sheet";
 import type { UserListItem } from "@/lib/user-list";
+import { jsonResponse } from "@/test-helpers/fetch";
 
 vi.mock("@/lib/enterprise", () => ({
   // Client component — mock at fetch level instead
@@ -35,6 +37,7 @@ const mockUser: UserListItem = {
   role: "member",
   status: "active",
   groups: [{ id: "g1", name: "Engineering" }],
+  unknownOrigin: false,
 };
 
 const allGroups = [
@@ -351,12 +354,12 @@ describe("UserDetailSheet", () => {
     // role PATCH lands, groups PUT fails — the classic partial-success case.
     vi.spyOn(global, "fetch").mockImplementation(async (url, init) => {
       if (String(url) === "/api/users/u1" && init?.method === "PATCH") {
-        return { ok: true, json: async () => ({}) } as Response;
+        return jsonResponse({});
       }
       if (String(url) === "/api/users/u1/groups" && init?.method === "PUT") {
-        return { ok: false, status: 500 } as Response;
+        return jsonResponse(undefined, { status: 500 });
       }
-      return { ok: true, json: async () => ({}) } as Response;
+      return jsonResponse({});
     });
 
     render(
@@ -402,18 +405,86 @@ describe("UserDetailSheet", () => {
 
   it("should show copied feedback when reset link Copy button is clicked", async () => {
     const user = userEvent.setup();
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", {
-      value: { writeText },
-      writable: true,
-      configurable: true,
-    });
+    // Spy on the clipboard user-event installed, rather than replacing
+    // `navigator.clipboard` wholesale with Object.defineProperty. `setup()`
+    // above defines the property itself (Clipboard.js: `attachClipboardStubToView`),
+    // so redefining it shadows the stub user-event will later look for, and
+    // `resetClipboardStubOnView` then silently does nothing between tests —
+    // leaving this test's mock in place for every later test in the file.
+    // A spy leaves that descriptor intact and `mockRestore` hands it back.
+    // add-integration-google-wizard.test.tsx spies for the same reason, but
+    // installs it describe-wide in beforeEach/afterEach; only this one test in
+    // this file needs a clipboard, so the spy is scoped to the test instead.
+    const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
 
-    vi.spyOn(global, "fetch").mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ token: "reset-token-xyz" }),
-    } as Response);
+    try {
+      // URL-routed rather than a single queued answer: the sheet also asks
+      // whether email delivery is on when it opens (#1309).
+      vi.spyOn(global, "fetch").mockImplementation(async (url) =>
+        String(url) === "/api/settings/mail"
+          ? jsonResponse({ configured: false })
+          : jsonResponse({ token: "reset-token-xyz" })
+      );
 
+      render(
+        <UserDetailSheet
+          user={mockUser}
+          allGroups={allGroups}
+          isEnterprise={true}
+          currentUserId="admin-1"
+          open={true}
+          onOpenChange={vi.fn()}
+          onSaved={vi.fn()}
+        />
+      );
+
+      await user.click(screen.getByRole("button", { name: /reset password/i }));
+
+      await screen.findByText(/reset-token-xyz/);
+      // Focus moves from Reset Password to the new link's Copy button, so a
+      // screen-reader user hears that the link appeared.
+      expect(screen.getByRole("button", { name: "Copy link" })).toHaveFocus();
+      expect(screen.getByRole("group", { name: "Reset link:" })).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Copy link" }));
+
+      await screen.findByRole("button", { name: "Copied" });
+      // The spy is what makes the success path deterministic, so assert the
+      // reset link really reached the clipboard — otherwise the spy is
+      // decoration and only the button label is under test.
+      expect(writeText).toHaveBeenCalledWith(expect.stringContaining("reset-token-xyz"));
+    } finally {
+      // In a `finally` so a failing assertion above still restores the spy —
+      // otherwise one red test leaves it in place for the rest of the file.
+      writeText.mockRestore();
+    }
+  });
+});
+
+describe("UserDetailSheet — reset with email delivery (#1309)", () => {
+  function mockFetch(resetResponse: Response) {
+    // mockClear: an earlier test in this file spies on fetch without restoring
+    // it, so the same spy would otherwise still carry that test's calls.
+    const spy = vi.spyOn(global, "fetch");
+    spy.mockClear();
+    return spy.mockImplementation(async (url) =>
+      String(url) === "/api/settings/mail"
+        ? jsonResponse({
+            configured: true,
+            config: {
+              host: "smtp.example.com",
+              port: 587,
+              security: "starttls",
+              fromAddress: "pinchy@example.com",
+              hasPassword: true,
+            },
+          })
+        : resetResponse
+    );
+  }
+
+  function renderSheet() {
+    if (mockUser.kind !== "user") throw new Error("fixture must be a user");
     render(
       <UserDetailSheet
         user={mockUser}
@@ -425,13 +496,75 @@ describe("UserDetailSheet", () => {
         onSaved={vi.fn()}
       />
     );
+  }
 
-    await user.click(screen.getByRole("button", { name: /reset password/i }));
+  it("emails the reset link and still shows it", async () => {
+    const spy = mockFetch(jsonResponse({ token: "rt", emailDelivery: { sent: true } }));
+    try {
+      const user = userEvent.setup();
+      renderSheet();
+      await user.click(await screen.findByRole("button", { name: "Email reset link" }));
 
-    await screen.findByText(/reset-token-xyz/);
+      expect(await screen.findByText("Reset link sent to max@example.com.")).toBeInTheDocument();
+      expect(screen.getByText(/\/invite\/rt/)).toBeInTheDocument();
+      const call = spy.mock.calls.find(([u]) => String(u) === "/api/users/u1/reset");
+      expect(JSON.parse(String((call?.[1] as RequestInit).body))).toEqual({ sendEmail: true });
+    } finally {
+      spy.mockRestore();
+    }
+  });
 
-    await user.click(screen.getByRole("button", { name: "Copy" }));
+  it("shows the link with an inline error when the send failed", async () => {
+    const spy = mockFetch(
+      jsonResponse({ token: "rt", emailDelivery: { sent: false, error: "Connection refused" } })
+    );
+    try {
+      const user = userEvent.setup();
+      renderSheet();
+      await user.click(await screen.findByRole("button", { name: "Email reset link" }));
 
-    await screen.findByRole("button", { name: "Copied!" });
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent("We couldn't send the email (Connection refused)");
+      expect(screen.getByText(/\/invite\/rt/)).toBeInTheDocument();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("can't send twice while the email is on its way", async () => {
+    let resolveReset: (r: Response) => void = () => {};
+    const spy = vi.spyOn(global, "fetch");
+    spy.mockClear();
+    spy.mockImplementation((url) =>
+      String(url) === "/api/settings/mail"
+        ? Promise.resolve(
+            jsonResponse({
+              configured: true,
+              config: {
+                host: "h",
+                port: 587,
+                security: "starttls",
+                fromAddress: "p@x.io",
+                hasPassword: false,
+              },
+            })
+          )
+        : new Promise<Response>((r) => (resolveReset = r))
+    );
+    try {
+      const user = userEvent.setup();
+      renderSheet();
+      const button = await screen.findByRole("button", { name: "Email reset link" });
+      await user.click(button);
+      expect(screen.getByRole("button", { name: "Sending..." })).toBeDisabled();
+      resolveReset(jsonResponse({ token: "rt", emailDelivery: { sent: true } }));
+      // CopyField has its own status region, so find the line by its text.
+      expect(await screen.findByText("Reset link sent to max@example.com.")).toHaveAttribute(
+        "role",
+        "status"
+      );
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

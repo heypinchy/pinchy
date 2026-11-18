@@ -22,7 +22,7 @@ import {
   type OAuthProviderId,
   type OAuthProviderDescriptor,
 } from "@/lib/integrations/oauth-providers";
-import { apiDelete, apiGet, ApiError } from "@/lib/api-client";
+import { apiGet, apiDelete, errorMessage } from "@/lib/api-client";
 
 interface OAuthAppState {
   configured: boolean;
@@ -128,7 +128,7 @@ export function ConnectedApps({ onConnectionsChanged }: { onConnectionsChanged?:
       await fetchStates();
       onConnectionsChanged?.();
     } catch (e) {
-      toast.error(e instanceof ApiError ? e.message : "Failed to reset app.");
+      toast.error(errorMessage(e, "Failed to reset app."));
     } finally {
       setResetting(false);
     }

@@ -1,7 +1,18 @@
-import { mkdir, writeFile, access } from "node:fs/promises";
+import { mkdir, writeFile, access, chown } from "node:fs/promises";
 import { basename } from "node:path";
 import type { EmailAdapter, EmailSummary, Folder } from "./email-adapter.js";
+import { MAX_ATTACHMENT_BYTES, truncateEmailBody } from "./email-adapter.js";
+import {
+  deliveryMimeType,
+  extensionForServableMime,
+  isServableDelivery,
+  normalizeMimeType,
+  safeMimeLabel,
+} from "./delivery-mime.js";
+import { isWebChatRun } from "./web-chat-run.js";
 import { checkPermission, type Permissions } from "./permissions.js";
+import { parseSingleRecipient } from "./recipient.js";
+import { refusingUnknownParams } from "./unknown-params.js";
 import {
   putHandle,
   putAttachmentHandle,
@@ -10,6 +21,16 @@ import {
   ATT_PREFIX,
   MAX_ENTRIES_PER_AGENT,
 } from "./id-handle-store.js";
+import {
+  CredentialsFetchError,
+  credentialCacheKey,
+  isAuthError,
+  postAuthFailure,
+  requestCredentials,
+  trackMutations,
+} from "./credential-client.js";
+import { checkedTarget, type PinnedTarget } from "./pinned-target.js";
+import type { MailLookupFailure, MailLookupFailures } from "./imap-adapter.js";
 
 // Filesystem convention shared with pinchy-odoo's odoo_attach_file: every
 // agent's uploads land in the same per-agent directory so a downloaded email
@@ -17,9 +38,26 @@ import {
 // NOT plugin config — do not add it to openclaw.plugin.json's configSchema.
 const WORKSPACE_ROOT = "/root/.openclaw/workspaces";
 
-// 25 MB matches odoo_attach_file's own cap (see packages/plugins/pinchy-odoo/index.ts),
-// so anything saved here is always small enough to hand off downstream.
-const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+// The Pinchy web process (uid/gid 999) serves a delivered attachment straight
+// off the shared volume (the #703 artifacts route). This plugin runs as root, so
+// a downloaded file lands root-owned and the web process cannot read it — chown
+// it back to 999, best-effort (a failure on a non-Linux/no-CAP_CHOWN host must
+// never fail the download itself). Mirrors pinchy-transcript's media mirror.
+const DELIVERY_UID = 999;
+const DELIVERY_GID = 999;
+
+// MAX_ATTACHMENT_BYTES is imported from email-adapter.ts, which owns it: the
+// 25 MB literal used to sit here AND in imap-adapter.ts, with a comment
+// claiming the two stayed in sync and nothing that would notice if they
+// stopped.
+
+// The two Pinchy-internal calls this plugin makes (credentials fetch,
+// auth-failure report) are bounded inside credential-client.ts. The mailbox
+// providers reach three different transports and each bounds itself where
+// that transport allows it: Graph via AbortSignal.timeout on fetch
+// (graph-adapter.ts), Gmail via googleapis' `timeout` option — gaxios has
+// none by default (gmail-adapter.ts), IMAP via
+// connectionTimeout/socketTimeout (imap-adapter.ts).
 
 const EXT_BY_MIME = new Map<string, string>([
   ["application/pdf", ".pdf"],
@@ -28,22 +66,19 @@ const EXT_BY_MIME = new Map<string, string>([
   ["image/gif", ".gif"],
   ["image/webp", ".webp"],
   ["application/msword", ".doc"],
-  [
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ".docx",
-  ],
+  ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".docx"],
   ["application/vnd.ms-excel", ".xls"],
-  [
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    ".xlsx",
-  ],
+  ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xlsx"],
   ["text/plain", ".txt"],
   ["text/csv", ".csv"],
 ]);
 
 function extensionForMimeType(mimeType: string | undefined): string {
-  if (!mimeType) return ".bin";
-  return EXT_BY_MIME.get(mimeType.toLowerCase()) ?? ".bin";
+  // Same normalization as deliveryMimeType, and every servable type gets the
+  // extension the serving route types it by: a nameless `text/csv; charset=…`
+  // or `application/json` saved as `.bin` would be offered and then refused.
+  const normalized = normalizeMimeType(mimeType);
+  return EXT_BY_MIME.get(normalized) ?? extensionForServableMime(normalized) ?? ".bin";
 }
 
 function humanReadableSize(bytes: number): string {
@@ -96,7 +131,7 @@ function sanitizeNameToken(value: string): string {
 function sanitizeAttachmentFilename(
   rawFilename: string,
   attachmentId: string,
-  mimeType: string | undefined,
+  mimeType: string | undefined
 ): string {
   const base = basename((rawFilename ?? "").trim().replace(/\\/g, "/"));
   const cleaned = sanitizeNameToken(base);
@@ -129,10 +164,7 @@ async function pathExists(path: string): Promise<boolean> {
  * before the extension. Never overwrites — uploads/ is also the user's
  * chat-upload zone, so clobbering a user's file would be data loss.
  */
-async function pickUniqueFilename(
-  dir: string,
-  filename: string,
-): Promise<string> {
+async function pickUniqueFilename(dir: string, filename: string): Promise<string> {
   const [stem, ext] = splitExtension(filename);
   let candidate = filename;
   let counter = 0;
@@ -145,18 +177,26 @@ async function pickUniqueFilename(
 
 interface PluginToolContext {
   agentId?: string;
+  sessionKey?: string;
+  messageChannel?: string;
 }
 
+// A text block carries `text`; a delivery block (`type: "file"` / `"image"`)
+// carries `filename`/`mimeType` instead and lands in the session transcript as a
+// native artifact, which Pinchy's client-router picks up via `artifacts.list`
+// to deliver the file to the user in chat (#703).
 interface ContentBlock {
   type: string;
-  text: string;
+  text?: string;
+  filename?: string;
+  mimeType?: string;
 }
 
 interface PluginApi {
   pluginConfig?: PluginConfig;
   registerTool: (
     factory: (ctx: PluginToolContext) => AgentTool | null,
-    opts?: { name?: string },
+    opts?: { name?: string }
   ) => void;
 }
 
@@ -168,11 +208,15 @@ interface AgentTool {
   execute: (
     toolCallId: string,
     params: Record<string, unknown>,
-    signal?: AbortSignal,
+    signal?: AbortSignal
   ) => Promise<{
     content: ContentBlock[];
     isError?: boolean;
-    details?: { error: string };
+    // `error` stays a typed string for the isError-stripping contract (#404),
+    // but tools may curate additional non-error fields — email_send/email_draft
+    // return { to, subject, bodyBytes } so the audit route suppresses raw params
+    // (recipient + full body). The route reads details as Record<string, unknown>.
+    details?: { error?: string } & Record<string, unknown>;
   }>;
 }
 
@@ -200,41 +244,44 @@ interface AgentEmailConfig {
 
 function getAgentConfig(
   agentConfigs: Record<string, AgentEmailConfig>,
-  agentId: string,
+  agentId: string
 ): AgentEmailConfig | null {
   return agentConfigs[agentId] ?? null;
 }
 
 /**
- * Best-effort POST to Pinchy's report-auth-failure endpoint when a
- * retry-once cycle fails with a permanent auth error. This lets Pinchy
- * surface a clear "re-authorise" banner to admins rather than requiring
- * them to trawl through agent error messages.
- *
- * Errors are swallowed — never mask the original tool error.
+ * The three operations this plugin gates on. Narrow on purpose: `lacksGrant`
+ * runs at REGISTRATION time, where a typo cannot produce a visible denial the
+ * way the execute-time gate does — it just makes the tool vanish from every
+ * agent's tool list, quietly. A union turns that into a compile error.
  */
-async function reportAuthFailure(
-  apiBaseUrl: string,
-  connectionId: string,
-  gatewayToken: string,
-  reason: string,
-): Promise<void> {
-  try {
-    await fetch(
-      `${apiBaseUrl}/api/internal/integrations/${connectionId}/report-auth-failure`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${gatewayToken}`,
-          "Content-Type": "application/json",
-          "X-Plugin-Id": "pinchy-email",
-        },
-        body: JSON.stringify({ reason: reason.slice(0, 500) }),
-      },
-    );
-  } catch {
-    // best-effort — never mask the original tool error
-  }
+type EmailOperation = "read" | "draft" | "send";
+
+/**
+ * True when this agent has no grant for `operation`, so the tool must be
+ * WITHHELD at registration rather than registered and refused at call time
+ * (heypinchy/pinchy#1194).
+ *
+ * `computeAllowedTools()` on the web side emits the full superset of plugin
+ * tools as `tools.allow`, and the comment there states the invariant that makes
+ * that safe: per-agent gating happens inside the plugin, "so listing a tool an
+ * agent lacks is a harmless no-match". That is only true if the plugin actually
+ * withholds it. This plugin used to register all six tools for any agent with an
+ * email connection, so a read-only agent was offered `email_send` — complete
+ * with "Send an email immediately" in its description — and only found out on
+ * use. A denied call is not a no-op: it costs a turn, and the agent has usually
+ * told the user it is doing the thing by then.
+ *
+ * Deliberately the SAME `checkPermission` the execute-time gates call, not a
+ * raw `.includes()`, so the pre-#328 legacy "search"/"list" → "read" alias keeps
+ * working. Gating on the raw array would silently unregister the read tools for
+ * every agent whose stored rows were never regenerated.
+ *
+ * The execute-time checks stay where they are — config can change under a live
+ * session, and defence in depth is the point.
+ */
+function lacksGrant(config: AgentEmailConfig, operation: EmailOperation): boolean {
+  return !checkPermission(config.permissions, "email", operation);
 }
 
 /**
@@ -262,9 +309,7 @@ function permissionDenied(operation: string): {
   isError: true;
   details: { error: string };
 } {
-  return toolError(
-    `Permission denied: email.${operation} is not allowed for this agent.`,
-  );
+  return toolError(`Permission denied: email.${operation} is not allowed for this agent.`);
 }
 
 function errorResult(error: unknown): {
@@ -274,6 +319,198 @@ function errorResult(error: unknown): {
 } {
   const message = error instanceof Error ? error.message : "Unknown error";
   return toolError(`Error: ${message}`);
+}
+
+/**
+ * Mask a recipient address for the tool-use audit. email_send / email_draft
+ * carry the recipient and the full body as tool params; the audit route logs
+ * raw params verbatim unless the tool returns curated `details` (route.ts:
+ * curatesNonErrorFields deletes detail.params). Those params are PII that would
+ * otherwise land in the append-only, HMAC-signed audit in plaintext (agent-rules/secrets.md
+ * § Secret Handling: "Never write plaintext email addresses or other PII into
+ * audit detail").
+ *
+ * We cannot call the web app's redactEmail() here — it keys an HMAC with a
+ * server-only secret this OpenClaw process has no access to — so we mask
+ * locally: keep the domain and the first local-part character, mask the rest
+ * (a one-char local part is masked entirely). Stricter than redactEmail's
+ * preview (which shows short local parts in full), so no address is ever
+ * emitted verbatim.
+ */
+function maskRecipientForAudit(value: unknown): string {
+  if (typeof value !== "string") return "<redacted>";
+  const email = value.trim();
+  const at = email.lastIndexOf("@");
+  if (at <= 0 || at === email.length - 1) return "<redacted>";
+  const local = email.slice(0, at);
+  const domain = email.slice(at + 1);
+  // A one-char local part would survive verbatim as `local[0]` + zero stars.
+  if (local.length === 1) return `*@${domain}`;
+  return `${local[0]}${"*".repeat(local.length - 1)}@${domain}`;
+}
+
+// Scrub any email-shaped run out of a free-text audit field (subject line,
+// search term). A subject like "Re: your mail to max@firma.de" carries an
+// address; keeping the subject for governance value must not keep the address
+// in the append-only, un-redactable audit. Mirrors web audit.ts scrubEmails —
+// which this plugin cannot import across the package boundary. The TLD-required
+// / IP-literal branches match that source so a social `@handle` isn't mistaken
+// for an email; `u` flag + \p{L}/\p{N} covers internationalized domains.
+const EMAIL_LIKE_PATTERN = /[\p{L}\p{N}._%+-]+@(?:\[[^\]\s]+\]|[\p{L}\p{N}.-]+\.[\p{L}]{2,})/gu;
+function scrubEmailsForAudit(text: string): string {
+  return text.replace(EMAIL_LIKE_PATTERN, "<email-redacted>");
+}
+
+// Cap free-text audit fields so a flooded value can't blow the 2048-byte
+// detail cap (web audit.ts truncateDetail would then collapse the whole
+// curated detail into a `_truncated` summary blob, losing the governance
+// fields this curation exists to keep). Byte-measured with a back-off to the
+// nearest UTF-8 character boundary, mirroring web audit.ts truncateUtf8 —
+// which this plugin cannot import across the package boundary.
+const AUDIT_SUBJECT_MAX_BYTES = 256;
+function truncateUtf8ForAudit(text: string, maxBytes: number): string {
+  const buf = Buffer.from(text, "utf8");
+  if (buf.length <= maxBytes) return text;
+  let end = maxBytes;
+  // 0b10xxxxxx marks a UTF-8 continuation byte — step back off a split char.
+  while (end > 0 && (buf.readUInt8(end) & 0xc0) === 0x80) {
+    end--;
+  }
+  return buf.subarray(0, end).toString("utf8");
+}
+
+// Curate a free-text audit field: scrub email addresses first, then cap —
+// never the other way round, so a truncation can't leave a partial
+// `user@example` fragment behind (same ordering rule as web safeProviderError).
+function curateAuditText(value: unknown, maxBytes: number): string {
+  const text = typeof value === "string" ? value : "";
+  return truncateUtf8ForAudit(scrubEmailsForAudit(text), maxBytes);
+}
+
+/**
+ * Curated audit details for email_send / email_draft. Returning these non-error
+ * fields makes the audit route suppress the raw params (recipient + full body)
+ * on EVERY return path — success and failure alike (route.ts: an error-only
+ * `details: { error }` deliberately does NOT suppress params, so error paths
+ * must carry a non-error field too). Body content is reduced to its byte length;
+ * the recipient is masked; the subject is kept for governance value, capped at
+ * AUDIT_SUBJECT_MAX_BYTES so it cannot smuggle content past the detail cap.
+ */
+function emailWriteAuditDetails(params: Record<string, unknown>): {
+  to: string;
+  subject: string;
+  bodyBytes: number;
+} {
+  return {
+    to: maskRecipientForAudit(params.to),
+    subject: curateAuditText(params.subject, AUDIT_SUBJECT_MAX_BYTES),
+    bodyBytes: Buffer.byteLength(typeof params.body === "string" ? params.body : "", "utf8"),
+  };
+}
+
+/**
+ * The parameters of email_send and email_draft — one object, shared by both
+ * tools. Every tool is registered through `refusingUnknownParams`, which
+ * declares `additionalProperties: false` and refuses an undeclared key at the
+ * tool's own edge, against this same schema.
+ */
+const EMAIL_WRITE_PARAMETERS = {
+  type: "object",
+  properties: {
+    to: {
+      type: "string",
+      description:
+        "Exactly one recipient email address. For several recipients, call the tool once per recipient.",
+    },
+    subject: { type: "string", description: "Email subject line" },
+    body: {
+      type: "string",
+      description: "Email body text (plain text)",
+    },
+    replyTo: {
+      type: "string",
+      description: "Message ID to reply to (optional). Sets In-Reply-To header.",
+    },
+  },
+  required: ["to", "subject", "body"],
+  additionalProperties: false,
+};
+
+/**
+ * Merge curated email audit details into an error result so the audit route
+ * suppresses the raw params on the failure path too (see emailWriteAuditDetails).
+ */
+function withEmailAuditDetails(
+  base: { content: ContentBlock[]; isError: true; details: { error: string } },
+  params: Record<string, unknown>
+): { content: ContentBlock[]; isError: true; details: Record<string, unknown> } {
+  return {
+    ...base,
+    details: { ...emailWriteAuditDetails(params), error: base.details.error },
+  };
+}
+
+/**
+ * Curated audit details for email_search. Its params carry PII too: `from`/`to`
+ * are recipient addresses by schema, and `subject`/`text` are free-text terms a
+ * model may fill with an address. Same contract as emailWriteAuditDetails —
+ * returning a non-error field makes the audit route drop the raw params on every
+ * return path. Addresses are masked, free-text is scrubbed + capped, and the
+ * remaining structured filters (folder/unread/sinceDays/limit) are safe to keep
+ * verbatim for governance value. `filters` lists which fields the search used —
+ * always present, so the route suppresses raw params even for a filter-less call.
+ */
+function emailSearchAuditDetails(params: Record<string, unknown>): Record<string, unknown> {
+  const details: Record<string, unknown> = {};
+  const filters: string[] = [];
+  if (typeof params.from === "string") {
+    details.from = maskRecipientForAudit(params.from);
+    filters.push("from");
+  }
+  if (typeof params.to === "string") {
+    details.to = maskRecipientForAudit(params.to);
+    filters.push("to");
+  }
+  if (typeof params.subject === "string") {
+    details.subject = curateAuditText(params.subject, AUDIT_SUBJECT_MAX_BYTES);
+    filters.push("subject");
+  }
+  if (typeof params.text === "string") {
+    details.text = curateAuditText(params.text, AUDIT_SUBJECT_MAX_BYTES);
+    filters.push("text");
+  }
+  if (typeof params.unread === "boolean") {
+    details.unread = params.unread;
+    filters.push("unread");
+  }
+  if (typeof params.sinceDays === "number") {
+    details.sinceDays = params.sinceDays;
+    filters.push("sinceDays");
+  }
+  if (typeof params.folder === "string") {
+    details.folder = params.folder;
+    filters.push("folder");
+  }
+  if (typeof params.limit === "number") {
+    details.limit = params.limit;
+    filters.push("limit");
+  }
+  details.filters = filters;
+  return details;
+}
+
+/**
+ * Merge curated search audit details into an error result (see
+ * emailSearchAuditDetails) so the route suppresses raw params on failure paths.
+ */
+function withEmailSearchAuditDetails(
+  base: { content: ContentBlock[]; isError: true; details: { error: string } },
+  params: Record<string, unknown>
+): { content: ContentBlock[]; isError: true; details: Record<string, unknown> } {
+  return {
+    ...base,
+    details: { ...emailSearchAuditDetails(params), error: base.details.error },
+  };
 }
 
 /**
@@ -291,12 +528,9 @@ function errorResult(error: unknown): {
  */
 function resolveEmailReference(
   agentId: string,
-  value: string,
-):
-  | { ok: true; realId: string }
-  | { ok: false; result: ReturnType<typeof toolError> } {
-  const isHandle =
-    value.startsWith(`${MSG_PREFIX}_`) || value.startsWith(`${ATT_PREFIX}_`);
+  value: string
+): { ok: true; realId: string } | { ok: false; result: ReturnType<typeof toolError> } {
+  const isHandle = value.startsWith(`${MSG_PREFIX}_`) || value.startsWith(`${ATT_PREFIX}_`);
   if (!isHandle) return { ok: true, realId: value };
 
   const realId = resolveHandle(agentId, value);
@@ -305,7 +539,7 @@ function resolveEmailReference(
       ok: false,
       result: toolError(
         `The email reference '${value}' is unknown or has expired. ` +
-          `Call email_list or email_search again to get a fresh reference.`,
+          `Call email_list or email_search again to get a fresh reference.`
       ),
     };
   }
@@ -313,10 +547,7 @@ function resolveEmailReference(
 }
 
 /** Replace each summary's raw id with a per-agent handle, minting one as needed. */
-function handleizeSummaries(
-  agentId: string,
-  summaries: EmailSummary[],
-): EmailSummary[] {
+function handleizeSummaries(agentId: string, summaries: EmailSummary[]): EmailSummary[] {
   return summaries.map((s) => ({
     ...s,
     id: putHandle(agentId, s.id),
@@ -335,8 +566,7 @@ function handleizeSummaries(
  * reach the provider and yield a confusing empty result or a 400.
  */
 function clampListLimit(limit: unknown): number | undefined {
-  if (typeof limit !== "number" || !Number.isFinite(limit) || limit <= 0)
-    return undefined;
+  if (typeof limit !== "number" || !Number.isFinite(limit) || limit <= 0) return undefined;
   return Math.min(limit, MAX_ENTRIES_PER_AGENT);
 }
 
@@ -370,12 +600,10 @@ export type EmailCredentials = OAuthEmailCredentials | ImapEmailCredentials;
  * real cause.
  */
 export function assertOAuthCredentialsShape(
-  creds: unknown,
+  creds: unknown
 ): asserts creds is OAuthEmailCredentials {
   if (!creds || typeof creds !== "object") {
-    throw new Error(
-      `pinchy-email: credentials must be an object, got ${typeof creds}`,
-    );
+    throw new Error(`pinchy-email: credentials must be an object, got ${typeof creds}`);
   }
   const obj = creds as Record<string, unknown>;
   const looksLikeSecretRef =
@@ -389,9 +617,7 @@ export function assertOAuthCredentialsShape(
       : actual === "object"
         ? " (looks like an unresolved SecretRef — see #209)"
         : "";
-    throw new Error(
-      `pinchy-email: credentials.accessToken must be a string, got ${actual}${hint}`,
-    );
+    throw new Error(`pinchy-email: credentials.accessToken must be a string, got ${actual}${hint}`);
   }
 }
 
@@ -403,118 +629,96 @@ export function assertOAuthCredentialsShape(
  * named in the error — an agent-facing "credentials.imapHost ..." error is
  * far more actionable than a generic shape mismatch.
  */
-export function assertImapCredentialsShape(
-  creds: unknown,
-): asserts creds is ImapEmailCredentials {
+export function assertImapCredentialsShape(creds: unknown): asserts creds is ImapEmailCredentials {
   if (!creds || typeof creds !== "object") {
-    throw new Error(
-      `pinchy-email: credentials must be an object, got ${typeof creds}`,
-    );
+    throw new Error(`pinchy-email: credentials must be an object, got ${typeof creds}`);
   }
   const obj = creds as Record<string, unknown>;
 
   if (typeof obj.imapHost !== "string" || obj.imapHost.length === 0) {
     throw new Error(
-      `pinchy-email: credentials.imapHost must be a non-empty string, got ${typeof obj.imapHost}`,
+      `pinchy-email: credentials.imapHost must be a non-empty string, got ${typeof obj.imapHost}`
     );
   }
   if (typeof obj.imapPort !== "number") {
     throw new Error(
-      `pinchy-email: credentials.imapPort must be a number, got ${typeof obj.imapPort}`,
+      `pinchy-email: credentials.imapPort must be a number, got ${typeof obj.imapPort}`
     );
   }
   if (typeof obj.smtpHost !== "string" || obj.smtpHost.length === 0) {
     throw new Error(
-      `pinchy-email: credentials.smtpHost must be a non-empty string, got ${typeof obj.smtpHost}`,
+      `pinchy-email: credentials.smtpHost must be a non-empty string, got ${typeof obj.smtpHost}`
     );
   }
   if (typeof obj.smtpPort !== "number") {
     throw new Error(
-      `pinchy-email: credentials.smtpPort must be a number, got ${typeof obj.smtpPort}`,
+      `pinchy-email: credentials.smtpPort must be a number, got ${typeof obj.smtpPort}`
     );
   }
   if (typeof obj.username !== "string" || obj.username.length === 0) {
     throw new Error(
-      `pinchy-email: credentials.username must be a non-empty string, got ${typeof obj.username}`,
+      `pinchy-email: credentials.username must be a non-empty string, got ${typeof obj.username}`
     );
   }
   if (typeof obj.password !== "string" || obj.password.length === 0) {
     throw new Error(
-      `pinchy-email: credentials.password must be a non-empty string, got ${typeof obj.password}`,
+      `pinchy-email: credentials.password must be a non-empty string, got ${typeof obj.password}`
     );
   }
-  if (
-    obj.security !== "tls" &&
-    obj.security !== "starttls" &&
-    obj.security !== "none"
-  ) {
+  if (obj.security !== "tls" && obj.security !== "starttls" && obj.security !== "none") {
     throw new Error(
-      `pinchy-email: credentials.security must be one of "tls", "starttls", "none", got ${JSON.stringify(obj.security)}`,
+      `pinchy-email: credentials.security must be one of "tls", "starttls", "none", got ${JSON.stringify(obj.security)}`
     );
   }
   if (obj.senderName !== undefined && typeof obj.senderName !== "string") {
     throw new Error(
-      `pinchy-email: credentials.senderName must be a string, got ${typeof obj.senderName}`,
+      `pinchy-email: credentials.senderName must be a string, got ${typeof obj.senderName}`
     );
   }
 }
 
-/**
- * Thrown by fetchCredentials when the credentials API responds non-ok.
- * Carries `status` so callers (withAuthRetry) can discriminate the
- * settings-missing 503 case from transient errors without string-matching
- * the message.
- */
-class CredentialsFetchError extends Error {
-  status: number;
+const LOOKUP_FAILURES: ReadonlySet<unknown> = new Set(["no-answer", "temporary"]);
 
-  constructor(message: string, status: number) {
-    super(message);
-    this.name = "CredentialsFetchError";
-    this.status = status;
+/**
+ * Why Pinchy has no checked addresses for a mail host, keyed by field. Only
+ * used to word the refusal, so a reason this version does not know is dropped
+ * rather than refused — the refusal itself does not depend on it.
+ */
+function lookupFailuresOf(data: unknown): { lookupFailures?: MailLookupFailures } {
+  const raw = (data as { lookupFailures?: unknown } | null)?.lookupFailures;
+  if (typeof raw !== "object" || raw === null) return {};
+  const failures: MailLookupFailures = {};
+  for (const field of ["imapHost", "smtpHost"] as const) {
+    const reason = (raw as Record<string, unknown>)[field];
+    if (LOOKUP_FAILURES.has(reason)) failures[field] = reason as MailLookupFailure;
   }
+  return Object.keys(failures).length > 0 ? { lookupFailures: failures } : {};
 }
 
 async function fetchCredentials(
   apiBaseUrl: string,
   gatewayToken: string,
   connectionId: string,
-): Promise<{ type: string; credentials: EmailCredentials }> {
-  const response = await fetch(
-    `${apiBaseUrl}/api/internal/integrations/${connectionId}/credentials`,
-    { headers: { Authorization: `Bearer ${gatewayToken}` } },
-  );
-
-  if (!response.ok) {
-    // The route's error responses (e.g. 503 when OAuth settings are missing —
-    // see OAuthSettingsMissingError in the credentials route) carry an
-    // actionable message in the JSON body. Read it tolerantly: a body that
-    // isn't JSON, or a response shape without .json(), must not mask the
-    // original HTTP status in a secondary error. `.catch()` alone would not
-    // save us from a response object whose .json is missing entirely (that
-    // throws synchronously rather than rejecting), so wrap the call itself.
-    const body = await (async () => {
-      try {
-        return (await response.json()) as { error?: unknown };
-      } catch {
-        return null;
-      }
-    })();
-    const detail =
-      body && typeof body.error === "string" ? `: ${body.error}` : "";
-    throw new CredentialsFetchError(
-      `Failed to fetch credentials: ${response.status} ${response.statusText}${detail}`,
-      response.status,
-    );
-  }
-
-  const data = (await response.json()) as {
-    type?: unknown;
-    credentials?: unknown;
+  agentId: string
+): Promise<{
+  type: string;
+  credentials: EmailCredentials;
+  targets: {
+    imapTarget?: PinnedTarget;
+    smtpTarget?: PinnedTarget;
+    lookupFailures?: MailLookupFailures;
   };
+}> {
+  const data = await requestCredentials({
+    apiBaseUrl,
+    gatewayToken,
+    connectionId,
+    agentId,
+    label: "email",
+  });
   if (!data.type || typeof data.type !== "string") {
     throw new Error(
-      `pinchy-email: credentials API returned no type field (got ${JSON.stringify((data as { type?: unknown }).type)})`,
+      `pinchy-email: credentials API returned no type field (got ${JSON.stringify(data.type)})`
     );
   }
   // IMAP connections carry host/port/username/password credentials with no
@@ -524,19 +728,31 @@ async function fetchCredentials(
   // own field-naming validation instead of failing on a missing accessToken.
   if (data.type === "imap") {
     assertImapCredentialsShape(data.credentials);
-  } else {
-    assertOAuthCredentialsShape(data.credentials);
+    // The addresses Pinchy checked for the stored hosts (pinned-target.ts).
+    // A missing one is not an error here: the mail-mock seam never connects
+    // to the stored host, so the adapter decides at connect time.
+    return {
+      type: data.type,
+      credentials: data.credentials,
+      targets: {
+        imapTarget: checkedTarget(data, "imapHost"),
+        smtpTarget: checkedTarget(data, "smtpHost"),
+        ...lookupFailuresOf(data),
+      },
+    };
   }
-  return { type: data.type, credentials: data.credentials };
+  assertOAuthCredentialsShape(data.credentials);
+  return { type: data.type, credentials: data.credentials, targets: {} };
 }
 
 const plugin = {
   id: "pinchy-email",
   name: "Pinchy Email",
-  description:
-    "Email integration (Gmail, Microsoft 365, and IMAP) with per-agent permissions.",
+  description: "Email integration (Gmail, Microsoft 365, and IMAP) with per-agent permissions.",
 
-  register(api: PluginApi) {
+  register(pluginApi: PluginApi) {
+    // Every tool refuses a parameter it does not declare (unknown-params.ts).
+    const api = refusingUnknownParams(pluginApi);
     // Capture agentConfigs at register() time. OpenClaw calls register() with a
     // fully-populated api.pluginConfig; the reference may be reset after the call
     // returns, so factories must not read api.pluginConfig?.agents dynamically —
@@ -580,31 +796,35 @@ const plugin = {
     // OAuth refresh races the call) we invalidate eagerly and refetch once
     // before surfacing the error.
     const CREDENTIALS_TTL_MS = 5 * 60 * 1000; // 5 minutes
-    const cache = new Map<
-      string,
-      { adapter: EmailAdapter; expiresAt: number }
-    >();
+    const cache = new Map<string, { adapter: EmailAdapter; expiresAt: number }>();
 
     function invalidate(agentId: string, connectionId: string) {
-      cache.delete(`${agentId}:${connectionId}`);
+      cache.delete(credentialCacheKey(agentId, connectionId));
     }
+
+    /**
+     * Adapter calls that change server-side state. `trackMutations` uses this
+     * to refuse a retry that would repeat one — re-running `send` would put a
+     * second copy of the message in the recipient's inbox.
+     */
+    const MUTATING_ADAPTER_METHODS = ["send", "draft"] as const;
 
     async function getOrCreateClient(
       agentId: string,
-      config: AgentEmailConfig,
+      config: AgentEmailConfig
     ): Promise<EmailAdapter> {
-      const cacheKey = `${agentId}:${config.connectionId}`;
+      const cacheKey = credentialCacheKey(agentId, config.connectionId);
       const hit = cache.get(cacheKey);
       if (hit && hit.expiresAt > Date.now()) return hit.adapter;
       // Read apiBaseUrl and gatewayToken dynamically so they reflect any
       // config update that arrived after the initial register() call.
       const apiBaseUrl = api.pluginConfig?.apiBaseUrl ?? "";
       const gatewayToken = api.pluginConfig?.gatewayToken ?? "";
-      const { type, credentials: creds } = await fetchCredentials(
-        apiBaseUrl,
-        gatewayToken,
-        config.connectionId,
-      );
+      const {
+        type,
+        credentials: creds,
+        targets,
+      } = await fetchCredentials(apiBaseUrl, gatewayToken, config.connectionId, agentId);
       // google/microsoft are oauth-shaped; imap carries its own
       // host/port/username/password shape (ImapEmailCredentials).
       // fetchCredentials already ran the matching assertion
@@ -635,7 +855,7 @@ const plugin = {
           });
         } else if (type === "imap") {
           const { ImapAdapter } = await import("./imap-adapter.js");
-          adapter = new ImapAdapter(creds as ImapEmailCredentials);
+          adapter = new ImapAdapter({ ...(creds as ImapEmailCredentials), ...targets });
         } else {
           throw new Error(`unsupported email provider: ${type}`);
         }
@@ -645,16 +865,22 @@ const plugin = {
         // dispatch and surfaced as an actionable error the tool layer turns
         // into a failed tool result. Re-throw "unsupported email provider"
         // unchanged so its message/behavior above is untouched.
-        if (err instanceof Error && /unsupported email provider/.test(err.message))
-          throw err;
+        if (err instanceof Error && /unsupported email provider/.test(err.message)) throw err;
         throw new Error(
-          `The ${type} email integration failed to initialize (a required module could not be loaded): ${err instanceof Error ? err.message : String(err)}`,
+          `The ${type} email integration failed to initialize (a required module could not be loaded): ${err instanceof Error ? err.message : String(err)}`
         );
       }
-      cache.set(cacheKey, {
-        adapter,
-        expiresAt: Date.now() + CREDENTIALS_TTL_MS,
-      });
+      // An IMAP adapter that lacks a checked address can only refuse to
+      // connect. Keeping it would hold that refusal for the cache's lifetime,
+      // even when Pinchy's lookup failed only for a moment — so the next call
+      // asks Pinchy again instead.
+      const complete = type !== "imap" || (targets.imapTarget && targets.smtpTarget);
+      if (complete) {
+        cache.set(cacheKey, {
+          adapter,
+          expiresAt: Date.now() + CREDENTIALS_TTL_MS,
+        });
+      }
       return adapter;
     }
 
@@ -664,16 +890,19 @@ const plugin = {
      * error is terminal (not worth retrying) so the "flag + rethrow" shape
      * can't drift between call sites.
      */
-    async function reportAndRethrow(
-      connectionId: string,
-      error: unknown,
-    ): Promise<never> {
+    async function reportAndRethrow(connectionId: string, error: unknown): Promise<never> {
       const reason = error instanceof Error ? error.message : String(error);
       // Read apiBaseUrl/gatewayToken dynamically (same as getOrCreateClient):
       // they live on api.pluginConfig, not in this function's scope.
       const apiBaseUrl = api.pluginConfig?.apiBaseUrl ?? "";
       const gatewayToken = api.pluginConfig?.gatewayToken ?? "";
-      await reportAuthFailure(apiBaseUrl, connectionId, gatewayToken, reason);
+      await postAuthFailure({
+        apiBaseUrl,
+        connectionId,
+        gatewayToken,
+        pluginId: "pinchy-email",
+        reason,
+      });
       throw error;
     }
 
@@ -688,17 +917,19 @@ const plugin = {
      * failures: getOrCreateClient can throw a CredentialsFetchError with
      * status 503 when the credentials route detects OAuth settings are
      * missing entirely (OAuthSettingsMissingError) and there is no token to
-     * even attempt a call with. That's gated strictly on status 503 — the
-     * credentials route emits 503 exclusively for the settings-missing case,
-     * so treating it as an auth failure is safe. Any OTHER status (a
-     * transient 5xx, a network error, etc.) must NOT flip the connection to
-     * auth_failed — those are retried/surfaced like before, without touching
-     * connection health.
+     * even attempt a call with. The route also answers 503 when it cannot
+     * check an Odoo connection's address for a moment, but never for an email
+     * connection — a mail host it could not look up comes back as a 200 with
+     * `lookupFailures` instead — so for this plugin a 503 still means the
+     * settings are missing, and treating it as an auth failure is safe. Any
+     * OTHER status (a transient 5xx, a network error, etc.) must NOT flip the
+     * connection to auth_failed — those are retried/surfaced like before,
+     * without touching connection health.
      */
     async function withAuthRetry<T>(
       agentId: string,
       config: AgentEmailConfig,
-      fn: (adapter: EmailAdapter) => Promise<T>,
+      fn: (adapter: EmailAdapter) => Promise<T>
     ): Promise<T> {
       let adapter: EmailAdapter;
       try {
@@ -709,33 +940,33 @@ const plugin = {
         }
         throw err;
       }
+      let mutated = false;
+      const markMutated = () => {
+        mutated = true;
+      };
       try {
-        return await fn(adapter);
+        return await fn(trackMutations(adapter, MUTATING_ADAPTER_METHODS, markMutated));
       } catch (err) {
-        const msg = err instanceof Error ? err.message.toLowerCase() : "";
-        const isAuthError =
-          msg.includes("401") ||
-          msg.includes("invalid credentials") ||
-          msg.includes("invalid_grant") ||
-          msg.includes("token has been expired") ||
-          msg.includes("unauthorized");
-        if (!isAuthError) throw err;
+        if (!isAuthError(err)) throw err;
+        // The message already left this process — a retry would send it
+        // twice. Surface the auth error instead.
+        if (mutated) throw err;
         invalidate(agentId, config.connectionId);
         let fresh: EmailAdapter;
         try {
           fresh = await getOrCreateClient(agentId, config);
         } catch (refetchErr) {
-          if (
-            refetchErr instanceof CredentialsFetchError &&
-            refetchErr.status === 503
-          ) {
+          if (refetchErr instanceof CredentialsFetchError && refetchErr.status === 503) {
             return reportAndRethrow(config.connectionId, refetchErr);
           }
           throw refetchErr;
         }
         try {
-          return await fn(fresh);
+          return await fn(trackMutations(fresh, MUTATING_ADAPTER_METHODS, markMutated));
         } catch (retryErr) {
+          // Only an auth error says the fresh credentials are bad; a 5xx or a
+          // validation error on the retry must not flag a healthy connection.
+          if (!isAuthError(retryErr)) throw retryErr;
           return reportAndRethrow(config.connectionId, retryErr);
         }
       }
@@ -748,6 +979,7 @@ const plugin = {
         if (!agentId) return probeStub("email_list");
         const config = getAgentConfig(agentConfigs, agentId);
         if (!config) return null;
+        if (lacksGrant(config, "read")) return null;
 
         return {
           name: "email_list",
@@ -784,15 +1016,13 @@ const plugin = {
                   folder: params.folder as Folder | undefined,
                   limit: clampListLimit(params.limit),
                   unreadOnly: params.unreadOnly as boolean | undefined,
-                }),
+                })
               );
 
               const handleized = handleizeSummaries(agentId, result);
 
               return {
-                content: [
-                  { type: "text", text: JSON.stringify(handleized, null, 2) },
-                ],
+                content: [{ type: "text", text: JSON.stringify(handleized, null, 2) }],
               };
             } catch (error) {
               return errorResult(error);
@@ -800,7 +1030,7 @@ const plugin = {
           },
         };
       },
-      { name: "email_list" },
+      { name: "email_list" }
     );
 
     // 2. email_read
@@ -810,6 +1040,7 @@ const plugin = {
         if (!agentId) return probeStub("email_read");
         const config = getAgentConfig(agentConfigs, agentId);
         if (!config) return null;
+        if (lacksGrant(config, "read")) return null;
 
         return {
           name: "email_read",
@@ -832,26 +1063,29 @@ const plugin = {
                 return permissionDenied("read");
               }
 
-              const resolved = resolveEmailReference(
-                agentId,
-                params.id as string,
-              );
+              const resolved = resolveEmailReference(agentId, params.id as string);
               if (!resolved.ok) return resolved.result;
 
               const result = await withAuthRetry(agentId, config, (adapter) =>
-                adapter.read(resolved.realId),
+                adapter.read(resolved.realId)
               );
 
               const msgHandle = putHandle(agentId, result.id);
-              const handleizedAttachments = (result.attachments ?? []).map(
-                (a) => ({
-                  ...a,
-                  id: putAttachmentHandle(agentId, a.id),
-                }),
-              );
+              const handleizedAttachments = (result.attachments ?? []).map((a) => ({
+                ...a,
+                id: putAttachmentHandle(agentId, a.id),
+              }));
+              // The body is the one unbounded field in this payload, and every
+              // adapter's is unbounded in its own way (Graph's stored html,
+              // Gmail's decoded part, IMAP's mailparser text). Bounding it here
+              // rather than in each adapter means a future provider is covered
+              // the moment it exists, instead of the moment someone remembers.
+              const body =
+                typeof result.body === "string" ? truncateEmailBody(result.body) : result.body;
               const handleizedResult = {
                 ...result,
                 id: msgHandle,
+                body,
                 attachments: handleizedAttachments,
               };
 
@@ -866,7 +1100,7 @@ const plugin = {
                 const list = handleizedAttachments
                   .map(
                     (a) =>
-                      `- id: ${a.id}, filename: ${a.filename}, mimeType: ${a.mimeType}, size: ${humanReadableSize(a.size)}`,
+                      `- id: ${a.id}, filename: ${a.filename}, mimeType: ${safeMimeLabel(a.mimeType)}, size: ${humanReadableSize(a.size)}`
                   )
                   .join("\n");
                 content.push({
@@ -884,7 +1118,7 @@ const plugin = {
           },
         };
       },
-      { name: "email_read" },
+      { name: "email_read" }
     );
 
     // 3. email_search
@@ -894,12 +1128,13 @@ const plugin = {
         if (!agentId) return probeStub("email_search");
         const config = getAgentConfig(agentConfigs, agentId);
         if (!config) return null;
+        if (lacksGrant(config, "read")) return null;
 
         return {
           name: "email_search",
           label: "Email Search",
           description:
-            "Search emails using structured DSL fields. All fields are optional — combine them to narrow results. Canonical folder names: INBOX, SENT, DRAFTS, TRASH, SPAM.",
+            "Search emails using structured DSL fields. All fields are optional — combine them to narrow results. There is no `query` parameter: use `text` for a free-text match, and `from`, `to`, `subject`, `unread`, `sinceDays`, `folder` and `limit` to filter. Canonical folder names: INBOX, SENT, DRAFTS, TRASH, SPAM.",
           parameters: {
             type: "object",
             properties: {
@@ -943,27 +1178,7 @@ const plugin = {
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
               if (!checkPermission(config.permissions, "email", "read")) {
-                return permissionDenied("read");
-              }
-
-              // email_search used to take a raw Gmail-style `query` string.
-              // It was replaced by the structured DSL fields below, but the
-              // JSON schema doesn't declare additionalProperties:false and
-              // nothing else in the handler catches a caller still passing
-              // `query` — the value would silently be dropped and the
-              // adapter would throw a generic "search requires at least one
-              // filter field" that never mentions `query`. Guard for it here
-              // so the model gets an error it can act on. If `query` and
-              // valid DSL fields are both present, treat it as ambiguous
-              // intent and reject rather than guess.
-              if (typeof params.query === "string" && params.query.length > 0) {
-                return errorResult(
-                  new Error(
-                    "The `query` parameter was removed. email_search now uses structured " +
-                      "fields instead of a raw query string: from, to, subject, unread, " +
-                      "sinceDays, folder, limit. Re-issue the call using those fields.",
-                  ),
-                );
+                return withEmailSearchAuditDetails(permissionDenied("read"), params);
               }
 
               const result = await withAuthRetry(agentId, config, (adapter) =>
@@ -977,23 +1192,22 @@ const plugin = {
                   folder: params.folder as
                     "INBOX" | "SENT" | "DRAFTS" | "TRASH" | "SPAM" | undefined,
                   limit: clampListLimit(params.limit),
-                }),
+                })
               );
 
               const handleized = handleizeSummaries(agentId, result);
 
               return {
-                content: [
-                  { type: "text", text: JSON.stringify(handleized, null, 2) },
-                ],
+                content: [{ type: "text", text: JSON.stringify(handleized, null, 2) }],
+                details: emailSearchAuditDetails(params),
               };
             } catch (error) {
-              return errorResult(error);
+              return withEmailSearchAuditDetails(errorResult(error), params);
             }
           },
         };
       },
-      { name: "email_search" },
+      { name: "email_search" }
     );
 
     // 4. email_draft
@@ -1003,50 +1217,42 @@ const plugin = {
         if (!agentId) return probeStub("email_draft");
         const config = getAgentConfig(agentConfigs, agentId);
         if (!config) return null;
+        if (lacksGrant(config, "draft")) return null;
 
         return {
           name: "email_draft",
           label: "Email Draft",
           description:
             "Create a draft email. The draft is saved but NOT sent. Use replyTo to create a reply to an existing message.",
-          parameters: {
-            type: "object",
-            properties: {
-              to: { type: "string", description: "Recipient email address" },
-              subject: { type: "string", description: "Email subject line" },
-              body: {
-                type: "string",
-                description: "Email body text (plain text)",
-              },
-              replyTo: {
-                type: "string",
-                description:
-                  "Message ID to reply to (optional). Sets In-Reply-To header.",
-              },
-            },
-            required: ["to", "subject", "body"],
-          },
+          parameters: EMAIL_WRITE_PARAMETERS,
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
               if (!checkPermission(config.permissions, "email", "draft")) {
-                return permissionDenied("draft");
+                return withEmailAuditDetails(permissionDenied("draft"), params);
               }
 
-              let replyTo: string | undefined = params.replyTo as
-                string | undefined;
+              // One address per call: a string is parsed as an address LIST by
+              // the mail libraries, so a comma-smuggled second recipient would
+              // be delivered to without the approver ever seeing it.
+              const recipient = parseSingleRecipient(params.to);
+              if (!recipient.ok) {
+                return withEmailAuditDetails(toolError(recipient.error), params);
+              }
+
+              let replyTo: string | undefined = params.replyTo as string | undefined;
               if (replyTo != null) {
                 const resolved = resolveEmailReference(agentId, replyTo);
-                if (!resolved.ok) return resolved.result;
+                if (!resolved.ok) return withEmailAuditDetails(resolved.result, params);
                 replyTo = resolved.realId;
               }
 
               const result = await withAuthRetry(agentId, config, (adapter) =>
                 adapter.draft({
-                  to: params.to as string,
+                  to: recipient.address,
                   subject: params.subject as string,
                   body: params.body as string,
                   replyTo,
-                }),
+                })
               );
 
               // Never hand the raw provider id back to the model — mint a
@@ -1062,18 +1268,19 @@ const plugin = {
                         draftId: putHandle(agentId, result.draftId),
                       },
                       null,
-                      2,
+                      2
                     ),
                   },
                 ],
+                details: emailWriteAuditDetails(params),
               };
             } catch (error) {
-              return errorResult(error);
+              return withEmailAuditDetails(errorResult(error), params);
             }
           },
         };
       },
-      { name: "email_draft" },
+      { name: "email_draft" }
     );
 
     // 5. email_send
@@ -1083,50 +1290,42 @@ const plugin = {
         if (!agentId) return probeStub("email_send");
         const config = getAgentConfig(agentConfigs, agentId);
         if (!config) return null;
+        if (lacksGrant(config, "send")) return null;
 
         return {
           name: "email_send",
           label: "Email Send",
           description:
             "Send an email immediately. WARNING: This sends the email right away — it cannot be undone. Use email_draft if you want to review before sending. Use replyTo to reply to an existing message.",
-          parameters: {
-            type: "object",
-            properties: {
-              to: { type: "string", description: "Recipient email address" },
-              subject: { type: "string", description: "Email subject line" },
-              body: {
-                type: "string",
-                description: "Email body text (plain text)",
-              },
-              replyTo: {
-                type: "string",
-                description:
-                  "Message ID to reply to (optional). Sets In-Reply-To header.",
-              },
-            },
-            required: ["to", "subject", "body"],
-          },
+          parameters: EMAIL_WRITE_PARAMETERS,
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
               if (!checkPermission(config.permissions, "email", "send")) {
-                return permissionDenied("send");
+                return withEmailAuditDetails(permissionDenied("send"), params);
               }
 
-              let replyTo: string | undefined = params.replyTo as
-                string | undefined;
+              // One address per call: a string is parsed as an address LIST by
+              // the mail libraries, so a comma-smuggled second recipient would
+              // be delivered to without the approver ever seeing it.
+              const recipient = parseSingleRecipient(params.to);
+              if (!recipient.ok) {
+                return withEmailAuditDetails(toolError(recipient.error), params);
+              }
+
+              let replyTo: string | undefined = params.replyTo as string | undefined;
               if (replyTo != null) {
                 const resolved = resolveEmailReference(agentId, replyTo);
-                if (!resolved.ok) return resolved.result;
+                if (!resolved.ok) return withEmailAuditDetails(resolved.result, params);
                 replyTo = resolved.realId;
               }
 
               const result = await withAuthRetry(agentId, config, (adapter) =>
                 adapter.send({
-                  to: params.to as string,
+                  to: recipient.address,
                   subject: params.subject as string,
                   body: params.body as string,
                   replyTo,
-                }),
+                })
               );
 
               // Never hand the raw provider id back to the model — mint a
@@ -1134,9 +1333,7 @@ const plugin = {
               // short reference, not a corruptible ~150-char Graph id. A null
               // messageId is a "no id available" signal, not an id: leave it.
               const messageId =
-                result.messageId == null
-                  ? result.messageId
-                  : putHandle(agentId, result.messageId);
+                result.messageId == null ? result.messageId : putHandle(agentId, result.messageId);
               const content: ContentBlock[] = [
                 {
                   type: "text",
@@ -1155,14 +1352,14 @@ const plugin = {
                 });
               }
 
-              return { content };
+              return { content, details: emailWriteAuditDetails(params) };
             } catch (error) {
-              return errorResult(error);
+              return withEmailAuditDetails(errorResult(error), params);
             }
           },
         };
       },
-      { name: "email_send" },
+      { name: "email_send" }
     );
 
     // 6. email_get_attachment
@@ -1170,8 +1367,10 @@ const plugin = {
       (ctx: PluginToolContext) => {
         const agentId = ctx?.agentId;
         if (!agentId) return probeStub("email_get_attachment");
+        const offeredInChat = isWebChatRun(ctx);
         const config = getAgentConfig(agentConfigs, agentId);
         if (!config) return null;
+        if (lacksGrant(config, "read")) return null;
 
         return {
           name: "email_get_attachment",
@@ -1183,8 +1382,7 @@ const plugin = {
             properties: {
               messageId: {
                 type: "string",
-                description:
-                  "The email message ID that contains the attachment",
+                description: "The email message ID that contains the attachment",
               },
               attachmentId: {
                 type: "string",
@@ -1199,41 +1397,35 @@ const plugin = {
                 return permissionDenied("read");
               }
 
-              const resolvedMessageId = resolveEmailReference(
-                agentId,
-                params.messageId as string,
-              );
+              const resolvedMessageId = resolveEmailReference(agentId, params.messageId as string);
               if (!resolvedMessageId.ok) return resolvedMessageId.result;
               const resolvedAttachmentId = resolveEmailReference(
                 agentId,
-                params.attachmentId as string,
+                params.attachmentId as string
               );
               if (!resolvedAttachmentId.ok) return resolvedAttachmentId.result;
 
               const messageId = resolvedMessageId.realId;
               const attachmentId = resolvedAttachmentId.realId;
 
-              // No pre-download size precheck is possible here: the
-              // EmailAdapter#getAttachment contract returns { filename,
-              // mimeType, data } — the provider APIs don't expose a byte
-              // size before the body is fetched, unlike odoo_attach_file's
-              // local-file stat() precheck. We always postcheck data.length
-              // below, which is what actually protects the process (metadata
-              // can lie or be absent; the downloaded buffer cannot).
-              const attachment = await withAuthRetry(
-                agentId,
-                config,
-                (adapter) => adapter.getAttachment(messageId, attachmentId),
+              // Each adapter prechecks the size signal its provider offers,
+              // before the bytes are materialized: Graph reads Content-Length
+              // off the attachment response ahead of res.json(), Gmail the
+              // part-listing `size` ahead of attachments.get, IMAP the
+              // message-level RFC822.SIZE ahead of the full fetch
+              // (MAX_MESSAGE_BYTES, see imap-adapter.ts). All three are
+              // best-effort — a provider can omit or misreport its own size —
+              // so the postcheck below on the buffer that actually arrived
+              // stays the authoritative guard: metadata can lie, the
+              // downloaded buffer cannot.
+              const attachment = await withAuthRetry(agentId, config, (adapter) =>
+                adapter.getAttachment(messageId, attachmentId)
               );
 
               if (attachment.data.length > MAX_ATTACHMENT_BYTES) {
-                const sizeMb = (attachment.data.length / 1024 / 1024).toFixed(
-                  1,
-                );
+                const sizeMb = (attachment.data.length / 1024 / 1024).toFixed(1);
                 const maxMb = (MAX_ATTACHMENT_BYTES / 1024 / 1024).toFixed(0);
-                throw new Error(
-                  `Attachment too large: ${sizeMb} MB, max allowed is ${maxMb} MB.`,
-                );
+                throw new Error(`Attachment too large: ${sizeMb} MB, max allowed is ${maxMb} MB.`);
               }
 
               const dir = `${WORKSPACE_ROOT}/${agentId}/uploads`;
@@ -1242,7 +1434,7 @@ const plugin = {
               const sanitized = sanitizeAttachmentFilename(
                 attachment.filename,
                 attachmentId,
-                attachment.mimeType,
+                attachment.mimeType
               );
               const finalFilename = await pickUniqueFilename(dir, sanitized);
               const filePath = `${dir}/${finalFilename}`;
@@ -1255,12 +1447,9 @@ const plugin = {
               // those forms fall into the attachment-<id> fallback and never
               // reach here. Keep that leading-dot strip if you refactor the
               // sanitizer.
-              if (
-                basename(filePath) !== finalFilename ||
-                !filePath.startsWith(`${dir}/`)
-              ) {
+              if (basename(filePath) !== finalFilename || !filePath.startsWith(`${dir}/`)) {
                 throw new Error(
-                  `Refusing to write attachment outside the uploads directory: ${finalFilename}`,
+                  `Refusing to write attachment outside the uploads directory: ${finalFilename}`
                 );
               }
 
@@ -1271,6 +1460,46 @@ const plugin = {
               // file or be redirected outside uploads/ via a planted symlink.
               await writeFile(filePath, attachment.data, { flag: "wx" });
 
+              // Hand ownership to the web process so it can serve the file (#703).
+              try {
+                await chown(filePath, DELIVERY_UID, DELIVERY_GID);
+              } catch {
+                // Best-effort — see DELIVERY_UID/DELIVERY_GID comment above.
+              }
+
+              // Say "delivered" only for what Pinchy will actually show as a
+              // chip: a type the chat can serve (delivery-mime.ts), in a run
+              // that ends in the web chat (isWebChatRun). The normalized type
+              // is also what the file block declares, so the web side decides
+              // on the same value this text was written from.
+              const mimeType = deliveryMimeType(attachment.mimeType, finalFilename);
+              const size = humanReadableSize(attachment.data.length);
+              const saved = `Saved to the workspace uploads directory as "${finalFilename}" (${size}). `;
+              let guidance: string;
+              if (!isServableDelivery(mimeType)) {
+                guidance =
+                  saved +
+                  // No ${mimeType} here: it is sender-controlled and unbounded, and
+                  // this sentence reads as the plugin's own instruction. The JSON
+                  // block above carries it, escaped.
+                  `This file type can't be offered as a download in chat, so do not ` +
+                  `tell the user it was delivered: it is saved in the agent's workspace. It can ` +
+                  `still be attached to an Odoo record via odoo_attach_file using this filename.`;
+              } else if (offeredInChat) {
+                guidance =
+                  saved +
+                  `Delivered to the user in chat as a downloadable file; also readable with the ` +
+                  `pdf tool (for PDFs) and attachable to an Odoo record via odoo_attach_file using ` +
+                  `this filename.`;
+              } else {
+                guidance =
+                  saved +
+                  `Files are offered as a download only in Pinchy's web chat, and this ` +
+                  `conversation is not one, so do not tell the user it was delivered: it is ` +
+                  `saved in the agent's workspace. It is readable with the pdf tool (for PDFs) ` +
+                  `and attachable to an Odoo record via odoo_attach_file using this filename.`;
+              }
+
               return {
                 content: [
                   {
@@ -1279,18 +1508,21 @@ const plugin = {
                       {
                         filename: finalFilename,
                         size: attachment.data.length,
-                        mimeType: attachment.mimeType,
+                        mimeType,
                       },
                       null,
-                      2,
+                      2
                     ),
                   },
+                  { type: "text", text: guidance },
+                  // File delivery (#703): a native file content block lands in the
+                  // session transcript, which Pinchy's client-router reads via
+                  // OpenClaw's `artifacts.list` RPC after the run to record the
+                  // per-user download grant and render the chip.
                   {
-                    type: "text",
-                    text:
-                      `Saved to the workspace uploads directory as "${finalFilename}" ` +
-                      `(${humanReadableSize(attachment.data.length)}). Readable with the pdf tool ` +
-                      `(for PDFs); attachable to an Odoo record via odoo_attach_file using this filename.`,
+                    type: "file",
+                    filename: finalFilename,
+                    mimeType,
                   },
                 ],
               };
@@ -1300,7 +1532,7 @@ const plugin = {
           },
         };
       },
-      { name: "email_get_attachment" },
+      { name: "email_get_attachment" }
     );
   },
 };

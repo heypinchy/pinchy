@@ -1,0 +1,64 @@
+---
+// Starlight's MarkdownContent, plus the client-side renderer for the
+// `<div class="mermaid">` containers that ./index.mjs emits. Mermaid is loaded
+// only on pages that have a diagram, and re-renders when the theme switches.
+// Adapted from @pasqal-io/starlight-client-mermaid (Apache-2.0).
+import Default from "@astrojs/starlight/components/MarkdownContent.astro";
+---
+
+<Default>
+  <slot />
+</Default>
+
+<script>
+  // A failed render must say so in the page: the diagram's source lives only in
+  // an attribute, so an untouched container is a blank gap with no clue why.
+  function showFailure(graph: Element, error: unknown) {
+    graph.textContent = `Diagram could not be rendered: ${String(error)}`;
+    graph.setAttribute("data-status", "error");
+  }
+
+  let renders = 0;
+
+  async function renderDiagrams(graphs: HTMLCollectionOf<Element>) {
+    let mermaid: typeof import("mermaid").default;
+    try {
+      ({ default: mermaid } = await import("mermaid"));
+    } catch (error) {
+      for (const graph of graphs) showFailure(graph, error);
+      return;
+    }
+
+    function render() {
+      const theme =
+        document.documentElement.getAttribute("data-theme") === "dark"
+          ? "dark"
+          : "default";
+      mermaid.initialize({ startOnLoad: false, theme });
+
+      for (const graph of graphs) {
+        const content = graph.getAttribute("data-content");
+        if (!content) continue;
+        // A counter, not Math.random(): two diagrams on one page must never
+        // share the id mermaid scopes their SVG and CSS by.
+        const id = `mermaid-${++renders}`;
+        mermaid
+          .render(id, content)
+          .then(({ svg }) => {
+            graph.innerHTML = svg;
+            graph.setAttribute("data-status", "rendered");
+          })
+          .catch((error) => showFailure(graph, error));
+      }
+    }
+
+    render();
+    new MutationObserver(render).observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme"],
+    });
+  }
+
+  const graphs = document.getElementsByClassName("mermaid");
+  if (graphs.length > 0) renderDiagrams(graphs);
+</script>

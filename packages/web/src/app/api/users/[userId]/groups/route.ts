@@ -1,17 +1,13 @@
-import { NextRequest, NextResponse, after } from "next/server";
-import { z } from "zod";
+import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { isEnterprise } from "@/lib/enterprise";
 import { db } from "@/db";
 import { users, groups, userGroups } from "@/db/schema";
 import { eq, inArray } from "drizzle-orm";
-import { appendAuditLog } from "@/lib/audit";
+import { deferAuditLog } from "@/lib/audit-deferred";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 import { parseRequestBody } from "@/lib/api-validation";
-
-const updateUserGroupsSchema = z.object({
-  groupIds: z.array(z.string()),
-});
+import { updateUserGroupsSchema } from "@/lib/schemas/users";
 
 export async function PUT(
   request: NextRequest,
@@ -103,23 +99,22 @@ export async function PUT(
     }
   });
 
-  // 7. Schedule audit log via after() so the response isn't blocked and any
-  // errors flow through Next's error handler instead of being swallowed.
-  after(() =>
-    appendAuditLog({
-      actorType: "user",
-      actorId: session.user.id!,
-      eventType: "user.groups_updated",
-      resource: `user:${userId}`,
-      detail: {
-        userName,
-        added,
-        removed,
-        memberCount: groupIds.length,
-      },
-      outcome: "success",
-    })
-  );
+  // 7. Audit the replace. Deferred: the replace is committed and the row is a
+  // diff of it, so a retry would write added = removed = []; a failed write is
+  // counted instead, and must not skip the allow-store recalculation below.
+  deferAuditLog({
+    actorType: "user",
+    actorId: session.user.id!,
+    eventType: "user.groups_updated",
+    resource: `user:${userId}`,
+    detail: {
+      userName,
+      added,
+      removed,
+      memberCount: groupIds.length,
+    },
+    outcome: "success",
+  });
 
   await recalculateTelegramAllowStores();
 

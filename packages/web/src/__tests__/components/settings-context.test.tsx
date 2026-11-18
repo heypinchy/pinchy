@@ -1,7 +1,10 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import "@testing-library/jest-dom";
 import { SettingsContext } from "@/components/settings-context";
+import { CONTEXT_CONTENT_MAX_LENGTH, CONTEXT_TOO_LONG_MESSAGE } from "@/lib/schemas/context";
+import { jsonResponse } from "@/test-helpers/fetch";
 
 vi.mock("@/components/markdown-editor", () => ({
   MarkdownEditor: ({
@@ -54,10 +57,7 @@ describe("SettingsContext", () => {
   });
 
   it("calls PUT /api/users/me/context when personal context is saved", async () => {
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ success: true }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ success: true }));
 
     render(<SettingsContext userContext="My personal context" orgContext="" isAdmin={false} />);
 
@@ -74,10 +74,7 @@ describe("SettingsContext", () => {
   });
 
   it("calls PUT /api/settings/context when org context is saved", async () => {
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ success: true }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ success: true }));
 
     render(<SettingsContext userContext="" orgContext="Org info" isAdmin={true} />);
 
@@ -95,10 +92,7 @@ describe("SettingsContext", () => {
   });
 
   it("shows success feedback after save", async () => {
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ success: true }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ success: true }));
 
     render(<SettingsContext userContext="" orgContext="" isAdmin={false} />);
 
@@ -108,6 +102,40 @@ describe("SettingsContext", () => {
       expect(
         screen.getByText(/saved\. changes will apply to your next conversation\./i)
       ).toBeInTheDocument();
+    });
+  });
+
+  // An editor shown for a context that never loaded starts empty, and its
+  // Save replaces the stored context with that emptiness. So the editor waits
+  // for its load, and a failed load shows why there is no editor instead.
+  describe("before and after a failed load", () => {
+    it("shows no editor while a context is still loading", () => {
+      render(<SettingsContext userContext={null} orgContext={null} isAdmin={true} />);
+
+      expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /save/i })).not.toBeInTheDocument();
+      expect(screen.getAllByText("Loading...")).toHaveLength(2);
+    });
+
+    it("shows no Organization Context editor when its load failed, and says why", () => {
+      render(
+        <SettingsContext userContext="Mine" orgContext={null} orgContextFailed isAdmin={true} />
+      );
+
+      expect(screen.getByText("Organization Context")).toBeInTheDocument();
+      expect(screen.getAllByRole("textbox")).toHaveLength(1);
+      expect(screen.getByDisplayValue("Mine")).toBeInTheDocument();
+      expect(screen.getAllByRole("button", { name: /save/i })).toHaveLength(1);
+      expect(screen.getByRole("alert")).toHaveTextContent(/couldn't load/i);
+    });
+
+    it("shows no Your Context editor when its load failed", () => {
+      render(
+        <SettingsContext userContext={null} userContextFailed orgContext="" isAdmin={false} />
+      );
+
+      expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+      expect(screen.getByRole("alert")).toHaveTextContent(/couldn't load/i);
     });
   });
 
@@ -144,10 +172,7 @@ describe("SettingsContext", () => {
     });
 
     it("should call onDirtyChange(false) after content is successfully saved", async () => {
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ success: true }),
-      } as Response);
+      vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ success: true }));
 
       const onDirtyChange = vi.fn();
       render(
@@ -186,10 +211,9 @@ describe("SettingsContext", () => {
   });
 
   it("shows error feedback on failure", async () => {
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: false,
-      json: async () => ({ error: "Something went wrong" }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse({ error: "Something went wrong" }, { status: 400 })
+    );
 
     render(<SettingsContext userContext="" orgContext="" isAdmin={false} />);
 
@@ -197,6 +221,66 @@ describe("SettingsContext", () => {
 
     await waitFor(() => {
       expect(screen.getByText(/something went wrong/i)).toBeInTheDocument();
+    });
+  });
+
+  it("surfaces the field-level reason from a structured validation error", async () => {
+    // parseRequestBody's 400 puts the actionable text in details.fieldErrors —
+    // `error` alone is the generic "Validation failed", which tells the user
+    // nothing they can act on.
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse(
+        {
+          error: "Validation failed",
+          details: {
+            formErrors: [],
+            fieldErrors: { content: [CONTEXT_TOO_LONG_MESSAGE] },
+          },
+        },
+        { status: 400 }
+      )
+    );
+
+    render(<SettingsContext userContext="Some context" orgContext="" isAdmin={false} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(CONTEXT_TOO_LONG_MESSAGE)).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Validation failed")).not.toBeInTheDocument();
+  });
+
+  describe("length limit", () => {
+    it("does not show a character count for ordinary short content", () => {
+      render(<SettingsContext userContext="Short" orgContext="" isAdmin={false} />);
+
+      expect(screen.queryByText(/characters/i)).not.toBeInTheDocument();
+    });
+
+    it("shows the character count as the content approaches the limit", () => {
+      const nearLimit = "a".repeat(CONTEXT_CONTENT_MAX_LENGTH - 100);
+      render(<SettingsContext userContext={nearLimit} orgContext="" isAdmin={false} />);
+
+      expect(screen.getByText(/15,900 \/ 16,000 characters/)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /save/i })).toBeEnabled();
+    });
+
+    it("disables saving while the content is over the limit", () => {
+      const tooLong = "a".repeat(CONTEXT_CONTENT_MAX_LENGTH + 1);
+      render(<SettingsContext userContext={tooLong} orgContext="" isAdmin={false} />);
+
+      expect(screen.getByText(/16,001 \/ 16,000 characters/)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /save/i })).toBeDisabled();
+    });
+
+    it("re-enables saving once the content is trimmed back under the limit", () => {
+      const tooLong = "a".repeat(CONTEXT_CONTENT_MAX_LENGTH + 1);
+      render(<SettingsContext userContext={tooLong} orgContext="" isAdmin={false} />);
+
+      fireEvent.change(screen.getByRole("textbox"), { target: { value: "trimmed" } });
+
+      expect(screen.getByRole("button", { name: /save/i })).toBeEnabled();
     });
   });
 });

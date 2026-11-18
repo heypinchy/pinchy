@@ -1,6 +1,6 @@
 /**
  * Pure logic for the plugin smoke-load gate (see scripts/smoke-load-plugins.mjs
- * for the CLI/CI wrapper and AGENTS.md § "Plugin Integration Contract").
+ * for the CLI/CI wrapper and agent-rules/plugins.md § "Plugin Integration Contract").
  *
  * The incident this gate exists to catch: `googleapis` was missing from
  * pinchy-email's production install, gmail-adapter.ts threw at import time,
@@ -110,6 +110,24 @@ export function hasProdDependencies(pkg) {
 }
 
 /**
+ * The manifest a production install should resolve: `pkg` without its
+ * devDependencies. `npm install --omit=dev` keeps the dev tree off disk but
+ * still resolves it first, so a conflict anywhere in the test tooling breaks
+ * an install that never uses a byte of it. Since vitest 5 (2026-09-03) that
+ * happens: an optional peer chain — vite -> @vitejs/devtools ->
+ * @vitejs/devtools-vitest -> vitest@* — pulls vitest 5 into the peer set
+ * beside the plugins' vitest 4, and npm's arborist crashes in #loadPeerSet
+ * ("Cannot read properties of null (reading 'edgesOut')") instead of
+ * reporting a conflict. Dockerfile.openclaw drops the same field with
+ * `npm pkg delete devDependencies`; the test file pins both halves.
+ */
+export function productionManifest(pkg) {
+  const production = { ...pkg };
+  delete production.devDependencies;
+  return production;
+}
+
+/**
  * Compare the set of tool names a plugin actually registered (captured by the
  * smoke-load harness's `registerTool` stub) against the set it declares in
  * `contracts.tools`. Set semantics: order and duplicate registrations don't
@@ -191,7 +209,10 @@ export function resolveSiblingModulePath(fromDir, specifier) {
  * @param {string} [entryFileName]
  * @returns {string[]} sorted absolute paths, or [] if the entry doesn't exist
  */
-export function discoverReachableModules(pluginDir, entryFileName = "index.ts") {
+export function discoverReachableModules(
+  pluginDir,
+  entryFileName = "index.ts",
+) {
   const entryPath = join(pluginDir, entryFileName);
   if (!existsSync(entryPath)) return [];
 

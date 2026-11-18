@@ -22,13 +22,10 @@ import { Aside } from "@astrojs/starlight/components";
 
 ## Turning it on
 
-MCP integrations are gated behind one server-side flag, `PINCHY_MCP_ENABLED`. Set it in your Docker Compose configuration:
+MCP integrations are gated behind one server-side flag, `PINCHY_MCP_ENABLED`. Add this line to your `.env`:
 
-```yaml
-services:
-  pinchy:
-    environment:
-      - PINCHY_MCP_ENABLED=1
+```bash
+PINCHY_MCP_ENABLED=1
 ```
 
 Then restart the container:

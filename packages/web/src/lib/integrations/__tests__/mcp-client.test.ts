@@ -9,18 +9,36 @@ import {
   McpSchemaError,
 } from "../mcp-client";
 
+// The SSRF guard always refuses loopback (ALLOW_PRIVATE_URLS opens only the
+// private class), and the mock server listens on 127.0.0.1. So the guard is a
+// seam here that passes by default; its own decisions are covered in
+// url-validation.test.ts, and the test at the bottom pins that listMcpTools
+// really consults it — and awaits it — before any network activity.
+const mockValidateExternalUrl = vi.fn();
+vi.mock("../url-validation", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../url-validation")>();
+  return {
+    ...actual,
+    validateExternalUrl: (...args: Parameters<typeof actual.validateExternalUrl>) =>
+      mockValidateExternalUrl(...args),
+  };
+});
+
 describe("listMcpTools", () => {
-  let mock: McpMockServer;
+  let mock: McpMockServer | undefined;
 
   beforeEach(() => {
-    // Allow loopback URLs so the mock server (127.0.0.1) passes SSRF validation
-    vi.stubEnv("ALLOW_PRIVATE_URLS", "1");
+    mockValidateExternalUrl.mockReset();
+    mockValidateExternalUrl.mockImplementation(async (url: string) => ({
+      valid: true,
+      url: new URL(url).origin,
+    }));
   });
 
   afterEach(async () => {
-    vi.unstubAllEnvs();
     if (mock) {
       await mock.close();
+      mock = undefined;
     }
   });
 
@@ -141,6 +159,42 @@ describe("listMcpTools", () => {
         })
       ).rejects.toThrow(McpAuthError);
     }, 10000);
+  });
+
+  describe("SSRF guard", () => {
+    it("refuses a loopback URL through the real (async) guard before connecting", async () => {
+      // The guard resolves DNS and is async. A synchronous call reads
+      // `.valid` off a Promise — so this pins that the refusal really comes
+      // from the guard's verdict, with its message, and no request is sent.
+      const actual = await vi.importActual<typeof import("../url-validation")>("../url-validation");
+      mockValidateExternalUrl.mockImplementation(actual.validateExternalUrl);
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+      try {
+        await expect(
+          listMcpTools({ url: "http://127.0.0.1:9/mcp", transport: "http", token: "t" })
+        ).rejects.toThrow(/Invalid MCP server URL: Blocked/);
+        expect(mockValidateExternalUrl).toHaveBeenCalledWith("http://127.0.0.1:9/mcp");
+        expect(fetchSpy).not.toHaveBeenCalled();
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    });
+
+    it("connects once the guard's verdict resolves to valid", async () => {
+      mockValidateExternalUrl.mockImplementation(
+        (url: string) =>
+          new Promise((resolve) =>
+            setTimeout(() => resolve({ valid: true, url: new URL(url).origin }), 5)
+          )
+      );
+      mock = await createMcpMockServer("normal");
+      const tools = await listMcpTools({
+        url: `http://127.0.0.1:${mock.port}/mcp`,
+        transport: "http",
+        token: "test-token",
+      });
+      expect(tools).toHaveLength(2);
+    });
   });
 });
 

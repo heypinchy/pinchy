@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Regression guard for the recurring `tapClientLookup: Index N out of bounds`
  * full-page crash. Root cause: assistant-ui's index-keyed message list throws

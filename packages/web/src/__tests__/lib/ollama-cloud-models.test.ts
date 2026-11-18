@@ -3,6 +3,7 @@ import {
   TOOL_CAPABLE_OLLAMA_CLOUD_MODELS,
   TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS,
   VISION_OLLAMA_CLOUD_MODEL_IDS,
+  type OllamaCloudModel,
 } from "@/lib/ollama-cloud-models";
 
 /**
@@ -21,7 +22,8 @@ import {
  *  - Tools were probed by offering a function schema and checking for a
  *    structured `tool_calls` response.
  */
-const byId = (id: string) => TOOL_CAPABLE_OLLAMA_CLOUD_MODELS.find((m) => m.id === id);
+const byId = (id: string): OllamaCloudModel | undefined =>
+  TOOL_CAPABLE_OLLAMA_CLOUD_MODELS.find((m) => m.id === id);
 
 describe("Ollama Cloud model catalog — empirically verified capabilities", () => {
   it("includes minimax-m3 with vision and reasoning", () => {
@@ -34,17 +36,25 @@ describe("Ollama Cloud model catalog — empirically verified capabilities", () 
     expect(m!.reasoning).toBe(true);
   });
 
-  it("flags qwen3.5:397b as text-only despite its library page", () => {
-    // The /v1/chat/completions endpoint returns HTTP 200 on image payloads
-    // for this model but hallucinates the contents (colors 1/3, numbers 0/3
-    // across distinct test images) — it does not actually see the image.
-    // Unlike qwen3-vl, qwen3.5 is a text/reasoning model, not a VL model.
-    // Flagged vision:false so it is never picked as an image model and is
-    // not offered as a vision-capable choice.
-    const m = byId("qwen3.5:397b");
-    expect(m).toBeDefined();
-    expect(m!.vision).toBe(false);
-    expect(VISION_OLLAMA_CLOUD_MODEL_IDS.has("qwen3.5:397b")).toBe(false);
+  it("no longer carries the 8 models Ollama stopped serving (2026-11-16)", () => {
+    // `pnpm models:discover` against https://ollama.com/v1/models on 2026-11-16
+    // (three runs, stable) reported these as REMOVED: they are not in the live
+    // catalog any more, so offering them in the picker or writing them into
+    // openclaw.json hands users a model that 404s.
+    const retired = [
+      "deepseek-v4-flash",
+      "deepseek-v4-pro",
+      "glm-5.1",
+      "kimi-k2.5",
+      "minimax-m2.5",
+      "minimax-m2.7",
+      "mistral-large-3:675b",
+      "qwen3.5:397b",
+    ];
+    for (const id of retired) {
+      expect(TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS, id).not.toContain(id);
+      expect(VISION_OLLAMA_CLOUD_MODEL_IDS.has(id), id).toBe(false);
+    }
   });
 
   it("drops qwen3-next:80b — tool calls still flaky on Ollama Cloud", () => {
@@ -141,20 +151,104 @@ describe("Ollama Cloud model catalog — empirically verified capabilities", () 
     }
   });
 
-  it("includes kimi-k2.7-code with reasoning, text-only, 256K context", () => {
+  it("includes kimi-k2.7-code with reasoning, vision since 2026-07-30, 256K context", () => {
     // Added 2026-06-25 (v0.7.x catalog sweep). ollama.com/library/kimi-k2.7-code
     // lists tools + thinking + vision (image/video via MoonViT), 256K context.
     // Tools verified empirically 4/4 rounds against /v1/chat/completions
     // (structured tool_call + clean multi-turn follow-up) — no multi-turn-500
-    // regression, unlike its kimi-k2-thinking sibling. Vision is flagged false:
-    // the live endpoint returns HTTP 500 on image_url payloads (2 rounds), so
-    // the library "vision" tag is a lie here, same shape as qwen3.5:397b.
+    // regression, unlike its kimi-k2-thinking sibling.
+    //
+    // Vision was false from 2026-06-25 to 2026-07-30 because the endpoint HTTP
+    // 500'd on every image_url payload. Re-probed 2026-07-30 with a 512x512
+    // PNG: HTTP 200 and the number + colour read correctly in 6/6 trials.
+    //
+    // Worth knowing WHY the old verdict was wrong, because it was not simply
+    // an upstream fix: the probe's own fixture was a 64x64 PNG that Ollama's
+    // decoders refuse, and this model still 500s on that image today. A dead
+    // fixture reads exactly like a missing capability. The probe now sends
+    // 512x512 and reports a decode refusal as its own verdict — see
+    // scripts/lib/ollama-cloud-vision-probe.mjs.
     const m = TOOL_CAPABLE_OLLAMA_CLOUD_MODELS.find((x) => x.id === "kimi-k2.7-code");
     expect(m).toBeDefined();
     expect(m!.reasoning).toBe(true);
-    expect(m!.vision).toBe(false);
+    expect(m!.vision).toBe(true);
     expect(m!.contextWindow).toBe(262144);
-    expect(VISION_OLLAMA_CLOUD_MODEL_IDS.has("kimi-k2.7-code")).toBe(false);
+    expect(VISION_OLLAMA_CLOUD_MODEL_IDS.has("kimi-k2.7-code")).toBe(true);
+  });
+
+  it("drops nemotron-3-nano:30b — tool calls now fail 4 of 5 rounds (2026-07-30)", () => {
+    // Carried since 2026-06 as a fast/cheap 1M-context option. The 2026-07-30
+    // sweep found it silently skipping the tool call: HTTP 200, empty content,
+    // no tool_calls — qwen3-next's exact failure mode. Re-probed four more
+    // times: 1 clean, 3 no-call. So 4 no-call out of 5 rounds in total; the
+    // denominator includes the sweep round that raised the suspicion, because
+    // dropping it would flatter the model and break comparison with the
+    // qwen3-next record below ("one of four rounds"), which counts the same way.
+    // An agent on this model would ignore its tools four turns out of five,
+    // which is worse than an outright error because it looks like the model
+    // simply chose not to act.
+    //
+    // Intermittent, not dead — and intermittent is still disqualifying here,
+    // the same bar qwen3-next was held to. Re-adding needs a clean multi-round
+    // sweep, not one lucky pass.
+    expect(TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS).not.toContain("nemotron-3-nano:30b");
+  });
+
+  it("keeps kimi-k3 out — extra-usage-only billing, not plan usage (2026-07-30)", () => {
+    // Appeared in /v1/models on 2026-07-30 with everything we look for on
+    // ollama.com/library/kimi-k3: "vision tools thinking cloud", 1M context
+    // (/api/show agrees: 1048576). It is still not a candidate, and the reason
+    // is commercial rather than technical.
+    //
+    // Every request returns HTTP 402: "this model uses extra usage only (not
+    // included plan usage) and your extra usage balance is empty". Confirmed
+    // twice — through the API with a valid key and through the signed-in CLI.
+    // So it cannot be capability-probed without buying balance, and more to the
+    // point, surfacing it would hand Pro/Max users an agent that 402s on every
+    // turn. It would also break this catalog's zero-cost premise (see
+    // ZERO_COST): Ollama Cloud is subscription-billed, which is exactly why
+    // Pinchy reports tokens and not spend.
+    //
+    // Add it only once the account carries an extra-usage balance AND the tools
+    // and vision probes have run. Never from the library page alone.
+    expect(TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS).not.toContain("kimi-k3");
+  });
+
+  it("keeps exactly the 9 models still served on 2026-11-16", () => {
+    expect([...TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS].sort()).toEqual(
+      [
+        "gemma4:31b",
+        "glm-5.2",
+        "gpt-oss:120b",
+        "gpt-oss:20b",
+        "kimi-k2.6",
+        "kimi-k2.7-code",
+        "minimax-m3",
+        "nemotron-3-super",
+        "nemotron-3-ultra",
+      ].sort()
+    );
+  });
+
+  it("keeps the vision set to the models that still pass the sight probe (2026-11-16)", () => {
+    expect([...VISION_OLLAMA_CLOUD_MODEL_IDS].sort()).toEqual(
+      ["gemma4:31b", "kimi-k2.6", "kimi-k2.7-code", "minimax-m3"].sort()
+    );
+  });
+
+  it("never sets a contextTokens cap above the native contextWindow", () => {
+    // The whole point of contextTokens is a budget *below* the native window,
+    // which OpenClaw budgets compaction against. A cap above contextWindow is
+    // nonsense OpenClaw would swallow silently, so guard every current and
+    // future cap in one place — a typo on the next capped model fails here.
+    // Widen off the `as const` literals so the optional field is visible (same
+    // satisfies-based widening as byId, no cast).
+    const models: readonly OllamaCloudModel[] = TOOL_CAPABLE_OLLAMA_CLOUD_MODELS;
+    for (const m of models) {
+      if (m.contextTokens !== undefined) {
+        expect(m.contextTokens).toBeLessThanOrEqual(m.contextWindow);
+      }
+    }
   });
 
   it("every model declares vision and carries no dead capability fields", () => {

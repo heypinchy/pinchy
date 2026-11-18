@@ -112,16 +112,29 @@ describe("runWatchdogTick", () => {
       expect(audit.outcome).toBe("failure");
       expect(audit.resource).toBe("agent:a1");
       expect(audit.detail.agent).toEqual({ id: "a1", name: "Smithers" });
-      expect(audit.detail.user).toEqual({ id: "u1" });
-      expect(audit.detail.sessionKey).toBe(basePending.sessionKey);
+      // #824: the session key and a `user.id` both carry the raw users.id, and
+      // this row's actor is the watchdog, so there is no pseudonymized column to
+      // lean on. Neither may reach the verbatim, immutable `detail`.
+      expect(audit.detail).not.toHaveProperty("user");
+      expect(audit.detail).not.toHaveProperty("sessionKey");
+      expect(JSON.stringify(audit.detail)).not.toContain("u1");
+      expect(audit.detail.chatId).toBeNull();
       expect(audit.detail.runId).toBe("provisional-1");
       expect(audit.detail.waitedMs).toBe(deps.now() - 1_000_000);
       expect(audit.detail.firstChunkTimeoutMs).toBe(NINETY_S);
       // No PII in detail.
       expect(JSON.stringify(audit.detail)).not.toContain("@");
 
+      // A pending run's runId is PROVISIONAL — Pinchy's per-turn messageId,
+      // which the gateway has never seen (scanForUnstartedRuns only returns
+      // firstChunkAt===null runs). Handing it to chatAbort names a run the
+      // gateway cannot find, so it aborts NOTHING while we tear the entry down
+      // and tell the user to retry. Omitting it aborts the session's current
+      // run instead — the same gate handleAbort uses (#550). The forensic audit
+      // row above keeps the provisional id (it identifies the Pinchy-side run
+      // that never started); only the abort RPC must not claim it.
       expect(chatAbort).toHaveBeenCalledTimes(1);
-      expect(chatAbort).toHaveBeenCalledWith(basePending.sessionKey, "provisional-1");
+      expect(chatAbort).toHaveBeenCalledWith(basePending.sessionKey, undefined);
 
       // Retryable broadcast.
       expect(broadcastNoFirstChunk).toHaveBeenCalledTimes(1);
@@ -191,18 +204,20 @@ describe("runWatchdogTick", () => {
     });
 
     it("continues processing other unstarted runs even if writeAudit throws for one", async () => {
-      writeAudit.mockImplementation(async (entry: { detail: { sessionKey: string } }) => {
-        if (entry.detail.sessionKey === "p1") throw new Error("audit DB down");
+      writeAudit.mockImplementation(async (entry: { detail: { runId: string } }) => {
+        if (entry.detail.runId === "p1") throw new Error("audit DB down");
       });
       runs.registerPending({
         ...basePending,
         sessionKey: "p1",
+        runId: "p1",
         submittedAt: 1_000_000,
         ws: fakeWs(),
       });
       runs.registerPending({
         ...basePending,
         sessionKey: "p2",
+        runId: "p2",
         submittedAt: 1_000_000,
         ws: fakeWs(),
       });

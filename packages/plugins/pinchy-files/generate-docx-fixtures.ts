@@ -25,7 +25,7 @@ import { join } from "node:path";
 // Minimal 1×1 px red PNG (base64). This byte array is a valid PNG.
 const TINY_PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI6QAAAABJRU5ErkJggg==",
-  "base64",
+  "base64"
 );
 
 const FIXTURES_DIR = join(import.meta.dirname!, "test-fixtures");
@@ -50,7 +50,7 @@ async function createSimpleDocx(): Promise<Buffer> {
           new Paragraph({
             children: [
               new TextRun(
-                "The customer prefers blue widgets and has previously ordered from us in 2024.",
+                "The customer prefers blue widgets and has previously ordered from us in 2024."
               ),
             ],
           }),

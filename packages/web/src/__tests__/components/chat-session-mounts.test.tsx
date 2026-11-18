@@ -1,18 +1,28 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+// @vitest-environment jsdom
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, act } from "@testing-library/react";
 import { useState } from "react";
 import { ChatSessionProvider, useChatSession } from "@/components/chat-session-provider";
 import { ChatSessionMounts } from "@/components/chat-session-mounts";
+import { useChatConnection } from "@/lib/chat-connection-store";
 
 // Mutable state that tests can override to control useWsRuntime's return value.
 let mockIsRunning = false;
-let mockReconnectExhausted = false;
+let mockConnectionRejection: "too_many_connections" | "rate_limited" | null = null;
+let mockIsOffline = false;
 let mockPayloadRejected = false;
+let mockHasQueuedMessage = false;
 let mockPathname = "/agents";
 
+// Hoisted so tests can assert on navigation — the `/compact` and `/reset`
+// commands must act on THIS session in place and never route away like `/new`.
+const routerPushSpy = vi.fn();
 vi.mock("next/navigation", () => ({
   usePathname: () => mockPathname,
-  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+  useRouter: () => ({
+    push: (...args: unknown[]) => routerPushSpy(...args),
+    replace: vi.fn(),
+  }),
 }));
 
 const toastSuccessSpy = vi.fn();
@@ -38,8 +48,10 @@ vi.mock("@/hooks/use-ws-runtime", () => ({
       hasInitialContent: true,
       isOpenClawConnected: true,
       isDelayed: false,
-      reconnectExhausted: mockReconnectExhausted,
+      isOffline: mockIsOffline,
+      connectionRejection: mockConnectionRejection,
       payloadRejected: mockPayloadRejected,
+      hasQueuedMessage: mockHasQueuedMessage,
       onRetryContinue: vi.fn(),
       onRetryResend: vi.fn(),
     };
@@ -68,9 +80,18 @@ function seedBundle(agentId: string, publish: (b: any) => void) {
 describe("ChatSessionMounts", () => {
   beforeEach(() => {
     mockIsRunning = false;
-    mockReconnectExhausted = false;
+    mockConnectionRejection = null;
+    mockIsOffline = false;
     mockPayloadRejected = false;
+    mockHasQueuedMessage = false;
     mockPathname = "/agents";
+    routerPushSpy.mockClear();
+  });
+
+  // Restore stubbed globals (`fetch`) here rather than at the end of each test,
+  // so a failing assertion can't leak the stub into the next one.
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it("calls useWsRuntime once per visited agentId", () => {
@@ -114,7 +135,6 @@ describe("ChatSessionMounts", () => {
           isDelayed: false,
           reconnectExhausted: false,
           payloadRejected: false,
-          isOrphaned: false,
           onRetryContinue: vi.fn(),
           onRetryResend: vi.fn(),
           lastError: null,
@@ -135,7 +155,12 @@ describe("ChatSessionMounts", () => {
     expect(useWsRuntimeSpy).toHaveBeenCalledWith("agent-A", "chat-x", expect.any(Function));
   });
 
-  it("wires a slash-command handler that surfaces /help via toast (#611)", () => {
+  it("runs /compact against the compact route and toasts success (#611)", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200, text: async () => JSON.stringify({ ok: true }) });
+    vi.stubGlobal("fetch", fetchMock);
+
     function Visitor() {
       const session = useChatSession("agent-A", "chat-x");
       if (!session.bundle) {
@@ -152,7 +177,6 @@ describe("ChatSessionMounts", () => {
           isDelayed: false,
           reconnectExhausted: false,
           payloadRejected: false,
-          isOrphaned: false,
           onRetryContinue: vi.fn(),
           onRetryResend: vi.fn(),
           lastError: null,
@@ -177,11 +201,20 @@ describe("ChatSessionMounts", () => {
     const onSlashCommand = lastCall![2] as (c: { name: string }) => void;
     expect(typeof onSlashCommand).toBe("function");
 
-    act(() => onSlashCommand({ name: "help" }));
-    expect(toastSuccessSpy).toHaveBeenCalledWith(
-      "Slash commands",
-      expect.objectContaining({ description: expect.stringContaining("/compact") })
+    await act(async () => {
+      onSlashCommand({ name: "compact" });
+      // Flush the apiPost microtasks behind the success toast.
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    // Hit the compact route for THIS chat's session...
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/agents/agent-A/sessions/compact",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ chatId: "chat-x" }) })
     );
+    // ...and stay put: compaction acts in place, unlike /new.
+    expect(routerPushSpy).not.toHaveBeenCalled();
+    expect(toastSuccessSpy).toHaveBeenCalledWith(expect.stringContaining("compacted"));
   });
 
   it("runs /reset against the reset route and remounts the thread (#611)", async () => {
@@ -235,11 +268,13 @@ describe("ChatSessionMounts", () => {
       await new Promise((r) => setTimeout(r, 0));
     });
 
-    // Hit the reset route (not /new navigation) for THIS chat's session.
+    // Hit the reset route for THIS chat's session...
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/agents/agent-A/sessions/reset",
       expect.objectContaining({ method: "POST", body: JSON.stringify({ chatId: "chat-x" }) })
     );
+    // ...and stay put: reset clears in place, unlike /new.
+    expect(routerPushSpy).not.toHaveBeenCalled();
     // The bumped nonce changes the instance's React key → remount → a fresh
     // useWsRuntime call, cold-starting the (now-empty) session.
     const mountsAfter = useWsRuntimeSpy.mock.calls.filter(
@@ -247,8 +282,6 @@ describe("ChatSessionMounts", () => {
     ).length;
     expect(mountsAfter).toBeGreaterThan(mountsBefore);
     expect(toastSuccessSpy).toHaveBeenCalledWith(expect.stringContaining("reset"));
-
-    vi.unstubAllGlobals();
   });
 
   it("keeps a mount alive when an unrelated child remounts", () => {
@@ -323,11 +356,9 @@ describe("ChatSessionMounts", () => {
       });
 
       expect(fetchMock).toHaveBeenCalledWith(
-        "/api/internal/audit/background-run",
+        "/api/audit/background-run",
         expect.objectContaining({ method: "POST" })
       );
-
-      vi.unstubAllGlobals();
     });
 
     it("does NOT call fetch when isRunning flips true → false and user IS on the agent chat page", async () => {
@@ -355,8 +386,6 @@ describe("ChatSessionMounts", () => {
       });
 
       expect(fetchMock).not.toHaveBeenCalled();
-
-      vi.unstubAllGlobals();
     });
 
     it("does NOT call fetch on initial render when isRunning is already false", async () => {
@@ -376,8 +405,6 @@ describe("ChatSessionMounts", () => {
       });
 
       expect(fetchMock).not.toHaveBeenCalled();
-
-      vi.unstubAllGlobals();
     });
   });
 
@@ -404,19 +431,84 @@ describe("ChatSessionMounts", () => {
       return observed[observed.length - 1];
     }
 
-    it("publishes lastError='Connection lost...' when bundle.reconnectExhausted is true", () => {
-      const bundle = lastBundleFor("agent-exhausted", () => {
-        mockReconnectExhausted = true;
+    it("publishes a lastError that says we are still retrying when the server refused the connection", () => {
+      const bundle = lastBundleFor("agent-refused", () => {
+        mockConnectionRejection = "too_many_connections";
       });
-      expect(bundle?.lastError).toMatch(/connection lost/i);
+      expect(bundle?.lastError).toMatch(/too many/i);
+      expect(bundle?.lastError).toMatch(/retry|trying/i);
+      // Retrying is automatic: no copy may say reload is the only way out.
+      expect(bundle?.lastError).not.toMatch(/reload/i);
     });
 
-    it("publishes lastError=null when reconnectExhausted is not set", () => {
-      // Per-turn failures are now authoritative `liveness: failed` verdicts
-      // rendered as a thread bubble — they are NOT surfaced as a sidebar
-      // lastError. Reconnect exhaustion is the only sidebar error.
+    it("publishes a message still queued in the instance (#957)", () => {
+      // The store exempts such a chat from eviction; it can only do that if
+      // the flag reaches the bundle.
+      const bundle = lastBundleFor("agent-queued", () => {
+        mockHasQueuedMessage = true;
+      });
+      expect(bundle?.hasQueuedMessage).toBe(true);
+    });
+
+    it("names the rate limit when that is what refused the connection", () => {
+      const bundle = lastBundleFor("agent-rate-limited", () => {
+        mockConnectionRejection = "rate_limited";
+      });
+      expect(bundle?.lastError).toMatch(/too quickly|rate/i);
+      expect(bundle?.lastError).not.toMatch(/reload/i);
+    });
+
+    it("publishes lastError=null for a plain outage and for being offline", () => {
+      // An outage heals itself (and the chat says so); the sidebar's red dot is
+      // for what needs a person, and nothing here needs a reload.
+      expect(lastBundleFor("agent-offline", () => (mockIsOffline = true))?.lastError).toBeNull();
+    });
+
+    it("publishes lastError=null when the connection is healthy", () => {
+      // Per-turn failures are authoritative `liveness: failed` verdicts rendered
+      // as a thread bubble — they are NOT surfaced as a sidebar lastError.
       const bundle = lastBundleFor("agent-healthy", () => {});
       expect(bundle?.lastError).toBeNull();
+    });
+  });
+
+  describe("connection info for the chat (#1422)", () => {
+    function Seed({ agentId }: { agentId: string }) {
+      const session = useChatSession(agentId);
+      if (!session.bundle) seedBundle(agentId, session.publish);
+      return null;
+    }
+    function Probe({ agentId, onInfo }: { agentId: string; onInfo: (i: unknown) => void }) {
+      onInfo(useChatConnection(agentId));
+      return null;
+    }
+
+    it("hands the chat the offline flag and the refusal reason the runtime reports", () => {
+      mockIsOffline = true;
+      mockConnectionRejection = "rate_limited";
+      let info: unknown;
+      render(
+        <ChatSessionProvider>
+          <Seed agentId="agent-info" />
+          <ChatSessionMounts />
+          <Probe agentId="agent-info" onInfo={(i) => (info = i)} />
+        </ChatSessionProvider>
+      );
+      expect(info).toEqual({ isOffline: true, rejection: "rate_limited" });
+    });
+
+    it("forgets the connection info when the instance unmounts", () => {
+      mockIsOffline = true;
+      let info: unknown;
+      const { unmount } = render(
+        <ChatSessionProvider>
+          <Seed agentId="agent-gone" />
+          <ChatSessionMounts />
+        </ChatSessionProvider>
+      );
+      unmount();
+      render(<Probe agentId="agent-gone" onInfo={(i) => (info = i)} />);
+      expect(info).toEqual({ isOffline: false, rejection: null });
     });
   });
 });

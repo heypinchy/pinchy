@@ -19,6 +19,7 @@
       "odoo_validate_picking",
       "odoo_mark_mo_done",
       "odoo_set_approval",
+      "odoo_reconcile",
       "odoo_write",
       "odoo_delete",
       "odoo_attach_file"

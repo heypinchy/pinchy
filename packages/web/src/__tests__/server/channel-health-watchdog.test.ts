@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Unit tests for the ChannelHealthMonitor — the stateful watchdog that polls
  * OpenClaw `channels.status()`, classifies each account, and turns transitions

@@ -4,6 +4,7 @@ import {
   mcpProxyUrl,
   mcpServerKey,
   nativeMcpToolName,
+  type NativeMcpConnectionInput,
 } from "@/lib/openclaw-config/native-mcp";
 
 describe("mcpServerKey", () => {
@@ -40,7 +41,7 @@ describe("mcpProxyUrl", () => {
 
 describe("buildNativeMcp", () => {
   const opts = { proxyBaseUrl: "http://pinchy:7777", gatewayToken: "gw-bootstrap-token" };
-  const conns = [
+  const conns: NativeMcpConnectionInput[] = [
     {
       id: "gh-1",
       transport: "http" as const,
@@ -96,7 +97,7 @@ describe("buildNativeMcp", () => {
     // tools.allow entries for BOTH connections would resolve against
     // whichever server happened to win the object-key write — a fail-open
     // authorization mix-up. buildNativeMcp must fail loudly instead.
-    const collidingConns = [
+    const collidingConns: NativeMcpConnectionInput[] = [
       { id: "conn-abc", transport: "http" as const, agentTools: { "agent-a": ["tool_one"] } },
       { id: "conn--abc", transport: "http" as const, agentTools: { "agent-b": ["tool_two"] } },
     ];

@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, waitFor, act, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -9,6 +10,7 @@ import React from "react";
 vi.mock("@/components/chat", () => ({
   AgentIdContext: React.createContext<string | null>(null),
   AgentModelContext: React.createContext<string | null>(null),
+  FileSourceContext: React.createContext<"uploads" | "artifacts">("uploads"),
 }));
 
 // useMessagePartFile is the assistant-ui hook the component reads from.
@@ -70,6 +72,28 @@ describe("AttachmentPreview — PDF", () => {
     expect(embed.getAttribute("type")).toBe("application/pdf");
     // URL-encoded path with the agent id segment.
     expect(embed.getAttribute("src")).toBe("/api/agents/agent-1/uploads/Profile%20(38).pdf");
+  });
+
+  it("points at the ARTIFACTS route when FileSourceContext is 'artifacts' (agent-delivered file, #703)", async () => {
+    mockUseMessagePartFile.mockReturnValue({
+      mimeType: "application/pdf",
+      filename: "report.pdf",
+    });
+    const { AgentIdContext, FileSourceContext } = await import("@/components/chat");
+    const { AttachmentPreview } = await import("@/components/assistant-ui/attachment-preview");
+    const { container } = render(
+      <AgentIdContext.Provider value="agent-1">
+        <FileSourceContext.Provider value="artifacts">
+          <AttachmentPreview />
+        </FileSourceContext.Provider>
+      </AgentIdContext.Provider>
+    );
+    const embed = await waitFor(() => {
+      const e = container.querySelector("embed");
+      if (!e) throw new Error("embed not yet mounted");
+      return e;
+    });
+    expect(embed.getAttribute("src")).toBe("/api/agents/agent-1/artifacts/report.pdf");
   });
 
   it("opens a modal with a full-size PDF embed when the thumbnail is clicked", async () => {
@@ -158,6 +182,51 @@ describe("AttachmentPreview — fallback chip", () => {
     expect(screen.getByText("archive.zip")).toBeInTheDocument();
     // The chip path skips any fetch entirely.
     expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it("makes the chip a download link to the ARTIFACTS route for an agent-delivered file (#1298)", async () => {
+    global.fetch = vi.fn() as unknown as typeof fetch;
+    mockUseMessagePartFile.mockReturnValue({ mimeType: "text/csv", filename: "smoke data.csv" });
+    const { AgentIdContext, FileSourceContext } = await import("@/components/chat");
+    const { AttachmentPreview } = await import("@/components/assistant-ui/attachment-preview");
+    render(
+      <AgentIdContext.Provider value="agent-1">
+        <FileSourceContext.Provider value="artifacts">
+          <AttachmentPreview />
+        </FileSourceContext.Provider>
+      </AgentIdContext.Provider>
+    );
+    const link = screen.getByRole("link", { name: "Download smoke data.csv" });
+    expect(link.getAttribute("href")).toBe("/api/agents/agent-1/artifacts/smoke%20data.csv");
+    // The route serves `inline`; the attribute is what makes a click save the
+    // file instead of opening a CSV as text in the tab.
+    expect(link.hasAttribute("download")).toBe(true);
+    expect(screen.getByText("smoke data.csv")).toBeInTheDocument();
+    // No preview, so no readiness probe either.
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it("links a user's own non-previewable upload to the UPLOADS route", async () => {
+    // CSV is one of the text types a user can upload; it has no preview.
+    mockUseMessagePartFile.mockReturnValue({ mimeType: "text/csv", filename: "data.csv" });
+    await renderWithAgent("agent-1");
+    expect(screen.getByRole("link", { name: "Download data.csv" }).getAttribute("href")).toBe(
+      "/api/agents/agent-1/uploads/data.csv"
+    );
+  });
+
+  it("is reachable with the keyboard", async () => {
+    mockUseMessagePartFile.mockReturnValue({ mimeType: "text/csv", filename: "smoke.csv" });
+    await renderWithAgent("agent-1");
+    await userEvent.tab();
+    expect(screen.getByRole("link", { name: "Download smoke.csv" })).toHaveFocus();
+  });
+
+  it("renders no link when there is no agent id to build a URL from", async () => {
+    mockUseMessagePartFile.mockReturnValue({ mimeType: "text/csv", filename: "smoke.csv" });
+    await renderWithAgent(null);
+    expect(screen.getByText("smoke.csv")).toBeInTheDocument();
+    expect(screen.queryByRole("link")).toBeNull();
   });
 
   it("renders a chip with a default filename when none is provided", async () => {

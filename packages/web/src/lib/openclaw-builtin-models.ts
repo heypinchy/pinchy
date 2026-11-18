@@ -1,4 +1,5 @@
 import type { ProviderName } from "@/lib/providers";
+import type { PricingTier } from "@/lib/usage-cost";
 
 /**
  * OpenClaw ModelDefinitionConfig shape — used in models.providers.<name>.models[]
@@ -35,21 +36,105 @@ export interface OpenClawModelDefinition {
   };
 }
 
-const ANTHROPIC_MODELS: OpenClawModelDefinition[] = [
+/**
+ * A built-in catalog entry. Same shape as {@link OpenClawModelDefinition} — the
+ * one custom OpenAI-compatible providers persist — plus prompt-length rate
+ * cards, which only Pinchy's own curated prices carry. `tieredPricing` is
+ * OpenClaw's own shape (its config schema accepts it on any model): half-open
+ * token ranges, `start <= prompt < end`, the last one open-ended. Usage & Costs
+ * and budgets pick the tier by the prompt the model read (usage-cost.ts).
+ */
+export interface BuiltinModelDefinition extends OpenClawModelDefinition {
+  cost: OpenClawModelDefinition["cost"] & { tieredPricing?: PricingTier[] };
+}
+
+// This list is the whole of what Pinchy knows about a built-in provider's
+// models: build.ts emits it to OpenClaw, and seedBuiltinModels turns it into the
+// capability rows (vision/tools/long-context) every model decision reads. The
+// agent model picker lists the provider's LIVE catalog instead, so a model the
+// provider serves but this list omits is selectable yet half-supported — it
+// reads as "not vision-capable" and drops out of the pdf/image chain.
+//
+// Newest first. Limits must agree with the vendored models.dev snapshot
+// (guarded in openclaw-builtin-models.test.ts); `maxTokens` may sit below the
+// model's own output cap, never above it.
+//
+// Anthropic `maxTokens` stays at 32K or below although the models allow up to
+// 128K: it becomes every request's `max_tokens`, and Anthropic reserves that
+// much of the output-tokens-per-minute limit when a request starts. On a new,
+// low-tier account a 128K reservation can exceed the whole limit, so every
+// turn would be answered 429 however short the reply.
+//
+// A model only belongs here once the pinned OpenClaw can drive it. Opus 5.5,
+// Sonnet 5.5 and Fable 5.1 cannot yet: OpenClaw 2026.7.1 predates their request
+// contract: it sends Opus 5.5 a thinking setting the API rejects, and has none
+// of the append-only context handling the newer runtime adds for the thinking
+// blocks of Sonnet 5.5 and Fable 5.1. They arrive with the OpenClaw update and
+// are tools-blocked until then (model-resolver/blocklist.ts).
+//
+// Claude Haiku 5.5 is here, but only as `reasoning: false`, and that flag is
+// load-bearing — read it as "OpenClaw must send this model no thinking
+// setting", not as a statement about the model (it does think: Anthropic runs
+// adaptive thinking when a request leaves `thinking` out). The runtime does not
+// know Haiku 5.5, so `reasoning: true` would make it default the thinking level
+// to "medium" and send a `budget_tokens` budget, which the model rejects with
+// HTTP 400. The blocklist reads this flag and blocks Haiku 5.5 again if it flips.
+//
+// Order matters for the first entry only: OpenClaw sizes an Anthropic model it
+// finds nowhere (one this list omits) by `models[0]`'s context window and
+// output cap.
+//
+// Anthropic prices: platform.claude.com/docs/en/about-claude/pricing, read
+// 2026-10-16 (Haiku 5.5 on 2026-11-04) — input / output / cache hits /
+// 5-minute cache writes. Haiku 5.5 has two rate cards, chosen per request by
+// prompt length with cache reads and writes counted: up to 100,000 tokens, and
+// five times that above. Its flat cost is the short card; `tieredPricing`
+// carries both, with the boundary as `100001` because OpenClaw's ranges are
+// half-open and "up to 100,000" includes 100,000.
+const ANTHROPIC_MODELS: BuiltinModelDefinition[] = [
   {
-    id: "claude-opus-4-7",
-    name: "Claude Opus 4.7",
-    contextWindow: 200000,
+    id: "claude-sonnet-5",
+    name: "Claude Sonnet 5",
+    contextWindow: 1000000,
     maxTokens: 32000,
     reasoning: true,
     vision: true,
     input: ["text", "image"],
-    cost: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
+    cost: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
+  },
+  {
+    id: "claude-haiku-5-5",
+    name: "Claude Haiku 5.5",
+    contextWindow: 1000000,
+    maxTokens: 32000,
+    reasoning: false,
+    vision: true,
+    input: ["text", "image"],
+    cost: {
+      input: 0.1,
+      output: 0.5,
+      cacheRead: 0.01,
+      cacheWrite: 0.125,
+      tieredPricing: [
+        { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125, range: [0, 100001] },
+        { input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 0.625, range: [100001] },
+      ],
+    },
+  },
+  {
+    id: "claude-opus-4-7",
+    name: "Claude Opus 4.7",
+    contextWindow: 1000000,
+    maxTokens: 32000,
+    reasoning: true,
+    vision: true,
+    input: ["text", "image"],
+    cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
   },
   {
     id: "claude-sonnet-4-6",
     name: "Claude Sonnet 4.6",
-    contextWindow: 200000,
+    contextWindow: 1000000,
     maxTokens: 16000,
     reasoning: true,
     vision: true,
@@ -64,7 +149,7 @@ const ANTHROPIC_MODELS: OpenClawModelDefinition[] = [
     reasoning: false,
     vision: true,
     input: ["text", "image"],
-    cost: { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 },
+    cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
   },
 ];
 
@@ -74,40 +159,44 @@ const ANTHROPIC_MODELS: OpenClawModelDefinition[] = [
 // synthetic OpenAI/Google cache discount, because a hardcoded price silently
 // goes stale between releases. The schema only requires the fields to be
 // present; accurate, refreshable provider pricing is tracked in #677.
-const OPENAI_MODELS: OpenClawModelDefinition[] = [
+//
+// Input/output: developers.openai.com/api/docs/pricing, read 2026-10-16, the
+// tier for prompts up to 272K tokens.
+const OPENAI_MODELS: BuiltinModelDefinition[] = [
   {
     id: "gpt-5.5",
     name: "GPT-5.5",
-    contextWindow: 128000,
+    contextWindow: 1050000,
     maxTokens: 32000,
     reasoning: false,
     vision: true,
     input: ["text", "image"],
-    cost: { input: 2.5, output: 10, cacheRead: 0, cacheWrite: 0 },
+    cost: { input: 5, output: 30, cacheRead: 0, cacheWrite: 0 },
   },
   {
     id: "gpt-5.4",
     name: "GPT-5.4",
-    contextWindow: 128000,
+    contextWindow: 1050000,
     maxTokens: 16384,
     reasoning: false,
     vision: true,
     input: ["text", "image"],
-    cost: { input: 2.5, output: 10, cacheRead: 0, cacheWrite: 0 },
+    cost: { input: 2.5, output: 15, cacheRead: 0, cacheWrite: 0 },
   },
   {
     id: "gpt-5.4-mini",
     name: "GPT-5.4 Mini",
-    contextWindow: 128000,
+    contextWindow: 400000,
     maxTokens: 16384,
     reasoning: false,
     vision: true,
     input: ["text", "image"],
-    cost: { input: 0.15, output: 0.6, cacheRead: 0, cacheWrite: 0 },
+    cost: { input: 0.75, output: 4.5, cacheRead: 0, cacheWrite: 0 },
   },
 ];
 
-const GOOGLE_MODELS: OpenClawModelDefinition[] = [
+// Prices: ai.google.dev/gemini-api/docs/pricing, read 2026-10-16.
+const GOOGLE_MODELS: BuiltinModelDefinition[] = [
   {
     id: "gemini-2.5-pro",
     name: "Gemini 2.5 Pro",
@@ -126,7 +215,7 @@ const GOOGLE_MODELS: OpenClawModelDefinition[] = [
     reasoning: true,
     vision: true,
     input: ["text", "image"],
-    cost: { input: 0.15, output: 0.6, cacheRead: 0, cacheWrite: 0 },
+    cost: { input: 0.3, output: 2.5, cacheRead: 0, cacheWrite: 0 },
   },
   {
     id: "gemini-2.5-flash-lite",
@@ -140,7 +229,7 @@ const GOOGLE_MODELS: OpenClawModelDefinition[] = [
   },
 ];
 
-const BUILTIN_MODEL_CATALOGS: Partial<Record<ProviderName, OpenClawModelDefinition[]>> = {
+const BUILTIN_MODEL_CATALOGS: Partial<Record<ProviderName, BuiltinModelDefinition[]>> = {
   anthropic: ANTHROPIC_MODELS,
   openai: OPENAI_MODELS,
   google: GOOGLE_MODELS,
@@ -152,6 +241,6 @@ const BUILTIN_MODEL_CATALOGS: Partial<Record<ProviderName, OpenClawModelDefiniti
  * openai, google). Returns an empty array for providers not in the catalog
  * (ollama-cloud, ollama-local — handled separately in build.ts).
  */
-export function getModelCatalogForProvider(provider: ProviderName): OpenClawModelDefinition[] {
+export function getModelCatalogForProvider(provider: ProviderName): BuiltinModelDefinition[] {
   return BUILTIN_MODEL_CATALOGS[provider] ?? [];
 }

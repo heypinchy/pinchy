@@ -27,6 +27,7 @@ vi.mock("@/lib/audit", () => ({
   appendAuditLog: (...args: unknown[]) => mockAppendAuditLog(...args),
 }));
 
+import { getAuditWriteFailedCount, resetAuditWriteFailedCount } from "@/lib/audit-deferred";
 import { POST, DELETE, GET } from "@/app/api/settings/domain/route";
 
 const adminSession = {
@@ -101,6 +102,35 @@ describe("POST /api/settings/domain", () => {
     expect(data.domain).toBe("pinchy.example.com");
     expect(data.restart).toBe(true);
     expect(mockSetDomainAndRefreshCache).toHaveBeenCalledWith("pinchy.example.com");
+  });
+
+  it("still locks, answers 200, counts the failure and restarts when the audit write fails", async () => {
+    vi.useFakeTimers();
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    resetAuditWriteFailedCount();
+    try {
+      mockGetSetting.mockResolvedValueOnce(null);
+      mockAppendAuditLog.mockRejectedValueOnce(new Error("audit db down"));
+
+      const res = await POST(
+        makeRequest("POST", {
+          "x-forwarded-host": "pinchy.example.com",
+          "x-forwarded-proto": "https",
+        })
+      );
+
+      // The lock is committed; a failed audit write must neither 500 nor skip
+      // the restart that makes the lock take effect.
+      expect(res.status).toBe(200);
+      expect(getAuditWriteFailedCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(600);
+      expect(exit).toHaveBeenCalledWith(0);
+    } finally {
+      vi.useRealTimers();
+      exit.mockRestore();
+    }
   });
 
   it("should use x-forwarded-host over host header", async () => {
@@ -189,6 +219,30 @@ describe("DELETE /api/settings/domain", () => {
     expect(mockDeleteDomainAndRefreshCache).toHaveBeenCalled();
   });
 
+  it("still unlocks, answers 200, counts the failure and restarts when the audit write fails", async () => {
+    vi.useFakeTimers();
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    resetAuditWriteFailedCount();
+    try {
+      mockGetSetting.mockResolvedValueOnce("pinchy.example.com");
+      mockAppendAuditLog.mockRejectedValueOnce(new Error("audit db down"));
+
+      const res = await DELETE(makeRequest("DELETE"));
+
+      // A retry would answer 400 "No domain is locked", so the row would be lost.
+      expect(res.status).toBe(200);
+      expect(mockDeleteDomainAndRefreshCache).toHaveBeenCalled();
+      expect(getAuditWriteFailedCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(600);
+      expect(exit).toHaveBeenCalledWith(0);
+    } finally {
+      vi.useRealTimers();
+      exit.mockRestore();
+    }
+  });
+
   it("should log an audit event on removal", async () => {
     mockGetSetting.mockResolvedValueOnce("pinchy.example.com");
 
@@ -250,5 +304,149 @@ describe("GET /api/settings/domain", () => {
     expect(data.domain).toBeNull();
     expect(data.currentHost).toBe("localhost:7777");
     expect(data.isHttps).toBe(false);
+  });
+
+  it("reports the public hop as the current host behind a proxy chain", async () => {
+    mockGetSetting.mockResolvedValueOnce("pinchy.example.com");
+
+    const response = await GET(
+      makeRequest("GET", {
+        "x-forwarded-host": "pinchy.example.com, internal:7777",
+        "x-forwarded-proto": "https",
+      })
+    );
+
+    // The settings UI compares this against the locked domain to tell the
+    // admin whether they are currently on it. The raw header never equals a
+    // locked domain, so it would always read "you are somewhere else".
+    const data = await response.json();
+    expect(data.currentHost).toBe("pinchy.example.com");
+  });
+});
+
+// The domain lock has one safety guarantee: you can only lock Pinchy to an
+// address you have just proven reachable, so it cannot lock you out. Storing
+// the header verbatim breaks that behind two proxies — `X-Forwarded-Host`
+// arrives as "public.example.com, internal:7777", and a domain nobody can ever
+// send as a Host header is exactly a lockout.
+describe("domain lock stores a host that can actually match", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRequireAdmin.mockResolvedValue(adminSession);
+    mockGetSetting.mockResolvedValue(null);
+  });
+
+  it("stores the public hop of a multi-hop x-forwarded-host", async () => {
+    await POST(
+      makeRequest("POST", {
+        "x-forwarded-host": "pinchy.example.com, internal:7777",
+        "x-forwarded-proto": "https",
+      })
+    );
+
+    expect(mockSetDomainAndRefreshCache).toHaveBeenCalledWith("pinchy.example.com");
+  });
+
+  it("stores a single-hop host unchanged", async () => {
+    await POST(
+      makeRequest("POST", {
+        "x-forwarded-host": "pinchy.example.com",
+        "x-forwarded-proto": "https",
+      })
+    );
+
+    expect(mockSetDomainAndRefreshCache).toHaveBeenCalledWith("pinchy.example.com");
+  });
+});
+
+// The resolved host is client-influenced (X-Forwarded-Host is attacker
+// controlled unless a trusted proxy strips it) and, once stored, is rendered
+// unescaped into the Access Denied page every unauthenticated visitor with a
+// mismatched Host header sees. A value that fails normalizeLockableHost must
+// never reach setDomainAndRefreshCache — for injection, and because storing a
+// name no browser can literally send is a lockout too.
+//
+// This is deliberately NOT the stricter `isValidDomain` used for an agent's
+// `pinchy-web` allowed/excludedDomains (which forbids ports and bare
+// single-label hosts like "localhost" — appropriate there because it bounds
+// what an agent may browse). A locked domain is a Host value, and a real Host
+// value legitimately carries a port and can be a bare host: the integration
+// suite locks to "localhost:7779" (its own baseURL) precisely so subsequent
+// browser requests keep matching, and a self-hosted install can sit behind a
+// reverse proxy terminating on a non-default port.
+describe("domain lock rejects hostnames that are not valid Host values", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRequireAdmin.mockResolvedValue(adminSession);
+    mockGetSetting.mockResolvedValue(null);
+  });
+
+  it.each([
+    ['a"><script>alert(1)</script>', "embedded markup"],
+    ["evil example.com", "embedded space"],
+    ["evil.com:1;rm -rf /", "port/shell injection"],
+    ["evil.com/path", "path suffix"],
+    ["evil.com@attacker.com", "userinfo injection"],
+    ["evil.com@attacker.com:443", "userinfo injection ending in a default port"],
+    ["evil.com#frag", "fragment suffix"],
+  ])("rejects %s (%s)", async (host) => {
+    const response = await POST(
+      makeRequest("POST", {
+        "x-forwarded-host": host,
+        "x-forwarded-proto": "https",
+      })
+    );
+
+    expect(response.status).toBe(400);
+    const data = await response.json();
+    expect(data.error).toMatch(/domain/i);
+    expect(mockSetDomainAndRefreshCache).not.toHaveBeenCalled();
+  });
+
+  it("accepts a bare host with a non-default port, matching what a real reverse-proxy Host header can carry", async () => {
+    const response = await POST(
+      makeRequest("POST", {
+        "x-forwarded-host": "localhost:7779",
+        "x-forwarded-proto": "https",
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockSetDomainAndRefreshCache).toHaveBeenCalledWith("localhost:7779");
+  });
+
+  // What is stored has to be what the gate will later match, and the gate
+  // matches through `normalizeHost` — which folds a default port but does NOT
+  // fold case. Storing the header verbatim therefore has two failure shapes,
+  // and both end as a lockout rather than as a rejection anyone can see:
+  //
+  //   `Host: EXAMPLE.COM`     stored verbatim, never equals the lowercase
+  //                           Host every browser sends afterwards.
+  //   `Host: example.com:443` a proxy configured with `$host:$server_port`
+  //                           sends this; the gate would happily match it,
+  //                           so refusing to store it turns a working
+  //                           deployment into a 400 with no way forward.
+  //
+  // Both are answered by storing the canonical parse rather than the input.
+  it.each([
+    ["EXAMPLE.COM", "example.com", "lower-cases the host the gate compares case-sensitively"],
+    [
+      "pinchy.example.com:443",
+      "pinchy.example.com",
+      "drops the default port the gate folds away anyway",
+    ],
+  ])("stores %s as %s (%s)", async (sent, stored) => {
+    const response = await POST(
+      makeRequest("POST", {
+        "x-forwarded-host": sent,
+        "x-forwarded-proto": "https",
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockSetDomainAndRefreshCache).toHaveBeenCalledWith(stored);
+    // The response echoes the stored value, so the success toast and the
+    // audit row name the domain that is actually locked.
+    expect((await response.json()).domain).toBe(stored);
   });
 });

@@ -7,16 +7,17 @@ import { Aside, Badge } from "@astrojs/starlight/components";
 
 Every agent in Pinchy is configured through a settings page. To open it, navigate to an agent's chat and click the **gear icon** in the top bar. Which tabs you see depends on your role and the agent type.
 
-| Tab                                                   | What it controls                     | Who can see it             |
-| ----------------------------------------------------- | ------------------------------------ | -------------------------- |
-| **General**                                           | Name, tagline, model, agent type     | Everyone who can edit      |
-| **Personality**                                       | Avatar, personality preset, SOUL.md  | Everyone who can edit      |
-| **Instructions**                                      | AGENTS.md operating instructions     | Everyone who can edit      |
-| **Permissions**                                       | Tool allow-list, directory access    | Admins only, shared agents |
-| **Access** <Badge text="Enterprise" variant="note" /> | Visibility mode, group assignment    | Admins only, shared agents |
-| **Telegram**                                          | Connect a Telegram bot to this agent | Admins only                |
+| Tab                                                   | What it controls                      | Who can see it             |
+| ----------------------------------------------------- | ------------------------------------- | -------------------------- |
+| **General**                                           | Name, tagline, model, agent type      | Everyone who can edit      |
+| **Personality**                                       | Avatar, personality preset, SOUL.md   | Everyone who can edit      |
+| **Instructions**                                      | AGENTS.md operating instructions      | Everyone who can edit      |
+| **Permissions**                                       | Tool allow-list, directory access     | Admins only, shared agents |
+| **Access** <Badge text="Enterprise" variant="note" /> | Visibility mode, group assignment     | Admins only, shared agents |
+| **Telegram**                                          | Connect a Telegram bot to this agent  | Admins only                |
+| **Automations**                                       | Email workflows the agent runs itself | Admins only, shared agents |
 
-The Permissions and Access tabs exist only for shared agents. Personal agents (the auto-created Smithers each user gets) don't show them because there's nothing to share. Admins still see the Telegram tab on Smithers, but the main Smithers bot is managed centrally via **Settings → Telegram** rather than per-agent.
+The Permissions, Access and Automations tabs exist only for shared agents. Personal agents (the auto-created Smithers each user gets) don't show Permissions or Access because there's nothing to share — and Automations follows them, because an automation needs a mailbox the agent may read, and email access is granted on the Permissions tab. A personal agent has no way to hold one, so the tab would only ever offer an empty mailbox list. Admins still see the Telegram tab on Smithers, but the main Smithers bot is managed centrally via **Settings → Telegram** rather than per-agent.
 
 :::note[Enterprise feature]
 The **Access** tab requires a Pinchy Enterprise license. Without a license, the tab shows an upgrade prompt. See [Enterprise Setup](/guides/enterprise-setup/) for details.
@@ -34,9 +35,9 @@ The General tab controls the agent's identity and the AI model it uses.
 | **Tagline** | A short description shown below the agent name in the sidebar. Optional.                      |
 | **Model**   | The AI model the agent uses, grouped by configured provider (e.g. OpenAI, Anthropic, Ollama). |
 
-Below the form fields, the tab shows the **agent type** — either "Personal agent" or "Shared agent." Personal agents are private to their owner with isolated memory and conversations. Shared agents are accessible to all team members, and memory from all conversations is shared.
+Below the form fields, the tab shows the **agent type** — either "Personal agent" or "Shared agent." Personal agents are private to their owner with isolated memory and conversations. Shared agents are accessible to all team members. If a shared agent has the **Memory** permission, what it remembers from one person's conversations is available in everyone's; without it, the agent doesn't keep memory and won't remember earlier conversations. See [Understanding Agent Memory](/explanation/agent-memory/). Either way, a shared agent can read the files in its workspace in every member's conversations — see [Workspaces](/concepts/workspaces/).
 
-**Starter prompts** are clickable suggestion chips shown in an empty chat with this agent. They lower the entry barrier for role-specific agents — for example "Summarize my latest HR tickets" on an HR assistant. Clicking a chip sends that prompt to the agent. Most templates ship with a few sensible starter prompts already filled in; edit them, add your own with **Add prompt**, or clear the list for no chips. The agent's greeting message is always shown regardless.
+**Starter prompts** are clickable suggestion chips shown below the agent's greeting when someone starts a new conversation with it, until they send their first message. The chips step aside while there is text in the message box, so a click can't replace a draft. They lower the entry barrier for role-specific agents — for example "Summarize my latest HR tickets" on an HR assistant. Clicking a chip sends that prompt to the agent. Most templates ship with a few sensible starter prompts already filled in; edit them, add your own with **Add prompt**, or clear the list for no chips. **Knowledge Base** and **Custom Agent** start with none: a Custom Agent has no role to suggest prompts for, and a Knowledge Base can't know what your documents cover or which language your team uses, so any default would name a topic you may not have. The agent's greeting is always shown, with or without chips.
 
 The **Danger Zone** at the bottom of the General tab lets admins delete shared agents. Personal agents cannot be deleted.
 
@@ -86,6 +87,16 @@ The agent reads both files at the start of every conversation. Separating person
 
 Not sure whether a piece of knowledge belongs here or in Memory? See [Instructions vs. Memory](/explanation/instructions-vs-memory/) for the heuristic.
 
+### Saving a rule straight from a conversation
+
+The best instructions usually aren't written at a desk — they come out of working with the agent. When you and the agent settle on a way of working worth keeping, ask it to write the rule up, then open the `⋯` menu on that message and choose **Save as instruction**.
+
+The text lands in this editor, appended below what's already there, with nothing saved yet: you can edit it, cut it down, or drop it, and it takes effect when you press **Save**.
+
+The action appears only for people who can edit this agent — an admin, or the owner of a personal agent. If you can't edit a shared agent, ask an admin to add the rule.
+
+Why not just let the agent remember it? Because memory isn't loaded by scheduled runs, so a working rule kept there quietly stops applying the moment the same work happens on a schedule.
+
 ## Permissions tab
 
 <Aside>
@@ -95,14 +106,15 @@ Not sure whether a piece of knowledge belongs here or in Memory? See [Instructio
 
 The Permissions tab controls which tools an agent can use. Pinchy uses an **allow-list** model: agents start with zero tools enabled, and admins grant specific capabilities.
 
-Tools are organised into a **Knowledge Base** section that's always shown, plus sections that only appear when a matching connection exists.
+Tools are organised into three sections that are always shown — **Memory**, **Workspace** and **Knowledge Base** — plus sections that appear when a matching connection exists (Web Search also appears when the agent already holds a web tool; see below). The three permanent sections follow the zones of an agent's workspace: what it remembers, what it may produce, and what it may read.
 
-**Knowledge Base** — sandboxed access to the agent's own workspace and admin-curated directories. **Workspace read access is always on** — agents can always list and read files under `uploads/` and `workbench/`. This section contains:
+**Memory** — the **Memory** (`pinchy_memory`) toggle, which lets the agent write and re-read `MEMORY.md` and the daily notes under `memory/`. Without it the agent has no memory and is not offered the recall tools, so it will not claim one. See [Understanding Agent Memory](/explanation/agent-memory/#memory-is-a-permission).
 
-- The **Allowed Directories** picker, which grants the agent read-access to additional directories under `/data/` — separate from the agent's own workspace.
-- The **Write files** (`pinchy_write`) toggle — the one powerful tool shown here, letting the agent save files into its own `workbench/` directory (and `uploads/`, kept writable for compat).
+**Workspace** — the **Create files** (`pinchy_write`) toggle, letting the agent save files into its own `workbench/` directory and hand them to you as chat downloads. It does **not** cover `uploads/`: that is where your chat attachments live, and nothing may overwrite them.
 
-**Web Search** — appears only when at least one active Web Search (Brave) connection exists:
+**Knowledge Base** — sandboxed **read** access to admin-curated directories. **Workspace read access is always on** — agents can always list and read files under `uploads/` and `workbench/`. This section contains the **Allowed Directories** picker, which grants the agent read-access to additional directories under `/data/`. Agents can never write to those directories.
+
+**Web Search** — appears when an active Web Search (Brave) connection exists, or when the agent already has a web tool (agents created from a web template do). Without a connection, the section says web search isn't set up and links to Settings → Integrations: **Fetch web pages** works without one, **Search the web** does not.
 
 | Tool            | Tool ID             | Description                                  |
 | --------------- | ------------------- | -------------------------------------------- |
@@ -130,7 +142,7 @@ New agents are created with **Restricted** visibility by default. This lets admi
 
 ### Group assignment
 
-When visibility is set to **Restricted**, a group picker appears listing all groups configured in **Settings**. Check one or more groups to grant their members access. If no groups are selected, only admins can see the agent.
+When visibility is set to **Restricted**, a group picker appears listing all groups configured in **Settings**. Check one or more groups to grant their members access. If no groups are selected, only admins can see the agent — the tab says so until you pick one. Agents in that state are also listed in **Settings → License**; see [Activating a license on an instance that already has agents](/concepts/groups/#activating-a-license-on-an-instance-that-already-has-agents).
 
 ## Telegram tab
 
@@ -142,16 +154,61 @@ The main Pinchy bot must be set up first via **Settings → Telegram** — users
 
 For the full flow including BotFather setup and account linking, see [Set Up Telegram](/guides/telegram-setup/).
 
+## Automations tab
+
+The Automations tab is where an agent's **email workflows** live — standing rules that let the agent act on incoming mail on its own, without anyone opening a chat. A workflow pairs a deterministic **trigger** (which mail it fires on) with an **instruction** (what the agent does with each matching message). Pinchy checks the connected mailboxes on a schedule and runs the instruction once per new matching mail, tracking exactly which messages it has already handled so nothing is processed twice — and it never relies on the read/unread state you see in your own inbox.
+
+As an admin, you'll see this tab on shared agents. It isn't on personal agents — including your own Smithers — for a practical reason rather than a permission one: an automation watches a mailbox the agent is allowed to read, that access is granted on the **Permissions** tab, and personal agents don't have one. The tab there could only ever show an empty mailbox list and a form you couldn't finish. Give a shared agent email access first and its Automations tab has something to offer.
+
+The API is deliberately a little wider than this tab, and a colleague's personal agent is still nobody else's to manage — personal agents stay private to their owner, admins included. One thing survives that rule: an admin who already has a workflow's ID can still stop it, so a runaway automation is never unstoppable. See the [API reference](/reference/api/#automations).
+
+If an admin has turned off automations on members' personal agents ([Member access](/guides/cost-governance/#member-access)), a member sees a note here instead: their automations are paused, **New automation** and **Enable** are disabled, and **Disable** and **Delete** still work.
+
+### Create an automation
+
+Click **New automation** and fill in:
+
+- **Name** — a short label so you can recognize the workflow later.
+- **Instruction** — what the agent should do with each matching mail, in plain words (for example, "Draft a supplier bill in Odoo from the attached invoice"). It runs with this agent's permissions and tools, so it can only do what the agent is already allowed to do.
+- **Trigger** — optional filters that narrow which mail fires the workflow: sender addresses, recipient domain, words in the subject, whether it has an attachment (and of what type), and a folder. Only mail matching **every** filled-in field runs the automation; leave them all blank to watch the entire mailbox.
+- **Mailboxes** — which connected mailboxes to watch. The list only offers mailboxes this agent is permitted to read, so you can't point a workflow at a mailbox the agent can't open.
+- **Look back (days)** — how far back each pass re-checks for mail it may have missed.
+
+:::note[Created paused]
+A new automation is always created **disabled**. Pinchy proposes the workflow; it never activates one on its own. This is deliberate — an agent (or a form) should never grant itself standing autonomous authority. Nothing runs until a person reviews the workflow and switches it on.
+:::
+
+### Review, enable, and remove
+
+The tab lists every workflow on the agent with its trigger (in plain words, not raw filters), its instruction, the mailboxes it watches, and its status:
+
+- **Pending** — proposed but never yet run.
+- **Active** — enabled and running on its schedule.
+- **Error** — the workflow is switched on, but Pinchy can't run it. There are three causes:
+  - A mailbox it watches won't open — expired credentials, a wrong host.
+  - It watches no mailboxes at all, because the integration was disconnected under **Settings → Integrations**. Removing a connection takes it out of every workflow that pointed at it.
+  - There's nobody left to notify: on a shared agent, results go to whoever created the workflow, and that person's account has since been deleted.
+
+Pinchy names the workflow and the reason in the server log the first time a workflow lands in this state. After that the badge is the record, so if you missed the line, the three causes above are what to check.
+
+An errored workflow stays switched on and keeps being retried, so there's nothing to re-enable. Repair the connection's credentials and the next pass moves the workflow back to **Active** by itself. The other two causes can't be edited on an existing workflow: a workflow's mailboxes and its recipient are fixed when you create it, so delete it and create it again — pointed at the reconnected mailbox, and by the person who should receive the results.
+
+Use **Enable** / **Disable** to turn a workflow on or off, and **Delete** to remove one for good. Enabling is the human-gated step that turns a proposal into a live automation; disabling pauses it without deleting it.
+
+For a walkthrough from a connected mailbox to a running workflow — including how to scope a trigger and what to check afterwards — see [Set Up Email Automations](/guides/email-automations/).
+
 ## Creating agents
 
 Agents are created from the **Create New Agent** page. Pinchy ships with pre-configured templates for common use cases — Knowledge Base agents, vision-powered document analyzers, Odoo ERP assistants, email agents, and more. Each template auto-configures tools, personality, and system instructions; you choose a name and any template-specific options.
 
 The generic starting points are:
 
-- **Knowledge Base** — pre-configured with safe file tools for answering questions from directories you select
-- **Custom Agent** — starts with only the default **Write files** tool enabled, for when you want to configure everything else manually
+- **Knowledge Base** — pre-configured with knowledge search for answering questions from directories you select
+- **Custom Agent** — starts with **no permissions at all**, for when you want to configure everything yourself. Every other template arrives with **Memory** and **Create files** already on.
 
-Domain-specific templates (e.g., Sales Analyst, HR Analyst, Contract Analyzer) appear in the template picker when the corresponding integration is connected or their required capabilities are available. See [Connect Odoo](/guides/connect-odoo/#agent-templates) for the Odoo template list.
+Domain-specific templates (e.g., Sales Analyst, HR Analyst, Contract Analyzer) are grouped by theme. A template whose integration isn't connected yet sits behind a collapsed line such as "5 templates available with Odoo · Set up connection →", so you can still see what's there. Once Odoo is connected, a template that needs an Odoo module you don't have sits behind "1 more with additional Odoo modules". A template that needs a model capability your provider lacks — every template except Custom Agent needs a model that can read images — shows as a greyed-out card with a tooltip; see [Ollama setup](/guides/ollama-setup/#vision-templates).
+
+The groups are ordered by what your instance can run today. Every group with at least one template you can create right now comes first; groups where nothing is usable yet move to the end — before you connect Odoo, that's the groups made only of Odoo templates: Sales & Customers, Finance & Procurement and Operations. Within each half the order stays the same: **Knowledge & Compliance** first, because its templates need no integration, then Sales & Customers, Finance & Procurement, HR & Recruiting, Operations, Marketing & Web and Email. Connect an integration and its groups move up on their own. See [Connect Odoo](/guides/connect-odoo/#agent-templates) for the Odoo template list.
 
 Every agent you create is a **shared agent** — the only personal agent is the Smithers that Pinchy auto-creates for each user. This is why the **Permissions** and **Access** tabs, and therefore integrations like email or Odoo, are always available on agents you create but never on a personal Smithers. See [Integrations](/concepts/integrations/#integrations-are-admin-managed-and-attach-to-shared-agents) for what this means for connecting a private mailbox (short version: private per-user mailboxes aren't supported).
 

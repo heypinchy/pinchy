@@ -5,8 +5,8 @@
 //
 // Pipeline:
 //   1. Auth + body validation + agent-access guard (standard route boilerplate).
-//   2. Resolve the per-user OpenClaw session via the on-disk sessions.json
-//      index, then read the trajectory JSONL.
+//   2. Resolve the per-user OpenClaw session, then read its trajectory JSONL
+//      (both over the gateway: `pinchy.trajectory.read`).
 //   3. Parse → turns → scope-resolve → otel spans.
 //   4. Pull audit rows for the session and assemble the bundle.
 //   5. Sanitize + enforce 5 MB cap (drops oldest turns until the bundle fits;
@@ -121,7 +121,7 @@ export const POST = withAuth(async (request, _ctx, session) => {
     exportedChatId = null;
   }
 
-  // Read the trajectory. When the chat is authorized but its trajectory file is
+  // Read the trajectory. When the chat is authorized but its trajectory is
   // gone (#639), don't 404 — degrade to an audit-only bundle so support still
   // gets the audit trail, flagged with `trajectoryMissing`.
   let raw: string | null = null;
@@ -193,11 +193,13 @@ export const POST = withAuth(async (request, _ctx, session) => {
     userDescription,
   });
   // Pipeline-order invariant: sanitize BEFORE enforceSizeCap.
-  // `sanitizeDetail` only substitutes (`[REDACTED]` is shorter than every
-  // secret-shaped string it matches), so it never grows the bundle. Running
-  // it first means enforceSizeCap's byte measurement reflects exactly what
-  // ships to the user. Swapping the order would mean we could overshoot the
-  // cap by however much sanitization shrinks the payload.
+  // Sanitizing moves the byte count in BOTH directions — `[REDACTED]` is
+  // shorter than the secret-shaped strings it matches but longer than a short
+  // value under a sensitive key, and `[TRUNCATED]` collapses a whole subtree
+  // past the depth cap. So the cap has to be measured on the sanitized bundle:
+  // enforceSizeCap's byte count then reflects exactly what ships to the user.
+  // Swapping the order would let the shipped bundle drift from the measured
+  // one — undershooting the cap in one direction, overshooting it in the other.
   const sanitized = sanitizeBundle(bundle);
   const { bundle: capped, dropped, truncated } = enforceSizeCap(sanitized);
 

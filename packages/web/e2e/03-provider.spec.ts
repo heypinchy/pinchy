@@ -12,9 +12,11 @@ test.describe("Provider configuration", () => {
     // Lands on provider setup (generous timeout: scrypt hashing + cold compilation of / and /setup/provider)
     await expect(page).toHaveURL(/\/setup\/provider/, { timeout: 20000 });
 
-    // Verify provider buttons are visible
+    // Verify provider buttons are visible. Use an EXACT name for "OpenAI": the
+    // #894 "OpenAI-compatible" option is also a button and a loose /openai/i
+    // would match both, tripping Playwright's strict-mode (2 elements).
     await expect(page.getByRole("button", { name: /anthropic/i })).toBeVisible();
-    await expect(page.getByRole("button", { name: /openai/i })).toBeVisible();
+    await expect(page.getByRole("button", { name: "OpenAI", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: /google/i })).toBeVisible();
   });
 
@@ -26,11 +28,14 @@ test.describe("Provider configuration", () => {
 
     await expect(page).toHaveURL(/\/setup\/provider/, { timeout: 20000 });
 
-    // Select Anthropic
-    await page.getByRole("button", { name: /anthropic/i }).click();
-
-    // API key input should be visible with correct placeholder
-    await expect(page.getByPlaceholder(/sk-ant-/i)).toBeVisible();
+    // Select Anthropic, retrying the click: signing in is a full page load
+    // (#1286), so the URL can match before the page has hydrated, and a click
+    // that lands first is silently dropped (see 06-user-management.spec.ts).
+    // The retry waits on the same thing the test asserts.
+    await expect(async () => {
+      await page.getByRole("button", { name: /anthropic/i }).click();
+      await expect(page.getByPlaceholder(/sk-ant-/i)).toBeVisible({ timeout: 1000 });
+    }).toPass({ timeout: 15000 });
   });
 
   test("app loads after provider is configured via DB", async ({ page }) => {

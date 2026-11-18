@@ -4,16 +4,25 @@
 //   - `pnpm test` stays fast and Docker-free.
 //   - `pnpm test:db` opts into the slower, DB-backed suite.
 //
-// Locally, point the suite at the dev-stack Postgres on :5434 (or override
+// Locally, point the suite at the dev-stack Postgres (or override
 // VITEST_INTEGRATION_DB_URL). In CI, the workflow spins up its own Postgres
 // service and sets VITEST_INTEGRATION_DB_URL accordingly.
+//
+// The port follows this worktree's allocation. `pnpm worktree:env` moves the
+// dev database off :5434 so two worktrees can run at once — and a gate that
+// kept pointing at the old default would either fail to connect or, worse,
+// quietly run against ANOTHER worktree's Postgres and truncate its tables.
 
 import { defineConfig } from "vitest/config";
 import path from "node:path";
 
-const TEST_DB_URL =
-  process.env.VITEST_INTEGRATION_DB_URL ??
-  "postgresql://pinchy:pinchy_dev@localhost:5434/pinchy_test_vitest";
+// One resolver, shared with global-setup.ts — see the comment in db-url.ts for
+// why having two was a data-loss hazard rather than mere duplication. It lives
+// inside `packages/web` because `Dockerfile.pinchy` copies only this package and
+// then runs `pnpm build`, which type-checks this file.
+import { integrationDbUrl } from "./src/test-helpers/integration/db-url";
+
+const TEST_DB_URL = integrationDbUrl();
 
 export default defineConfig({
   test: {
@@ -24,7 +33,8 @@ export default defineConfig({
     include: ["src/**/*.integration.test.{ts,tsx}"],
     setupFiles: ["./src/test-helpers/integration/setup.ts"],
     globalSetup: ["./src/test-helpers/integration/global-setup.ts"],
-    // TRUNCATE in beforeEach makes parallel workers race on the shared DB.
+    // The per-test reset in beforeEach empties the shared DB, so parallel
+    // workers would wipe each other's rows mid-test.
     // fileParallelism: false runs all test files sequentially in a single
     // worker; if test count grows we can switch to per-worker DB names and
     // remove this.
@@ -35,9 +45,14 @@ export default defineConfig({
     testTimeout: 30_000,
     // Same budget for setup/teardown hooks: beforeAll/afterAll here do
     // CREATE / DROP DATABASE WITH (FORCE) plus migration cp/rm, which contend
-    // for the shared Postgres under full-suite load. The 10s hook default was
-    // too tight and flaked migration-gap-repair's afterAll; 30s still
-    // fail-fast for a genuine hang.
+    // for the shared Postgres under full-suite load; 30s still fail-fast for a
+    // genuine hang. The afterAll timeouts that once flaked migration-gap-repair
+    // (and later migration-upgrade-path, -090, -kb-archive-backfill) were not
+    // a too-tight budget: DROP DATABASE forces a checkpoint, which had to fsync
+    // the ~210 files a TRUNCATE-based per-test reset created for EVERY test
+    // since the last one — 45s under load. Fixed at the source in
+    // src/test-helpers/integration/reset-db.ts; do not "fix" a recurrence by
+    // raising this number.
     hookTimeout: 30_000,
     env: {
       DATABASE_URL: TEST_DB_URL,
@@ -48,6 +63,11 @@ export default defineConfig({
       // 32-byte hex key so module-load doesn't error.
       ENCRYPTION_KEY: "0".repeat(64),
       AUDIT_HMAC_SECRET: "deadbeef".repeat(8),
+      // The KB's native embedder is exercised via injected fake deps in every
+      // integration test; only the worker's "model missing" path relies on the
+      // real resolution. Point it at a path that cannot exist so that check is
+      // deterministically false regardless of what the host has bundled.
+      KB_EMBEDDING_MODEL_PATH: "/nonexistent/kb-embeddinggemma-not-bundled-in-tests.gguf",
       NODE_ENV: "test",
     },
   },

@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Tests for IntegrationTypePicker — the grid of integration tiles shown on
  * the /settings/integrations/new page.

@@ -1,13 +1,48 @@
 import { createHmac } from "crypto";
-import { asc, desc, eq, gt, gte, lte, and, sql } from "drizzle-orm";
+import { asc, desc, eq, gt, gte, lt, lte, and, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { auditLog, users, type AuditDetail } from "@/db/schema";
-import { getOrCreateSecret } from "@/lib/encryption";
+import { getOrCreateSecret, getPreviousSecret } from "@/lib/encryption";
+import { scrubEmails } from "@/lib/scrub-emails";
+// Type-only (erased at build time), so the IMAP probe's runtime dependencies
+// never enter audit.ts's module graph.
+import type { ProbeFailureCode } from "@/lib/integrations/imap-probe";
+import type { KbIndexJobTrigger } from "@/db/enums";
+import type { SummaryLimit } from "@/lib/approvals/summary";
 
 // Transaction-scoped advisory lock key that serializes audit appends so the
 // prev-hash chain can never fork (two writers must not read the same
 // predecessor). Arbitrary fixed constant, unique to the audit chain.
 const AUDIT_CHAIN_LOCK_KEY = 738291002;
+
+// A slow lock acquisition (checkpoint, autovacuum, a stuck writer) previously
+// stalled every appendAuditLog caller with nothing pointing at the lock as
+// the cause. Warn once a wait crosses this threshold — high enough that a
+// normal acquisition never trips it, low enough to catch a stall while it's
+// happening rather than after routes have already started timing out.
+const LOCK_WAIT_WARN_THRESHOLD_MS = 1000;
+// Rate-limited like claimScopeDenialSlot (api-auth.ts) and the host-blocked
+// throttle: if the lock is chronically slow, many concurrent appends could
+// all cross the threshold at once, and one warning per append would spam the
+// log exactly when it's least useful. One warning per window; the window
+// reports how many were suppressed since the last one.
+const LOCK_WAIT_WARN_WINDOW_MS = 60_000;
+let lockWaitWarnWindow: { openedAt: number; suppressed: number } | null = null;
+
+/** Test seam — the window is process-global. */
+export function resetLockWaitWarnWindow(): void {
+  lockWaitWarnWindow = null;
+}
+
+function claimLockWaitWarnSlot(now: number): { write: boolean; suppressed: number } {
+  if (lockWaitWarnWindow && now - lockWaitWarnWindow.openedAt < LOCK_WAIT_WARN_WINDOW_MS) {
+    lockWaitWarnWindow.suppressed++;
+    return { write: false, suppressed: lockWaitWarnWindow.suppressed };
+  }
+  const suppressed = lockWaitWarnWindow?.suppressed ?? 0;
+  lockWaitWarnWindow = { openedAt: now, suppressed: 0 };
+  return { write: true, suppressed };
+}
 
 // ── Audit Detail Base Types ─────────────────────────────────────────────
 
@@ -20,6 +55,33 @@ export type UpdateDetail = {
 
 export type DeleteDetail = { name: string; [key: string]: unknown };
 
+/**
+ * Shared by `knowledge.source_viewed` and `knowledge.source_downloaded` — the
+ * same access to the same document, differing only in what the reader asked to
+ * do with it.
+ *
+ * `partial` marks a byte-range read: a PDF viewer fetches a large document as a
+ * series of ranges, so one opened document produces several rows. Every access
+ * stays logged — reading a file in chunks must not be a way to read it
+ * unobserved — and this flag is what lets an analyst count documents rather
+ * than chunks.
+ *
+ * `revalidated` marks a 304: the browser reused the copy it held, after the
+ * access check allowed it. No bytes left; `partial` says whether a range of
+ * the document would have been served (a Range under If-Range, or one past
+ * the end, would not), so a chunked re-read counts as one view.
+ * `representation` says which form of the document was asked for and
+ * checked — on a 304, nothing was sent.
+ */
+export type SourceAccessDetail = {
+  agent: EntityRef;
+  document: { name: string };
+  reason?: string;
+  partial?: boolean;
+  revalidated?: true;
+  representation?: "original" | "converted" | "rows";
+};
+
 export type MembershipDetail = {
   added: EntityRef[];
   removed: EntityRef[];
@@ -28,7 +90,21 @@ export type MembershipDetail = {
 };
 
 export type AuditResource =
-  "agent" | "group" | "user" | "settings" | "config" | "channel" | "chat" | "integration";
+  | "agent"
+  | "group"
+  | "user"
+  | "settings"
+  | "config"
+  | "channel"
+  | "chat"
+  | "integration"
+  // Inbox Agent email workflows (design §5). Durable noun matching the
+  // email_workflows table; yields email_workflow.created/.updated/.deleted for
+  // the whole Automations CRUD lifecycle (the create path lands first).
+  | "email_workflow"
+  | "api_key"
+  // Monthly cost budgets (#36): budget.created / .updated / .deleted.
+  | "budget";
 
 export type AuditEventType =
   | `tool.${string}`
@@ -37,13 +113,44 @@ export type AuditEventType =
   | "auth.failed"
   | "auth.logout"
   | "auth.csrf_blocked"
+  // A request was rejected by the domain lock because its Host header didn't
+  // match the configured domain (server.ts / host-check.ts). API paths only.
+  | "auth.host_blocked"
   | "auth.password_reset_completed"
   | "auth.password_changed"
+  // Written by withApiKey (lib/api-auth.ts) when a verified key reaches past
+  // its scopes. Listed here because this union is the curated vocabulary, and
+  // the `auth.${string}` arm above means an omission still compiles — the
+  // types test only asserts this union is a SUBSET of what's writable, so it
+  // cannot catch a missing entry in this direction.
+  | "auth.scope_denied"
+  // Written by recordTelegramPairingFailure (lib/telegram-pairing-security.ts)
+  // when POST /api/settings/telegram denies a pairing-code redemption (rate
+  // limited, invalid/expired code, or a channel_links unique-constraint
+  // conflict). Listed here for the same reason as auth.scope_denied above.
+  | "auth.telegram_pairing_denied"
+  // Written by withApiKey (lib/api-auth.ts) when a caller is THROTTLED, not
+  // merely denied: a verified key past its own request budget, or an IP
+  // past its invalid-key-attempt budget (#1086). `detail.reason` names
+  // which limiter fired. Bounded the same way as auth.scope_denied — one
+  // row per identity per window.
+  | "auth.rate_limited"
   | "agent.created"
   | "agent.updated"
   | "agent.deleted"
+  // An account came into existence: through the setup wizard (the first
+  // admin) or a claimed invite. `detail.via` says which. Actor is the new user.
+  | "user.created"
   | "user.invited"
   | "user.invite_blocked"
+  // Written once per account at boot by reportUnknownOriginUsers
+  // (lib/user-provenance.ts): an account that neither the setup wizard nor a
+  // claimed invite explains — in practice, one self-registered through the
+  // sign-up endpoint earlier releases left open to clients.
+  | "user.unknown_origin_detected"
+  // An admin marked a flagged account as known (Mark as known in Settings →
+  // Users). The row IS the acknowledgement: findUnknownOriginUsers reads it.
+  | "user.origin_acknowledged"
   | "user.updated"
   | "user.deleted"
   | "config.changed"
@@ -54,6 +161,10 @@ export type AuditEventType =
   | "group.members_updated"
   | "user.groups_updated"
   | "user.role_updated"
+  // An admin created a password-reset link for a user (POST
+  // /api/users/:id/reset), with or without emailing it. The row records the
+  // request, not the reset itself — that is `auth.password_reset_completed`.
+  | "user.password_reset_requested"
   | "channel.created"
   | "channel.deleted"
   | "channel.degraded"
@@ -71,8 +182,17 @@ export type AuditEventType =
   | "chat.run_aborted"
   | "chat.run_completed_after_disconnect"
   | "chat.image_model_fallback"
+  // A send refused by an instance policy (Settings → Organization → Member
+  // access, cost budgets) rather than by access. `detail.reason` names the
+  // rule, `detail.agent` snapshots the agent.
+  | "chat.policy_refused"
   | "agent.model_unavailable"
   | "agent.memory_changed"
+  // A person edited an agent's SOUL.md (Personality) or AGENTS.md
+  // (Instructions) through the API. The sibling of agent.memory_changed, and
+  // the more consequential half: memory is what the agent wrote about itself,
+  // instructions are the rules it operates under.
+  | "agent.instructions_changed"
   | "audit.exported"
   | "audit.integrity_check"
   | "diagnostics.exported"
@@ -84,9 +204,47 @@ export type AuditEventType =
   | "integration.auth_recovered"
   | "integration.credentials_tested"
   | "integration.credentials_updated"
+  | "integration.credentials_denied"
+  | "email_workflow.created"
+  | "email_workflow.updated"
+  | "email_workflow.deleted"
+  // Agent-provisioning API key lifecycle (#572). Issuance → api_key.created with
+  // { id, name, scopes, expiresAt }; revocation → api_key.deleted (better-auth
+  // hard-deletes the row) with DeleteDetail { name }. No api_key.updated: PATCH
+  // over keys is an explicit Non-Goal for #572.
+  | "api_key.created"
+  | "api_key.deleted"
   | "file.upload.staged"
   | "file.upload.attached"
-  | "file.upload.expired";
+  | "file.upload.expired"
+  | "file.delivered"
+  | "retrieval.query"
+  | "knowledge.source_viewed"
+  | "knowledge.source_downloaded"
+  | "knowledge.reindex"
+  | "inbox.claim_reset"
+  | "approval.requested"
+  | "approval.granted"
+  | "approval.denied"
+  | "approval.consumed"
+  | "approval.expired"
+  // A gated call whose arguments the confirmation card or the approval prompt
+  // cannot show in full — too large, too costly to draw, or reaching more hosts
+  // than the prompt can name: nothing was opened, so nobody could approve what
+  // they cannot see.
+  | "approval.refused"
+  | "approval.gc"
+  // Cost budgets (#36). Written once per budget and month by the budget
+  // monitor when spend crosses 80% (threshold_reached) and 100% (exceeded).
+  | "budget.created"
+  | "budget.updated"
+  | "budget.deleted"
+  | "budget.threshold_reached"
+  | "budget.exceeded"
+  // The system mailer (#1309) tried to send an email on an admin's behalf: an
+  // invitation, a password-reset link, or a test. One row per attempt,
+  // outcome success/failure; the recipient only ever as redactEmail().
+  | "mail.sent";
 
 interface HmacFieldsV1 {
   timestamp: Date;
@@ -230,32 +388,11 @@ export function redactEmail(email: string): RedactedEmail {
   };
 }
 
-/**
- * Defence-in-depth for free-text audit fields (e.g. `providerError` on
- * `chat.agent_error`). When an upstream provider validation error gets
- * echoed back — `"Invalid input: user@example.com is not …"` — we never
- * want the raw address to land in the append-only HMAC-signed audit
- * table: GDPR Art. 17 erasure on an HMAC-signed row is impossible by
- * design, so we substitute any email-shaped run with `<email-redacted>`.
- *
- * Distinct from `redactEmail`, which returns a structured
- * `{emailHash, emailPreview}` pair for fields where we KNOW an email
- * is identity data and may want to match it later. Here we operate on
- * opaque free text — the only goal is "don't store the raw address".
- *
- * The regex deliberately requires a TLD (`\.[A-Za-z]{2,}`) so social
- * `@handle` mentions in free text don't get mistaken for emails.
- */
-// Unicode-aware: \p{L} covers internationalized-domain (IDN) emails like
-// user@münchen.de, and the bracket alternative covers IP-literal domains like
-// user@[192.168.1.1] — both of which the old ASCII-only class let through into
-// the HMAC-signed, un-redactable audit detail. The TLD-required branch is kept
-// so a social `@handle` mention isn't mistaken for an email.
-const EMAIL_LIKE_PATTERN = /[\p{L}\p{N}._%+-]+@(?:\[[^\]\s]+\]|[\p{L}\p{N}.-]+\.[\p{L}]{2,})/gu;
-
-export function scrubEmails(text: string): string {
-  return text.replace(EMAIL_LIKE_PATTERN, "<email-redacted>");
-}
+// `scrubEmails` lives in its own dependency-free module so callers that must
+// not pull in `@/db` (which this module does, and which opens a postgres pool
+// on evaluation) can reach it. Re-exported here because every existing call
+// site imports it from `@/lib/audit` alongside the other audit helpers.
+export { scrubEmails };
 
 /**
  * Canonical way to land an upstream `providerError` string in audit
@@ -293,6 +430,22 @@ export function safeProviderError(text: string): string {
   return truncateUtf8(scrubEmails(text), PROVIDER_ERROR_MAX_BYTES);
 }
 
+const AUDIT_PATH_MAX_BYTES = 256;
+/**
+ * Cap a request path before it goes into a `detail`.
+ *
+ * Same reasoning as `safeProviderError`, different attacker: a URL path is
+ * sized by whoever sent the request. Left uncapped it can push a detail past
+ * MAX_DETAIL_BYTES, and `truncateDetail` does not trim the offending field —
+ * it replaces the entire object with a summary blob. Every other key in that
+ * detail, including the `{ id, name }` actor snapshot, is gone. So the one
+ * field a caller controls can silently strip a row of its attribution, on the
+ * rows most worth attributing.
+ */
+export function safeAuditPath(path: string): string {
+  return truncateUtf8(path, AUDIT_PATH_MAX_BYTES);
+}
+
 const MAX_DETAIL_BYTES = 2048;
 
 export function truncateDetail(detail: AuditDetail | null | undefined): AuditDetail | null {
@@ -310,8 +463,16 @@ export function truncateDetail(detail: AuditDetail | null | undefined): AuditDet
   };
 }
 
+/**
+ * The actor kinds an audit row can attribute an action to. Mirrors the
+ * `actor_type` pgEnum in `db/schema.ts`. Named (rather than inlined at each
+ * use) so widening it can't drift between the entry type and the helpers that
+ * consume it — `api_key` (#572) was added here and to `resolveActorId` below.
+ */
+export type AuditActorType = "user" | "agent" | "system" | "api_key";
+
 type AuditLogBase = {
-  actorType: "user" | "agent" | "system";
+  actorType: AuditActorType;
   actorId: string;
   resource?: string | null;
   outcome: "success" | "failure";
@@ -351,6 +512,134 @@ export type AuditLogEntry =
   | (AuditLogBase & {
       eventType: `chat.${string}`;
       detail?: Record<string, unknown>;
+    })
+  | (AuditLogBase & {
+      // Tool-call confirmation lifecycle (#124 Tier 2). `argsDigest` is a
+      // PII-free sha256; the human-readable arg summary lives in the
+      // operational `tool_approval` row, never in the audit detail.
+      eventType:
+        | "approval.requested"
+        | "approval.granted"
+        | "approval.denied"
+        | "approval.consumed"
+        | "approval.expired";
+      //
+      // People are named, never identified by users.id: `detail` is stored
+      // verbatim and crypto-erasure cannot reach an id in it (#824, #1273). On
+      // a decision the approver is the row's (pseudonymized) actor; on the
+      // agent- and system-written rows the name is all there is. `resource`
+      // names the request, but the sweep reaps that row after 30 days.
+      detail: {
+        request: { id: string };
+        agent: { id: string; name: string | null };
+        requester: { name: string | null };
+        approver?: { name: string | null };
+        toolName: string;
+        argsDigest: string;
+        /** The person's own words, with any address scrubbed (`scrubEmails`). */
+        reason?: string;
+        /**
+         * Whether the decision reached the tool call OpenClaw parked for it
+         * (#1132). `false` means the row was flipped but the run never heard
+         * it, so the tool did NOT run — the difference between a confirmation
+         * that took effect and one that only looks like it did. Set on
+         * granted/denied; absent on the other events, which resolve nothing.
+         */
+        resumed?: boolean;
+        /**
+         * What the agent runtime finally did with the parked call, as the
+         * runtime reported it. `approval.expired` is written by two different
+         * things — a run that stopped waiting (this field) and the hourly
+         * bookkeeping sweep (`sweepId`) — and this is what tells them apart.
+         */
+        resolution?: "allow-once" | "allow-always" | "deny" | "timeout" | "cancelled";
+        /** Why the decision did not reach the run. */
+        resumeReason?: "nothing-waiting" | "refused" | "unreachable";
+        /** The gateway's own words, when it gave any. */
+        resumeDetail?: string;
+        /** Set on sweep-emitted rows (approval.expired) so analysts can
+         * correlate one sweep run (AGENTS.md §"Audit logging rules"). */
+        sweepId?: string;
+      };
+    })
+  | (AuditLogBase & {
+      // A gated call the gate would not open a confirmation for. There is no
+      // request row, so no `request.id`; the digest still binds exactly which
+      // call it was.
+      eventType: "approval.refused";
+      detail: {
+        agent: { id: string; name: string | null };
+        requester: { name: string | null };
+        toolName: string;
+        argsDigest: string;
+        reason: "too-large-to-show";
+        /** Which bound the call crossed (`SummaryLimit["kind"]` in
+         * `approvals/summary.ts`, `too-many-hosts` from `approvals/prompt.ts`)
+         * — never the value, the key path or a host, which may carry the
+         * call's content. */
+        exceeded: SummaryLimit["kind"];
+      };
+    })
+  | (AuditLogBase & {
+      // Provenance check (lib/user-provenance.ts). System-written, one row per
+      // account ever; `resource` is `user:<id>`, which is also how the check
+      // knows it already reported an account. No email — `user.name` is the
+      // human-readable snapshot.
+      eventType: "user.unknown_origin_detected";
+      detail: {
+        user: EntityRef;
+        role: string;
+        accountCreatedAt: string;
+      };
+    })
+  | (AuditLogBase & {
+      // `resource` is `user:<id>`. The admin may reset their own password, so
+      // `user.id` is left out in that case — the acting user's raw id never
+      // goes into `detail` (#824); it is in `resource`. No email: whether a
+      // mail went out is the separate `mail.sent` row.
+      eventType: "user.password_reset_requested";
+      detail: {
+        user: { id?: string; name: string };
+        via: "email" | "link";
+        /** Joins with `mail.sent` and `auth.password_reset_completed`. */
+        invite: { id: string };
+      };
+    })
+  | (AuditLogBase & {
+      // An admin vouched for a flagged account (lib/user-provenance.ts). The
+      // provenance check reads these rows by `resource` = `user:<id>`, so the
+      // row is the stored state, not a side note. No email, and no id: the
+      // route works on the admin's own account, so a `user.id` here could be
+      // the acting admin's raw id (#824). The id is in `resource`.
+      eventType: "user.origin_acknowledged";
+      detail: { user: { name: string } };
+    })
+  | (AuditLogBase & {
+      // Cost budgets (#36): a budget crossed its warning line (80%) or its
+      // limit (100%) this month. One row per budget, crossing and month — the
+      // monitor claims each before writing it (lib/budgets.ts).
+      eventType: "budget.threshold_reached" | "budget.exceeded";
+      detail: {
+        budget:
+          | { id: string; scope: "agent"; agent: { id: string; name: string } }
+          | { id: string; scope: "instance" };
+        period: string;
+        thresholdPercent: 80 | 100;
+        spentUsd: number;
+        limitUsd: number;
+        onExceeded: "notify" | "block";
+      };
+    })
+  | (AuditLogBase & {
+      // Retention GC for settled tool_approval rows — one summary row per
+      // sweep (bulk housekeeping delete), not per deleted row: each row's
+      // lifecycle is already in the trail via the approval.* events above.
+      eventType: "approval.gc";
+      detail: {
+        swept: number;
+        retentionDays: number;
+        sweepId: string;
+      };
     })
   | (AuditLogBase & {
       // Channel-health watchdog (A-1/A-2/A-4): a channel poller (Telegram, …)
@@ -428,8 +717,33 @@ export type AuditLogEntry =
       };
     })
   | (AuditLogBase & {
+      // Same shape as agent.memory_changed on purpose: an analyst asking "what
+      // changed about this agent's behaviour" reads both families with one
+      // query. `file` distinguishes SOUL.md from AGENTS.md.
+      //
+      // The line counts are the whole payload — the text never is. An audit row
+      // is immutable and hash-chained, so anything written here cannot be
+      // corrected or erased later, and instructions are free text a user
+      // authored that may name customers or internal rules.
+      eventType: "agent.instructions_changed";
+      detail: {
+        agent: { id: string; name: string };
+        file: string;
+        addedLines: number;
+        removedLines: number;
+        byteSize: number;
+      };
+    })
+  | (AuditLogBase & {
       eventType: "audit.exported";
-      detail: { format: "csv" | "pdf"; filterSummary: string; rowCount: number };
+      detail: {
+        format: "csv" | "pdf";
+        filterSummary: string;
+        rowCount: number;
+        // Set when the export hit MAX_AUDIT_EXPORT_ROWS (lib/audit-query.ts)
+        // and was capped below the full matching set.
+        truncated: boolean;
+      };
     })
   | (AuditLogBase & {
       // Periodic incremental hash-chain verification (audit-verify-job). One
@@ -445,6 +759,12 @@ export type AuditLogEntry =
         // huge number of violations still fits the 2048-byte detail budget.
         invalidIds: number[];
         chainBreakIds: number[];
+        // Rows that verified under the SUPERSEDED signing secret rather than
+        // the active one. Not a violation, so `outcome` stays "success" — this
+        // is the durable record that a rotation happened and which rows it
+        // covered. See getPreviousSecret() in lib/encryption.ts.
+        previousKeyCount: number;
+        previousKeyIds: number[];
       };
     })
   | (AuditLogBase & {
@@ -478,6 +798,12 @@ export type AuditLogEntry =
         reason?: string;
         fields?: string[];
         modelCount?: number;
+        // Where a credential update moved the secret (Odoo url/db, mail
+        // hosts/ports/security), as `{ <field>: { from, to } }`. On a refused
+        // update (`reason: "secret_required_for_new_destination"`, outcome
+        // failure) it names the destination the stored secret was kept from.
+        // URLs carry no userinfo or query. See lib/secret-destination.ts.
+        destinationChange?: Record<string, { from: string | number; to: string | number }>;
         // MCP sync: added/removed tool names (or, past MAX_TOOL_NAMES_IN_AUDIT,
         // a { count } summary so a chatty server can't blow the 2048-byte
         // detail cap — see summarizeToolNames() in
@@ -498,6 +824,28 @@ export type AuditLogEntry =
       };
     })
   | (AuditLogBase & {
+      // An agent asked the internal credentials endpoint for a connection it
+      // was never granted (#987). The actor is the AGENT, not a user — the
+      // request comes from inside the OpenClaw container — so `actorId`
+      // carries the agent id and there is no email or user id to redact.
+      // `connection` deliberately carries the id alone: the name of a mailbox
+      // connection is itself an address, and this row is written on a path
+      // where the caller has already failed authorization.
+      //
+      // `destination-blocked`: the agent IS granted the connection, but the
+      // stored Odoo URL / IMAP / SMTP host fails the SSRF guard under the
+      // current rules (re-checked on every fetch). `field` names which one;
+      // the address itself is not recorded (a mail host can be a person's
+      // own domain).
+      eventType: "integration.credentials_denied";
+      detail: {
+        agent: EntityRef;
+        connection: { id: string };
+        reason: "agent-unknown" | "not-granted" | "destination-blocked";
+        field?: "url" | "imapHost" | "smtpHost";
+      };
+    })
+  | (AuditLogBase & {
       // Pre-creation IMAP/SMTP credential probe (POST
       // /api/integrations/imap/test). There is no connectionId yet — the
       // connection is only created in a later step if this test succeeds —
@@ -508,7 +856,15 @@ export type AuditLogEntry =
       detail: {
         imapHost: string;
         smtpHost: string;
-        reason?: string;
+        // Per-leg failure classification, present only for the leg that
+        // failed — both legs always run, so a row can carry either, both, or
+        // neither. This is the whole diagnostic value of a failure row: the
+        // human-readable message goes into `error.message`, while these codes
+        // are what an analyst can filter and count on.
+        imapCode?: ProbeFailureCode;
+        smtpCode?: ProbeFailureCode;
+        // Present instead of a plaintext username when it looks like an email
+        // address. See redactEmail() and the note on the sibling member above.
         emailHash?: string;
         emailPreview?: string;
       };
@@ -530,6 +886,12 @@ export type AuditLogEntry =
             filename: string;
             claimedMime: string;
             reason: string;
+            agent: EntityRef;
+          }
+        | {
+            // failure: request body exceeded the size bound before it was
+            // parsed, so there is no filename or claimed MIME to record
+            reason: "oversize";
             agent: EntityRef;
           };
     })
@@ -569,6 +931,173 @@ export type AuditLogEntry =
             sweepId: string;
             reason: string;
           };
+    })
+  | (AuditLogBase & {
+      // Agent → user file delivery (#703): a plugin handed a file to the user in
+      // chat, creating a per-user download grant. Logged where the grant is
+      // recorded (client-router's post-run artifacts.list poll). The filename is
+      // the user-facing artifact name (same posture as file.upload.attached,
+      // which also logs filenames); do not add the user's email or other PII here.
+      eventType: "file.delivered";
+      detail: {
+        agent: EntityRef;
+        filename: string;
+        mimeType: string;
+      };
+    })
+  | (AuditLogBase & {
+      // Knowledge-base retrieval (Task 8 of the KB implementation plan): the
+      // internal /api/internal/knowledge/search route audits every retrieval
+      // deliberately, even though it's read-only — this is the record of
+      // which documents an agent's answer drew on. `query` is intentionally
+      // NOT here: a KB question can carry PII (a name, a case number), so
+      // only a one-way `queryHash` is logged. `reason` is present on failure
+      // rows only (agent not found, retrieval/embedding error).
+      eventType: "retrieval.query";
+      detail: {
+        agent: EntityRef;
+        queryHash: string;
+        resultCount: number;
+        returnedDocumentIds: EntityRef[];
+        // Present (as true) only when the caller opted into searching
+        // archived documents — the audit trail must show when an answer drew
+        // on OLD/-style archive material (#858). Absent on default queries.
+        includeArchived?: true;
+        reason?: string;
+      };
+    })
+  | (AuditLogBase & {
+      // GET /api/agents/[agentId]/workspace-file: a browser-facing,
+      // access-controlled read of a file under an agent's allowed_paths
+      // (KB citation source PDFs today; the shared "agent, give me file X"
+      // serve mechanism later). Audited deliberately even though it's
+      // read-only (governance: which documents did a user actually open).
+      // The actor is carried by the top-level `actorId` ALONE: that column is
+      // pseudonymized on write (resolveActorId) so crypto-erasure can reach
+      // it, whereas `detail` is stored verbatim. Never mirror a raw users.id
+      // in here for query convenience (#824) — filter by actorId through
+      // `resolveActorIdMatchSet` instead.
+      // `document.name` is a basename ONLY — never the full path, which
+      // could embed a username (AGENTS.md PII rule). `reason` is present on
+      // failure rows only (outside allowed_paths, traversal/symlink escape,
+      // missing file, not a regular file, oversized).
+      eventType: "knowledge.source_viewed";
+      detail: SourceAccessDetail;
+    })
+  | (AuditLogBase & {
+      // The same read through the same gate as `knowledge.source_viewed`, told
+      // apart by what the caller asked for: a view renders the bytes in a pane,
+      // a download hands the user a copy to keep. Separate event types because
+      // the governance question is separate — "who read the spec sheet" and
+      // "who has the spec sheet on their own machine" are not the same
+      // question, and only the second one leaves the building.
+      //
+      // Spelled out as its own union member rather than widening the event type
+      // above: `Extract<AuditLogEntry, { eventType: "…" }>` — how the type tests
+      // and every narrowing caller reach a detail shape — collapses to `never`
+      // against a member whose eventType is itself a union.
+      eventType: "knowledge.source_downloaded";
+      detail: SourceAccessDetail;
+    })
+  | (AuditLogBase & {
+      // Knowledge-base index management. Since #714 a reindex is asynchronous,
+      // so ONE run produces TWO rows, correlated by `jobId` (the same
+      // correlation pattern as `sweepId` for GC sweeps):
+      //
+      //   1. the admin's request        — actorType "user",   POST .../knowledge/reindex
+      //   2. the run's outcome          — actorType "system", written by the index worker
+      //
+      // Both are needed: the request is a user action and must be attributable
+      // even if the run never happens, and the outcome lands hours later in a
+      // context that has no request behind it.
+      //
+      // `pathCount` is the number of granted folders reindexed — NOT the folder
+      // paths themselves, which can embed a username (AGENTS.md PII rule).
+      // `reason` is present on failure rows only (embedding endpoint
+      // unconfigured, a job already running, ingest error).
+      //
+      // `jobId` is absent only where no job exists: nothing granted, or the
+      // request was rejected before it could enqueue.
+      //
+      // The counters mirror IngestResult (lib/knowledge/types.ts) and are what
+      // an admin judges the corpus by, so they distinguish findable from merely
+      // processed: `unsearchable` files were indexed but produced no text to
+      // retrieve (image-only scans), and `failed` files could not be read or
+      // parsed at all. Both can be non-zero on a `success` row — the reindex
+      // worked, and these are its findings. They are absent on the request row,
+      // which has not counted anything yet; writing zeros there would report an
+      // empty corpus for every reindex ever started. Kept flat rather than
+      // nested under a `counts` object so `detail->>'indexed'` keeps answering
+      // across rows written before this change — an append-only log should not
+      // need a shape-version branch to query.
+      //
+      // Spelled out field by field rather than typed as IngestResult on
+      // purpose: the obvious next counter to want is a list of the paths that
+      // failed, which is precisely what this HMAC-signed row must never carry.
+      // Adding a counter here has to stay a decision, not a side effect.
+      //
+      // `trigger` says who decided the run should happen: `manual` for an
+      // admin's request, `scheduled` for the nightly reindex, `upgrade` for
+      // the run Pinchy queues itself after an update changed how Office
+      // documents are converted. Rows written before the schedule existed
+      // carry no trigger and were all manual.
+      // `sweepId` correlates one night's rows across agents (scheduled only).
+      //
+      // `ocr` is present only when the run sent scanned pages to a vision
+      // model: the model and how much was sent, never which files.
+      //
+      // `unavailableFolders` counts the granted folders the run had to leave
+      // out (missing, unreadable, or emptied under a nightly run); absent
+      // when every folder was read.
+      eventType: "knowledge.reindex";
+      detail: {
+        agent: EntityRef;
+        pathCount: number;
+        jobId?: string;
+        trigger?: KbIndexJobTrigger;
+        sweepId?: string;
+        indexed?: number;
+        skipped?: number;
+        removed?: number;
+        unsearchable?: number;
+        failed?: number;
+        archived?: number;
+        // Files under the run's folders whose type the indexer cannot read (#1267). The count only: the list lives in kb_unsupported_files.
+        // Since #1410 documents only; a row without `ignored` predates the split and counts non-documents here too.
+        unsupported?: number;
+        // Files under the run's folders that are not documents at all — programs, data, firmware (#1410). Counted apart from `unsupported`.
+        ignored?: number;
+        ocr?: { model: string; documents: number; pages: number; skippedPages: number };
+        unavailableFolders?: number;
+        // Files refused because their path no longer led to a regular file in the folder (a swapped link); also in `failed`.
+        refusedFiles?: number;
+        reason?: string;
+      };
+    })
+  | (AuditLogBase & {
+      eventType: "mail.sent";
+      detail: RedactedEmail & {
+        purpose: "invite" | "password_reset" | "test";
+        /** The invite (or reset token) the email carried a link to. */
+        invite?: { id: string };
+      };
+    })
+  | (AuditLogBase & {
+      eventType: "inbox.claim_reset";
+      detail: {
+        // The reconciliation sweep freed a stuck `processing` claim by deleting
+        // its ledger row (delete-and-reclaim, #735), so the email is listed and
+        // processed again. This is the sweep's only destructive act and the only
+        // way an email is processed twice — it has to be attributable.
+        //
+        // No PII: the claim tuple is opaque provider/DB ids, never an address.
+        workflow: EntityRef;
+        connectionId: string;
+        /** Provider immutable id (Graph id / Gmail message id). */
+        providerMessageId: string;
+        /** Correlates every row emitted by a single sweep run. */
+        sweepId: string;
+      };
     });
 
 // ── GDPR crypto-erasure: actorId → auditPseudonym substitution ─────────────
@@ -626,10 +1155,10 @@ export function resetAuditPseudonymCache(): void {
   auditPseudonymCache.clear();
 }
 
-async function resolveActorId(
-  actorType: "user" | "agent" | "system",
-  actorId: string
-): Promise<string> {
+async function resolveActorId(actorType: AuditActorType, actorId: string): Promise<string> {
+  // Only user actorIds are pseudonymised. An `api_key` actorId is a key id
+  // (#572), an `agent`/`system` id isn't a person either — all pass through
+  // unchanged, which is what this guard already did.
   if (actorType !== "user") return actorId;
 
   const cached = auditPseudonymCache.get(actorId);
@@ -672,6 +1201,12 @@ async function resolveActorId(
  * must match against this whole set instead of the bare id, or pseudonymized
  * rows silently vanish from their results.
  *
+ * Only meaningful for `actorType: "user"` rows. An `api_key` actorId is the
+ * key's own id and is never pseudonymized — it identifies a machine, not a
+ * person, so there's nothing to crypto-erase. Passing one here harmlessly
+ * returns just that id, which is what makes filtering the trail by key id
+ * work.
+ *
  * When the user no longer exists (already erased), only the raw id is
  * returned — there is no pseudonym left to look up, which is the intended
  * crypto-erasure outcome for post-erasure queries by the old id.
@@ -711,7 +1246,21 @@ export async function appendAuditLog(
   // predecessor and fork the chain, which verifyIntegrity would (correctly) then
   // flag as tampering.
   return db.transaction(async (tx) => {
+    const lockAcquireStart = Date.now();
     await tx.execute(sql`SELECT pg_advisory_xact_lock(${AUDIT_CHAIN_LOCK_KEY})`);
+    const lockAcquiredAt = Date.now();
+    const lockWaitMs = lockAcquiredAt - lockAcquireStart;
+    if (lockWaitMs >= LOCK_WAIT_WARN_THRESHOLD_MS) {
+      const slot = claimLockWaitWarnSlot(lockAcquiredAt);
+      if (slot.write) {
+        console.warn(
+          `[audit] appendAuditLog waited ${lockWaitMs}ms to acquire the audit chain lock` +
+            (slot.suppressed > 0
+              ? ` (${slot.suppressed} similar warning${slot.suppressed === 1 ? "" : "s"} suppressed since the last one)`
+              : "")
+        );
+      }
+    }
 
     const [prev] = await tx
       .select({ rowHmac: auditLog.rowHmac })
@@ -763,7 +1312,118 @@ interface VerifyResult {
   invalidIds: number[];
   // v3 chain links that don't point at their predecessor's rowHmac — evidence
   // of a deleted (middle) row or a reordering, distinct from field tampering.
+  // Also the window's first row when the caller says its predecessor broke
+  // (`seedPredecessorBroken`); that row can be in `invalidIds` as well.
   chainBreakIds: number[];
+  // Rows whose signature verifies under the SUPERSEDED signing secret rather
+  // than the active one — an operator pinned AUDIT_HMAC_SECRET on an install
+  // that had been signing with the generated file secret. These rows are
+  // authentic and unmodified, so they are not integrity violations and do not
+  // clear `valid`. They are reported separately and never folded into the
+  // healthy rows, so the rotation stays visible. See getPreviousSecret().
+  // Only a contiguous prefix of the chain can land here: an old-key row after a
+  // row that verified under the active key is forged (the old key file outlives
+  // a rotation) and goes to `invalidIds` instead.
+  previousKeyIds: number[];
+}
+
+type AuditLogRow = typeof auditLog.$inferSelect;
+
+/**
+ * Which key a stored row's signature verifies under, recomputed from the row as
+ * it is now:
+ *
+ * - `"active"`: the current signing key.
+ * - `"previous"`: the key an operator superseded by pinning AUDIT_HMAC_SECRET
+ *   (`getPreviousSecret`), and not the active one.
+ * - `"neither"`: no key this instance holds. Either the row was altered after it
+ *   was signed, or the key that signed it is no longer held (removed key file, a
+ *   second rotation). The two look identical without that key.
+ * - `"unknown-version"`: a row version no verifier knows. `verifyIntegrity`
+ *   reports such a row as invalid under every key, so it is not a key question.
+ * - `"missing"`: there is no such row.
+ *
+ * Legacy v1/v2 rows are signed with the same audit secret as v3 (only the
+ * payload shape differs), so they classify by key exactly like v3 rows, as they
+ * do in `verifyIntegrity`.
+ */
+export type AuditRowKey = "active" | "previous" | "neither" | "unknown-version" | "missing";
+
+function classifyRowKey(entry: AuditLogRow): Exclude<AuditRowKey, "missing"> {
+  const verifier = ROW_HMAC_VERIFIERS[entry.version];
+  if (!verifier) return "unknown-version";
+  const fields = {
+    timestamp: entry.timestamp,
+    eventType: entry.eventType,
+    actorType: entry.actorType,
+    actorId: entry.actorId,
+    resource: entry.resource,
+    detail: entry.detail,
+    outcome: (entry.outcome ?? "success") as "success" | "failure",
+    error: entry.error as { message: string } | null,
+    prevHmac: entry.prevHmac,
+  };
+  if (verifier(getOrCreateSecret("audit_hmac_secret"), fields) === entry.rowHmac) return "active";
+  const previousSecret = getPreviousSecret("audit_hmac_secret");
+  if (previousSecret && verifier(previousSecret, fields) === entry.rowHmac) return "previous";
+  return "neither";
+}
+
+/**
+ * Read the stored row `id` once and answer both questions a verifier resuming
+ * after it needs: its rowHmac as stored now, and which key it verifies under
+ * (see `AuditRowKey`). One read, so the row can't change between the two.
+ */
+export async function readAuditRowKey(
+  id: number
+): Promise<{ key: AuditRowKey; rowHmac: string | null }> {
+  const [entry] = await db.select().from(auditLog).where(eq(auditLog.id, id)).limit(1);
+  if (!entry) return { key: "missing", rowHmac: null };
+  return { key: classifyRowKey(entry), rowHmac: entry.rowHmac };
+}
+
+/**
+ * The `seedActiveKeySeen` for a window that follows a row of class `key`.
+ *
+ * Only a row that positively verifies under the previous key says the key change
+ * hasn't happened yet, so only `"previous"` keeps the old key open. A row that
+ * verifies under neither key or has an unknown version was either altered or
+ * signed by a key retired since; both mean the change already happened, so they
+ * close it (fail closed). Reading them as "not the active key, so not rotated
+ * yet" let content-only tampering of that one row re-open the old key for
+ * everything after it. `"missing"` means there is no row before the window: it
+ * starts the chain, and nothing has been seen.
+ *
+ * Whether the row is still the row a caller verified earlier is a separate
+ * question this can't answer; the incremental sweep compares its rowHmac with
+ * the one it remembered.
+ */
+export function keyChangeSeenAfter(key: AuditRowKey): boolean {
+  return key !== "previous" && key !== "missing";
+}
+
+/**
+ * Had the active key already signed a row by the time the row at `fromId` was
+ * written? The seed for a partial-range verification that starts at `fromId`.
+ *
+ * Answers from the row immediately before `fromId` (the greatest existing id
+ * below it), by the same rule the incremental sweep applies to its checkpoint
+ * row (`keyChangeSeenAfter`): only a predecessor that verifies under the
+ * previous key and not the active one answers false, and so does having no
+ * predecessor at all.
+ *
+ * That is a context, not a proof. Whether the predecessor itself is authentic,
+ * and where in the log the key really changed, only a verification from the
+ * first row establishes.
+ */
+export async function isActiveKeySeenBefore(fromId: number): Promise<boolean> {
+  const [entry] = await db
+    .select()
+    .from(auditLog)
+    .where(lt(auditLog.id, fromId))
+    .orderBy(desc(auditLog.id))
+    .limit(1);
+  return keyChangeSeenAfter(entry ? classifyRowKey(entry) : "missing");
 }
 
 // Rows processed per fetch. The whole audit_log can grow unbounded, so loading
@@ -785,15 +1445,45 @@ export async function verifyIntegrity(
     // (the default, omitting the option) preserves the pre-existing
     // unchecked-root behavior for existing callers.
     seedPrevHmac?: string | null;
+    // Whether a row BEFORE this window already verified under the active key.
+    // The previous signing key is only acceptable for the rows that pre-date
+    // the rotation, and a windowed verifier cannot see that from its own rows:
+    // a window of forged old-key rows that follows an active-key checkpoint
+    // would otherwise look like a legitimate pre-rotation prefix. An
+    // incremental verifier derives this from its checkpoint row and passes it
+    // here; omitted (the default) means "the window starts at the chain's
+    // beginning", which is correct for a full-range verification.
+    seedActiveKeySeen?: boolean;
+    // The row BEFORE this window is no longer the row the caller verified: it
+    // was deleted, or its rowHmac changed. `seedPrevHmac` can't see that, since
+    // the first row's link still matches the value the caller remembered. The
+    // first row's link to its real predecessor is broken all the same, so it is
+    // reported in `chainBreakIds` whatever its row version and whatever its own
+    // signature says. A first row that also fails its signature (or has an
+    // unknown version) is in `invalidIds` too: the two findings are independent.
+    //
+    // That matters with `seedActiveKeySeen: true`, which a caller that lost its
+    // predecessor passes to fail closed: an earlier-key first row then fails
+    // its signature, and without this the deletion would only show up as that
+    // row being "changed". The option does not touch the key context itself;
+    // that is `seedActiveKeySeen`'s job.
+    seedPredecessorBroken?: boolean;
   }
 ): Promise<VerifyResult> {
   const secret = getOrCreateSecret("audit_hmac_secret");
+  // Resolved once: the key an operator superseded by pinning AUDIT_HMAC_SECRET,
+  // or null on the overwhelming majority of installs that never rotated.
+  const previousSecret = getPreviousSecret("audit_hmac_secret");
   const pageSize = opts?.pageSize ?? VERIFY_PAGE_SIZE;
   const hasSeed = opts !== undefined && Object.prototype.hasOwnProperty.call(opts, "seedPrevHmac");
 
   const invalidIds: number[] = [];
   const chainBreakIds: number[] = [];
+  const previousKeyIds: number[] = [];
   let totalChecked = 0;
+  // Set once a row verifies under the ACTIVE key. Carried across pages: the
+  // previous key is only acceptable before the first such row.
+  let activeKeySeen = opts?.seedActiveKeySeen ?? false;
   // rowHmac of the previous row in range; undefined before the first row so the
   // first row in a partial range isn't chain-checked against a missing
   // predecessor — UNLESS seedPrevHmac was supplied, in which case it seeds the
@@ -801,6 +1491,8 @@ export async function verifyIntegrity(
   // Carried ACROSS pages so a chain break that straddles a page boundary is
   // still detected.
   let prevRowHmac: string | null | undefined = hasSeed ? (opts?.seedPrevHmac ?? null) : undefined;
+  // Cleared after the first row of the window, not the first row of each page.
+  let predecessorBroken = opts?.seedPredecessorBroken ?? false;
   // Exclusive lower-bound cursor for keyset pagination. Undefined on the first
   // page (which honors `fromId`); afterwards it advances past the last id seen.
   let cursor: number | undefined = undefined;
@@ -822,6 +1514,14 @@ export async function verifyIntegrity(
 
     for (const entry of page) {
       totalChecked++;
+      // Taken before any `continue` below, so it can only ever apply to the
+      // window's first row.
+      const linkKnownBroken = predecessorBroken;
+      predecessorBroken = false;
+      // The break to this row's real predecessor is known from outside the
+      // window, not read from the row, so it is reported whatever the row's own
+      // signature says. A row that also fails its signature is in both lists.
+      if (linkKnownBroken) chainBreakIds.push(entry.id);
       const verifier = ROW_HMAC_VERIFIERS[entry.version];
       if (!verifier) {
         invalidIds.push(entry.id);
@@ -829,7 +1529,7 @@ export async function verifyIntegrity(
         continue;
       }
 
-      const expectedHmac = verifier(secret, {
+      const fields = {
         timestamp: entry.timestamp,
         eventType: entry.eventType,
         actorType: entry.actorType,
@@ -839,11 +1539,37 @@ export async function verifyIntegrity(
         outcome: (entry.outcome ?? "success") as "success" | "failure",
         error: entry.error as { message: string } | null,
         prevHmac: entry.prevHmac, // v3 verifier uses this; v1/v2 ignore it
-      });
+      };
 
-      if (expectedHmac !== entry.rowHmac) {
+      let signatureOk = verifier(secret, fields) === entry.rowHmac;
+      if (signatureOk) {
+        // The rotation has happened by this row. From here on the superseded
+        // key is no longer acceptable (see below).
+        activeKeySeen = true;
+      } else if (
+        // Only rows that fail under the ACTIVE key are retried, so an
+        // unrotated install pays nothing and a rotated one pays one extra HMAC
+        // per legacy row. A row that verifies under neither key is tampering,
+        // and the fallback must not launder it into the previous-key bucket.
+        //
+        // The previous key is only trusted for the PREFIX of the chain that
+        // pre-dates the rotation. Its file stays in the secrets volume after a
+        // rotation (typically one done because the old key leaked), so anyone
+        // with DB write access and that file could re-sign any row, including
+        // rows written after the rotation, and have it verify. Once a row has
+        // verified under the active key, an old-key row is therefore invalid.
+        !activeKeySeen &&
+        previousSecret &&
+        verifier(previousSecret, fields) === entry.rowHmac
+      ) {
+        previousKeyIds.push(entry.id);
+        signatureOk = true;
+      }
+
+      if (!signatureOk) {
         invalidIds.push(entry.id);
       } else if (
+        !linkKnownBroken &&
         entry.version >= 3 &&
         prevRowHmac !== undefined &&
         entry.prevHmac !== prevRowHmac
@@ -863,9 +1589,14 @@ export async function verifyIntegrity(
   }
 
   return {
+    // previousKeyIds is deliberately absent: a row signed under the superseded
+    // key is authentic and unmodified. Clearing `valid` for it would restore
+    // the exact defect this bucket exists to fix — a key rotation reported as
+    // tampering.
     valid: invalidIds.length === 0 && chainBreakIds.length === 0,
     totalChecked,
     invalidIds,
     chainBreakIds,
+    previousKeyIds,
   };
 }

@@ -9,17 +9,73 @@ import {
   useIsMarkdownCodeBlock,
 } from "@assistant-ui/react-markdown";
 import remarkGfm from "remark-gfm";
-import { type FC, memo } from "react";
+import { type ComponentProps, type FC, memo, useContext, useMemo } from "react";
 import { CheckIcon, CopyIcon } from "lucide-react";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 
+import type { TextMessagePartProps } from "@assistant-ui/react";
+
+import { AgentIdContext } from "@/components/chat";
+import { PdfDialog } from "@/components/assistant-ui/attachment-preview";
+import { SheetDialog } from "@/components/assistant-ui/sheet-dialog";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import {
+  remarkSourceLinks,
+  buildSourceDownloads,
+  buildSourceViewerUrl,
+  buildPassageRequest,
+  parseSourceHref,
+} from "@/lib/knowledge/source-links";
+import { isSpreadsheetFile } from "@/lib/knowledge/office-formats";
 import { cn } from "@/lib/utils";
 
-const MarkdownTextImpl = () => {
+/** Taken from the consuming component so the list below cannot drift from what it accepts. */
+type RemarkPlugins = ComponentProps<typeof MarkdownTextPrimitive>["remarkPlugins"];
+
+/**
+ * The remark plugins a chat message is rendered with.
+ *
+ * Exported ONLY so a test can apply this list the way unified does. The types
+ * do not protect the distinction that matters here: unified wants an ATTACHER
+ * (`(options) => transformer`), and an already-applied transformer is also just
+ * a function, so `remarkSourceLinks({ agentId })` type-checks perfectly and then
+ * crashes the render of every message. That is not hypothetical — it shipped
+ * once and took the chat down with "Cannot read properties of undefined". The
+ * unit tests could not see it because they invoke the transformer directly,
+ * which is precisely the step this list gets to skip.
+ *
+ * Without an agent id there is no route to link a citation to, so the plugin is
+ * left out entirely rather than emitting hrefs that cannot resolve.
+ */
+export function buildRemarkPlugins(agentId: string | null): RemarkPlugins {
+  return agentId ? [remarkGfm, [remarkSourceLinks, { agentId }]] : [remarkGfm];
+}
+
+/**
+ * This component is registered as assistant-ui's `Text` part renderer, so it
+ * must stay assignable to `TextMessagePartComponent` — it is handed the part's
+ * own props even though it reads none of them. Declaring only `smooth` would
+ * make the props type share no field with that signature, which TypeScript
+ * rejects outright (and the typecheck gate caught).
+ */
+type MarkdownTextProps = Partial<TextMessagePartProps> & { smooth?: boolean };
+
+const MarkdownTextImpl = ({ smooth = true }: MarkdownTextProps) => {
+  const agentId = useContext(AgentIdContext);
+
+  // Rebuilt only when the agent changes: remark re-parses the whole message on
+  // a new plugin array identity, and this renderer runs per streamed chunk.
+  const remarkPlugins = useMemo(() => buildRemarkPlugins(agentId), [agentId]);
+
   return (
     <MarkdownTextPrimitive
-      remarkPlugins={[remarkGfm]}
+      remarkPlugins={remarkPlugins}
+      // On by default, which is the streaming look the chat wants. A test that
+      // renders a whole answer at once turns it OFF: the animation is driven by
+      // requestAnimationFrame, so with it on the assertion is really waiting on
+      // an animation clock, and that is a timing-dependent test rather than a
+      // test of the markdown pipeline it is actually about.
+      smooth={smooth}
       className="aui-md"
       components={defaultComponents}
     />
@@ -103,15 +159,85 @@ const defaultComponents = memoizeMarkdownComponents({
       {...props}
     />
   ),
-  a: ({ className, ...props }) => (
-    <a
-      className={cn(
-        "aui-md-a text-primary-accent underline underline-offset-2 hover:text-primary-accent/80",
-        className
-      )}
-      {...props}
-    />
-  ),
+  a: function Anchor({ className, href, children, ...linkProps }) {
+    // Set by remarkSourceLinks on a citation it built, never by markdown a
+    // model can write; read here and kept off the rendered anchor.
+    const {
+      "data-cited-claim": citedClaim,
+      "data-cited-slide": citedSlide,
+      "data-cited-heading": citedHeading,
+      ...props
+    } = linkProps as typeof linkProps & {
+      "data-cited-claim"?: string;
+      "data-cited-slide"?: string;
+      "data-cited-heading"?: string;
+    };
+    const linkClasses = cn(
+      "aui-md-a text-primary-accent underline underline-offset-2 hover:text-primary-accent/80",
+      className
+    );
+
+    // A cited source opens in the same lightbox as an uploaded PDF rather than
+    // navigating: the point of the citation is to check a claim against the
+    // answer still on screen. Every other link keeps normal anchor behaviour.
+    const source = href ? parseSourceHref(href) : null;
+    // A spreadsheet opens into its cited ROWS, not into the PDF lightbox: it
+    // has no page to open at, and an <embed> of a .xlsx is a pane no browser
+    // renders. Dispatched on the PATH, not only the locator, so a workbook
+    // mentioned without rows still reaches the sheet dialog (which then opens
+    // the top of the workbook) instead of falling through to a viewer that
+    // cannot render it. See sheet-dialog.tsx.
+    if (source && href && (source.locator?.kind === "sheet" || isSpreadsheetFile(source.path))) {
+      const locator = source.locator?.kind === "sheet" ? source.locator : null;
+      return (
+        <SheetDialog
+          url={href}
+          title={source.path}
+          sheet={locator?.sheet}
+          startRow={locator?.startRow}
+          endRow={locator?.endRow}
+        >
+          <button type="button" className={cn(linkClasses, "cursor-pointer text-left")}>
+            {children}
+          </button>
+        </SheetDialog>
+      );
+    }
+    if (source && href) {
+      return (
+        // The download list is derived from the SAME href the viewer opens, so
+        // what the reader is shown and what they can take away can never
+        // describe two different documents. For an Office source that is the
+        // original next to its converted PDF (#939).
+        // The viewer opens the same document under a url ending in its name,
+        // which is what the browser's PDF viewer titles it by (#1268).
+        <PdfDialog
+          url={buildSourceViewerUrl(href) ?? href}
+          title={source.path}
+          page={source.locator?.kind === "page" ? source.locator.page : null}
+          downloads={buildSourceDownloads(href) ?? undefined}
+          // Which passage the answer drew on, asked of the index with the
+          // answer's own claim (#1268): on the cited page of a PDF, the cited
+          // slide or heading of an Office document. Null for a citation that
+          // names none of them, which keeps the browser's viewer.
+          passage={buildPassageRequest(href, citedClaim, {
+            slide: citedSlide,
+            heading: citedHeading,
+          })}
+        >
+          <button type="button" className={cn(linkClasses, "cursor-pointer text-left")}>
+            {children}
+          </button>
+        </PdfDialog>
+      );
+    }
+
+    return (
+      <a className={linkClasses} href={href} {...props}>
+        {children}
+      </a>
+    );
+  },
   blockquote: ({ className, ...props }) => (
     <blockquote
       className={cn(

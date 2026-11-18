@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   getErrorHint,
   presentProviderError,
+  cannedProviderMessage,
   PROVIDER_SETTINGS_HINT,
   PROVIDER_REJECTED_GENERIC_MESSAGE,
   CONTEXT_OVERFLOW_HINT,
@@ -281,5 +282,53 @@ describe("getErrorHint", () => {
       expect(shown).not.toBe(PROVIDER_REJECTED_GENERIC_MESSAGE);
       expect(shown).toMatch(/thought_signature/);
     });
+  });
+});
+
+describe("cannedProviderMessage", () => {
+  // The security-relevant contract the thrown-error sink (client-router
+  // surfaceRunFailure) relies on: a rewrite for errors it can present SAFELY,
+  // and `null` for everything presentProviderError would echo verbatim. On
+  // `null` the caller must fall back to a generic bubble rather than leak
+  // untrusted thrown text (an internal Node/infra error) to the browser (#882).
+
+  it("returns the canned rewrite for a retired model (names the model, no raw echo)", () => {
+    const canned = cannedProviderMessage("HTTP 410: gpt-5-turbo was retired", "gpt-5-turbo");
+    expect(canned).toBe(MODEL_RETIRED_MESSAGE("gpt-5-turbo"));
+    expect(canned).not.toContain("410");
+  });
+
+  it("returns the canned rewrite for a context-window overflow", () => {
+    expect(cannedProviderMessage("prompt is too large for context window")).toBe(
+      CONTEXT_OVERFLOW_MESSAGE
+    );
+  });
+
+  it("returns the canned rewrite for the #584 provider-rejection envelope", () => {
+    expect(cannedProviderMessage("provider rejected the request schema or tool payload")).toBe(
+      PROVIDER_REJECTED_GENERIC_MESSAGE
+    );
+  });
+
+  it.each([
+    [
+      "a bare rate-limit (transient — echoed verbatim by presentProviderError)",
+      "Rate limit exceeded",
+    ],
+    ["a provider-config error (echoed verbatim)", "Invalid API key provided"],
+    [
+      "an internal infra error that merely classifies as transient",
+      "connect ETIMEDOUT 10.0.0.42:8443",
+    ],
+    [
+      "an internal DB auth error that classifies as provider_config",
+      'password authentication failed for user "pinchy"',
+    ],
+    ["a truly unclassified failure", "LLM request failed."],
+  ])("returns null (no safe rewrite) for %s", (_label, text) => {
+    expect(cannedProviderMessage(text)).toBeNull();
+    // presentProviderError, by contrast, echoes these verbatim — which is only
+    // safe because its callers pass provider-facing text by construction.
+    expect(presentProviderError(text)).toBe(text);
   });
 });

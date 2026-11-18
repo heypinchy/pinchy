@@ -54,15 +54,19 @@ describe("sweepResolvedChatErrors", () => {
       { ...base, createdAt: daysAgo(100) }, // UNRESOLVED but past the 90d hard cap → swept
       { ...base, createdAt: daysAgo(40) }, // UNRESOLVED, within 90d → kept
       { ...base, createdAt: daysAgo(5), dismissedAt: daysAgo(5) }, // resolved but <30d → kept
+      // Recorded only to answer the retry gate (#1013), never shown as a
+      // banner — so it follows the SHORT window, not the 90d banner cap.
+      { ...base, createdAt: daysAgo(40), showBanner: false }, // → swept
+      { ...base, createdAt: daysAgo(5), showBanner: false }, // still retryable-recent → kept
     ]);
 
     const res = await sweepResolvedChatErrors();
 
-    expect(res.swept).toBe(2);
+    expect(res.swept).toBe(3);
     expect(res.sweepId).toMatch(/[0-9a-f-]{36}/);
 
     const remaining = await db.select().from(chatSessionErrors);
-    expect(remaining).toHaveLength(2);
+    expect(remaining).toHaveLength(3);
 
     // One summary audit row carrying the sweepId.
     const gcRows = await db.select().from(auditLog).where(eq(auditLog.eventType, "chat.error_gc"));

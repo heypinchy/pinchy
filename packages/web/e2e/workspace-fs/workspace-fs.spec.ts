@@ -3,7 +3,11 @@
 // Dispatch probe for the pinchy-files plugin workspace tools:
 //   pinchy_ls   — list files in the agent's uploads directory
 //   pinchy_read — read a file from the agent's uploads directory
-//   pinchy_write — write a file into the agent's uploads directory
+//   pinchy_write — write a file into the agent's workbench directory
+//
+// The read side reaches `uploads/` and the write side does not, which is the
+// zone split itself: `uploads/` holds what the user attached, so the agent may
+// read it and never write it (`write_paths` covers `workbench/` only).
 //
 // Satisfies the plugin-tool-coverage drift guard by exercising all three tools
 // that pinchy-files exposes and asserting the audit entries appear.
@@ -19,6 +23,7 @@ import {
   FAKE_OLLAMA_WORKSPACE_LS_TOOL_TRIGGER,
   FAKE_OLLAMA_WORKSPACE_READ_TOOL_TRIGGER,
   FAKE_OLLAMA_WORKSPACE_WRITE_TOOL_TRIGGER,
+  FAKE_OLLAMA_WORKSPACE_DELETE_TOOL_TRIGGER,
   FAKE_OLLAMA_PORT,
   startFakeOllama,
   stopFakeOllama,
@@ -89,11 +94,12 @@ async function login(email = ADMIN_USER.email, password = ADMIN_USER.password): 
 // agent then fails with EACCES (same blocker as the skipped pinchy_ls
 // probe in e2e/integration/agent-chat.spec.ts).
 //
-// The tests stay in the file (skipped) so the plugin-tool-coverage drift
-// guard still finds the `pollAuditForTool` references for pinchy_ls,
-// pinchy_read, and pinchy_write. Re-enable once #427 ships uid-aligned
-// mounts for shared-agent creation (or an internal test-only "create
-// shared agent" API).
+// The tests stay in the file as the work #427 will re-enable, NOT as
+// coverage: since #834 the plugin-tool-coverage guard drops matches inside
+// skipped blocks, so the `pollAuditForTool` references below count for
+// nothing. (They used to count, and this comment used to say so.) Re-enable
+// once #427 ships uid-aligned mounts for shared-agent creation (or an
+// internal test-only "create shared agent" API).
 test.describe.skip("Workspace filesystem dispatch probe (pinchy-files plugin coverage)", () => {
   let cookie: string;
   let agentId: string;
@@ -220,11 +226,76 @@ test.describe.skip("Workspace filesystem dispatch probe (pinchy-files plugin cov
           (e) => e.resource === `agent:${agentId}` && e.detail?.toolName === "pinchy_write"
         );
         if (entry?.detail) {
-          expect(entry.detail.path).toContain("uploads/");
+          // workbench/, and the audited path is the RESOLVED one: a write the
+          // plugin denied never reaches this branch at all (no path, no mode,
+          // no hash — the details are error-only). So this line is what proves
+          // the write landed in the agent's own zone.
+          expect(entry.detail.path).toContain("workbench/");
           expect(entry.detail.mode).toBe("create");
           expect(typeof entry.detail.sizeBytes).toBe("number");
           // SHA-256 hex digest is always 64 characters
           expect(entry.detail.contentHash).toMatch(/^[0-9a-f]{64}$/);
+          detailVerified = true;
+          break;
+        }
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    expect(detailVerified).toBe(true);
+  });
+
+  // NOT COVERAGE — this whole block is skipped on #427, so nothing below has
+  // ever run and CI will not run it either. `pinchy_delete` has no live
+  // end-to-end proof today; the plugin-tool-coverage guard stays green only
+  // because pinchy-files is discharged by pinchy_generate_file's running probe
+  // in e2e/integration/agent-chat.spec.ts. Said out loud because the file
+  // header's warning is 150 lines up and the probe below reads as if it runs.
+  //
+  // Ordered after the write probe, deliberately, for when #427 re-enables the
+  // block: pinchy_delete reports a missing path as an error, so a probe against
+  // a seeded-but-unknown file would prove the refusal rather than the dispatch.
+  // Playwright runs a file's tests in order with workers: 1, so the file this
+  // deletes is the one the previous test wrote.
+  test("pinchy_delete dispatches via fake-LLM and audits the file it removed", async ({ page }) => {
+    await loginViaUI(page, ADMIN_USER.email, ADMIN_USER.password);
+
+    await page.goto(`/chat/${agentId}`);
+    await expect(page).toHaveURL(`/chat/${agentId}`, { timeout: 10_000 });
+
+    const input = page.getByPlaceholder(/send a message/i);
+    await expect(input).toBeVisible({ timeout: 10_000 });
+    await input.fill(`${FAKE_OLLAMA_WORKSPACE_DELETE_TOOL_TRIGGER}: drop the result file`);
+    await input.press("Enter");
+
+    const found = await pollAuditForTool(page, { toolName: "pinchy_delete", agentId });
+    expect(found).toBe(true);
+
+    // The audited detail is what separates a real removal from a refusal: the
+    // error path carries `error` and the caller-supplied path, the success path
+    // carries the RESOLVED path and the size of what was removed.
+    const deadline = Date.now() + 30_000;
+    let detailVerified = false;
+    while (Date.now() < deadline) {
+      const auditRes = await page.request.get("/api/audit?eventType=tool.pinchy_delete&limit=10");
+      if (auditRes.status() === 200) {
+        const audit = (await auditRes.json()) as {
+          entries: Array<{
+            resource: string | null;
+            detail: {
+              toolName?: string;
+              path?: string;
+              sizeBytes?: number;
+              error?: string;
+            } | null;
+          }>;
+        };
+        const entry = audit.entries.find(
+          (e) => e.resource === `agent:${agentId}` && e.detail?.toolName === "pinchy_delete"
+        );
+        if (entry?.detail) {
+          expect(entry.detail.error).toBeUndefined();
+          expect(entry.detail.path).toContain("workbench/");
+          expect(typeof entry.detail.sizeBytes).toBe("number");
           detailVerified = true;
           break;
         }

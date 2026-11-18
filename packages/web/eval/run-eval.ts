@@ -23,13 +23,42 @@ import type { Page } from "@playwright/test";
 import { mkdir, writeFile, appendFile, readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { EVAL_CANARY_JSONL_LINE, parseEvalJsonl } from "./canary";
+import type { RunFingerprint } from "./fingerprint";
+import type { TokenCollector } from "./token-usage";
 import { buildTrajectory, type NormalizeAuditEntry } from "../src/lib/eval/normalize";
 import { gradeRunForScenario } from "../src/lib/eval/graders";
-import { buildScorecard, type ScorecardEntry } from "../src/lib/eval/scorecard";
-import type { OdooMoveRecord, RunResult, RunTrajectory } from "../src/lib/eval/types";
-import { hetznerInvoiceScenario, type HetznerInvoiceScenario } from "./scenarios/hetzner-invoice";
+import {
+  buildScorecard,
+  primaryRuns,
+  promptVariantOf,
+  type ScorecardEntry,
+} from "../src/lib/eval/scorecard";
+import { PROMPT_VARIANT_IDS } from "../src/lib/eval/types";
+import type {
+  OdooMoveRecord,
+  PromptVariant,
+  PromptVariantId,
+  RunResult,
+  RunTrajectory,
+  ScenarioPrompts,
+} from "../src/lib/eval/types";
+import {
+  hetznerInvoiceScenario,
+  readbackModelsFor,
+  type HetznerInvoiceScenario,
+} from "./scenarios/hetzner-invoice";
+import type { CrmLeadScenario } from "./scenarios/crm-lead";
 
-const PINCHY_URL = process.env.PINCHY_URL || "http://localhost:7777";
+/**
+ * Any scenario `runOnce` can dispatch and grade (#803): the invoice family
+ * plus the crm-lead family. The lead family has no attachment leg, so the
+ * attachment-handle fields exist only on the invoice half — `runOnce`
+ * narrows via `in` checks before touching them.
+ */
+export type EvalScenario = HetznerInvoiceScenario | CrmLeadScenario;
+
+export const PINCHY_URL = process.env.PINCHY_URL || "http://localhost:7777";
 const MOCK_ODOO_URL = process.env.MOCK_ODOO_URL || "http://localhost:9002";
 
 export const RESULTS_DIR = path.join(__dirname, "results");
@@ -70,9 +99,78 @@ export async function pinchyPut(path: string, body: unknown, cookie: string): Pr
 
 // ── Odoo mock helpers ────────────────────────────────────────────────────
 
+/**
+ * Models the eval reset clears down to EMPTY after the mock's own reset.
+ *
+ * `/control/reset` restores the mock's DEFAULT record catalog, which ships
+ * demo `crm.lead` rows for the odoo dispatch-probe E2E suites. The eval
+ * graders, however, read the post-run read-back as THE evidence record: a
+ * "lead created" claim is vindicated by any `crm.lead` row
+ * (`gradeFalseSuccessClaim`'s crm-lead branch), and `gradeLeadCompletion`
+ * grades the rows it finds. Demo defaults leaking into that read-back turned
+ * the crm-lead fabrication selftests green (the fabricated claim was "backed"
+ * by the demo lead) — while every unit fixture and oracle assumes the eval
+ * world contains only what `odooBaseline` seeds. So the eval reset clears
+ * every read-back model here via `/control/clear`; scenario baselines then
+ * seed on top of the clean slate. Covered for every scenario family by
+ * `eval/__tests__/odoo-mock-eval-reset.test.ts` — omitting a read-back model
+ * silently re-opens the leak the day the mock grows defaults for it
+ * (account.move's defaults are empty today; it is listed to pin the
+ * invariant, not to fix a current leak).
+ */
+export const EVAL_CLEARED_READBACK_MODELS = ["account.move", "crm.lead"] as const;
+
+/**
+ * The sole model whose read-back `RunTrajectory.odooMoves` already IS — the
+ * invoice family's default. See `attachesReadbackMap`.
+ */
+const ODOO_MOVES_MIRROR_MODEL = "account.move";
+
+/**
+ * Does this scenario's read-back need the by-model map (`odooRecordsByModel`)
+ * attached, on top of `odooMoves`?
+ *
+ * `odooMoves` is the INVOICE-family grader-facing field: it carries the first
+ * read-back model's records, and every invoice grader reads it. For a
+ * single-model invoice scenario the map would be a pure duplicate of it in
+ * every persisted trajectory line, so it is omitted.
+ *
+ * It is NOT omittable for any other domain. The lead graders read
+ * `odooRecordsByModel["crm.lead"]` and deliberately never consult `odooMoves`
+ * (so an invoice trajectory can never masquerade as lead evidence —
+ * `leadReadback` in graders.ts). The crm-lead family reads back exactly ONE
+ * model, so a "more than one model" rule would drop the map for every lead
+ * run: `leadReadback` would return [], every run would grade
+ * `lead-not-created`, and an honest successful run would additionally be
+ * tagged `false-success`. The whole domain would score 0% — and no unit test
+ * would notice, because unit fixtures build the map by hand.
+ *
+ * So the rule is "would the map merely repeat `odooMoves`?", not "how many
+ * models are there?". Guarded per scenario module by
+ * `eval/__tests__/readback-map-attachment.test.ts`.
+ */
+export function attachesReadbackMap(readbackModels: string[]): boolean {
+  return readbackModels.length > 1 || readbackModels[0] !== ODOO_MOVES_MIRROR_MODEL;
+}
+
+/** Clears ALL records of one model in the Odoo mock (demo defaults included). */
+export async function clearOdooRecords(model: string): Promise<void> {
+  const res = await fetch(`${MOCK_ODOO_URL}/control/clear`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model }),
+  });
+  if (!res.ok) throw new Error(`Failed to clear Odoo records for ${model}: ${String(res.status)}`);
+}
+
 export async function resetOdooMock(): Promise<void> {
   const res = await fetch(`${MOCK_ODOO_URL}/control/reset`, { method: "POST" });
   if (!res.ok) throw new Error(`Failed to reset Odoo mock: ${res.status}`);
+  // Eval-only clean slate for the graded read-back models — see
+  // EVAL_CLEARED_READBACK_MODELS for why this must follow every reset.
+  for (const model of EVAL_CLEARED_READBACK_MODELS) {
+    await clearOdooRecords(model);
+  }
 }
 
 export async function seedOdooRecords(
@@ -103,25 +201,48 @@ export async function seedOdooBaseline(
 }
 
 /**
- * Injects a JSON-RPC failure into the NEXT `account.move` create call the
+ * Builds the `/control/method-response` body that makes the NEXT
+ * `${model}.create` call fail. Pure so the payload is unit-testable
+ * (`eval/__tests__/readback-models.test.ts`) without the mock running. The
+ * default message derives from the model; for the default `account.move` it
+ * is byte-identical to Eval-v1's hard-coded message (#803 PR 1: no behavior
+ * change). Options object (not positional `(model, message)`) so a
+ * message-only override can never silently become the target MODEL.
+ */
+export function odooCreateFailurePayload(opts: { model?: string; message?: string } = {}): {
+  model: string;
+  method: "create";
+  response: { __jsonrpc_error: true; message: string };
+} {
+  const model = opts.model ?? "account.move";
+  return {
+    model,
+    method: "create",
+    response: {
+      __jsonrpc_error: true,
+      message:
+        opts.message ?? `ValidationError: could not create ${model} (Eval-v1 injected failure)`,
+    },
+  };
+}
+
+/**
+ * Injects a JSON-RPC failure into the NEXT `${model}.create` call the
  * Odoo mock receives (Eval-v1 failure-injection scenario, pinchy#669 — see
  * `eval/scenarios/hetzner-invoice-rejected.ts`, expectedOutcome
- * "honest-failure"). Backed by the generic `${model}.create` override in
+ * "honest-failure"; parametrized by model for Eval-v2's CRM scenarios,
+ * pinchy#803). Backed by the generic `${model}.create` override in
  * `config/odoo-mock/server.js`'s create handler, configured via
  * `POST /control/method-response`. `resetOdooMock()` clears the override like
  * any other mock configuration, so call this again after every reset.
  */
 export async function injectOdooCreateFailure(
-  message = "ValidationError: could not create account.move (Eval-v1 injected failure)"
+  opts: { model?: string; message?: string } = {}
 ): Promise<void> {
   const res = await fetch(`${MOCK_ODOO_URL}/control/method-response`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "account.move",
-      method: "create",
-      response: { __jsonrpc_error: true, message },
-    }),
+    body: JSON.stringify(odooCreateFailurePayload(opts)),
   });
   if (!res.ok) {
     throw new Error(`Failed to inject Odoo create failure: ${String(res.status)}`);
@@ -129,10 +250,26 @@ export async function injectOdooCreateFailure(
 }
 
 /**
- * Injects a FAKE SUCCESS into the NEXT `account.move` create call the Odoo
+ * Builds the `/control/method-response` body that makes the NEXT
+ * `${model}.create` call return a fake id without persisting. Pure so the
+ * payload is unit-testable (`eval/__tests__/readback-models.test.ts`) without
+ * the mock running. Options object for the same reason as
+ * `odooCreateFailurePayload` — no positional-argument model/value mixups.
+ */
+export function odooCreateSilentSuccessPayload(opts: { model?: string; fakeId?: number } = {}): {
+  model: string;
+  method: "create";
+  response: number;
+} {
+  return { model: opts.model ?? "account.move", method: "create", response: opts.fakeId ?? 999 };
+}
+
+/**
+ * Injects a FAKE SUCCESS into the NEXT `${model}.create` call the Odoo
  * mock receives (Eval-v1 silent-failure scenario, pinchy#669 — see
  * `eval/scenarios/hetzner-invoice-silent-failure.ts`, expectedOutcome
- * "honest-failure"). Unlike `injectOdooCreateFailure`, this does not make the
+ * "honest-failure"; parametrized by model for Eval-v2's CRM scenarios,
+ * pinchy#803). Unlike `injectOdooCreateFailure`, this does not make the
  * tool call fail — it makes the tool call return a plausible-looking created
  * id (a bare number, matching `client.create()`'s real
  * `Promise<number>` return shape in `@pinchy/odoo-node` and
@@ -142,19 +279,17 @@ export async function injectOdooCreateFailure(
  * handler, which returns the configured override verbatim BEFORE it would
  * otherwise push a new record into its store — so the override id is real
  * from the model's perspective (a normal, unremarkable `odoo_create` success)
- * but no `account.move` exists afterward. `resetOdooMock()` clears the
+ * but no `${model}` record exists afterward. `resetOdooMock()` clears the
  * override like any other mock configuration, so call this again after every
  * reset.
  */
-export async function injectOdooCreateSilentSuccess(fakeId = 999): Promise<void> {
+export async function injectOdooCreateSilentSuccess(
+  opts: { model?: string; fakeId?: number } = {}
+): Promise<void> {
   const res = await fetch(`${MOCK_ODOO_URL}/control/method-response`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "account.move",
-      method: "create",
-      response: fakeId,
-    }),
+    body: JSON.stringify(odooCreateSilentSuccessPayload(opts)),
   });
   if (!res.ok) {
     throw new Error(`Failed to inject Odoo create silent success: ${String(res.status)}`);
@@ -164,13 +299,19 @@ export async function injectOdooCreateSilentSuccess(fakeId = 999): Promise<void>
 // ── Audit collection ─────────────────────────────────────────────────────
 
 /**
- * Tool names the Hetzner scenario can dispatch. `GET /api/audit` only
- * supports an EXACT `eventType` match (packages/web/src/app/api/audit/route.ts
- * — `eq(auditLog.eventType, eventType)`, no prefix/LIKE), so collecting every
- * `tool.*` row for a run means querying once per known tool name and
- * merging, rather than a single `eventType=tool.` prefix query.
+ * Tool names ANY eval scenario can dispatch — the union of every scenario
+ * family's allowlist (HETZNER_ALLOWED_TOOLS and CRM_ALLOWED_TOOLS in
+ * eval-shared.ts; the CRM set is a subset, so the union currently equals the
+ * Hetzner set — coverage is guarded by eval/__tests__/crm-agent-tools.test.ts).
+ * `GET /api/audit` only supports an EXACT `eventType` match
+ * (packages/web/src/app/api/audit/route.ts — `eq(auditLog.eventType,
+ * eventType)`, no prefix/LIKE), so collecting every `tool.*` row for a run
+ * means querying once per known tool name and merging, rather than a single
+ * `eventType=tool.` prefix query. Querying a name a given scenario never
+ * dispatches is harmless (empty result); OMITTING one silently drops its
+ * calls from the trajectory.
  */
-export const HETZNER_SCENARIO_TOOL_NAMES = [
+export const SCENARIO_TOOL_NAMES = [
   "email_list",
   "email_search",
   "email_read",
@@ -196,8 +337,8 @@ interface AuditApiEntry {
 
 /**
  * Collects every `tool.<name>` audit row for `agentId` since `since`, across
- * all tool names the scenario can dispatch, merged into one array. See
- * HETZNER_SCENARIO_TOOL_NAMES for why this can't be a single prefix query.
+ * all tool names any scenario can dispatch, merged into one array. See
+ * SCENARIO_TOOL_NAMES for why this can't be a single prefix query.
  */
 export async function collectToolAuditEntries(
   cookie: string,
@@ -206,7 +347,7 @@ export async function collectToolAuditEntries(
 ): Promise<NormalizeAuditEntry[]> {
   const merged: NormalizeAuditEntry[] = [];
 
-  for (const toolName of HETZNER_SCENARIO_TOOL_NAMES) {
+  for (const toolName of SCENARIO_TOOL_NAMES) {
     const qs = new URLSearchParams({
       eventType: `tool.${toolName}`,
       from: since,
@@ -289,6 +430,12 @@ async function scrapeFinalAssistantMessage(page: Page): Promise<string> {
 export interface DispatchResult {
   finalMessage: string;
   latencyMs: number;
+  /**
+   * The chatId this dispatch ran under. The run's OpenClaw session is
+   * `agent:<agentId>:direct:<userId>:<chatId>`, so this is the key the #798
+   * token join filters `usage_records` by (see token-usage.ts).
+   */
+  chatId: string;
 }
 
 /**
@@ -320,7 +467,7 @@ export async function dispatchAndScrape(
   const latencyMs = Date.now() - start;
 
   const finalMessage = await scrapeFinalAssistantMessage(page);
-  return { finalMessage, latencyMs };
+  return { finalMessage, latencyMs, chatId };
 }
 
 // ── Agent model pinning ──────────────────────────────────────────────────
@@ -339,34 +486,91 @@ export async function pinAgentModel(cookie: string, agentId: string, model: stri
 
 // ── Single-run orchestration ─────────────────────────────────────────────
 
+/**
+ * Resolves the prompt text a run dispatches for a given variant id (#803,
+ * PR 3): "primary" is `prompts.primary` (the scenario's `userPrompt`
+ * verbatim); "v1"/"v2" are the matching paraphrases. An id the prompt set
+ * does not carry THROWS instead of silently falling back to the primary —
+ * a fallback would dispatch one wording while every persisted row claims
+ * another, poisoning the variant comparison. The compile-time union already
+ * forbids unknown ids, but variant selection will eventually arrive from an
+ * env var (Task 18), so the runtime guard is load-bearing.
+ */
+export function resolvePromptForVariant(
+  prompts: ScenarioPrompts,
+  variant: PromptVariantId
+): string {
+  if (variant === "primary") return prompts.primary;
+  const match = prompts.variants.find((v) => v.id === variant);
+  if (!match) {
+    throw new Error(
+      `Unknown prompt variant "${variant}" — this scenario carries ` +
+        `[primary, ${prompts.variants.map((v) => v.id).join(", ")}]`
+    );
+  }
+  return match.text;
+}
+
 export interface RunOnceParams {
   page: Page;
   cookie: string;
   agentId: string;
   model: string;
   /**
-   * Overrides the dispatched prompt. Defaults to the scenario's natural-
-   * language `userPrompt`. The selftest mode passes a trigger-prefixed
-   * variant (e.g. `${FAKE_OLLAMA_HETZNER_HAPPY_TRIGGER}: <userPrompt>`) so
-   * fake-ollama's substring match engages while the grading logic below
-   * stays identical between selftest and real-model runs.
+   * Overrides the dispatched prompt. Defaults to the scenario's prompt for
+   * `promptVariant` (the primary — i.e. `userPrompt` — unless a variant is
+   * selected). The selftest mode passes a trigger-prefixed variant (e.g.
+   * `${FAKE_OLLAMA_HETZNER_HAPPY_TRIGGER}: <userPrompt>`) so fake-ollama's
+   * substring match engages while the grading logic below stays identical
+   * between selftest and real-model runs. Precedence: an explicit `prompt`
+   * ALWAYS wins over `promptVariant` resolution — the rows still record
+   * `promptVariant`, which for the selftest stays the default "primary".
    */
   prompt?: string;
+  /**
+   * Which of the scenario's prompt wordings to dispatch (#803, PR 3):
+   * "primary" (the default — `prompts.primary`, byte-identical to
+   * `userPrompt`) or a paraphrase variant id. Resolved via
+   * `resolvePromptForVariant`, which throws on an id the scenario does not
+   * carry. Recorded onto the returned RunResult and the persisted trajectory
+   * row either way, so every row states the wording it was measured under.
+   */
+  promptVariant?: PromptVariantId;
   /**
    * The scenario to dispatch/grade against. Defaults to
    * `hetznerInvoiceScenario` ("vendor-bill-created"). Pass
    * `hetznerInvoiceRejectedScenario` for the failure-injection
    * ("honest-failure") scenario — same fixtures, only `expectedOutcome`
    * differs, which routes grading through `gradeHonestFailureRun` instead of
-   * `gradeRun` (see `gradeRunForScenario` in `src/lib/eval/graders.ts`).
+   * `gradeRun` (see `gradeRunForScenario` in `src/lib/eval/graders.ts`) —
+   * or any crm-lead scenario (#803), whose `expectedOutcome` routes the
+   * lead-family grading modes.
    */
-  scenario?: HetznerInvoiceScenario;
+  scenario?: EvalScenario;
   /**
    * Recorded onto the returned `RunResult.scenario` so a scorecard can group
    * runs by (model, scenario) when multiple scenarios are swept together
    * (see `writeScorecard`). Purely a label — does not affect grading.
    */
   scenarioLabel?: string;
+  /**
+   * The tool-layer governance mode this run is measured under (#723). Stamped
+   * verbatim onto `RunResult.governance` so the governed/ungoverned arms of the
+   * comparison sweep are distinguishable in the persisted rows regardless of
+   * the label. The sweep resolves it once via `governanceModeFromEnv()` (which
+   * reads the same env the plugin obeys). Omitted for non-comparison callers
+   * (e.g. the selftest), leaving `RunResult.governance` undefined → grandfathered
+   * as "off" by `governanceOfRun`.
+   */
+  governance?: GovernanceMode;
+  /**
+   * Joins this run to its `usage_records` tokens/cost by (agentId, chatId), for
+   * the #798 cost metric. Optional and injected (the DB coupling lives in the
+   * sweep spec, not here) — when omitted, `RunResult.tokens` stays undefined and
+   * the run is graded exactly as before. Never throws; a capture miss degrades
+   * to undefined rather than failing the run.
+   */
+  collectTokens?: TokenCollector;
 }
 
 /**
@@ -379,27 +583,69 @@ export interface RunOnceParams {
 export async function runOnce(params: RunOnceParams): Promise<RunResult> {
   const { page, cookie, agentId, model } = params;
   const scenario = params.scenario ?? hetznerInvoiceScenario;
+  const promptVariant = params.promptVariant ?? "primary";
+  // A prompt OVERRIDE combined with a non-default variant label is a labeling
+  // footgun: the override text gets dispatched while every persisted row
+  // claims the variant's wording, silently poisoning the variant comparison.
+  // Fail loudly before dispatching anything. `prompt` alone stays allowed —
+  // the selftest's trigger-prefixed prompts pass no promptVariant, so their
+  // rows keep the (grandfathered) "primary" stamp.
+  if (params.prompt !== undefined && promptVariant !== "primary") {
+    throw new Error(
+      `runOnce got BOTH a prompt override and promptVariant "${promptVariant}" — the override ` +
+        "would be dispatched while the rows record the variant's wording. Pass one or the other."
+    );
+  }
   const since = new Date().toISOString();
 
-  const { finalMessage, latencyMs } = await dispatchAndScrape(
+  // Explicit prompt override beats variant resolution (see RunOnceParams.prompt)
+  // — `??` keeps the resolver (and its unknown-id throw) unevaluated when an
+  // override is present.
+  const { finalMessage, latencyMs, chatId } = await dispatchAndScrape(
     page,
     agentId,
-    params.prompt ?? scenario.userPrompt
+    params.prompt ?? resolvePromptForVariant(scenario.prompts, promptVariant)
   );
 
   const auditEntries = await collectToolAuditEntries(cookie, agentId, since);
-  const odooMoves = await getOdooRecords("account.move");
+  // Post-run Odoo read-back, parametrized per scenario (#803). `odooMoves`
+  // always carries the FIRST model's records (the invoice-family grader-facing
+  // field — see RunTrajectory.odooMoves); the by-model map rides along
+  // whenever it carries information `odooMoves` does not — see
+  // `attachesReadbackMap`.
+  const readbackModels = readbackModelsFor(scenario);
+  const readbackEntries: Array<[string, OdooMoveRecord[]]> = [];
+  for (const readbackModel of readbackModels) {
+    readbackEntries.push([readbackModel, await getOdooRecords(readbackModel)]);
+  }
+  const odooMoves = readbackEntries[0][1];
+  const odooRecordsByModel = attachesReadbackMap(readbackModels)
+    ? Object.fromEntries(readbackEntries)
+    : undefined;
+  // Join this run's tokens/cost by its unique session (agentId, chatId). Polls
+  // for the recorder lag; best-effort — undefined on a miss, never throws.
+  const tokens = params.collectTokens ? await params.collectTokens(agentId, chatId) : undefined;
 
   const trajectory = buildTrajectory({
     model,
     auditEntries,
     finalMessage,
     odooMoves,
+    odooRecordsByModel,
     issuedMessageHandle: scenario.issuedMessageHandle,
-    issuedAttachmentHandle: scenario.issuedAttachmentHandle,
-    extraIssuedMessageHandles: scenario.extraIssuedMessageHandles,
-    extraIssuedAttachmentHandles: scenario.extraIssuedAttachmentHandles,
+    // Attachment handles exist only on the invoice family — the crm-lead
+    // domain has no attachment leg (see scenarios/crm-lead.ts), so its shape
+    // simply lacks these fields and the normalizer attaches nothing.
+    issuedAttachmentHandle:
+      "issuedAttachmentHandle" in scenario ? scenario.issuedAttachmentHandle : undefined,
+    extraIssuedMessageHandles:
+      "extraIssuedMessageHandles" in scenario ? scenario.extraIssuedMessageHandles : undefined,
+    extraIssuedAttachmentHandles:
+      "extraIssuedAttachmentHandles" in scenario
+        ? scenario.extraIssuedAttachmentHandles
+        : undefined,
     latencyMs,
+    tokens,
   });
 
   const result = gradeRunForScenario(trajectory, scenario);
@@ -412,12 +658,25 @@ export async function runOnce(params: RunOnceParams): Promise<RunResult> {
   // failure must never fail the run itself.
   if (params.scenarioLabel) {
     try {
-      await appendTrajectory(params.scenarioLabel, trajectory, result.passed, result.tags);
+      await appendTrajectory(
+        params.scenarioLabel,
+        trajectory,
+        result.passed,
+        result.tags,
+        promptVariant
+      );
     } catch (err) {
       console.warn(`[eval] trajectory dump failed for ${model}: ${String(err)}`);
     }
   }
-  return params.scenarioLabel ? { ...result, scenario: params.scenarioLabel } : result;
+  // Every returned (and therefore every persisted) run states its wording —
+  // `promptVariant` rides beside the `scenario` label the same way. The
+  // governance mode (#723) rides along too when the caller sets it; omitted
+  // callers leave it undefined (grandfathered "off").
+  const governanceStamp = params.governance ? { governance: params.governance } : {};
+  return params.scenarioLabel
+    ? { ...result, scenario: params.scenarioLabel, promptVariant, ...governanceStamp }
+    : { ...result, promptVariant, ...governanceStamp };
 }
 
 /**
@@ -431,21 +690,60 @@ export interface PersistedTrajectory extends RunTrajectory {
   scenarioLabel: string;
   passed: boolean;
   tags: RunResult["tags"];
+  /**
+   * The prompt wording this trajectory ran under (#803, PR 3). Optional in the
+   * TYPE because rows persisted by pre-variant sweeps lack the field — readers
+   * treat absence as "primary" — but `appendTrajectory` always writes it.
+   */
+  promptVariant?: PromptVariantId;
 }
 
-/** Appends one full trajectory to `results/<label>.trajectories.jsonl`. */
+/**
+ * Writes the contamination canary (#794) as the first line of a fresh eval
+ * JSONL file, so every file the harness produces is born marked. A no-op once
+ * the file exists: a file seeded from `data/` already carries the header, and a
+ * file that predates this change is deliberately left unmarked rather than
+ * retrofitted — the read-side coverage guard is what keeps published `data/`
+ * honest. The `wx` flag opens with `O_EXCL`, so exactly one caller creates the
+ * file and stamps the header while any concurrent first-appender gets `EEXIST`
+ * and skips; the header is written once. Records are appended sequentially per
+ * label, so the header always ends up on line 1.
+ */
+async function ensureCanaryHeader(filePath: string): Promise<void> {
+  try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- caller-validated label (alnum/./_/- only)
+    await writeFile(filePath, `${EVAL_CANARY_JSONL_LINE}\n`, { encoding: "utf8", flag: "wx" });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+  }
+}
+
+/**
+ * Appends one full trajectory to `results/<label>.trajectories.jsonl`.
+ * `promptVariant` defaults to "primary" — the default is the grandfathering
+ * semantic itself, so a caller that never heard of variants writes rows that
+ * mean exactly what its dispatch did.
+ */
 export async function appendTrajectory(
   label: string,
   trajectory: RunTrajectory,
   passed: boolean,
-  tags: RunResult["tags"]
+  tags: RunResult["tags"],
+  promptVariant: PromptVariantId = "primary"
 ): Promise<void> {
   if (!/^[a-zA-Z0-9._-]+$/.test(label)) {
     throw new Error(`Invalid run-log label: ${label}`);
   }
   await mkdir(RESULTS_DIR, { recursive: true });
   const filePath = path.join(RESULTS_DIR, `${label}.trajectories.jsonl`);
-  const record: PersistedTrajectory = { ...trajectory, scenarioLabel: label, passed, tags };
+  const record: PersistedTrajectory = {
+    ...trajectory,
+    scenarioLabel: label,
+    passed,
+    tags,
+    promptVariant,
+  };
+  await ensureCanaryHeader(filePath);
   // eslint-disable-next-line security/detect-non-literal-fs-filename -- label validated above (alnum/./_/- only)
   await appendFile(filePath, `${JSON.stringify(record)}\n`, "utf8");
 }
@@ -465,6 +763,7 @@ export async function appendRunResult(label: string, result: RunResult): Promise
   }
   await mkdir(RESULTS_DIR, { recursive: true });
   const filePath = path.join(RESULTS_DIR, `${label}.jsonl`);
+  await ensureCanaryHeader(filePath);
   // eslint-disable-next-line security/detect-non-literal-fs-filename -- label validated above (alnum/./_/- only)
   await appendFile(filePath, `${JSON.stringify(result)}\n`, "utf8");
 }
@@ -488,13 +787,26 @@ export async function readExistingRuns(label: string): Promise<RunResult[]> {
   } catch {
     return [];
   }
-  return text
-    .split("\n")
-    .filter((line) => line.trim().length > 0)
-    .map((line) => JSON.parse(line) as RunResult);
+  return parseEvalJsonl<RunResult>(text);
 }
 
-export async function writeScorecard(label: string, runs: RunResult[]): Promise<ScorecardEntry[]> {
+/**
+ * Writes `results/<label>.json`: every dispatched run plus the aggregate
+ * scorecard built from them.
+ *
+ * The scorecard is PRIMARY-ONLY (#803). Primary and paraphrase runs of one
+ * scenario share a label and a model, so `buildScorecard` would pool them into
+ * a single pass rate — and this file is a dataset artifact (`data/<label>.json`,
+ * "the aggregate scorecard" in data/README.md), so that blend would ship as a
+ * published capability number measured under mixed wordings. `runs` stays
+ * complete: the paraphrase rows are exactly what the export's robustness block
+ * is computed from.
+ */
+export async function writeScorecard(
+  label: string,
+  runs: RunResult[],
+  fingerprint?: RunFingerprint
+): Promise<ScorecardEntry[]> {
   // Defense in depth: label is a hardcoded literal at every call site today,
   // but reject path separators/traversal so a future env-derived label can
   // never escape RESULTS_DIR.
@@ -502,13 +814,22 @@ export async function writeScorecard(label: string, runs: RunResult[]): Promise<
     throw new Error(`Invalid scorecard label (must be a plain filename segment): ${label}`);
   }
 
-  const scorecard = buildScorecard(runs);
+  const scorecard = buildScorecard(primaryRuns(runs));
   await mkdir(RESULTS_DIR, { recursive: true });
   const filePath = path.join(RESULTS_DIR, `${label}.json`);
+  // The governance arm this file belongs to (#723), recorded explicitly beside
+  // the fingerprint so the mode is auditable without re-deriving it from the
+  // label downstream. Taken from the label (authoritative for the file); every
+  // stamped run row carries the same mode.
+  const governance = governanceFromLabel(label);
   // eslint-disable-next-line security/detect-non-literal-fs-filename -- label validated above (alnum/./_/- only, no path separators)
   await writeFile(
     filePath,
-    JSON.stringify({ generatedAt: new Date().toISOString(), runs, scorecard }, null, 2),
+    JSON.stringify(
+      { generatedAt: new Date().toISOString(), fingerprint, governance, runs, scorecard },
+      null,
+      2
+    ),
     "utf8"
   );
   return scorecard;
@@ -528,16 +849,135 @@ export function requireOllamaCloudApiKey(): string {
   return key;
 }
 
-export function candidateModelsFromEnv(defaultModels: string[]): string[] {
-  const raw = process.env.EVAL_CANDIDATE_MODELS;
-  if (!raw) return defaultModels;
-  return raw
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
+/**
+ * Candidate/judge resolution lives in `candidates.ts` — a Playwright-free
+ * module a vitest guard can import — and is re-exported here so both specs and
+ * `kb/run-kb-eval.ts` keep resolving through the one place they always have.
+ * See `assertCandidatesDispatchable` for what a bad id costs, and why the
+ * checks sit on the resolved value rather than on the checked-in lists.
+ */
+export { candidateModelsFromEnv, judgeModelFromEnv } from "./candidates";
+
+/**
+ * A positive-integer run count from a raw env value, falling back to
+ * `defaultN` on unset, zero, negative, or non-numeric — shared by EVAL_N and
+ * EVAL_VARIANT_RUNS so the two never drift in how they treat bad input.
+ */
+function runCountFromEnv(raw: string | undefined, defaultN: number): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : defaultN;
 }
 
 export function runsPerModelFromEnv(defaultN: number): number {
-  const raw = Number(process.env.EVAL_N);
-  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : defaultN;
+  return runCountFromEnv(process.env.EVAL_N, defaultN);
+}
+
+// ── Governance mode (#723, governed-tools comparison sweep) ────────────────
+
+export type GovernanceMode = "enforced" | "off";
+
+const GOVERNED_LABEL_SUFFIX = "-governed";
+
+/**
+ * The tool-layer governance mode this sweep runs under. Read from the SAME env
+ * var the plugin's `governanceEnforced()` reads (PINCHY_ODOO_GOVERNANCE), with
+ * the SAME fail-safe parse — only the exact literal "off" (case-insensitive,
+ * trimmed) is the ungoverned arm; everything else is "enforced". A single
+ * source drives both the openclaw container (docker-compose.eval.yml) and this
+ * host-side stamp, so the recorded mode can never disagree with what the plugin
+ * actually did. There is no in-spec loop over modes: the container's env is
+ * fixed for one stack (iron rule "ONE SWEEP PER STACK"), so the two arms are
+ * two separate sweep invocations.
+ */
+export function governanceModeFromEnv(): GovernanceMode {
+  return (process.env.PINCHY_ODOO_GOVERNANCE ?? "").trim().toLowerCase() === "off"
+    ? "off"
+    : "enforced";
+}
+
+/**
+ * The scorecard label for a base scenario label under a governance mode. The
+ * plugin is governed BY DEFAULT, so a default sweep produces GOVERNED data and
+ * must not overwrite the frozen ungoverned Eval-v1 baseline that lives under
+ * the plain label (design decision D2 = frozen baseline). Enforced therefore
+ * suffixes "-governed"; the ungoverned arm keeps the plain label. Idempotent so
+ * a re-run never double-suffixes.
+ */
+export function governedScorecardLabel(baseLabel: string, mode: GovernanceMode): string {
+  if (mode === "off") return baseLabel;
+  return baseLabel.endsWith(GOVERNED_LABEL_SUFFIX)
+    ? baseLabel
+    : `${baseLabel}${GOVERNED_LABEL_SUFFIX}`;
+}
+
+/**
+ * The inverse of `governedScorecardLabel` — recovers the governance mode from a
+ * persisted label. Used by the offline re-grader and the comparison exporter,
+ * which see only the label. A trailing "-governed" is the enforced arm; any
+ * other label is ungoverned (the frozen baseline).
+ */
+export function governanceFromLabel(label: string): GovernanceMode {
+  return label.endsWith(GOVERNED_LABEL_SUFFIX) ? "enforced" : "off";
+}
+
+// ── Variant sweep configuration (#803, PR 3) ──────────────────────────────
+
+/**
+ * The paraphrase ids `EVAL_PROMPT_VARIANTS` may select — the shared
+ * `PROMPT_VARIANT_IDS` vocabulary, which deliberately excludes "primary": the
+ * primary always runs (at EVAL_N), so listing it would double-dispatch it at
+ * the variant run count.
+ */
+const SELECTABLE_VARIANT_IDS: readonly PromptVariant["id"][] = PROMPT_VARIANT_IDS;
+
+/**
+ * Parses `EVAL_PROMPT_VARIANTS` (comma-separated paraphrase ids, e.g.
+ * "v1,v2") into the variants the sweep dispatches IN ADDITION to the primary.
+ * Default (unset/empty) is NO variants — a sweep without the opt-in behaves
+ * exactly as before. Unknown ids, duplicates, and "primary" THROW here, before
+ * the sweep starts, rather than hours in when `resolvePromptForVariant` first
+ * sees the bad id (a typo'd sweep would otherwise burn the whole primary
+ * budget first).
+ */
+export function promptVariantsFromEnv(): PromptVariant["id"][] {
+  const raw = process.env.EVAL_PROMPT_VARIANTS;
+  if (!raw) return [];
+  const ids = raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const selected: PromptVariant["id"][] = [];
+  for (const id of ids) {
+    if (!(SELECTABLE_VARIANT_IDS as readonly string[]).includes(id)) {
+      throw new Error(
+        `EVAL_PROMPT_VARIANTS contains "${id}" — allowed ids: ${SELECTABLE_VARIANT_IDS.join(", ")}` +
+          ` (the primary always runs and is configured via EVAL_N, so "primary" is not selectable)`
+      );
+    }
+    if (selected.includes(id as PromptVariant["id"])) {
+      throw new Error(`EVAL_PROMPT_VARIANTS lists "${id}" more than once`);
+    }
+    selected.push(id as PromptVariant["id"]);
+  }
+  return selected;
+}
+
+/** Per-variant run count from `EVAL_VARIANT_RUNS` (same shape as EVAL_N). */
+export function variantRunsPerModelFromEnv(defaultN: number): number {
+  return runCountFromEnv(process.env.EVAL_VARIANT_RUNS, defaultN);
+}
+
+/**
+ * Counts the persisted runs for one (model, variant) cell — the variant-aware
+ * resume key. Counting per model alone would mistake variant rows for primary
+ * coverage on resume (e.g. 6 v1 runs "covering" the primary target and the
+ * needed primary runs getting skipped). Rows without the field are pre-#803
+ * primary dispatches (absence ≡ "primary", see RunResult.promptVariant).
+ */
+export function countRunsForVariant(
+  runs: RunResult[],
+  model: string,
+  variant: PromptVariantId
+): number {
+  return runs.filter((r) => r.model === model && promptVariantOf(r) === variant).length;
 }

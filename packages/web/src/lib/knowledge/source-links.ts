@@ -1,0 +1,824 @@
+/**
+ * Turns the document paths a knowledge-base answer mentions into links to the
+ * agent's workspace-file route, so a citation can be opened and checked.
+ *
+ * Why a remark plugin and not a post-processing pass over the rendered DOM:
+ * the Sources list is written by the MODEL, and its shape is not stable. Within
+ * one day, against one corpus, three shapes appeared — the template's bullet
+ * list, the same model embellishing into a run-on paragraph, and another model
+ * inventing `*Quelle: …, S. 275*` under each section. Working on the mdast means
+ * one implementation covers bullets, paragraphs and table cells alike, because
+ * it keys off the path itself rather than the format around it.
+ *
+ * The transform is deliberately additive: text it does not recognise is left
+ * exactly as it was. The fallback is therefore today's behaviour (plain text),
+ * so a model that invents a fourth shape costs a link, never a broken answer.
+ *
+ * Authorization is unaffected. The href points at
+ * `/api/agents/[agentId]/workspace-file`, which resolves the request against the
+ * SAME `allowed_paths` that scope retrieval, re-checks the session, and audits
+ * the view. A fabricated path in an answer therefore yields a link that 403s —
+ * it cannot widen what the user may read.
+ */
+import { fromCitationPath, toCitationPath } from "./citation-path";
+import type { ChunkLocator } from "./locator";
+import {
+  convertedPdfName,
+  isOfficeFile,
+  isPresentationFile,
+  isShownAsConvertedPdf,
+  isSpreadsheetFile,
+  isWordFile,
+} from "./office-formats";
+
+/**
+ * A DATA-ROOT-RELATIVE path ending in an extension we can serve, anchored at the
+ * END of the slice it is run against — see `findSourcePaths` for why it is never
+ * let loose on a whole text node. The extension is baked into the pattern rather
+ * than checked separately: a second predicate deciding the same thing is a pair
+ * that drifts, and a mutation test proved the separate check was already
+ * unreachable. Widening what is linkable therefore means editing this
+ * alternation — everything the route can put in front of a reader, and nothing
+ * else.
+ *
+ * Relative, with NO leading slash, because that is the shape `knowledge_search`
+ * shows the model and a model can only cite what it is shown (#933). The
+ * absolute form is rebuilt in `buildSourceHref` via `fromCitationPath`, the one
+ * place that knows the data root.
+ *
+ * The Office formats joined `.pdf` here when their conversion gained a preview
+ * (#939): the route answers a request for one with the converted PDF, so a
+ * citation to a `.doc` now opens in the same viewer as everything else. The
+ * alternation and `OFFICE_EXTENSIONS` are paired by a test rather than shared
+ * as a variable — a built RegExp would hide the one thing a reader of this
+ * comment needs to see, and the pattern's cost model (see `findSourcePaths`)
+ * depends on what is written here. Spreadsheets joined in turn (#940), and
+ * NOT by gaining a conversion: paginating a wide sheet clips the very columns
+ * the cell-based ingest exists to preserve (see xlsx-extract.ts), so a `.xlsx`
+ * citation opens a rendering of the cited ROWS instead of a page of a PDF.
+ *
+ * At least one `/` is required. A bare `report.pdf` is exactly the citation
+ * shape a full path exists to prevent — unfindable in a deep tree, ambiguous
+ * across folders — and linking it would dress that failure up as a working
+ * reference. The known cost: a grant that points at a single FILE at the data
+ * root (`/data/report.pdf`, a shape `discoverFiles` supports) cites as a bare
+ * name legitimately, and that citation stays plain text. Prose mentioning a
+ * filename is far commoner than that grant, so the trade goes this way.
+ * Anchoring on the extension is what keeps arbitrary path-shaped strings
+ * (`/etc/passwd`) out.
+ *
+ * Paths in a real corpus routinely contain spaces ("PF LAB/…"), so segments
+ * allow them — except the FIRST one, which must be a whitespace-delimited
+ * token. That asymmetry replaces the leading `/` the absolute form used to be
+ * pinned by: without something marking where a path may begin, the leftmost
+ * match happily swallows the prose in front of it and links "[1] a/one.pdf"
+ * rather than "a/one.pdf". A mount name with a space in it is the price, and
+ * "the citation starts at a word" is a rule a reader can predict.
+ */
+const SOURCE_PATH_ENDING_HERE =
+  /[^\s/]+(?:\/[^/\n]+?)+?\.(?:pdf|docm|docx?|pptx?|xlsx?|xlsm|tiff?)$/i;
+
+/** What may follow a path so that "…/doc.pdf." links the file and not the full stop. */
+const PATH_BOUNDARY = /[\s,.;:)\]]/;
+
+/**
+ * Locates the extension case-insensitively. A plain `indexOf` on a lowercased
+ * copy would be the obvious way and is wrong: case folding is not
+ * length-preserving ("İ".toLowerCase() is two characters), so every offset
+ * after such a character shifts and the path is extracted one character short.
+ * Matching on the ORIGINAL string keeps offsets meaning what they say.
+ *
+ * Paired with `SOURCE_PATH_ENDING_HERE` above: this one finds where a candidate
+ * might END, that one decides whether what precedes it is a path. Teaching one
+ * a new extension and not the other yields a link that never appears, with
+ * nothing anywhere saying why — which is what `linkable-extensions-drift`
+ * checks.
+ *
+ * `docm` comes before `docx?` on purpose: an alternation takes the first
+ * branch that matches, and `docx?` would end the hit at the `.doc` inside
+ * `.docm`, where the boundary check then rejects it.
+ */
+const EXTENSION = /\.(?:pdf|docm|docx?|pptx?|xlsx?|xlsm|tiff?)/gi;
+
+/**
+ * How far back from an extension a path may reasonably start. The longest path
+ * in the corpus this was built against is under 120 characters; 256 is slack,
+ * not a fit. A path longer than this is read from its last 256 characters, so
+ * the worst case is a link that opens a shorter path (and 403s) rather than a
+ * scan that grows with the message.
+ */
+const MAX_PATH_LENGTH = 256;
+
+/**
+ * Finds the cited paths in one text node, left to right, non-overlapping.
+ *
+ * The obvious implementation — one global regex over the whole string — is what
+ * this replaces, and the reason is not style. The pattern's nested lazy
+ * quantifiers backtrack catastrophically on text that is path-SHAPED but never
+ * completes a match (`/a/a/a/…/bbbb`, or an extension the boundary check
+ * rejects): 18 KB of it took nearly seven seconds. This transform runs
+ * synchronously in the browser on every streamed chunk of every message, so
+ * that is a frozen chat, and the text is model output about documents a
+ * knowledge base ingested — not something we get to assume is benign.
+ *
+ * So the scan is driven by the ONE landmark a citation must contain: the
+ * extension. Each occurrence is found with `indexOf` (linear, no backtracking),
+ * and only then is the regex run — anchored, over at most `MAX_PATH_LENGTH`
+ * characters ending exactly there. Total work is bounded by
+ * occurrences × constant instead of growing with the text.
+ */
+function findSourcePaths(value: string): Array<{ start: number; end: number }> {
+  const found: Array<{ start: number; end: number }> = [];
+  let cursor = 0;
+
+  // Collected first so a hit can see the one after it. `Angebot.doc.pdf` is a
+  // SINGLE document — a PDF whose author kept the source extension in the
+  // name, which is what a batch conversion produces and therefore the commonest
+  // shape in exactly the corpora this feature serves. `.` is a legal path
+  // boundary (so that "…/doc.pdf." links the file and not the full stop), so
+  // without this the scan stops at the inner `.doc` and cites `Angebot.doc` —
+  // a document that does not exist, handed to the reader as a link that looks
+  // right and 403s. Only `.pdf` was linkable before #939, which is why the
+  // question could not arise until the alternation grew.
+  const hits: Array<{ start: number; end: number }> = [];
+  EXTENSION.lastIndex = 0;
+  for (let hit = EXTENSION.exec(value); hit !== null; hit = EXTENSION.exec(value)) {
+    hits.push({ start: hit.index, end: hit.index + hit[0].length });
+  }
+
+  for (const [index, hit] of hits.entries()) {
+    const end = hit.end;
+
+    // A chained extension defers to the last one in the chain. Adjacency is the
+    // whole test: `Angebot.doc. Und` has a hit at `.doc` and none at `. Un`, so
+    // the sentence is still left where it is.
+    if (hits[index + 1]?.start === end) continue;
+
+    // The character AFTER the extension, read from the real text rather than
+    // the window below, so a path at the very end of the node is still a path.
+    if (end < value.length && !PATH_BOUNDARY.test(value[end])) continue;
+
+    const windowStart = Math.max(cursor, end - MAX_PATH_LENGTH);
+    const match = SOURCE_PATH_ENDING_HERE.exec(value.slice(windowStart, end));
+    if (!match) continue;
+
+    found.push({ start: windowStart + match.index, end });
+    cursor = end;
+  }
+
+  return found;
+}
+
+/** `p. 44`, `S. 275`, `page 12`, `Seite 3` — the page hint that may follow a path. */
+const TRAILING_PAGE = /^\s*[—–\-,]?\s*(?:p\.?|pp\.?|page|s\.|seite)\s*(\d{1,5})\b/i;
+
+/**
+ * `(Suppliers, rows 5-12)` / `(Sheet1, row 5)` — the range hint that may follow
+ * a spreadsheet path, in the shape `formatLocator` renders and the citation
+ * contract asks the model to repeat.
+ *
+ * Deliberately NOT shared with `parseCitedPosition` in `lib/eval/kb`, which
+ * parses the same rendering for the eval graders. That one is strict on
+ * purpose — it answers "did the model repeat what the tool printed?" and a
+ * looser reading would inflate its scores. This one is forgiving, because its
+ * job is to give a reader a working link out of whatever the model actually
+ * wrote. Same input, opposite failure costs; merging them would quietly pick
+ * one cost for both.
+ */
+const TRAILING_SHEET_RANGE =
+  /^\s*[—–\-,]?\s*\(?\s*([^(),\n]+?),\s*rows?\s*(\d{1,7})(?:\s*[-–]\s*(\d{1,7}))?\s*\)?/i;
+
+/**
+ * The position a citation names, read from whatever trails the path — but only
+ * a position THIS document can honour. A page hint on a spreadsheet (no page
+ * to open at) and a sheet range on anything else (no sheets to open) are both
+ * dropped rather than carried: a locator the viewer can only answer with an
+ * error pane is worse than none, while a locator-less spreadsheet link still
+ * opens the top of the workbook. Forgiving about spelling, never about shape —
+ * which is also why a range the route would 400 on (row 0, a descending
+ * range, a blank sheet name) is declined here instead of shipped to a reader.
+ */
+function trailingLocator(rest: string, isSpreadsheet: boolean): ChunkLocator | null {
+  if (!isSpreadsheet) {
+    const page = TRAILING_PAGE.exec(rest);
+    return page ? { kind: "page", page: Number(page[1]) } : null;
+  }
+
+  const range = TRAILING_SHEET_RANGE.exec(rest);
+  if (!range) return null;
+  const sheet = range[1].trim();
+  const startRow = Number(range[2]);
+  // `formatLocator` collapses a one-row range to "row 5"; both ends are
+  // restored so the preview asks for a range either way.
+  const endRow = range[3] === undefined ? startRow : Number(range[3]);
+  if (sheet === "" || startRow < 1 || endRow < startRow) return null;
+  return { kind: "sheet", sheet, startRow, endRow };
+}
+
+/** `— slide 4`, `(slide 4)`, `, Folie 4` — the slide hint that may follow a presentation path. */
+const TRAILING_SLIDE = /^\s*(?:[—–\-,:]\s*)?(?:\(\s*)?(?:slide|folie)\s*(\d{1,5})\b/i;
+
+/**
+ * `(§ Safety > Zone B)` / `— § Quality > Incoming goods` — the heading path
+ * that may follow a Word path, in the shape `formatLocator` renders.
+ *
+ * The parenthesised form is the one `knowledge_search` prints, and it ends at
+ * ITS closing parenthesis, not the first one: real headings carry their own
+ * ("Anhang A (normativ)", "Gewährleistung (§ 5)"). One level of nesting is
+ * read. An unparenthesised path runs to the end of the line — a heading may
+ * hold commas or dots — but stops before a `;` or a `[n]` that starts the
+ * next citation on the same line.
+ *
+ * The separator's whitespace runs are unambiguous, and the alternatives
+ * inside a heading start with different characters, so a long line costs at
+ * most quadratic time on a heading that never closes, never exponential.
+ */
+const TRAILING_HEADING =
+  /^\s*(?:[—–\-,:]\s*)?(?:\(\s*§\s*((?:[^()\n]|\([^()\n]*\))+)\)|§\s*([^\n;[]+))/;
+
+/** Longest heading path carried to the viewer; the endpoint accepts more. */
+const MAX_CITED_HEADING_CHARS = 1000;
+
+/**
+ * Which section of an Office document a citation names (#1268, Office
+ * addendum), read from the text after the path: a slide for a presentation,
+ * a heading path for a Word document. Only the format that HAS such a section
+ * gets one — a "slide 4" after a `.docx` names nothing in it.
+ *
+ * Returned as the hast properties it travels as, beside `data-cited-claim`,
+ * and for the same reason: the href's shape is what the renderer trusts as a
+ * citation, and it must not widen to carry a hint.
+ */
+function trailingOfficeSection(rest: string, path: string): Record<string, string> | null {
+  if (isPresentationFile(path)) {
+    const slide = TRAILING_SLIDE.exec(rest);
+    return slide && Number(slide[1]) >= 1 ? { dataCitedSlide: String(Number(slide[1])) } : null;
+  }
+  if (isWordFile(path)) {
+    const match = TRAILING_HEADING.exec(rest);
+    if (!match) return null;
+    // A sentence may close right after the heading: "… — § Safety." The dot is
+    // the sentence's, and a heading spelled with it would name nothing.
+    const heading = (match[1] ?? match[2])
+      .trim()
+      .replace(/[.,;:]+$/, "")
+      .trim();
+    return heading && heading.length <= MAX_CITED_HEADING_CHARS
+      ? { dataCitedHeading: heading }
+      : null;
+  }
+  return null;
+}
+
+/**
+ * The fragment that carries a locator to the viewer, or "" for none.
+ *
+ * `#page=N` is what Chrome's and Firefox's built-in PDF viewers honour, so that
+ * arm is not ours to name. The sheet arm IS ours — nothing but our own dialog
+ * reads it — and it is encoded rather than trusted: a real workbook has sheets
+ * called "Preise & Rabatte 2026".
+ *
+ * `slide` and `heading` produce no fragment yet. They cannot reach a citation
+ * until Office ingest (#938) lands, and inventing a spelling for them now would
+ * be a contract nobody has read the requirements for.
+ */
+function locatorFragment(locator: ChunkLocator | null): string {
+  if (locator === null) return "";
+  if (locator.kind === "page") return `#page=${locator.page}`;
+  if (locator.kind === "sheet") {
+    const sheet = encodeURIComponent(locator.sheet);
+    return `#sheet=${sheet}&rows=${locator.startRow}-${locator.endRow}`;
+  }
+  return "";
+}
+
+/** The inverse of `locatorFragment`. */
+function parseLocatorFragment(fragment: string): ChunkLocator | null {
+  const page = /^page=(\d{1,5})$/.exec(fragment);
+  if (page) return { kind: "page", page: Number(page[1]) };
+
+  const sheet = /^sheet=([^&]*)&rows=(\d{1,7})-(\d{1,7})$/.exec(fragment);
+  if (!sheet) return null;
+  return {
+    kind: "sheet",
+    sheet: decodeURIComponent(sheet[1]),
+    startRow: Number(sheet[2]),
+    endRow: Number(sheet[3]),
+  };
+}
+
+interface MdastNode {
+  type: string;
+  value?: string;
+  url?: string;
+  children?: MdastNode[];
+  data?: { hProperties?: Record<string, string> };
+}
+
+/**
+ * The claim a citation supports, for the viewer to find the cited PASSAGE on
+ * the cited page (#1268). The href says which page; a dense page holds two or
+ * three indexed passages, and the index can only say which one the answer drew
+ * on if it is told what the answer said. The claim is that: the sentences of
+ * the answer that cite the entry's number, or — for a path cited inline in
+ * prose — the sentence around it.
+ *
+ * Carried as a hast property on the link (`data-cited-claim`), never in the
+ * href, so `WORKSPACE_FILE_HREF` — the shape the renderer trusts — stays as
+ * narrow as it is. Markdown has no syntax for hast properties, so a model
+ * cannot write one; and the claim is only a ranking hint for our own endpoint,
+ * which re-checks the reader's access to the document whatever it says.
+ */
+const CLAIM_MAX_SENTENCES = 3;
+const CLAIM_MAX_CHARS = 600;
+
+/** Below this many letters a "claim" is the reference itself, not something it supports. */
+const CLAIM_MIN_LETTERS = 15;
+
+/**
+ * `[1]`, `[1, 3]` — the inline markers a sentence cites its sources with.
+ * Flat and bounded on purpose (no nested quantifier): this runs over every
+ * streamed chunk of model output. The numbers are read out of the match.
+ */
+const CITATION_MARKERS = /\[(\d[\d,\s]{0,30})\]/g;
+
+/** `[1] ` right before a path: the number of the Sources entry it belongs to. */
+const ENTRY_NUMBER_BEFORE_PATH = /\[(\d{1,3})\]\s*[:.\-–—]?\s*$/;
+
+/**
+ * Blocks whose inline text forms sentences. List items and quotes hold
+ * paragraphs. A table ROW, not a cell: the marker usually sits in a cell of
+ * its own, beside the cells it backs.
+ */
+const SENTENCE_BLOCKS = new Set(["paragraph", "heading", "tableRow"]);
+
+/** One inline marker, read at a given position (sticky). */
+const MARKER_AT = /\[\d[\d,\s]{0,30}\]/y;
+
+/**
+ * Sentence boundaries: a `.`, `!` or `?` followed by whitespace — with two
+ * exceptions that decide which sentence a citation belongs to.
+ *
+ * - Markers right after the stop stay with the sentence before it.
+ *   "claim. [1]" is as common as "claim [1]." (the contract only says "next
+ *   to the claim"), and read the other way source 1 would be handed the NEXT
+ *   sentence: a confident highlight of the wrong passage.
+ * - A one- or two-letter abbreviation does not end a sentence, or the most
+ *   common thing a citation trails, "p. 4" / "S. 4", would cut it in half.
+ *
+ * A hand-written scan rather than one regex, and every check looks at a
+ * bounded window: this runs on each streamed chunk of model output, and a
+ * whitespace run must cost linear time, not quadratic.
+ */
+function splitSentences(text: string): Array<{ start: number; end: number }> {
+  const sentences: Array<{ start: number; end: number }> = [];
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch !== "." && ch !== "!" && ch !== "?") continue;
+
+    let end = i + 1;
+    for (let k = end; ;) {
+      // Spaces and tabs only: a marker at the start of the NEXT line is a
+      // Sources entry's own number, not a citation of this sentence.
+      while (k < text.length && (text[k] === " " || text[k] === "\t") && k - end < 8) k++;
+      MARKER_AT.lastIndex = k;
+      if (!MARKER_AT.test(text)) break;
+      end = k = MARKER_AT.lastIndex;
+    }
+    if (end < text.length && !/\s/.test(text[end])) continue;
+    if (end === i + 1 && ch === ".") {
+      const tail = text.slice(Math.max(start, i - 3), i);
+      if (/(?:^|[\s(])\p{L}{1,2}$/u.test(tail)) continue;
+    }
+
+    sentences.push({ start, end });
+    let next = end;
+    while (next < text.length && /\s/.test(text[next])) next++;
+    start = next;
+    i = next - 1;
+  }
+  if (start < text.length) sentences.push({ start, end: text.length });
+  return sentences;
+}
+
+/** The sentence as the claim: markers dropped, whitespace normalised. */
+function claimText(sentence: string): string {
+  return sentence
+    .replace(CITATION_MARKERS, "")
+    .replace(/\s+/g, " ")
+    .replace(/ ([.,;:!?])/g, "$1")
+    .trim();
+}
+
+function letters(text: string): number {
+  return text.match(/\p{L}/gu)?.length ?? 0;
+}
+
+function capClaim(sentences: string[]): string | undefined {
+  const joined = sentences.slice(0, CLAIM_MAX_SENTENCES).join(" ");
+  if (letters(joined) < CLAIM_MIN_LETTERS) return undefined;
+  if (joined.length <= CLAIM_MAX_CHARS) return joined;
+  const cut = joined.slice(0, CLAIM_MAX_CHARS);
+  const lastSpace = cut.lastIndexOf(" ");
+  return lastSpace > 0 ? cut.slice(0, lastSpace) : cut;
+}
+
+function inlineText(node: MdastNode): string {
+  if (node.type === "text" || node.type === "inlineCode") return node.value ?? "";
+  return (node.children ?? []).map(inlineText).join(node.type === "tableRow" ? " " : "");
+}
+
+/**
+ * Every sentence of the answer that cites a number, by number. Sentences that
+ * themselves name a document path are left out: those are Sources entries (or
+ * inline references), and a reference is not a claim about its own content.
+ */
+function claimsByNumber(tree: MdastNode): Map<number, string[]> {
+  const byNumber = new Map<number, string[]>();
+  const visit = (node: MdastNode) => {
+    if (SENTENCE_BLOCKS.has(node.type)) {
+      const text = inlineText(node);
+      for (const { start, end } of splitSentences(text)) {
+        const sentence = text.slice(start, end);
+        if (findSourcePaths(sentence).length > 0) continue;
+        const cited = new Set<number>();
+        for (const marker of sentence.matchAll(CITATION_MARKERS)) {
+          for (const n of marker[1].split(",")) {
+            if (/^\d{1,3}$/.test(n.trim())) cited.add(Number(n.trim()));
+          }
+        }
+        if (cited.size === 0) continue;
+        const claim = claimText(sentence);
+        // A marker standing alone ("… [1]" after a list) is no claim, and must
+        // not use up one of the three sentences a claim may hold.
+        if (letters(claim) < CLAIM_MIN_LETTERS) continue;
+        for (const n of cited) byNumber.set(n, [...(byNumber.get(n) ?? []), claim]);
+      }
+      return;
+    }
+    (node.children ?? []).forEach(visit);
+  };
+  visit(tree);
+  return byNumber;
+}
+
+/**
+ * The claim for the path at `start..end` of `value`. `before` is the text
+ * between the previous path in this node and this one — where a Sources
+ * entry's `[N]` stands.
+ */
+function claimFor(
+  value: string,
+  start: number,
+  end: number,
+  before: string,
+  numbered: () => Map<number, string[]>
+): string | undefined {
+  // Only the end of `before` can hold the number; a bounded slice keeps the
+  // `\s*` in the pattern from going quadratic on a whitespace run.
+  const entry = ENTRY_NUMBER_BEFORE_PATH.exec(before.slice(-48));
+  const sentences = entry ? numbered().get(Number(entry[1])) : undefined;
+  if (sentences) return capClaim(sentences);
+  // No sentence cites the number elsewhere: the path may stand inside its own
+  // claim ("four hours [1]: quality/x.pdf, p. 4."), so read the sentence it
+  // is in. A bare Sources line yields too few letters and no claim.
+  const sentence = splitSentences(value).find((s) => s.start <= start && end <= s.end);
+  if (!sentence) return undefined;
+  const text = value.slice(sentence.start, start) + value.slice(end, sentence.end);
+  return capClaim([claimText(text)]);
+}
+
+/**
+ * Builds the href for one cited document from the citation path the answer
+ * shows. The route opens a file, so the href carries the ABSOLUTE path — the
+ * conversion is `fromCitationPath`, which also confines the result to the data
+ * root, since `citationPath` reaches here from model output.
+ *
+ * The path is carried as a query parameter (not a path segment) because it is
+ * absolute and may contain any character a filesystem allows. Where in the
+ * document to open is a `ChunkLocator` — the same closed union the index
+ * anchors a chunk on — rather than a second position model living only here:
+ * two of those would drift the moment a third locator kind arrives, and
+ * `locatorFragment` says which kinds have a spelling today.
+ */
+export function buildSourceHref(
+  agentId: string,
+  citationPath: string,
+  locator: ChunkLocator | null
+): string {
+  const absolutePath = fromCitationPath(citationPath);
+  const base = `/api/agents/${encodeURIComponent(agentId)}/workspace-file?path=${encodeURIComponent(absolutePath)}`;
+  return `${base}${locatorFragment(locator)}`;
+}
+
+/**
+ * The shape of an href this module produced, anchored at the START of the
+ * string. The anchor is the security-relevant part.
+ *
+ * Recognising a citation by a substring search let ANY absolute url carrying
+ * `/workspace-file?path=` through — `https://evil.example/workspace-file?path=…`
+ * included. What the renderer recognises it hands to `<embed src>`, so that is
+ * an arbitrary cross-origin frame inside the chat, reachable from model output
+ * about documents the knowledge base ingested. There is no CSP to stop it
+ * downstream. A citation is a same-origin path under `/api/agents/`, and the
+ * only thing that can assert "same origin" is a leading `/` with no second one.
+ *
+ * Exported so the renderer recognises its own links without re-deriving the shape.
+ */
+export const WORKSPACE_FILE_HREF = /^\/api\/agents\/[^/]+\/workspace-file\?path=([^#]*)(?:#(.*))?$/;
+
+/**
+ * Recovers the CITATION path from an href built by `buildSourceHref`, for use
+ * as the viewer's title. Citation and not absolute: this value is what the
+ * reader sees above the document, and `/data/customer/…` there would put the
+ * container path straight back in front of them (#933). Returns null for
+ * anything else, which is how the renderer tells a citation from an ordinary
+ * link. Kept beside the builder so the two cannot drift — a dialog whose
+ * accessible name silently came back empty would be a real defect for a
+ * screen-reader user, and string surgery on a url is exactly the kind of code
+ * that decays quietly.
+ */
+export function parseSourceHref(
+  href: string
+): { path: string; locator: ChunkLocator | null } | null {
+  const match = WORKSPACE_FILE_HREF.exec(href);
+  if (!match) return null;
+
+  const [, encodedPath, fragment] = match;
+  if (!encodedPath) return null;
+
+  try {
+    return {
+      path: toCitationPath(decodeURIComponent(encodedPath)),
+      locator: parseLocatorFragment(fragment ?? ""),
+    };
+  } catch {
+    // A malformed percent-escape must not take down the render of a whole message.
+    return null;
+  }
+}
+
+/**
+ * The url the citation viewer opens, which is the citation's href with the
+ * served document's NAME appended as a last path segment:
+ * `/api/agents/a/workspace-file/Angebot.pdf?path=…#page=3`. Null for anything
+ * that is not a citation.
+ *
+ * Why it exists (#1268): a browser's built-in PDF viewer titles a document
+ * after the last path segment of its url whenever the file carries no title of
+ * its own — Chrome reads nothing else, not even Content-Disposition. For every
+ * citation that segment was the route, so the toolbar above a reader's
+ * document said "workspace-file". It names the bytes SHOWN, which for an
+ * Office source or a scanned TIFF is the converted PDF: a `.docx` name on PDF bytes would title
+ * a PDF as a Word file.
+ *
+ * Derived here rather than written into the markdown link, so the shape the
+ * renderer recognises as a citation (`WORKSPACE_FILE_HREF`) does not widen: a
+ * model-authored link still has to look exactly like one `buildSourceHref`
+ * built. The name is presentation only — `path` decides which file is read,
+ * and the route refuses a name that is not the name of what it serves.
+ */
+export function buildSourceViewerUrl(href: string): string | null {
+  const source = parseSourceHref(href);
+  if (!source) return null;
+
+  const [base, fragment] = splitFragment(href);
+  const [routePath, query] = [base.slice(0, base.indexOf("?")), base.slice(base.indexOf("?"))];
+  const name = leafName(source.path);
+  const shown = isShownAsConvertedPdf(source.path) ? convertedPdfName(name) : name;
+  return `${routePath}/${encodeURIComponent(shown)}${query}${fragment}`;
+}
+
+/** The passage endpoint's body: one anchor, plus the claim when there is one. */
+export type PassageRequestBody = { path: string; claim?: string } & (
+  { page: number } | { slide: number } | { heading: string }
+);
+
+/**
+ * The section hints `remarkSourceLinks` attached to an Office citation, as the
+ * renderer reads them back off the link (`data-cited-slide`,
+ * `data-cited-heading`). Strings, because that is what a hast property is by
+ * the time it reaches the anchor.
+ */
+export interface CitedSection {
+  slide?: string;
+  heading?: string;
+}
+
+/**
+ * The request the citation viewer makes to find the cited passage (#1268), or
+ * null when there is nothing to find.
+ *
+ * - A PDF asks about the cited PAGE; without one there are no candidates.
+ * - A presentation asks about the cited SLIDE, which is page N of its
+ *   converted PDF (the converter maps them one to one).
+ * - A Word document asks about the cited HEADING path. Its passages are
+ *   anchored on headings, not pages (a Word page break is a rendering result,
+ *   #933); the viewer finds the page through the converted PDF's outline.
+ *
+ * An Office citation with only a page hint asks nothing: its chunks carry no
+ * page, so the hint names no set of candidates.
+ *
+ * Built from the href rather than from separate props, so it asks about the
+ * document the viewer shows — through the same citation path `parseSourceHref`
+ * reads, which confines it to the data root. (A hand-written href naming a
+ * path outside it opens that path and asks about its data-root reading; both
+ * requests are gated on their own, so the worst case is no highlight.) The
+ * agent comes from the href's own path segment, which `WORKSPACE_FILE_HREF`
+ * already confines to a same-origin `/api/agents/<id>/` url.
+ */
+export function buildPassageRequest(
+  href: string,
+  claim: string | undefined,
+  section: CitedSection = {}
+): { url: string; body: PassageRequestBody } | null {
+  const source = parseSourceHref(href);
+  if (!source) return null;
+
+  const anchor = passageAnchor(source.path, source.locator, section);
+  if (!anchor) return null;
+
+  const agentSegment = href.slice("/api/agents/".length, href.indexOf("/workspace-file"));
+  return {
+    url: `/api/agents/${agentSegment}/knowledge/passage`,
+    body: {
+      path: fromCitationPath(source.path),
+      ...anchor,
+      ...(claim ? { claim } : {}),
+    },
+  };
+}
+
+function passageAnchor(
+  path: string,
+  locator: ChunkLocator | null,
+  section: CitedSection
+): { page: number } | { slide: number } | { heading: string } | null {
+  if (isPresentationFile(path)) {
+    // Re-checked here: the property arrives from the rendered DOM, and only a
+    // plain positive number is a slide.
+    if (!section.slide || !/^\d{1,5}$/.test(section.slide)) return null;
+    const slide = Number(section.slide);
+    return slide >= 1 ? { slide } : null;
+  }
+  if (isWordFile(path)) {
+    const heading = section.heading?.trim();
+    return heading && heading.length <= MAX_CITED_HEADING_CHARS ? { heading } : null;
+  }
+  if (isOfficeFile(path)) return null;
+  return locator?.kind === "page" ? { page: locator.page } : null;
+}
+
+/** `[everything before "#", "#…" or ""]` — the fragment keeps its `#`. */
+function splitFragment(href: string): [string, string] {
+  const hash = href.indexOf("#");
+  return hash === -1 ? [href, ""] : [href.slice(0, hash), href.slice(hash)];
+}
+
+function leafName(path: string): string {
+  return path.split("/").filter(Boolean).pop() ?? path;
+}
+
+/**
+ * What a reader may take away from the viewer for one cited document, in the
+ * order the header shows them. Null for anything that is not a citation.
+ *
+ * A PDF has one representation and yields one entry — today's behaviour,
+ * spelled out rather than left to the dialog's default so the two cases are
+ * decided in one place. An Office source or a scanned TIFF has two, and they answer different
+ * needs: the ORIGINAL is the file that exists on the reader's drive and the one
+ * they forward to a customer; the CONVERTED PDF is what the viewer just showed
+ * them, and sometimes exactly what they wanted to send anyway — it saves them
+ * the conversion. Original first, because it is the document; the PDF is the
+ * convenience.
+ *
+ * The pair is LABELLED by representation — "Original (.docx)" and "PDF" — and
+ * not by filename (#1268). Both filenames are the same up to the extension,
+ * and the header truncates a label long before the extension, so two
+ * filename labels read "Vorlage_Wartung…" twice. The filename stays on each
+ * entry for the tooltip and the accessible name.
+ *
+ * `variant` is named on BOTH, including the single-entry PDF case. A default
+ * that means "the thing to look at" is right for a viewer and wrong for a save:
+ * being explicit here is what stops a later widening of that default from
+ * silently changing which bytes a download control hands over.
+ *
+ * Each entry also says which representation it is, as data: the converted PDF
+ * is what the viewer shows, and it may not exist yet (not converted, or a
+ * conversion that was refused). The dialog then drops that entry and points at
+ * the original, and it recognises the entry by this field, never by its label.
+ *
+ * The fragment goes: `#page=510` positions a viewer and means nothing to a
+ * saved file.
+ */
+export function buildSourceDownloads(href: string): Array<{
+  label: string;
+  filename: string;
+  url: string;
+  variant: "original" | "converted";
+}> | null {
+  const source = parseSourceHref(href);
+  if (!source) return null;
+
+  const [base] = splitFragment(href);
+  const name = leafName(source.path);
+  const originalUrl = `${base}&download=1&variant=original`;
+  if (!isShownAsConvertedPdf(source.path)) {
+    return [{ label: name, filename: name, url: originalUrl, variant: "original" }];
+  }
+
+  const extension = name.slice(name.lastIndexOf("."));
+  return [
+    { label: `Original (${extension})`, filename: name, url: originalUrl, variant: "original" },
+    {
+      label: "PDF",
+      filename: convertedPdfName(name),
+      url: `${base}&download=1&variant=converted`,
+      variant: "converted",
+    },
+  ];
+}
+
+/**
+ * Splits one text node into text/link/text… parts. Returns null when nothing
+ * matched, which lets the caller leave the original node untouched rather than
+ * replace it with an equivalent copy.
+ */
+function linkifyText(
+  value: string,
+  agentId: string,
+  numbered: () => Map<number, string[]>
+): MdastNode[] | null {
+  const matches = findSourcePaths(value);
+  if (matches.length === 0) return null;
+
+  const parts: MdastNode[] = [];
+  let cursor = 0;
+
+  for (const { start, end } of matches) {
+    const path = value.slice(start, end);
+
+    // A position may trail the path ("— p. 44", "(Suppliers, rows 5-12)"). It
+    // is consumed into the href but left in the visible text: the reader still
+    // sees what is being cited, and the link merely opens there.
+    const locator = trailingLocator(value.slice(end), isSpreadsheetFile(path));
+
+    const claim = claimFor(value, start, end, value.slice(cursor, start), numbered);
+    const section = isOfficeFile(path) ? trailingOfficeSection(value.slice(end), path) : null;
+    const hProperties = { ...(claim ? { dataCitedClaim: claim } : {}), ...section };
+
+    if (start > cursor) parts.push({ type: "text", value: value.slice(cursor, start) });
+    parts.push({
+      type: "link",
+      url: buildSourceHref(agentId, path, locator),
+      children: [{ type: "text", value: path }],
+      ...(Object.keys(hProperties).length > 0 ? { data: { hProperties } } : {}),
+    });
+    cursor = end;
+  }
+
+  if (cursor < value.length) parts.push({ type: "text", value: value.slice(cursor) });
+  return parts;
+}
+
+/**
+ * remark plugin factory. `agentId` scopes every generated href to the agent
+ * whose answer this is — the route rejects anything outside that agent's
+ * granted folders, so the id must come from the rendering context and never
+ * from the answer text.
+ */
+export function remarkSourceLinks({ agentId }: { agentId: string }) {
+  return (tree: MdastNode) => {
+    // Read before any text node is rewritten, and only once a citation needs
+    // it: most messages cite nothing, and this runs on every streamed chunk.
+    let numbered: Map<number, string[]> | null = null;
+    const claims = () => (numbered ??= claimsByNumber(tree));
+
+    const visit = (node: MdastNode) => {
+      // `link` is skipped so we never nest an anchor inside an anchor; `code`
+      // and `inlineCode` because a path shown as code is being displayed, not
+      // referenced. Neither carries text children we should rewrite.
+      if (node.type === "link" || node.type === "code" || node.type === "inlineCode") return;
+      if (!node.children) return;
+
+      const rewritten: MdastNode[] = [];
+      let changed = false;
+      for (const child of node.children) {
+        if (child.type === "text" && child.value) {
+          const parts = linkifyText(child.value, agentId, claims);
+          if (parts) {
+            rewritten.push(...parts);
+            changed = true;
+            continue;
+          }
+        }
+        visit(child);
+        rewritten.push(child);
+      }
+      if (changed) node.children = rewritten;
+    };
+
+    visit(tree);
+  };
+}

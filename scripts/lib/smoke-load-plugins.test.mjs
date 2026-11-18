@@ -2,7 +2,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import {
+  mkdtempSync,
+  writeFileSync,
+  mkdirSync,
+  rmSync,
+  readFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import {
   PLUGIN_DIR_PREFIX,
@@ -10,6 +16,7 @@ import {
   hasIndexEntry,
   readDeclaredTools,
   hasProdDependencies,
+  productionManifest,
   compareToolSets,
   extractImportSpecifiers,
   resolveSiblingModulePath,
@@ -30,7 +37,10 @@ function makeTempPluginDir() {
 
 test("discoverPluginDirs finds every real packages/plugins/pinchy-* package", () => {
   const dirs = discoverPluginDirs(PLUGINS_ROOT);
-  assert.ok(dirs.length >= 8, `expected to discover plugin packages, found ${dirs.length}`);
+  assert.ok(
+    dirs.length >= 8,
+    `expected to discover plugin packages, found ${dirs.length}`,
+  );
   for (const dir of dirs) {
     assert.match(dir, new RegExp(`${PLUGIN_DIR_PREFIX}[^/]+$`));
   }
@@ -151,13 +161,19 @@ test("readDeclaredTools matches every real plugin's manifest without throwing", 
 // ---------------------------------------------------------------------------
 
 test("hasProdDependencies is true when dependencies has at least one entry", () => {
-  assert.equal(hasProdDependencies({ dependencies: { googleapis: "^1.0.0" } }), true);
+  assert.equal(
+    hasProdDependencies({ dependencies: { googleapis: "^1.0.0" } }),
+    true,
+  );
 });
 
 test("hasProdDependencies is false when dependencies is empty or absent", () => {
   assert.equal(hasProdDependencies({ dependencies: {} }), false);
   assert.equal(hasProdDependencies({}), false);
-  assert.equal(hasProdDependencies({ devDependencies: { vitest: "^1.0.0" } }), false);
+  assert.equal(
+    hasProdDependencies({ devDependencies: { vitest: "^1.0.0" } }),
+    false,
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -189,7 +205,11 @@ test("compareToolSets treats duplicate registrations as a single tool (set seman
 });
 
 test("compareToolSets is empty-vs-empty ok for sidecar plugins with no tools", () => {
-  assert.deepEqual(compareToolSets([], []), { ok: true, missing: [], extra: [] });
+  assert.deepEqual(compareToolSets([], []), {
+    ok: true,
+    missing: [],
+    extra: [],
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -274,9 +294,15 @@ test("discoverReachableModules follows static imports transitively from the entr
       join(dir, "index.ts"),
       `import { a } from "./a.js";\nexport default { register() {} };`,
     );
-    writeFileSync(join(dir, "a.ts"), `import { b } from "./b.js";\nexport const a = 1;`);
+    writeFileSync(
+      join(dir, "a.ts"),
+      `import { b } from "./b.js";\nexport const a = 1;`,
+    );
     writeFileSync(join(dir, "b.ts"), `export const b = 1;`);
-    writeFileSync(join(dir, "unreachable.ts"), `import "some-dev-only-package";\nexport const u = 1;`);
+    writeFileSync(
+      join(dir, "unreachable.ts"),
+      `import "some-dev-only-package";\nexport const u = 1;`,
+    );
 
     const modules = discoverReachableModules(dir);
     const names = modules.map((m) => m.split("/").pop()).sort();
@@ -293,7 +319,10 @@ test("discoverReachableModules follows dynamic import() specifiers too", () => {
       join(dir, "index.ts"),
       `export default { async register() { await import("./lazy-adapter.js"); } };`,
     );
-    writeFileSync(join(dir, "lazy-adapter.ts"), `import "some-prod-dep";\nexport const x = 1;`);
+    writeFileSync(
+      join(dir, "lazy-adapter.ts"),
+      `import "some-prod-dep";\nexport const x = 1;`,
+    );
 
     const modules = discoverReachableModules(dir);
     const names = modules.map((m) => m.split("/").pop()).sort();
@@ -306,8 +335,14 @@ test("discoverReachableModules follows dynamic import() specifiers too", () => {
 test("discoverReachableModules never revisits a module twice even with import cycles", () => {
   const dir = makeTempPluginDir();
   try {
-    writeFileSync(join(dir, "index.ts"), `import "./a.js";\nexport default {};`);
-    writeFileSync(join(dir, "a.ts"), `import "./index.js";\nexport const a = 1;`);
+    writeFileSync(
+      join(dir, "index.ts"),
+      `import "./a.js";\nexport default {};`,
+    );
+    writeFileSync(
+      join(dir, "a.ts"),
+      `import "./index.js";\nexport const a = 1;`,
+    );
 
     const modules = discoverReachableModules(dir);
     const names = modules.map((m) => m.split("/").pop()).sort();
@@ -325,7 +360,10 @@ test("discoverReachableModules does not pull in a sibling that nothing imports (
     // referenced by index.ts. Reachability-based discovery must not pull this
     // in — otherwise a plugin whose dev scripts import devDependencies would
     // fail smoke-load even though OpenClaw never loads that file at runtime.
-    writeFileSync(join(dir, "generate-fixtures.ts"), `import { Document } from "docx";\nexport {};`);
+    writeFileSync(
+      join(dir, "generate-fixtures.ts"),
+      `import { Document } from "docx";\nexport {};`,
+    );
 
     const modules = discoverReachableModules(dir);
     const names = modules.map((m) => m.split("/").pop());
@@ -358,6 +396,57 @@ test("discoverReachableModules runs cleanly against every real plugin package", 
     assert.ok(
       modules.some((m) => m.endsWith("/index.ts")),
       `expected index.ts to be included for ${dir}`,
+    );
+  }
+});
+
+test("productionManifest drops devDependencies and keeps everything a production install reads", () => {
+  const pkg = {
+    name: "pinchy-example",
+    type: "module",
+    dependencies: { "odoo-node": "^0.3.0" },
+    peerDependencies: { openclaw: "*" },
+    devDependencies: { vitest: "^4.1.11", typescript: "^6.0.3" },
+  };
+  assert.deepEqual(productionManifest(pkg), {
+    name: "pinchy-example",
+    type: "module",
+    dependencies: { "odoo-node": "^0.3.0" },
+    peerDependencies: { openclaw: "*" },
+  });
+});
+
+test("productionManifest leaves the manifest it was given untouched", () => {
+  const pkg = { dependencies: { a: "1" }, devDependencies: { b: "2" } };
+  productionManifest(pkg);
+  assert.deepEqual(pkg.devDependencies, { b: "2" });
+});
+
+// This gate claims to mirror Dockerfile.openclaw's per-plugin installs, so the
+// two must resolve a production bundle the same way: without the dev tree.
+// `npm install --omit=dev` still RESOLVES devDependencies before omitting them,
+// and since vitest 5 (2026-09-03) that tree carries an optional peer chain —
+// vite -> @vitejs/devtools -> @vitejs/devtools-vitest -> vitest@* — on which
+// npm's arborist crashes in #loadPeerSet ("Cannot read properties of null
+// (reading 'edgesOut')"). Stripping the dev tree first makes the production
+// install independent of test-tooling drift; this pins the Dockerfile half.
+test("every production npm install in Dockerfile.openclaw drops devDependencies first", () => {
+  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+  const statements = readFileSync(join(repoRoot, "Dockerfile.openclaw"), "utf8")
+    .replace(/\\\n/g, " ")
+    .split("\n")
+    .filter(
+      (line) => /^RUN\b/.test(line) && line.includes("npm install --omit=dev"),
+    );
+  assert.ok(
+    statements.length >= 4,
+    `expected the four plugin bundle installs, found ${statements.length}`,
+  );
+  for (const run of statements) {
+    const strip = run.indexOf("npm pkg delete devDependencies");
+    assert.ok(
+      strip !== -1 && strip < run.indexOf("npm install --omit=dev"),
+      `must drop devDependencies before installing:\n${run}`,
     );
   }
 });

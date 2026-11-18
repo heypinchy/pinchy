@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
+import { routeContext } from "@/test-helpers/route";
 
 // ── Hoisted mocks ────────────────────────────────────────────────────────────
 
@@ -99,11 +100,9 @@ vi.mock("@/db", () => ({
     }),
     select: vi.fn().mockReturnValue({
       from: mockSelectFrom.mockImplementation(() => {
-        const result = Promise.resolve([]) as Promise<unknown[]> & {
-          where: ReturnType<typeof vi.fn>;
-        };
-        result.where = vi.fn().mockResolvedValue([]);
-        return result;
+        return Object.assign(Promise.resolve([] as unknown[]), {
+          where: vi.fn().mockResolvedValue([]),
+        });
       }),
     }),
   },
@@ -119,7 +118,7 @@ vi.mock("drizzle-orm", () => ({
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function makeRequest(path: string, options?: RequestInit) {
+function makeRequest(path: string, options?: ConstructorParameters<typeof NextRequest>[1]) {
   return new NextRequest(`http://localhost:7777${path}`, options);
 }
 
@@ -153,11 +152,9 @@ describe("POST /api/integrations (type=mcp)", () => {
       returning: vi.fn().mockResolvedValue([mockMcpConnection]),
     });
     mockSelectFrom.mockImplementation(() => {
-      const result = Promise.resolve([]) as Promise<unknown[]> & {
-        where: ReturnType<typeof vi.fn>;
-      };
-      result.where = vi.fn().mockResolvedValue([]);
-      return result;
+      return Object.assign(Promise.resolve([] as unknown[]), {
+        where: vi.fn().mockResolvedValue([]),
+      });
     });
   });
 
@@ -172,7 +169,7 @@ describe("POST /api/integrations (type=mcp)", () => {
       method: "POST",
       body: JSON.stringify(validMcpBody),
     });
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     const body = await response.json();
 
     expect(response.status).toBe(201);
@@ -246,7 +243,7 @@ describe("POST /api/integrations (type=mcp)", () => {
         url: "https://mcp.internal.example.com/rpc",
       }),
     });
-    await POST(request);
+    await POST(request, routeContext());
 
     const call = mockDeferAuditLog.mock.calls.find((c) => c[0].eventType === "integration.created");
     expect(call).toBeDefined();
@@ -264,7 +261,7 @@ describe("POST /api/integrations (type=mcp)", () => {
       method: "POST",
       body: JSON.stringify(validMcpBody),
     });
-    await POST(request);
+    await POST(request, routeContext());
 
     const call = mockDeferAuditLog.mock.calls.find((c) => c[0].eventType === "integration.created");
     expect(JSON.stringify(call![0].detail)).not.toContain(validMcpBody.token);
@@ -282,7 +279,7 @@ describe("POST /api/integrations (type=mcp)", () => {
         extraHeaders: { locationId: "loc-123" },
       }),
     });
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
 
     expect(response.status).toBe(201);
     expect(mockListMcpTools).toHaveBeenCalledWith(
@@ -302,7 +299,7 @@ describe("POST /api/integrations (type=mcp)", () => {
       method: "POST",
       body: JSON.stringify(validMcpBody),
     });
-    await POST(request);
+    await POST(request, routeContext());
 
     const insertedData = mockInsertValues.mock.calls[0][0].data;
     expect(insertedData).not.toHaveProperty("extraHeaders");
@@ -319,7 +316,7 @@ describe("POST /api/integrations (type=mcp)", () => {
         url: "https://services.leadconnectorhq.com/mcp/",
       }),
     });
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     const body = await response.json();
 
     expect(response.status).toBe(400);
@@ -338,7 +335,7 @@ describe("POST /api/integrations (type=mcp)", () => {
         preset: "salesforce", // not in the allowed enum
       }),
     });
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
 
     expect(response.status).toBe(400);
     expect(mockListMcpTools).not.toHaveBeenCalled();
@@ -360,7 +357,7 @@ describe("POST /api/integrations (type=mcp)", () => {
         extraHeaders: { Authorization: "Bearer should-not-be-allowed" },
       }),
     });
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     const body = await response.json();
 
     expect(response.status).toBe(400);
@@ -379,7 +376,7 @@ describe("POST /api/integrations (type=mcp)", () => {
       method: "POST",
       body: JSON.stringify(validMcpBody),
     });
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     const body = await response.json();
 
     expect(response.status).toBe(502);
@@ -405,7 +402,7 @@ describe("POST /api/integrations (type=mcp)", () => {
       method: "POST",
       body: JSON.stringify(validMcpBody),
     });
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
     const body = await response.json();
 
     expect(response.status).toBe(502);
@@ -421,7 +418,7 @@ describe("POST /api/integrations (type=mcp)", () => {
       method: "POST",
       body: JSON.stringify(validMcpBody),
     });
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
 
     expect(response.status).toBe(404);
     expect(mockListMcpTools).not.toHaveBeenCalled();
@@ -437,7 +434,7 @@ describe("POST /api/integrations (type=mcp)", () => {
       method: "POST",
       body: JSON.stringify(validMcpBody),
     });
-    const response = await POST(request);
+    const response = await POST(request, routeContext());
 
     expect(response.status).toBe(403);
     expect(mockListMcpTools).not.toHaveBeenCalled();

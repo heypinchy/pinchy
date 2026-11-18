@@ -1,14 +1,30 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, act } from "@testing-library/react";
+// @vitest-environment jsdom
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from "vitest";
+import { render, screen, waitFor, act, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
+import { useRouter, useSearchParams } from "next/navigation";
+import type { ReadonlyURLSearchParams } from "next/navigation";
 import { SettingsPageContent as SettingsPage } from "@/components/settings-page-content";
+import { jsonResponse } from "@/test-helpers/fetch";
+
+// useSearchParams() is typed as ReadonlyURLSearchParams; a plain URLSearchParams
+// is structurally not assignable (the readonly type drops the mutating methods)
+// but is a valid value at runtime, so the mocks cast through it.
+const readonlySearchParams = (init?: string) =>
+  new URLSearchParams(init) as unknown as ReadonlyURLSearchParams;
+
+const mockToastError = vi.fn();
+vi.mock("sonner", () => ({
+  toast: { error: (...args: unknown[]) => mockToastError(...args), success: vi.fn() },
+}));
 
 let capturedProviderProps: {
   onSuccess?: () => void;
   submitLabel?: string;
   configuredProviders?: Record<string, { configured: boolean }>;
   defaultProvider?: string | null;
+  manageCustomProviders?: boolean;
 } = {};
 
 let capturedOnDirtyChangeProvider: ((isDirty: boolean) => void) | undefined;
@@ -22,6 +38,7 @@ vi.mock("@/components/provider-key-form", () => ({
     configuredProviders?: Record<string, { configured: boolean }>;
     defaultProvider?: string | null;
     onDirtyChange?: (isDirty: boolean) => void;
+    manageCustomProviders?: boolean;
   }) => {
     capturedProviderProps = props;
     capturedOnDirtyChangeProvider = props.onDirtyChange;
@@ -68,25 +85,52 @@ vi.mock("@/components/settings-groups", () => ({
 }));
 
 vi.mock("@/components/timezone-settings", () => ({
-  TimezoneSettings: () => <div data-testid="mock-timezone-settings">Timezone</div>,
+  TimezoneSettings: ({ onSaved }: { onSaved?: (timezone: string) => void }) => (
+    <div data-testid="mock-timezone-settings">
+      Timezone
+      <button onClick={() => onSaved?.("America/New_York")}>mock-save-timezone</button>
+    </div>
+  ),
+}));
+
+vi.mock("@/components/knowledge-index-schedule-settings", () => ({
+  KnowledgeIndexScheduleSettings: ({ refreshKey }: { refreshKey?: number }) => (
+    <div data-testid="mock-knowledge-index-schedule" data-refresh-key={refreshKey}>
+      Knowledge Base Indexing
+    </div>
+  ),
+}));
+
+vi.mock("@/components/email-delivery-settings", () => ({
+  EmailDeliverySettings: () => <div data-testid="mock-email-delivery-settings">Email delivery</div>,
+}));
+
+vi.mock("@/components/member-access-settings", () => ({
+  MemberAccessSettings: () => <div data-testid="mock-member-access-settings">Member access</div>,
 }));
 
 vi.mock("@/components/settings-context", () => ({
   SettingsContext: ({
     userContext,
     orgContext,
+    userContextFailed,
+    orgContextFailed,
     isAdmin,
     onDirtyChange,
   }: {
-    userContext: string;
-    orgContext: string;
+    userContext: string | null;
+    orgContext: string | null;
+    userContextFailed?: boolean;
+    orgContextFailed?: boolean;
     isAdmin: boolean;
     onDirtyChange?: (isDirty: boolean) => void;
   }) => {
     capturedOnDirtyChangeContext = onDirtyChange;
     return (
       <div data-testid="mock-settings-context">
-        Context (isAdmin: {String(isAdmin)}, userContext: {userContext}, orgContext: {orgContext})
+        Context (isAdmin: {String(isAdmin)}, userContext: {userContext}, orgContext: {orgContext}
+        {userContextFailed && ", userContextFailed"}
+        {orgContextFailed && ", orgContextFailed"})
       </div>
     );
   },
@@ -106,7 +150,7 @@ vi.mock("@/components/settings-profile", () => ({
 }));
 
 vi.mock("next/navigation", () => ({
-  useRouter: vi.fn().mockReturnValue({ replace: vi.fn() }),
+  useRouter: vi.fn().mockReturnValue({ replace: vi.fn(), push: vi.fn() }),
   useSearchParams: vi.fn().mockReturnValue(new URLSearchParams()),
   usePathname: vi.fn().mockReturnValue("/settings"),
 }));
@@ -137,10 +181,7 @@ describe("Settings Page", () => {
   };
 
   function mockContextFetches() {
-    return {
-      ok: true,
-      json: async () => ({ content: "" }),
-    } as Response;
+    return jsonResponse({ content: "" });
   }
 
   function setupAdminFetchMocks(providerData?: object) {
@@ -155,7 +196,7 @@ describe("Settings Page", () => {
     vi.mocked(global.fetch).mockImplementation(async (url) => {
       const path = typeof url === "string" ? url : url.toString();
       if (path === "/api/settings/providers") {
-        return { ok: true, json: async () => pd } as Response;
+        return jsonResponse(pd);
       }
       if (path === "/api/users/me/context" || path === "/api/settings/context") {
         return mockContextFetches();
@@ -167,6 +208,7 @@ describe("Settings Page", () => {
   beforeEach(() => {
     fetchSpy = vi.spyOn(global, "fetch").mockImplementation(vi.fn());
     vi.clearAllMocks();
+    vi.mocked(useSearchParams).mockReturnValue(readonlySearchParams());
     capturedProviderProps = {};
     capturedOnDirtyChangeProvider = undefined;
     capturedOnDirtyChangeContext = undefined;
@@ -180,6 +222,41 @@ describe("Settings Page", () => {
 
   afterEach(() => {
     fetchSpy.mockRestore();
+    // Tab clicks write jsdom's history for real now; the location must not
+    // carry into the next test.
+    // Through the prototype: a test's own replaceState spy is restored only
+    // after afterEach runs (onTestFinished), and would swallow this call.
+    History.prototype.replaceState.call(window.history, null, "", "/");
+  });
+
+  // The nightly reindex is read in the org timezone, so it lives next to it.
+  it("shows the nightly knowledge-base reindex on the Organization tab, beside the timezone", async () => {
+    vi.mocked(useSearchParams).mockReturnValue(readonlySearchParams("tab=organization"));
+    setupAdminFetchMocks();
+
+    render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
+
+    expect(await screen.findByTestId("mock-knowledge-index-schedule")).toBeInTheDocument();
+    expect(screen.getByTestId("mock-timezone-settings")).toBeInTheDocument();
+  });
+
+  // The reindex card shows its time in the org timezone; saving a new zone in
+  // the card above must make it read again rather than keep the old label.
+  it("has the nightly reindex card reload after the timezone is saved", async () => {
+    vi.mocked(useSearchParams).mockReturnValue(readonlySearchParams("tab=organization"));
+    setupAdminFetchMocks();
+
+    render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
+    const card = await screen.findByTestId("mock-knowledge-index-schedule");
+    const before = card.getAttribute("data-refresh-key");
+
+    fireEvent.click(screen.getByText("mock-save-timezone"));
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("mock-knowledge-index-schedule").getAttribute("data-refresh-key")
+      ).not.toBe(before)
+    );
   });
 
   it("should render the page title", async () => {
@@ -195,6 +272,25 @@ describe("Settings Page", () => {
   describe("Admin user", () => {
     beforeEach(() => {
       mockUseSession.mockReturnValue(adminSession);
+    });
+
+    it("puts Member access in the Organization tab, beside the timezone", async () => {
+      setupAdminFetchMocks();
+
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
+      await userEvent.click(await screen.findByRole("tab", { name: "Organization" }));
+
+      expect(screen.getByTestId("mock-member-access-settings")).toBeInTheDocument();
+      expect(screen.getByTestId("mock-timezone-settings")).toBeInTheDocument();
+    });
+
+    it("puts Email delivery in the Organization tab (#1309)", async () => {
+      setupAdminFetchMocks();
+
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
+      await userEvent.click(await screen.findByRole("tab", { name: "Organization" }));
+
+      expect(screen.getByTestId("mock-email-delivery-settings")).toBeInTheDocument();
     });
 
     it("should render AI Provider, Users, Context, and Profile tabs", async () => {
@@ -227,7 +323,7 @@ describe("Settings Page", () => {
       expect(contextTab).toHaveAttribute("data-state", "active");
     });
 
-    it("should render LLM Provider section with ProviderKeyForm", async () => {
+    it("should render AI Provider section with ProviderKeyForm", async () => {
       setupAdminFetchMocks();
 
       render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
@@ -235,6 +331,18 @@ describe("Settings Page", () => {
       await waitFor(() => {
         expect(screen.getByTestId("mock-provider-form")).toBeInTheDocument();
       });
+
+      // The card heading must agree with the tab label and with the chat
+      // error hint ("Go to Settings > AI Provider…"), which both already say
+      // "AI Provider". 3966c06b renamed the tab and missed this heading, so a
+      // user following that hint landed on a card still titled "LLM Provider".
+      // Scoped to the card that holds the provider form — several tabs stay
+      // mounted, so the first card-title in the container is not necessarily
+      // this one.
+      const providerCard = screen.getByTestId("mock-provider-form").closest('[data-slot="card"]');
+      expect(providerCard?.querySelector('[data-slot="card-title"]')).toHaveTextContent(
+        "AI Provider"
+      );
     });
 
     it("should show loading state while fetching provider status", () => {
@@ -293,6 +401,22 @@ describe("Settings Page", () => {
       });
     });
 
+    // #894 settings redesign: the AI-Provider tab renders ONE unified grid via
+    // ProviderKeyForm's `manageCustomProviders` mode — the separate
+    // `OpenAiCompatibleProvidersSection` card was removed entirely.
+    it("should render ProviderKeyForm in manageCustomProviders mode and not a separate OpenAI-compatible providers card", async () => {
+      setupAdminFetchMocks();
+
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId("mock-provider-form")).toBeInTheDocument();
+      });
+
+      expect(capturedProviderProps.manageCustomProviders).toBe(true);
+      expect(screen.queryByText("OpenAI-compatible providers")).not.toBeInTheDocument();
+    });
+
     it("should re-fetch provider status after onSuccess", async () => {
       setupAdminFetchMocks();
 
@@ -302,10 +426,14 @@ describe("Settings Page", () => {
         expect(screen.getByTestId("mock-provider-form")).toBeInTheDocument();
       });
 
+      const providerLoads = () =>
+        vi.mocked(global.fetch).mock.calls.filter(([url]) => url === "/api/settings/providers")
+          .length;
+      const before = providerLoads();
       capturedProviderProps.onSuccess!();
 
       await waitFor(() => {
-        expect(global.fetch).toHaveBeenCalledWith("/api/settings/providers");
+        expect(providerLoads()).toBe(before + 1);
       });
     });
   });
@@ -475,6 +603,15 @@ describe("Settings Page", () => {
       mockUseSession.mockReturnValue(userSession);
     });
 
+    it("never renders the Member access switches for a member", () => {
+      vi.mocked(global.fetch).mockImplementation(async () => mockContextFetches());
+
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
+
+      expect(screen.queryByTestId("mock-member-access-settings")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("mock-email-delivery-settings")).not.toBeInTheDocument();
+    });
+
     it("should show Context and Profile tabs but not Provider or Users", () => {
       vi.mocked(global.fetch).mockImplementation(async () => mockContextFetches());
 
@@ -518,10 +655,200 @@ describe("Settings Page", () => {
 
       render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
 
+      // By URL: the loads pass a second argument (method, signal), and a
+      // `not.toHaveBeenCalledWith(url)` would pass for any call that has one.
+      const fetchedUrls = () => vi.mocked(global.fetch).mock.calls.map(([url]) => String(url));
       await waitFor(() => {
-        expect(global.fetch).toHaveBeenCalledWith("/api/users/me/context");
-        expect(global.fetch).not.toHaveBeenCalledWith("/api/settings/providers");
+        expect(fetchedUrls()).toContain("/api/users/me/context");
       });
+      expect(fetchedUrls()).not.toContain("/api/settings/providers");
+    });
+  });
+
+  describe("Mobile drill-down navigation", () => {
+    it("does not show a back control when no tab is explicitly selected", async () => {
+      setupAdminFetchMocks();
+
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
+
+      await waitFor(() => screen.getByTestId("mock-settings-context"));
+      expect(screen.queryByRole("button", { name: /back to settings/i })).not.toBeInTheDocument();
+    });
+
+    it("shows a back control when a tab is explicitly selected via the URL param", async () => {
+      vi.mocked(useSearchParams).mockReturnValue(readonlySearchParams("tab=profile"));
+      setupAdminFetchMocks();
+
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /back to settings/i })).toBeInTheDocument();
+      });
+    });
+
+    it("clears the tab param when the back control is clicked", async () => {
+      const replaceState = vi.spyOn(window.history, "replaceState").mockImplementation(() => {});
+      onTestFinished(() => replaceState.mockRestore());
+      vi.mocked(useSearchParams).mockReturnValue(readonlySearchParams("tab=profile"));
+      setupAdminFetchMocks();
+
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
+
+      const backButton = await screen.findByRole("button", { name: /back to settings/i });
+      await userEvent.click(backButton);
+
+      // Native replaceState, not router.replace: a router navigation waits on
+      // a server round trip before the menu shows (#1271).
+      expect(replaceState).toHaveBeenCalledWith(null, "", "/settings");
+      expect(useRouter().replace).not.toHaveBeenCalled();
+    });
+
+    it("preserves unrelated query params when the back control is clicked", async () => {
+      const replaceState = vi.spyOn(window.history, "replaceState").mockImplementation(() => {});
+      onTestFinished(() => replaceState.mockRestore());
+      vi.mocked(useSearchParams).mockReturnValue(readonlySearchParams("tab=profile&foo=bar"));
+      setupAdminFetchMocks();
+
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
+
+      const backButton = await screen.findByRole("button", { name: /back to settings/i });
+      await userEvent.click(backButton);
+
+      // Native replaceState, not router.replace: a router navigation waits on
+      // a server round trip before the menu shows (#1271).
+      expect(replaceState).toHaveBeenCalledWith(null, "", "/settings?foo=bar");
+      expect(useRouter().replace).not.toHaveBeenCalled();
+    });
+
+    it("keeps the active tab indicator on the sidebar variant", async () => {
+      setupAdminFetchMocks();
+
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
+
+      const contextTab = await screen.findByRole("tab", { name: /context/i });
+      expect(contextTab).toHaveAttribute("data-state", "active");
+    });
+
+    // Drift guard: the mobile back-header label (from TAB_LABELS) must match the
+    // active sidebar trigger's text, so renaming a tab can't leave a stale label.
+    // Covers the "AI Provider" disambiguation, the trickiest label.
+    it.each([
+      ["profile", "Profile"],
+      ["provider", "AI Provider"],
+    ])("mobile back header label matches the '%s' tab trigger", async (tab, expected) => {
+      vi.mocked(useSearchParams).mockReturnValue(readonlySearchParams(`tab=${tab}`));
+      setupAdminFetchMocks();
+
+      const { container } = render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
+
+      const backButton = await screen.findByRole("button", { name: /back to settings/i });
+      const headerLabel = backButton.parentElement?.querySelector("span")?.textContent?.trim();
+      const activeTrigger = container
+        .querySelector('[role="tab"][data-state="active"]')
+        ?.textContent?.trim();
+
+      expect(headerLabel).toBe(expected);
+      expect(headerLabel).toBe(activeTrigger);
+    });
+  });
+
+  // Every load on this page runs from an effect that awaits nothing. Before
+  // they caught, a failed one left its card silently empty — and an empty
+  // context editor's Save replaced the stored context.
+  describe("load failure", () => {
+    function stubLoads(failing: string, response: () => Promise<Response>) {
+      vi.mocked(global.fetch).mockImplementation(async (url) => {
+        const path = String(url);
+        if (path === failing) return response();
+        if (path === "/api/settings/providers") {
+          return jsonResponse({ defaultProvider: null, providers: {} });
+        }
+        if (path === "/api/users/me/context") return jsonResponse({ content: "Mine" });
+        if (path === "/api/settings/context") return jsonResponse({ content: "Ours" });
+        // The integrations tab mounts in the background and shows its own
+        // alert for a failed list; only the load under test may fail here.
+        if (path === "/api/integrations") return jsonResponse([]);
+        return jsonResponse(undefined, { status: 404 });
+      });
+    }
+
+    const failures = [
+      ["rejects", () => Promise.reject(new TypeError("Failed to fetch"))],
+      ["answers 500", async () => jsonResponse({}, { status: 500 })],
+    ] as const;
+
+    it.each(failures)(
+      "tells the context editor the org context failed when its load %s",
+      async (_label, response) => {
+        stubLoads("/api/settings/context", response);
+        render(<SettingsPage isAdmin={true} />);
+
+        await waitFor(() => {
+          expect(screen.getByTestId("mock-settings-context")).toHaveTextContent("orgContextFailed");
+        });
+        expect(screen.getByTestId("mock-settings-context")).toHaveTextContent("userContext: Mine");
+      }
+    );
+
+    it.each(failures)(
+      "tells the context editor the user context failed when its load %s",
+      async (_label, response) => {
+        stubLoads("/api/users/me/context", response);
+        render(<SettingsPage isAdmin={false} />);
+
+        await waitFor(() => {
+          expect(screen.getByTestId("mock-settings-context")).toHaveTextContent(
+            "userContextFailed"
+          );
+        });
+      }
+    );
+
+    it.each(failures)(
+      "shows why there is no provider form when the status load %s",
+      async (_label, response) => {
+        vi.mocked(useSearchParams).mockReturnValue(readonlySearchParams("tab=provider"));
+        stubLoads("/api/settings/providers", response);
+        render(<SettingsPage isAdmin={true} />);
+
+        expect(await screen.findByRole("alert")).toHaveTextContent(/couldn't load/i);
+        expect(screen.queryByTestId("mock-provider-form")).not.toBeInTheDocument();
+      }
+    );
+
+    // The refresh after a provider save is not the first load: the form the
+    // admin just used stays, and the failure is said once in a toast.
+    it("keeps the provider form and toasts when the refresh after a save fails", async () => {
+      vi.mocked(useSearchParams).mockReturnValue(readonlySearchParams("tab=provider"));
+      stubLoads("/api/none", async () => jsonResponse({}));
+      render(<SettingsPage isAdmin={true} />);
+      await screen.findByTestId("mock-provider-form");
+
+      stubLoads("/api/settings/providers", async () => jsonResponse({}, { status: 500 }));
+      act(() => capturedProviderProps.onSuccess!());
+
+      await waitFor(() =>
+        expect(mockToastError).toHaveBeenCalledWith(
+          "We couldn't refresh your provider settings. Reload the page to see the latest."
+        )
+      );
+      expect(screen.getByTestId("mock-provider-form")).toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
+    it("cancels its loads when it unmounts mid-flight", async () => {
+      const loads = ["/api/settings/providers", "/api/users/me/context", "/api/settings/context"];
+      const signals = new Map<string, AbortSignal | undefined>();
+      vi.mocked(global.fetch).mockImplementation(async (url, init) => {
+        if (loads.includes(String(url))) signals.set(String(url), init?.signal ?? undefined);
+        return new Promise<Response>(() => {});
+      });
+      const { unmount } = render(<SettingsPage isAdmin={true} />);
+
+      await waitFor(() => expect(signals.size).toBe(3));
+      unmount();
+
+      for (const load of loads) expect(signals.get(load)?.aborted, load).toBe(true);
     });
   });
 });

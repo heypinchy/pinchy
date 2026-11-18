@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -189,6 +190,104 @@ describe("EditCredentialsDialog", () => {
       expect(toast.success).not.toHaveBeenCalled();
     });
 
+    describe("a stored API key never follows the connection to a new destination", () => {
+      const KEY_AGAIN =
+        "Enter the API key again when you change the URL or database — the stored key is never sent to a new destination.";
+
+      it("asks for the API key again when the URL changes, and does not call the server without it", async () => {
+        const user = userEvent.setup();
+        render(
+          <EditCredentialsDialog
+            connection={odooConnection}
+            open={true}
+            onOpenChange={vi.fn()}
+            onSuccess={vi.fn()}
+          />
+        );
+
+        expect(screen.queryByText(KEY_AGAIN)).not.toBeInTheDocument();
+        await user.clear(screen.getByLabelText("URL"));
+        await user.type(screen.getByLabelText("URL"), "https://odoo2.example.com");
+        expect(screen.getByText(KEY_AGAIN)).toBeInTheDocument();
+        expect(screen.getByLabelText("API Key")).toBeRequired();
+
+        await user.click(screen.getByRole("button", { name: "Save" }));
+
+        await waitFor(() =>
+          expect(screen.getByLabelText("API Key")).toHaveAttribute("aria-invalid", "true")
+        );
+        expect(apiPatch).not.toHaveBeenCalled();
+      });
+
+      it("asks for the API key again when the database changes", async () => {
+        const user = userEvent.setup();
+        render(
+          <EditCredentialsDialog
+            connection={odooConnection}
+            open={true}
+            onOpenChange={vi.fn()}
+            onSuccess={vi.fn()}
+          />
+        );
+
+        await user.clear(screen.getByLabelText("Database"));
+        await user.type(screen.getByLabelText("Database"), "other");
+        await user.click(screen.getByRole("button", { name: "Save" }));
+
+        await waitFor(() => expect(screen.getAllByText(KEY_AGAIN).length).toBeGreaterThan(0));
+        expect(apiPatch).not.toHaveBeenCalled();
+      });
+
+      it("sends the new URL together with the fresh key", async () => {
+        const user = userEvent.setup();
+        vi.mocked(apiPatch).mockResolvedValue({ id: "conn-odoo-1" });
+        render(
+          <EditCredentialsDialog
+            connection={odooConnection}
+            open={true}
+            onOpenChange={vi.fn()}
+            onSuccess={vi.fn()}
+          />
+        );
+
+        await user.clear(screen.getByLabelText("URL"));
+        await user.type(screen.getByLabelText("URL"), "https://odoo2.example.com");
+        await user.type(screen.getByLabelText("API Key"), "fresh-key");
+        await user.click(screen.getByRole("button", { name: "Save" }));
+
+        await waitFor(() => expect(apiPatch).toHaveBeenCalled());
+        const callArg = vi.mocked(apiPatch).mock.calls[0][1] as {
+          credentials: Record<string, string>;
+        };
+        expect(callArg.credentials).toMatchObject({
+          url: "https://odoo2.example.com",
+          apiKey: "fresh-key",
+        });
+      });
+
+      it("shows the server's field error under the API key field, not as a form-wide error", async () => {
+        const user = userEvent.setup();
+        vi.mocked(apiPatch).mockRejectedValue(
+          new ApiError(422, KEY_AGAIN, { formErrors: [], fieldErrors: { apiKey: [KEY_AGAIN] } })
+        );
+        render(
+          <EditCredentialsDialog
+            connection={odooConnection}
+            open={true}
+            onOpenChange={vi.fn()}
+            onSuccess={vi.fn()}
+          />
+        );
+
+        await user.click(screen.getByRole("button", { name: "Save" }));
+
+        await waitFor(() =>
+          expect(screen.getByLabelText("API Key")).toHaveAttribute("aria-invalid", "true")
+        );
+        expect(screen.getAllByText(KEY_AGAIN)).toHaveLength(1);
+      });
+    });
+
     it("shows 'Current credentials failed authentication' hint when status is auth_failed", () => {
       render(
         <EditCredentialsDialog
@@ -256,6 +355,58 @@ describe("EditCredentialsDialog", () => {
         });
       });
     });
+
+    it("shows a generic message, not the raw error, when the save fails opaquely", async () => {
+      // The non-ApiError branch of the shared save path (#1087): a transport
+      // failure carries no server-authored message, and its text is an
+      // internal detail rather than something to render at a user. Only the
+      // ApiError branch was covered before the copies were collapsed.
+      const user = userEvent.setup();
+      vi.mocked(apiPatch).mockRejectedValue(new Error("ECONNRESET"));
+
+      render(
+        <EditCredentialsDialog
+          connection={webSearchConnection}
+          open={true}
+          onOpenChange={vi.fn()}
+          onSuccess={vi.fn()}
+        />
+      );
+
+      await user.type(screen.getByLabelText("API Key"), "new-brave-key");
+      await user.click(screen.getByRole("button", { name: "Save" }));
+
+      await waitFor(() => {
+        expect(screen.getByText("Something went wrong. Please try again.")).toBeInTheDocument();
+      });
+      expect(screen.queryByText("ECONNRESET")).not.toBeInTheDocument();
+      expect(toast.success).not.toHaveBeenCalled();
+    });
+
+    it("re-enables Save after a failed attempt so the user can retry", async () => {
+      // The `finally` that clears `saving` is the one line of the shared save
+      // path with no visible success counterpart — lose it and the dialog
+      // strands the user on a spinner after a transient failure.
+      const user = userEvent.setup();
+      vi.mocked(apiPatch).mockRejectedValue(new ApiError(502, "Upstream is down"));
+
+      render(
+        <EditCredentialsDialog
+          connection={webSearchConnection}
+          open={true}
+          onOpenChange={vi.fn()}
+          onSuccess={vi.fn()}
+        />
+      );
+
+      await user.type(screen.getByLabelText("API Key"), "new-brave-key");
+      await user.click(screen.getByRole("button", { name: "Save" }));
+
+      await waitFor(() => {
+        expect(screen.getByText("Upstream is down")).toBeInTheDocument();
+      });
+      expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    });
   });
 
   describe("Google integration", () => {
@@ -306,6 +457,30 @@ describe("EditCredentialsDialog", () => {
       await waitFor(() => {
         expect(assignMock).toHaveBeenCalledWith("https://accounts.google.com/oauth?code=xxx");
       });
+    });
+
+    it("shows a generic message when starting the OAuth redirect fails opaquely", async () => {
+      // The reconnect branch shares `credentialErrorMessage` with the three
+      // credential forms since #1087, but reaches it from apiPost rather than
+      // apiPatch — and it was the branch with no failure test at all.
+      const user = userEvent.setup();
+      vi.mocked(apiPost).mockRejectedValue(new Error("ECONNRESET"));
+
+      render(
+        <EditCredentialsDialog
+          connection={googleConnection}
+          open={true}
+          onOpenChange={vi.fn()}
+          onSuccess={vi.fn()}
+        />
+      );
+
+      await user.click(screen.getByRole("button", { name: "Reconnect via Google" }));
+
+      await waitFor(() => {
+        expect(screen.getByText("Something went wrong. Please try again.")).toBeInTheDocument();
+      });
+      expect(screen.queryByText("ECONNRESET")).not.toBeInTheDocument();
     });
   });
 
@@ -487,6 +662,52 @@ describe("EditCredentialsDialog", () => {
         expect(screen.getByText("IMAP login rejected")).toBeInTheDocument();
       });
       expect(toast.success).not.toHaveBeenCalled();
+    });
+
+    it("asks for the password again when the IMAP host changes, and does not call the server without it", async () => {
+      const PASSWORD_AGAIN =
+        "Enter the password again when you change the server, a port or the security setting — the stored password is never sent to a new destination.";
+      const user = userEvent.setup();
+      render(
+        <EditCredentialsDialog
+          connection={authFailedImapConnection}
+          open={true}
+          onOpenChange={vi.fn()}
+          onSuccess={vi.fn()}
+        />
+      );
+
+      expect(screen.queryByText(PASSWORD_AGAIN)).not.toBeInTheDocument();
+      await user.clear(screen.getByLabelText("IMAP Host"));
+      await user.type(screen.getByLabelText("IMAP Host"), "imap.other.example");
+      expect(screen.getByText(PASSWORD_AGAIN)).toBeInTheDocument();
+      expect(screen.getByLabelText("Password")).toBeRequired();
+
+      await user.click(screen.getByRole("button", { name: "Save" }));
+
+      await waitFor(() =>
+        expect(screen.getByLabelText("Password")).toHaveAttribute("aria-invalid", "true")
+      );
+      expect(apiPatch).not.toHaveBeenCalled();
+    });
+
+    it("does not ask for the password when only the username or sender name changes", async () => {
+      const user = userEvent.setup();
+      vi.mocked(apiPatch).mockResolvedValue({ id: "conn-imap-1" });
+      render(
+        <EditCredentialsDialog
+          connection={authFailedImapConnection}
+          open={true}
+          onOpenChange={vi.fn()}
+          onSuccess={vi.fn()}
+        />
+      );
+
+      await user.clear(screen.getByLabelText("Username"));
+      await user.type(screen.getByLabelText("Username"), "support@example.com");
+      await user.click(screen.getByRole("button", { name: "Save" }));
+
+      await waitFor(() => expect(apiPatch).toHaveBeenCalled());
     });
 
     it("does not resend senderName when left unchanged from its prefilled value", async () => {

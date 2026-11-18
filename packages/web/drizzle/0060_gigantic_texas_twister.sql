@@ -1,0 +1,1 @@
+CREATE INDEX "idx_audit_integrity_violation" ON "audit_log" USING btree ("timestamp" DESC NULLS LAST) WHERE "audit_log"."event_type" = 'audit.integrity_check' AND "audit_log"."outcome" = 'failure';

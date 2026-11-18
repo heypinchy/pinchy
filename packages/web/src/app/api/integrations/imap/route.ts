@@ -7,6 +7,7 @@ import { integrationConnections } from "@/db/schema";
 import { encrypt } from "@/lib/encryption";
 import { appendAuditLog, redactEmail, scrubEmails } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
+import { assertMailHostAllowed, MailHostBlockedError } from "@/lib/integrations/mail-host-guard";
 
 // Matches an email-shaped username so we can redact it the same way the IMAP
 // test route does (see EMAIL_LIKE in imap/test/route.ts). Not every IMAP
@@ -17,6 +18,15 @@ const EMAIL_LIKE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // credentials via POST /api/integrations/imap/test. We don't re-probe here —
 // this route's job is only to encrypt-and-store what the client already
 // confirmed works, then audit the creation.
+//
+// The one exception is the SSRF guard, which runs on BOTH routes. The test
+// route's guard stops a one-shot probe of the internal network (pinchy#823);
+// this one stops the durable version of the same thing, because nothing forces
+// a client to call /test first, and a stored row is worse than a probe: the
+// inbox sweep and the pinchy-email plugin reconnect to that host on a schedule
+// and report what they find. It resolves DNS, so it is the only network call
+// this route makes — a host that doesn't resolve is let through (see the
+// guard), so a saveable connection never turns unsaveable on a DNS hiccup.
 export const POST = withAdmin(async (request: NextRequest, _ctx, session) => {
   const parsed = await parseRequestBody(imapCreateSchema, request);
   if ("error" in parsed) return parsed.error;
@@ -27,6 +37,41 @@ export const POST = withAdmin(async (request: NextRequest, _ctx, session) => {
   // `name` is an optional label for the integrations list; default it to the
   // mailbox address so the row always has a sensible, renameable name.
   const connectionName = name ?? username;
+
+  const identity = EMAIL_LIKE.test(username) ? redactEmail(username) : undefined;
+
+  try {
+    await assertMailHostAllowed(imapHost);
+    await assertMailHostAllowed(smtpHost);
+  } catch (err) {
+    if (!(err instanceof MailHostBlockedError)) throw err;
+
+    // A refused host is security-relevant on its own — record the attempt, but
+    // say only THAT a host was blocked. The guard's message already tells the
+    // admin which tier they hit; naming the resolved address in an immutable
+    // row would just archive someone's internal topology.
+    const blockedEntry = {
+      eventType: "integration.created" as const,
+      actorType: "user" as const,
+      actorId,
+      resource: "integration",
+      outcome: "failure" as const,
+      error: { message: err.message },
+      detail: {
+        name: scrubEmails(connectionName),
+        type: "imap",
+        blocked: "host",
+        ...(identity ?? {}),
+      },
+    };
+    try {
+      await appendAuditLog(blockedEntry);
+    } catch (auditErr) {
+      recordAuditFailure(auditErr, blockedEntry);
+    }
+
+    return NextResponse.json({ error: err.message }, { status: 400 });
+  }
 
   // Store every field (including host/port/security/senderName) encrypted as
   // a single blob — never persist the password (or the sender display name,
@@ -59,7 +104,6 @@ export const POST = withAdmin(async (request: NextRequest, _ctx, session) => {
       })
       .returning();
   } catch (err) {
-    const identity = EMAIL_LIKE.test(username) ? redactEmail(username) : undefined;
     const failureEntry = {
       eventType: "integration.created" as const,
       actorType: "user" as const,

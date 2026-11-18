@@ -16,10 +16,37 @@ permissions:
   pages: write
   id-token: write
 
+# Two tags pushed in quick succession (or a tag push racing a
+# workflow_dispatch republish) must not run their Docker pushes
+# concurrently — they can overtake each other on `:latest`/the version tag,
+# and the loser silently leaves the tag pointing at the older image.
+#
+# The group is a CONSTANT, and that is the whole point. `:latest` is one
+# resource for the entire repository, so every release run competes with
+# every other one. `release-${{ github.ref }}` would look like this fix and
+# serialize almost nothing: a tag push carries `refs/tags/vX.Y.Z`, so two
+# tags land in two different groups and race exactly as before — and a
+# workflow_dispatch republish names its tag in `inputs.tag` (see the checkout
+# step) while running from a branch ref, so it would never share a group with
+# any tag push, not even a republish of the tag still building.
+#
+# Never cancel: a release in progress must run to completion; the next one
+# waits. The cost is that GitHub keeps only ONE run pending per group, so a
+# third release starting while one runs and one waits cancels the waiting
+# one. That needs three tags inside a single ~20-minute build, and it is
+# loud when it happens (no GitHub Release is created for the cancelled run),
+# whereas a `:latest` that points at the wrong image is silent and permanent.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   docker:
     name: Build & Push Docker Images
     runs-on: ubuntu-latest
+    # Max observed 20m; same registry/cache variance as pre-release.yml, and
+    # a cancelled release build is the most expensive false positive here.
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v7
@@ -30,10 +57,29 @@ jobs:
       # Hub (same reason as .github/actions/docker-mirror in CI — avoids the
       # 200 pulls/6h rate limit). buildx runs in its own buildkit container,
       # so /etc/docker/daemon.json doesn't apply; we configure it here.
+      #
+      # This is defense-in-depth, NOT the primary mechanism: every `FROM` in
+      # Dockerfile.pinchy / Dockerfile.openclaw already names
+      # mirror.gcr.io/library/node:22-slim explicitly. It catches the next
+      # `FROM` that forgets the prefix, and any transitive docker.io ref.
+      #
+      # The input is `buildkitd-config-inline`, NOT `config-inline` — the
+      # action renamed it in v3 and an unknown `with:` key is passed as an
+      # INPUT_* env var the action never reads. It ran that way from the
+      # workflow's first commit until 2026-08-05: green step, dead config,
+      # and the only trace was an `##[warning]Unexpected input(s)` line
+      # buried in the step log.
+      #
+      # The `actionlint` step in ci.yml's `quality` job catches that class —
+      # but only while actionlint's bundled schema DB knows the pinned major.
+      # At a version it does not know it reports nothing, so bumping this
+      # `@v4` is not a routine dependabot merge: the coverage check next to
+      # that step goes red on the bump, and the honest fix is a newer
+      # actionlint rather than an acceptance.
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
         with:
-          config-inline: |
+          buildkitd-config-inline: |
             [registry."docker.io"]
               mirrors = ["mirror.gcr.io"]
 
@@ -124,6 +170,7 @@ jobs:
   end-user-install-published:
     name: End-user install (published images)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: docker
 
     steps:
@@ -214,8 +261,8 @@ jobs:
         run: |
           RUNNING=$(docker compose ps --format json | jq -rs '[.[] | select(.State == "running")] | length')
           echo "Running services: $RUNNING"
-          if [ "$RUNNING" -ne 3 ]; then
-            echo "::error::Expected 3 running services (pinchy, openclaw, db), got $RUNNING"
+          if [ "$RUNNING" -ne 4 ]; then
+            echo "::error::Expected 4 running services (pinchy, office-converter, openclaw, db), got $RUNNING"
             docker compose ps
             exit 1
           fi
@@ -245,6 +292,7 @@ jobs:
     # must not re-create a release that already exists.
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: [docker, end-user-install-published]
 
     steps:
@@ -296,6 +344,11 @@ jobs:
     # generates fresh screenshots against the newly released build and
     # then deploys the docs site with those screenshots embedded — keeping
     # screenshots in lockstep with the released UI.
+    #
+    # No `timeout-minutes` here: a reusable-workflow call accepts only
+    # name/uses/with/secrets/needs/if/permissions, and GitHub rejects the
+    # whole file if it carries one. screenshots.yml sets its own per-job
+    # timeouts instead.
     uses: ./.github/workflows/screenshots.yml
     secrets: inherit
     permissions:

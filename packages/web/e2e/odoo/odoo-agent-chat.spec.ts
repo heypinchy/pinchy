@@ -1,9 +1,12 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page, type TestInfo } from "@playwright/test";
+import path from "path";
 import {
   seedSetup,
   waitForPinchy,
   waitForOdooMock,
   resetOdooMock,
+  seedOdooRecords,
+  getOdooRecords,
   login,
   createOdooConnection,
   setAgentPermissions,
@@ -17,6 +20,22 @@ import {
 import {
   FAKE_OLLAMA_ODOO_LIST_MODELS_TOOL_TRIGGER,
   FAKE_OLLAMA_ODOO_READ_DENIED_TRIGGER,
+  FAKE_OLLAMA_ODOO_SCHEDULE_ACTIVITY_REF_TRIGGER,
+  FAKE_OLLAMA_ODOO_COMPLETE_ACTIVITY_REF_TRIGGER,
+  FAKE_OLLAMA_ODOO_RESCHEDULE_ACTIVITY_REF_TRIGGER,
+  FAKE_OLLAMA_ODOO_CONFIRM_ORDER_REF_TRIGGER,
+  FAKE_OLLAMA_ODOO_APPLY_INVENTORY_REF_TRIGGER,
+  FAKE_OLLAMA_ODOO_VALIDATE_PICKING_REF_TRIGGER,
+  FAKE_OLLAMA_ODOO_MARK_MO_DONE_REF_TRIGGER,
+  FAKE_OLLAMA_ODOO_SET_APPROVAL_REF_TRIGGER,
+  FAKE_OLLAMA_ODOO_RECONCILE_REF_TRIGGER,
+  FAKE_OLLAMA_ODOO_ATTACH_FILE_REF_TRIGGER,
+  FAKE_OLLAMA_ODOO_ATTACH_FILE_REF_FILENAME,
+  FAKE_OLLAMA_ODOO_DELETE_REF_TRIGGER,
+  FAKE_OLLAMA_ODOO_DELETE_REF_MODEL,
+  FAKE_OLLAMA_ODOO_DUP_BILL_REF,
+  FAKE_OLLAMA_ODOO_CREATE_DUP_BLOCK_TRIGGER,
+  FAKE_OLLAMA_ODOO_CREATE_DUP_OVERRIDE_TRIGGER,
   FAKE_OLLAMA_PORT,
   startFakeOllama,
   stopFakeOllama,
@@ -24,6 +43,7 @@ import {
 import {
   loginViaUI,
   pollAuditForTool,
+  pollAuditForEvent,
   seedDefaultProviderToOllama,
   waitForOpenClawStable,
   waitForAgentDispatchable,
@@ -327,18 +347,176 @@ test.describe("Odoo dispatch probe (pinchy-odoo plugin coverage)", () => {
     expect(createRes.status).toBe(201);
     dispatchAgentId = ((await createRes.json()) as { id: string }).id;
 
-    // 6. Grant Odoo permissions → triggers regenerateOpenClawConfig() which now
-    //    reads default_provider=ollama-local and emits the Ollama provider block.
-    await setAgentPermissions(dispatchCookie, dispatchAgentId, dispatchConnectionId, [
-      { model: "sale.order", operation: "read" },
+    // 5b. Seed the records each ref-based tool probe (pinchy#791) reads to mint a
+    //     runtime `_pinchy_ref`. sale.order + crm.lead are already in the mock's
+    //     defaults; the models below are empty/absent by default. resetOdooMock
+    //     runs once in the outer describe's beforeAll (before this one), so these
+    //     seeds persist for the whole probe block.
+    //
+    //     TWO mail.activity records on purpose: odoo_complete_activity finishes an
+    //     activity via action_feedback, which the mock UNLINKS (mirroring Odoo).
+    //     odoo_read returns the first remaining record, so complete consumes 9101
+    //     and reschedule still has 9102 to read — the two activity probes never
+    //     contend for the same row regardless of run order.
+    await seedOdooRecords("mail.activity", [
+      {
+        id: 9101,
+        summary: "E2E activity (complete target)",
+        date_deadline: "2030-01-01",
+        res_model_id: [5, "crm.lead"],
+        res_id: 1,
+        user_id: [7, "Sally Seller"],
+      },
+      {
+        id: 9102,
+        summary: "E2E activity (reschedule target)",
+        date_deadline: "2030-01-01",
+        res_model_id: [5, "crm.lead"],
+        res_id: 1,
+        user_id: [7, "Sally Seller"],
+      },
+    ]);
+    await seedOdooRecords("stock.quant", [
+      { id: 9201, name: "Quant DSM-2030", inventory_quantity: 12, quantity: 10 },
+    ]);
+    await seedOdooRecords("stock.picking", [
+      { id: 9301, name: "WH/OUT/E2E-0001", state: "assigned" },
+    ]);
+    await seedOdooRecords("mrp.production", [
+      { id: 9401, name: "MO/E2E-0001", state: "confirmed" },
+    ]);
+    await seedOdooRecords("purchase.order", [{ id: 9501, name: "P0E2E-01", state: "draft" }]);
+    // pinchy#1078 (odoo_delete): its own model, touched by no other probe — a
+    // delete probe sharing a model would remove the row another probe reads,
+    // making the suite order-dependent. TWO rows: odoo_read returns the first,
+    // so the probe deletes 9901 and 9902 proves the unlink was scoped to the
+    // ref it was given rather than to the whole model.
+    await seedOdooRecords(FAKE_OLLAMA_ODOO_DELETE_REF_MODEL, [
+      { id: 9901, name: "E2E Tag (delete target)" },
+      { id: 9902, name: "E2E Tag (must survive)" },
+    ]);
+    // Reconcile (payment counterpart): a POSTED bill with one open payable line,
+    // plus a payment whose journal entry has a matching open line on the SAME
+    // account. js_assign_outstanding_line (the mock handler added for this)
+    // zeroes the bill's residual — the ONLY signal the plugin trusts to report
+    // success (didReconcile), so this exercises the real verification path, not
+    // a blind return value.
+    await seedOdooRecords("account.move", [
+      {
+        id: 9601,
+        name: "BILL/E2E-0001",
+        state: "posted",
+        payment_state: "not_paid",
+        amount_residual: 119.0,
+        company_id: [1, "Helmcraft GmbH"],
+        partner_id: [1, "Müller GmbH"],
+      },
+    ]);
+    await seedOdooRecords("account.payment", [
+      {
+        id: 9701,
+        name: "PAY/E2E-0001",
+        move_id: [9602, "PAY/E2E-0001"],
+        state: "paid",
+        company_id: [1, "Helmcraft GmbH"],
+      },
+    ]);
+    // Duplicate guard (pinchy#721): a POSTED vendor bill already on file. A
+    // second odoo_create with this same ref+move_type must be blocked; the
+    // override probe re-files it deliberately. It carries no lines, so the
+    // mock's amount-computation leaves it untouched. Crucially it is seeded
+    // AFTER the reconcile bill (9601): the reconcile probe's odoo_read passes no
+    // `order`, so the mock returns account.move in INSERTION order, keeping 9601
+    // first and the probe's `refs[0]` on the reconcile bill. The id (9801 > 9601)
+    // is a belt-and-suspenders in case a default id sort is ever introduced.
+    // Do not reorder these seeds.
+    await seedOdooRecords("account.move", [
+      {
+        id: 9801,
+        name: "BILL/E2E-DUP",
+        move_type: "in_invoice",
+        state: "posted",
+        ref: FAKE_OLLAMA_ODOO_DUP_BILL_REF,
+        company_id: [1, "Helmcraft GmbH"],
+        partner_id: [1, "Müller GmbH"],
+      },
+    ]);
+    await seedOdooRecords("account.move.line", [
+      {
+        id: 9611,
+        move_id: [9601, "BILL/E2E-0001"],
+        account_id: [50, "Kundenforderungen"],
+        account_type: "asset_receivable",
+        reconciled: false,
+        debit: 119.0,
+        credit: 0,
+      },
+      {
+        id: 9612,
+        move_id: [9602, "PAY/E2E-0001"],
+        account_id: [50, "Kundenforderungen"],
+        account_type: "asset_receivable",
+        reconciled: false,
+        debit: 0,
+        credit: 119.0,
+      },
     ]);
 
-    // 7. Allow odoo_list_models (happy-path probe) + odoo_read (failure probe:
-    //    the agent only holds sale.order read, so an odoo_read on res.partner
-    //    hits permissionDenied inside the plugin).
+    // 6. Grant Odoo permissions → triggers regenerateOpenClawConfig() which now
+    //    reads default_provider=ollama-local and emits the Ollama provider block.
+    //    Each ref-based tool (pinchy#791) needs read on its ref model (to mint
+    //    the ref via odoo_read) plus the write/create its handler checks. One
+    //    setAgentPermissions call = one regen, so listing every pair here does
+    //    not add to the config.apply rate-limit pressure the drain above guards.
+    //    res.partner is deliberately NOT granted so the failure probe below still
+    //    hits permissionDenied on odoo_read res.partner.
+    await setAgentPermissions(dispatchCookie, dispatchAgentId, dispatchConnectionId, [
+      { model: "sale.order", operation: "read" },
+      { model: "sale.order", operation: "write" },
+      { model: "crm.lead", operation: "read" },
+      { model: "mail.activity", operation: "create" },
+      { model: "mail.activity", operation: "read" },
+      { model: "mail.activity", operation: "write" },
+      { model: "stock.quant", operation: "read" },
+      { model: "stock.quant", operation: "write" },
+      { model: "stock.picking", operation: "read" },
+      { model: "stock.picking", operation: "write" },
+      { model: "mrp.production", operation: "read" },
+      { model: "mrp.production", operation: "write" },
+      { model: "purchase.order", operation: "read" },
+      { model: "purchase.order", operation: "write" },
+      { model: "account.move", operation: "read" },
+      { model: "account.move", operation: "create" },
+      { model: "account.move.line", operation: "write" },
+      { model: "account.payment", operation: "read" },
+      { model: "ir.attachment", operation: "create" },
+      { model: FAKE_OLLAMA_ODOO_DELETE_REF_MODEL, operation: "read" },
+      { model: FAKE_OLLAMA_ODOO_DELETE_REF_MODEL, operation: "delete" },
+    ]);
+
+    // 7. Allow odoo_list_models (happy-path probe), odoo_read (failure probe +
+    //    the read half of every ref-dispatch chain), and each ref-based tool
+    //    under test (pinchy#791).
     const patchRes = await pinchyPatch(
       `/api/agents/${dispatchAgentId}`,
-      { allowedTools: ["odoo_list_models", "odoo_read"] },
+      {
+        allowedTools: [
+          "odoo_list_models",
+          "odoo_read",
+          "odoo_schedule_activity",
+          "odoo_complete_activity",
+          "odoo_reschedule_activity",
+          "odoo_confirm_order",
+          "odoo_apply_inventory",
+          "odoo_validate_picking",
+          "odoo_mark_mo_done",
+          "odoo_set_approval",
+          "odoo_reconcile",
+          "odoo_attach_file",
+          "odoo_delete",
+          "odoo_create",
+        ],
+      },
       dispatchCookie
     );
     expect(patchRes.status).toBe(200);
@@ -452,5 +630,288 @@ test.describe("Odoo dispatch probe (pinchy-odoo plugin coverage)", () => {
       await new Promise((r) => setTimeout(r, 500));
     }
     expect(foundFailure).toBe(true);
+  });
+
+  test("a ref-based tool (odoo_schedule_activity) dispatches on a runtime-minted _pinchy_ref", async ({
+    page,
+  }, testInfo) => {
+    // pinchy#791: ref-based odoo tools take an opaque `_pinchy_ref` minted at
+    // runtime, so a static tool_call can never carry a valid one. The fake-LLM
+    // resolves it dynamically — round 1 dispatches odoo_read on crm.lead, then
+    // reads the real `_pinchy_ref` back out of that tool result and reuses it in
+    // odoo_schedule_activity (round 2). This proves the whole ref chain runs
+    // end-to-end against the real plugin + Odoo mock, not just the read half.
+    testInfo.setTimeout(180_000);
+
+    await loginViaUI(page, getAdminEmail(), getAdminPassword());
+
+    await page.goto(`/chat/${dispatchAgentId}`);
+    await expect(page).toHaveURL(`/chat/${dispatchAgentId}`, { timeout: 10_000 });
+
+    // Capture the cutoff BEFORE dispatch so the poll cannot match a stale row.
+    const since = new Date().toISOString();
+
+    const input = page.getByPlaceholder(/send a message/i);
+    await expect(input).toBeVisible({ timeout: 10_000 });
+    await input.fill(
+      `${FAKE_OLLAMA_ODOO_SCHEDULE_ACTIVITY_REF_TRIGGER}: schedule a follow-up on a lead`
+    );
+    await input.press("Enter");
+
+    // Assert the SECOND-round tool (the ref-based one) not only dispatched but
+    // SUCCEEDED. outcome=success is the whole point: it proves the runtime
+    // `_pinchy_ref` decoded, the crm.lead target was read, and mail.activity was
+    // created — the full ref chain end-to-end. A broken ref would still dispatch
+    // (audited outcome=failure), so a dispatch-only assertion could false-pass.
+    const entry = await pollAuditForEvent(page, {
+      eventType: "tool.odoo_schedule_activity",
+      predicate: (e) => e.resource === `agent:${dispatchAgentId}`,
+      since,
+      deadlineMs: 160_000,
+    });
+    expect(entry.outcome).toBe("success");
+  });
+
+  // ── Remaining ref-based tools (pinchy#791) ────────────────────────────────
+  // Every tool below takes an opaque runtime-minted `_pinchy_ref`. The fake-LLM
+  // resolves it dynamically (round 1 odoo_read on the ref model → round 2 reuse
+  // the returned ref in the tool), exactly like the schedule_activity probe
+  // above. Each asserts outcome=success, not merely that a row exists: a broken
+  // ref still dispatches (audited failure), so dispatch-only could false-pass.
+  //
+  // These share the one warm OpenClaw session created in beforeAll, so unlike
+  // the first probe they do not pay the cold-start dispatch-race budget.
+  async function runRefDispatchProbe(
+    page: Page,
+    testInfo: TestInfo,
+    opts: {
+      trigger: string;
+      eventType: string;
+      message: string;
+      // Optional setup run after the composer is ready but before the cutoff is
+      // captured and the trigger fires — e.g. odoo_attach_file uploads its
+      // fixture here so the file exists in the agent's uploads/ dir on disk.
+      beforeDispatch?: (page: Page) => Promise<void>;
+    }
+  ): Promise<void> {
+    testInfo.setTimeout(180_000);
+    await loginViaUI(page, getAdminEmail(), getAdminPassword());
+    await page.goto(`/chat/${dispatchAgentId}`);
+    await expect(page).toHaveURL(`/chat/${dispatchAgentId}`, { timeout: 10_000 });
+
+    const input = page.getByPlaceholder(/send a message/i);
+    await expect(input).toBeVisible({ timeout: 10_000 });
+
+    if (opts.beforeDispatch) await opts.beforeDispatch(page);
+
+    // Capture the cutoff BEFORE dispatch so the poll cannot match a stale row.
+    const since = new Date().toISOString();
+    await input.fill(`${opts.trigger}: ${opts.message}`);
+    await input.press("Enter");
+
+    const entry = await pollAuditForEvent(page, {
+      eventType: opts.eventType,
+      predicate: (e) => e.resource === `agent:${dispatchAgentId}`,
+      since,
+      deadlineMs: 160_000,
+    });
+    // Surface the audited failure reason on assertion failure — a ref tool that
+    // dispatches but the plugin rejects (bad ref, missing seed, silent no-op)
+    // audits outcome=failure with the plugin's error in `detail`. Printing it
+    // makes a red probe self-diagnose in the CI log instead of just "failure".
+    expect(entry.outcome, `audit detail: ${JSON.stringify(entry.detail)}`).toBe("success");
+  }
+
+  test("odoo_complete_activity dispatches on a runtime-minted _pinchy_ref", async ({
+    page,
+  }, testInfo) => {
+    await runRefDispatchProbe(page, testInfo, {
+      trigger: FAKE_OLLAMA_ODOO_COMPLETE_ACTIVITY_REF_TRIGGER,
+      eventType: "tool.odoo_complete_activity",
+      message: "mark the activity done",
+    });
+  });
+
+  test("odoo_reschedule_activity dispatches on a runtime-minted _pinchy_ref", async ({
+    page,
+  }, testInfo) => {
+    await runRefDispatchProbe(page, testInfo, {
+      trigger: FAKE_OLLAMA_ODOO_RESCHEDULE_ACTIVITY_REF_TRIGGER,
+      eventType: "tool.odoo_reschedule_activity",
+      message: "push the follow-up to a new date",
+    });
+  });
+
+  test("odoo_confirm_order dispatches on a runtime-minted _pinchy_ref", async ({
+    page,
+  }, testInfo) => {
+    await runRefDispatchProbe(page, testInfo, {
+      trigger: FAKE_OLLAMA_ODOO_CONFIRM_ORDER_REF_TRIGGER,
+      eventType: "tool.odoo_confirm_order",
+      message: "confirm the quotation",
+    });
+  });
+
+  test("odoo_apply_inventory dispatches on a runtime-minted _pinchy_ref", async ({
+    page,
+  }, testInfo) => {
+    await runRefDispatchProbe(page, testInfo, {
+      trigger: FAKE_OLLAMA_ODOO_APPLY_INVENTORY_REF_TRIGGER,
+      eventType: "tool.odoo_apply_inventory",
+      message: "apply the inventory count",
+    });
+  });
+
+  test("odoo_validate_picking dispatches on a runtime-minted _pinchy_ref", async ({
+    page,
+  }, testInfo) => {
+    await runRefDispatchProbe(page, testInfo, {
+      trigger: FAKE_OLLAMA_ODOO_VALIDATE_PICKING_REF_TRIGGER,
+      eventType: "tool.odoo_validate_picking",
+      message: "validate the transfer",
+    });
+  });
+
+  test("odoo_mark_mo_done dispatches on a runtime-minted _pinchy_ref", async ({
+    page,
+  }, testInfo) => {
+    await runRefDispatchProbe(page, testInfo, {
+      trigger: FAKE_OLLAMA_ODOO_MARK_MO_DONE_REF_TRIGGER,
+      eventType: "tool.odoo_mark_mo_done",
+      message: "mark the manufacturing order done",
+    });
+  });
+
+  test("odoo_set_approval dispatches on a runtime-minted _pinchy_ref", async ({
+    page,
+  }, testInfo) => {
+    await runRefDispatchProbe(page, testInfo, {
+      trigger: FAKE_OLLAMA_ODOO_SET_APPROVAL_REF_TRIGGER,
+      eventType: "tool.odoo_set_approval",
+      message: "approve the purchase order",
+    });
+  });
+
+  test("odoo_reconcile dispatches on runtime-minted invoice + counterpart refs", async ({
+    page,
+  }, testInfo) => {
+    // The only two-ref tool: round 1 reads account.move (invoice ref), round 2
+    // reads account.payment (counterpart ref), round 3 reconciles on both. The
+    // mock's js_assign_outstanding_line zeroes the bill's residual, which is the
+    // only thing the plugin trusts (didReconcile) — so outcome=success proves
+    // the whole payment-counterpart path, not a blind method return.
+    await runRefDispatchProbe(page, testInfo, {
+      trigger: FAKE_OLLAMA_ODOO_RECONCILE_REF_TRIGGER,
+      eventType: "tool.odoo_reconcile",
+      message: "reconcile the bill against the payment",
+    });
+  });
+
+  test("odoo_attach_file dispatches on a runtime-minted _pinchy_ref", async ({
+    page,
+  }, testInfo) => {
+    // odoo_attach_file reads a file from the agent's uploads/ dir on disk, so
+    // this probe FIRST uploads that file through the composer (landing it under
+    // the exact basename the fake-LLM will pass) via beforeDispatch, then fires
+    // the trigger. Round 1 reads sale.order (target ref), round 2 attaches
+    // `test.pdf` to it.
+    await runRefDispatchProbe(page, testInfo, {
+      trigger: FAKE_OLLAMA_ODOO_ATTACH_FILE_REF_TRIGGER,
+      eventType: "tool.odoo_attach_file",
+      message: "attach the document to the order",
+      beforeDispatch: async (page) => {
+        // Upload the fixture the fake-LLM will attach (basename must match the
+        // filename in the odoo_attach_file probe's buildArgs).
+        const fixturesDir = path.join(__dirname, "../fixtures");
+        const [fileChooser] = await Promise.all([
+          page.waitForEvent("filechooser"),
+          page.locator(".aui-composer-add-attachment").click(),
+        ]);
+        await fileChooser.setFiles(
+          path.join(fixturesDir, FAKE_OLLAMA_ODOO_ATTACH_FILE_REF_FILENAME)
+        );
+
+        // Wait until the upload chip reaches "ready" (POST /uploads returned 200
+        // → the file now exists in the agent's uploads/ dir for the plugin to
+        // read).
+        const readyChip = page
+          .locator(".text-green-600")
+          .locator("xpath=ancestor::*[@class and contains(@class,'rounded-lg')]")
+          .first();
+        await expect(readyChip).toBeVisible({ timeout: 20_000 });
+      },
+    });
+  });
+
+  test("odoo_delete dispatches on a runtime-minted _pinchy_ref", async ({ page }, testInfo) => {
+    // pinchy#1078. Round 1 reads res.partner.category (target ref), round 2
+    // deletes on that ref alone — the tool no longer accepts raw ids, so this
+    // chain is the ONLY way a delete can reach Odoo at all.
+    await runRefDispatchProbe(page, testInfo, {
+      trigger: FAKE_OLLAMA_ODOO_DELETE_REF_TRIGGER,
+      eventType: "tool.odoo_delete",
+      message: "delete the tag",
+    });
+
+    // outcome=success only proves the plugin was happy. Read the mock back: the
+    // targeted row is gone and its neighbour is not, which is what "scoped to
+    // the ref it was given" means.
+    const remaining = await getOdooRecords(FAKE_OLLAMA_ODOO_DELETE_REF_MODEL);
+    expect(remaining.map((r) => r.id)).toEqual([9902]);
+  });
+
+  // ── Deterministic vendor-bill duplicate guard (pinchy#721) ────────────────
+  // A vendor bill with ref ODOO_DUP_BILL_REF is already on file (seeded in
+  // beforeAll). These two probes dispatch odoo_create for the SAME ref and
+  // assert the AUDIT outcome end-to-end: a blind create is BLOCKED (failure),
+  // and the explicit allow_duplicate:true override proceeds (success). This is
+  // the audit half of the acceptance — the block/override logic itself is unit-
+  // and integration-tested against the same odoo-mock.
+  async function dispatchCreateAndGetAudit(page: Page, testInfo: TestInfo, trigger: string) {
+    testInfo.setTimeout(180_000);
+    await loginViaUI(page, getAdminEmail(), getAdminPassword());
+    await page.goto(`/chat/${dispatchAgentId}`);
+    await expect(page).toHaveURL(`/chat/${dispatchAgentId}`, { timeout: 10_000 });
+
+    const input = page.getByPlaceholder(/send a message/i);
+    await expect(input).toBeVisible({ timeout: 10_000 });
+
+    const since = new Date().toISOString();
+    await input.fill(`${trigger}: file the vendor bill`);
+    await input.press("Enter");
+
+    return pollAuditForEvent(page, {
+      eventType: "tool.odoo_create",
+      predicate: (e) => e.resource === `agent:${dispatchAgentId}`,
+      since,
+      deadlineMs: 160_000,
+    });
+  }
+
+  test("odoo_create is BLOCKED for a duplicate vendor bill (audited failure)", async ({
+    page,
+  }, testInfo) => {
+    const entry = await dispatchCreateAndGetAudit(
+      page,
+      testInfo,
+      FAKE_OLLAMA_ODOO_CREATE_DUP_BLOCK_TRIGGER
+    );
+    expect(entry.outcome, `audit detail: ${JSON.stringify(entry.detail)}`).toBe("failure");
+    // The blocked attempt is what the audit trail should show — with the
+    // structured refusal (naming the on-file bill) in the detail.
+    expect(JSON.stringify(entry.detail)).toContain("blocked");
+  });
+
+  test("odoo_create PROCEEDS for a duplicate when allow_duplicate is set (audited success)", async ({
+    page,
+  }, testInfo) => {
+    const entry = await dispatchCreateAndGetAudit(
+      page,
+      testInfo,
+      FAKE_OLLAMA_ODOO_CREATE_DUP_OVERRIDE_TRIGGER
+    );
+    expect(entry.outcome, `audit detail: ${JSON.stringify(entry.detail)}`).toBe("success");
+    // The deliberate override is traceable: the curated detail flags it.
+    expect(JSON.stringify(entry.detail)).toContain("duplicateOverride");
   });
 });

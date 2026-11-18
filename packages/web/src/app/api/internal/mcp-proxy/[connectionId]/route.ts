@@ -122,7 +122,7 @@ async function proxy(request: NextRequest, connectionId: string): Promise<Respon
   // time, but data.url could have changed since (or the guard's rules could
   // have tightened) — never forward to a private/internal host unless the
   // operator opted in right now.
-  const validation = validateExternalUrl(upstreamUrl);
+  const validation = await validateExternalUrl(upstreamUrl);
   if (!validation.valid) {
     return NextResponse.json(
       { error: `Upstream URL rejected: ${validation.error}` },
