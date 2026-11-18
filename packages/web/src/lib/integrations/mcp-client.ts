@@ -6,7 +6,9 @@
  *   McpServerError — server returned 5xx (includes status code + body for audit log)
  *   McpSchemaError — response was valid JSON but a tool was missing `name`
  *
- * SSRF protection: validateExternalUrl() is called before any network request.
+ * SSRF protection: resolveExternalUrlTarget() classifies the URL's addresses
+ * before any network request, and every request then connects to exactly those
+ * addresses (address pinning), so a second DNS lookup cannot answer differently.
  * Timeout: defaults to 10 seconds, overrideable for tests.
  *
  * Implementation note: We use direct JSON-RPC fetch rather than the MCP SDK's
@@ -20,7 +22,12 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import type { McpTool } from "./types";
 import type { McpErrorCode } from "./mcp-error-messages";
-import { validateExternalUrl } from "./url-validation";
+import { resolveExternalUrlTarget } from "./url-validation";
+import {
+  createPinnedAgent,
+  fetchWithPinnedAgent,
+  type PinnedTarget,
+} from "@/lib/pinned-connection";
 import { RESERVED_HEADERS } from "./mcp-shared";
 
 // ---------------------------------------------------------------------------
@@ -129,10 +136,11 @@ export async function listMcpTools(
   timeoutMs: number = DEFAULT_TIMEOUT_MS
 ): Promise<McpTool[]> {
   // SSRF protection — must happen before any network activity
-  const validation = await validateExternalUrl(opts.url);
+  const validation = await resolveExternalUrlTarget(opts.url);
   if (!validation.valid) {
     throw new Error(`Invalid MCP server URL: ${validation.error}`);
   }
+  const pinned = originPinnedFetch(validation.url, validation.target);
 
   // Build an AbortController for the timeout
   const timeoutController = new AbortController();
@@ -145,13 +153,51 @@ export async function listMcpTools(
 
   try {
     if (opts.transport === "http") {
-      return await listToolsViaHttp(opts, combinedSignal);
+      return await listToolsViaHttp(opts, combinedSignal, pinned.fetch);
     } else {
-      return await listToolsViaSse(opts, combinedSignal);
+      return await listToolsViaSse(opts, combinedSignal, pinned.fetch);
     }
   } finally {
     clearTimeout(timeoutId);
+    await pinned.close();
   }
+}
+
+type FetchFn = (url: string | URL, init?: RequestInit) => Promise<Response>;
+
+/**
+ * A fetch that connects only to `target`, the addresses the SSRF guard
+ * classified for `origin`, and refuses any other origin.
+ *
+ * The origin check is not redundant with the pin. The pinned agent answers
+ * EVERY host name with the checked addresses, and an address literal needs no
+ * lookup at all — so a request to another origin (an SSE `endpoint` event, a
+ * redirect) would either borrow a pin meant for a different name or skip the
+ * pin entirely. Neither was checked.
+ *
+ * Redirects are never followed by the fetch itself (see `fetchWithPinnedAgent`);
+ * the SDK's same-origin redirect handling stays inside this origin.
+ */
+export function originPinnedFetch(
+  origin: string,
+  target: PinnedTarget
+): { fetch: FetchFn; close: () => Promise<void> } {
+  const agent = createPinnedAgent(target);
+  const allowed = new URL(origin).origin;
+  return {
+    fetch: async (url, init = {}) => {
+      const href = url instanceof URL ? url.href : url;
+      if (new URL(href).origin !== allowed) {
+        throw new Error(
+          `Refused a request to ${new URL(href).origin}: only the checked origin ${allowed} may be reached.`
+        );
+      }
+      return fetchWithPinnedAgent(href, init, agent);
+    },
+    // Graceful: waits for requests in flight (the fire-and-forget
+    // `notifications/initialized` included), then drops the sockets.
+    close: () => agent.close().catch(() => {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -167,7 +213,8 @@ interface JsonRpcResponse {
 
 async function listToolsViaHttp(
   opts: ListMcpToolsOptions,
-  signal: AbortSignal
+  signal: AbortSignal,
+  fetch: FetchFn
 ): Promise<McpTool[]> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -190,7 +237,8 @@ async function listToolsViaHttp(
       },
     },
     headers,
-    signal
+    signal,
+    fetch
   );
 
   // Extract session ID if provided (Streamable HTTP spec)
@@ -223,7 +271,8 @@ async function listToolsViaHttp(
       params: {},
     },
     headers,
-    signal
+    signal,
+    fetch
   );
 
   const toolsBody = await parseJsonRpcBody(toolsResponse);
@@ -234,7 +283,8 @@ async function fetchJsonRpc(
   url: string,
   payload: object,
   headers: Record<string, string>,
-  signal: AbortSignal
+  signal: AbortSignal,
+  fetch: FetchFn
 ): Promise<Response> {
   const response = await fetch(url, {
     method: "POST",
@@ -320,7 +370,11 @@ async function parseFirstSseEvent(response: Response): Promise<unknown> {
 // SSE transport — uses SDK (SSE requires event-source handling)
 // ---------------------------------------------------------------------------
 
-async function listToolsViaSse(opts: ListMcpToolsOptions, signal: AbortSignal): Promise<McpTool[]> {
+async function listToolsViaSse(
+  opts: ListMcpToolsOptions,
+  signal: AbortSignal,
+  fetch: FetchFn
+): Promise<McpTool[]> {
   const serverUrl = new URL(opts.url);
   const requestInit: RequestInit = {
     headers: {
@@ -331,7 +385,9 @@ async function listToolsViaSse(opts: ListMcpToolsOptions, signal: AbortSignal): 
 
   const client = new Client({ name: "pinchy-mcp-client", version: "1.0.0" }, { capabilities: {} });
 
-  const transport = new SSEClientTransport(serverUrl, { requestInit });
+  // `fetch` carries both the stream and the POSTs, so the SDK never resolves
+  // the host itself.
+  const transport = new SSEClientTransport(serverUrl, { requestInit, fetch });
 
   // Wire up abort: if signal fires, close the transport
   const abortHandler = () => {

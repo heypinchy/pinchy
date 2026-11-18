@@ -17,7 +17,8 @@ import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { decrypt } from "@/lib/encryption";
-import { validateExternalUrl } from "@/lib/integrations/url-validation";
+import { resolveExternalUrlTarget } from "@/lib/integrations/url-validation";
+import { pinnedFetch } from "@/lib/pinned-connection";
 import { isMcpEnabled } from "@/lib/feature-flags";
 import { sanitiseExtraHeaders } from "@/lib/integrations/mcp-client";
 import type { McpIntegrationData } from "@/lib/integrations/types";
@@ -122,7 +123,12 @@ async function proxy(request: NextRequest, connectionId: string): Promise<Respon
   // time, but data.url could have changed since (or the guard's rules could
   // have tightened) — never forward to a private/internal host unless the
   // operator opted in right now.
-  const validation = await validateExternalUrl(upstreamUrl);
+  //
+  // The upstream request is then pinned to the addresses this check
+  // classified. Without the pin, fetch would resolve the host a second time,
+  // and a resolver can answer a public address for the check and 127.0.0.1
+  // or the metadata service for the connect (DNS rebinding).
+  const validation = await resolveExternalUrlTarget(upstreamUrl);
   if (!validation.valid) {
     return NextResponse.json(
       { error: `Upstream URL rejected: ${validation.error}` },
@@ -165,16 +171,20 @@ async function proxy(request: NextRequest, connectionId: string): Promise<Respon
 
   let upstream: Response;
   try {
-    upstream = await fetch(upstreamUrl, {
-      method,
-      headers,
-      body,
-      signal: request.signal,
-      // Do not auto-follow redirects: a redirect Location could point at an
-      // internal host (SSRF) or bypass the proxy entirely. Known MCP servers
-      // don't redirect the JSON-RPC endpoint; reject if one does.
-      redirect: "manual",
-    });
+    upstream = await pinnedFetch(
+      upstreamUrl,
+      {
+        method,
+        headers,
+        body,
+        signal: request.signal,
+        // Do not auto-follow redirects: a redirect Location could point at an
+        // internal host (SSRF) or bypass the proxy entirely. Known MCP servers
+        // don't redirect the JSON-RPC endpoint; reject if one does.
+        redirect: "manual",
+      },
+      validation.target
+    );
   } catch (err) {
     // fetch (undici) rejects an aborted request with a DOMException named
     // "AbortError". Check `.name` directly rather than gating on

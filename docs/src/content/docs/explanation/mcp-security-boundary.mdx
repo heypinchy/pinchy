@@ -41,7 +41,9 @@ Every other Pinchy integration enforces its permission checks inside its own plu
 
 An MCP server URL is one more place a malicious or careless admin input could point at Pinchy's own internal network — a Docker service, a cloud metadata endpoint, `localhost`. Pinchy validates every MCP server URL against a private/internal address list, and re-validates it **again inside the proxy, on every single request** — not just once at connection-creation time — since the stored URL could theoretically change between when it was validated and when a request is actually proxied.
 
-If you're deliberately running your own internal MCP server (a self-hosted tool exposed only on your Docker network), the guard would reject it by default. Set `ALLOW_PRIVATE_URLS=1` in Pinchy's environment to opt out of the private-address check — this is an explicit, deployment-wide decision an operator makes, not something end users can toggle per connection.
+The check resolves the server's host name and classifies every address it returns, and the request then connects to exactly those addresses. Pinchy never looks the name up a second time for the connection itself. That closes DNS rebinding: a name server that answers a public address for the check and `127.0.0.1` a moment later for the connection gets no second chance to answer. The same holds for tool discovery, when you test a connection or re-sync its tools. Pinchy follows no redirects from an MCP server; a server that answers with one gets an error.
+
+If you're deliberately running your own internal MCP server (a self-hosted tool exposed only on your Docker network or your LAN), the guard rejects it by default. Set `ALLOW_PRIVATE_URLS=1` in Pinchy's environment to allow private addresses (RFC 1918, IPv6 ULA, the CGNAT range Tailscale uses). This is an explicit, deployment-wide decision an operator makes, not something end users can toggle per connection. Loopback, link-local and cloud-metadata addresses stay blocked whatever the flag says: no real MCP server lives there.
 
 ## What this doesn't protect against — said plainly
 

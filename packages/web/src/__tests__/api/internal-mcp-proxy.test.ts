@@ -16,6 +16,22 @@ vi.mock("@/lib/encryption", () => ({
   decrypt: (v: string) => v,
 }));
 
+// The SSRF guard resolves the upstream host. No test here may touch real DNS:
+// every name resolves to one public address by default.
+const PUBLIC_ANSWER = "93.184.216.34";
+const { mockLookup } = vi.hoisted(() => ({ mockLookup: vi.fn() }));
+vi.mock("node:dns/promises", () => ({ default: { lookup: mockLookup }, lookup: mockLookup }));
+
+// The upstream request goes through `pinnedFetch` (real sockets, covered in
+// pinned-connection.test.ts). Here it hands the request to the mocked global
+// fetch, so the existing assertions keep reading it there, and the spy records
+// which addresses each request was pinned to.
+const { mockPinnedFetch } = vi.hoisted(() => ({ mockPinnedFetch: vi.fn() }));
+vi.mock("@/lib/pinned-connection", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/pinned-connection")>()),
+  pinnedFetch: mockPinnedFetch,
+}));
+
 import { validateGatewayToken } from "@/lib/gateway-auth";
 import { db } from "@/db";
 import { POST, GET } from "@/app/api/internal/mcp-proxy/[connectionId]/route";
@@ -87,6 +103,10 @@ beforeEach(() => {
   mockValidate.mockReturnValue(true);
   mockDbSelectResult(makeConn());
   global.fetch = vi.fn().mockResolvedValue(upstreamResponse());
+  mockLookup.mockReset();
+  mockLookup.mockResolvedValue([{ address: PUBLIC_ANSWER, family: 4 }]);
+  mockPinnedFetch.mockReset();
+  mockPinnedFetch.mockImplementation((url: string, init: RequestInit) => global.fetch(url, init));
 });
 
 afterEach(() => {
@@ -149,6 +169,28 @@ describe("MCP credential proxy route", () => {
     );
     const res = await POST(makeRequest(), { params });
     expect(res.status).toBe(502);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it("connects to the address the SSRF guard classified, never resolving the host again (DNS rebinding)", async () => {
+    const res = await POST(makeRequest(), { params });
+    expect(res.status).toBe(200);
+    // One lookup — the guard's. The connection is pinned to its answer, so a
+    // resolver that answers a public address for the check and 127.0.0.1 for
+    // the connect gets no second chance to answer.
+    expect(mockLookup).toHaveBeenCalledTimes(1);
+    expect(mockPinnedFetch).toHaveBeenCalledTimes(1);
+    const [url, init, target] = mockPinnedFetch.mock.calls[0];
+    expect(url).toBe("https://api.githubcopilot.com/mcp/");
+    expect(init).toMatchObject({ redirect: "manual" });
+    expect(target).toEqual([{ address: PUBLIC_ANSWER, family: 4 }]);
+  });
+
+  it("refuses an upstream host that resolves to a private address, without connecting", async () => {
+    mockLookup.mockResolvedValue([{ address: "127.0.0.1", family: 4 }]);
+    const res = await POST(makeRequest(), { params });
+    expect(res.status).toBe(502);
+    expect(mockPinnedFetch).not.toHaveBeenCalled();
     expect(global.fetch).not.toHaveBeenCalled();
   });
 

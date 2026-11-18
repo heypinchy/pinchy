@@ -1,9 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type { McpMockServer } from "@/test-utils/mcp-mock-server";
 import { createMcpMockServer } from "@/test-utils/mcp-mock-server";
+import { toPinnedTarget } from "@/lib/pinned-connection";
 import {
   listMcpTools,
   mcpErrorCodeFromError,
+  originPinnedFetch,
   McpAuthError,
   McpServerError,
   McpSchemaError,
@@ -11,28 +13,40 @@ import {
 
 // The SSRF guard always refuses loopback (ALLOW_PRIVATE_URLS opens only the
 // private class), and the mock server listens on 127.0.0.1. So the guard is a
-// seam here that passes by default; its own decisions are covered in
-// url-validation.test.ts, and the test at the bottom pins that listMcpTools
-// really consults it — and awaits it — before any network activity.
-const mockValidateExternalUrl = vi.fn();
+// seam here that passes by default and pins every URL to 127.0.0.1; its own
+// decisions are covered in url-validation.test.ts, and the tests at the bottom
+// pin that listMcpTools really consults it — and awaits it — before any
+// network activity, and then connects to the addresses it classified.
+const mockResolveExternalUrlTarget = vi.fn();
 vi.mock("../url-validation", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../url-validation")>();
   return {
     ...actual,
-    validateExternalUrl: (...args: Parameters<typeof actual.validateExternalUrl>) =>
-      mockValidateExternalUrl(...args),
+    resolveExternalUrlTarget: (...args: Parameters<typeof actual.resolveExternalUrlTarget>) =>
+      mockResolveExternalUrlTarget(...args),
   };
 });
+
+// Wrapped, not replaced: the real agent still connects. The spy only lets a
+// test see whether a connection was ever set up.
+const { createPinnedAgentSpy } = vi.hoisted(() => ({ createPinnedAgentSpy: vi.fn() }));
+vi.mock("@/lib/pinned-connection", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/pinned-connection")>();
+  createPinnedAgentSpy.mockImplementation(actual.createPinnedAgent);
+  return { ...actual, createPinnedAgent: createPinnedAgentSpy };
+});
+
+function pinnedToLoopback(url: string) {
+  return { valid: true, url: new URL(url).origin, target: toPinnedTarget(["127.0.0.1"]) };
+}
 
 describe("listMcpTools", () => {
   let mock: McpMockServer | undefined;
 
   beforeEach(() => {
-    mockValidateExternalUrl.mockReset();
-    mockValidateExternalUrl.mockImplementation(async (url: string) => ({
-      valid: true,
-      url: new URL(url).origin,
-    }));
+    mockResolveExternalUrlTarget.mockReset();
+    mockResolveExternalUrlTarget.mockImplementation(async (url: string) => pinnedToLoopback(url));
+    createPinnedAgentSpy.mockClear();
   });
 
   afterEach(async () => {
@@ -165,27 +179,20 @@ describe("listMcpTools", () => {
     it("refuses a loopback URL through the real (async) guard before connecting", async () => {
       // The guard resolves DNS and is async. A synchronous call reads
       // `.valid` off a Promise — so this pins that the refusal really comes
-      // from the guard's verdict, with its message, and no request is sent.
+      // from the guard's verdict, with its message, and no connection is set up.
       const actual = await vi.importActual<typeof import("../url-validation")>("../url-validation");
-      mockValidateExternalUrl.mockImplementation(actual.validateExternalUrl);
-      const fetchSpy = vi.spyOn(globalThis, "fetch");
-      try {
-        await expect(
-          listMcpTools({ url: "http://127.0.0.1:9/mcp", transport: "http", token: "t" })
-        ).rejects.toThrow(/Invalid MCP server URL: Blocked/);
-        expect(mockValidateExternalUrl).toHaveBeenCalledWith("http://127.0.0.1:9/mcp");
-        expect(fetchSpy).not.toHaveBeenCalled();
-      } finally {
-        fetchSpy.mockRestore();
-      }
+      mockResolveExternalUrlTarget.mockImplementation(actual.resolveExternalUrlTarget);
+      await expect(
+        listMcpTools({ url: "http://127.0.0.1:9/mcp", transport: "http", token: "t" })
+      ).rejects.toThrow(/Invalid MCP server URL: Blocked/);
+      expect(mockResolveExternalUrlTarget).toHaveBeenCalledWith("http://127.0.0.1:9/mcp");
+      expect(createPinnedAgentSpy).not.toHaveBeenCalled();
     });
 
     it("connects once the guard's verdict resolves to valid", async () => {
-      mockValidateExternalUrl.mockImplementation(
+      mockResolveExternalUrlTarget.mockImplementation(
         (url: string) =>
-          new Promise((resolve) =>
-            setTimeout(() => resolve({ valid: true, url: new URL(url).origin }), 5)
-          )
+          new Promise((resolve) => setTimeout(() => resolve(pinnedToLoopback(url)), 5))
       );
       mock = await createMcpMockServer("normal");
       const tools = await listMcpTools({
@@ -194,6 +201,51 @@ describe("listMcpTools", () => {
         token: "test-token",
       });
       expect(tools).toHaveLength(2);
+    });
+  });
+
+  // DNS rebinding: the guard classifies the addresses a name resolves to, and
+  // whoever connects next must use exactly those — a second lookup can answer
+  // differently (a public address for the check, 127.0.0.1 for the connect).
+  // `.invalid` never resolves (RFC 6761), so a request that looked the name up
+  // again could not succeed; reaching the mock proves the connection went to
+  // the address the guard handed over.
+  describe("address pinning", () => {
+    it("HTTP: connects to the guard's addresses instead of resolving the name again", async () => {
+      mock = await createMcpMockServer("normal");
+      const tools = await listMcpTools({
+        url: `http://mcp-upstream.invalid:${mock.port}/mcp`,
+        transport: "http",
+        token: "test-token",
+      });
+      expect(tools).toHaveLength(2);
+    });
+
+    it("SSE: connects to the guard's addresses instead of resolving the name again", async () => {
+      mock = await createMcpMockServer("auth-error");
+      // A 401 is an answer from the mock — reaching it at all is the point.
+      await expect(
+        listMcpTools({
+          url: `http://mcp-upstream.invalid:${mock.port}/sse`,
+          transport: "sse",
+          token: "bad-token",
+        })
+      ).rejects.toThrow(McpAuthError);
+    }, 10000);
+  });
+
+  describe("originPinnedFetch", () => {
+    // The pinned agent answers EVERY name with the checked addresses, and an
+    // address literal needs no lookup at all, so a request to another origin
+    // would either borrow the pin or skip it. Neither was checked.
+    it("refuses a request to an origin other than the one that was checked", async () => {
+      const pinned = originPinnedFetch("https://mcp.example.com", toPinnedTarget(["203.0.113.7"]));
+      try {
+        await expect(pinned.fetch("http://169.254.169.254/latest", {})).rejects.toThrow(/origin/i);
+        await expect(pinned.fetch("https://other.example.com/mcp", {})).rejects.toThrow(/origin/i);
+      } finally {
+        await pinned.close();
+      }
     });
   });
 });
