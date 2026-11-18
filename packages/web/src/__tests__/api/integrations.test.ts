@@ -978,6 +978,83 @@ describe("DELETE /api/integrations/[connectionId]", () => {
         }),
       })
     );
+    // Every type refreshes the config on delete (#1297): pinchy-odoo carries a
+    // per-agent connectionId that would otherwise point at the deleted row.
+    expect(mockRegenerateOpenClawConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it("records the MCP server identity in the delete audit — the deleted row is the only other copy", async () => {
+    // AGENTS.md: "Include resource names in delete-event details because
+    // deleted rows may no longer be queryable." For an MCP connection the
+    // server URL is exactly that: once the row is gone the audit log is the
+    // only remaining record of which external endpoint this deployment could
+    // reach, and when that access was withdrawn.
+    const mcpConnection = {
+      ...mockConnection,
+      id: "conn-mcp-1",
+      type: "mcp",
+      name: "Our internal MCP",
+      data: {
+        type: "mcp",
+        preset: "generic",
+        transport: "http",
+        url: "https://mcp.internal.example.com/rpc",
+        tools: [],
+        lastSyncAt: "2026-01-01T00:00:00.000Z",
+      },
+    };
+    mockSelectFrom.mockImplementationOnce(() => {
+      const r = Promise.resolve([mcpConnection]) as Promise<unknown[]> & {
+        where: ReturnType<typeof vi.fn>;
+      };
+      r.where = vi.fn().mockResolvedValue([mcpConnection]);
+      return r;
+    });
+
+    const { DELETE } = await import("@/app/api/integrations/[connectionId]/route");
+    const response = await DELETE(
+      makeRequest("/api/integrations/conn-mcp-1", { method: "DELETE" }),
+      { params: Promise.resolve({ connectionId: "conn-mcp-1" }) }
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockAppendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "integration.deleted",
+        detail: expect.objectContaining({
+          id: "conn-mcp-1",
+          type: "mcp",
+          name: "Our internal MCP",
+          preset: "generic",
+          transport: "http",
+          origin: "https://mcp.internal.example.com",
+        }),
+      })
+    );
+    expect(mockAppendAuditLog.mock.calls[0][0].detail).not.toHaveProperty("url");
+    // Unlike Odoo/email, MCP gating lives entirely in openclaw.json
+    // (mcp.servers + tools.allow). Without regenerating on delete, a stale
+    // mcp.servers entry (and any agent's tools.allow names for it) would
+    // linger until an unrelated regenerate happened to notice — the
+    // per-request proxy 404 (T4's Gone-Contract) is a safety net for that
+    // window, not a substitute for cleaning it up promptly.
+    expect(mockRegenerateOpenClawConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the delete audit detail of non-MCP connections untouched", async () => {
+    // Guards the generic path: the MCP branch above must not leak server
+    // fields onto every other connection type's delete event.
+    const { DELETE } = await import("@/app/api/integrations/[connectionId]/route");
+    await DELETE(makeRequest("/api/integrations/conn-1", { method: "DELETE" }), {
+      params: Promise.resolve({ connectionId: "conn-1" }),
+    });
+
+    const call = mockAppendAuditLog.mock.calls.find(
+      (c) => c[0].eventType === "integration.deleted"
+    );
+    expect(call).toBeDefined();
+    // Exact shape, not objectContaining — an added key must fail this.
+    expect(call![0].detail).toEqual({ id: "conn-1", type: "odoo", name: "Test Odoo" });
   });
 
   it("should NOT clear OAuth settings when the last Google connection is deleted (independent app lifecycle)", async () => {
@@ -1196,9 +1273,13 @@ describe("POST /api/integrations/[connectionId]/test (web-search)", () => {
 
     expect(response.status).toBe(200);
     expect(body.success).toBe(true);
-    expect(mockProbeIntegrationCredentials).toHaveBeenCalledWith("web-search", {
-      apiKey: "BSA-valid-key",
-    });
+    expect(mockProbeIntegrationCredentials).toHaveBeenCalledWith(
+      "web-search",
+      {
+        apiKey: "BSA-valid-key",
+      },
+      { data: null }
+    );
   });
 
   it("should return error when probe fails for an invalid Brave API key", async () => {

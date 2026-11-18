@@ -804,6 +804,16 @@ export type AuditLogEntry =
         // failure) it names the destination the stored secret was kept from.
         // URLs carry no userinfo or query. See lib/secret-destination.ts.
         destinationChange?: Record<string, { from: string | number; to: string | number }>;
+        // MCP sync: added/removed tool names (or, past MAX_LIST_ITEMS_IN_AUDIT,
+        // a { count } summary so a chatty server can't blow the 2048-byte
+        // detail cap — see summarizeListForAudit() in lib/audit-list-summary.ts). "Log what changed, not only that
+        // something changed" (AGENTS.md), mirroring MembershipDetail's
+        // added/removed shape above.
+        tools?: {
+          added: string[] | { count: number };
+          removed: string[] | { count: number };
+          total: number;
+        };
         // Present instead of a plaintext `name` when the connection's
         // human-readable name is itself PII (an OAuth mailbox address).
         // See redactEmail(): GDPR Art. 17 forbids writing the raw address

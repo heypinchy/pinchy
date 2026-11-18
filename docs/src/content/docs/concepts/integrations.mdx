@@ -9,13 +9,14 @@ Integrations connect Pinchy to external systems — ERPs, email accounts, CRMs, 
 
 ## Supported integrations
 
-| Integration                   | Connection method | Guide                                                         |
-| ----------------------------- | ----------------- | ------------------------------------------------------------- |
-| **Google (Gmail)**            | OAuth 2.0         | [Connect Email (Gmail)](/guides/connect-email-google/)        |
-| **Microsoft (Outlook / 365)** | OAuth 2.0         | [Connect Email (Microsoft)](/guides/connect-email-microsoft/) |
-| **IMAP / Other email**        | IMAP + SMTP       | [Connect Email (IMAP)](/guides/connect-email-imap/)           |
-| **Odoo**                      | API key           | [Connect Odoo](/guides/connect-odoo/)                         |
-| **Web Search (Brave)**        | API key           | [Set Up Web Search](/guides/web-search-setup/)                |
+| Integration                                                                                              | Connection method | Guide                                                         |
+| -------------------------------------------------------------------------------------------------------- | ----------------- | ------------------------------------------------------------- |
+| **Google (Gmail)**                                                                                       | OAuth 2.0         | [Connect Email (Gmail)](/guides/connect-email-google/)        |
+| **Microsoft (Outlook / 365)**                                                                            | OAuth 2.0         | [Connect Email (Microsoft)](/guides/connect-email-microsoft/) |
+| **IMAP / Other email**                                                                                   | IMAP + SMTP       | [Connect Email (IMAP)](/guides/connect-email-imap/)           |
+| **Odoo**                                                                                                 | API key           | [Connect Odoo](/guides/connect-odoo/)                         |
+| **Web Search (Brave)**                                                                                   | API key           | [Set Up Web Search](/guides/web-search-setup/)                |
+| **MCP servers** (GitHub, Linear, Atlassian, Stripe, Cloudflare, Intercom, HighLevel, or a custom server) | Bearer token      | [Connect an MCP Server](/guides/connect-mcp/)                 |
 
 :::note
 **Integrations vs. Channels.** This page is about _data integrations_ — how agents access external business systems. If you're looking for _communication channels_ (how users reach their agents from outside the Pinchy web UI), see [Set Up Telegram](/guides/telegram-setup/). LLM providers like OpenAI, Anthropic, Google, and Ollama (local and cloud) are configured separately via [Manage LLM Providers](/guides/llm-providers/).
@@ -163,6 +164,18 @@ To re-sync: go to **Settings → Integrations**, open the connection's `…` men
 Re-syncing may remove models that are no longer accessible. Agents that were configured to use those models will lose access to them.
 :::
 
+## MCP servers
+
+MCP (Model Context Protocol) connections work differently from the other integrations on this page in two ways worth knowing up front.
+
+**MCP is native, not a plugin.** Odoo, email, and web search are each a Pinchy plugin that fetches its own credentials and enforces its own permission checks. MCP has no plugin — OpenClaw speaks the MCP protocol directly, through a Pinchy-run proxy that injects the connection's token per request. See [The MCP Security Boundary](/explanation/mcp-security-boundary/) for exactly how that works and what it protects against.
+
+**Permissions are tool-level, not operation-level.** Where Odoo uses access levels (Read-only / Read & Write / Full) and email uses fixed permission tiers (Read / Draft / Send), an MCP connection's tool list is whatever the server itself exposes — so you grant individual tools by name in the agent's Permissions tab, grouped by category to keep a large tool list navigable.
+
+MCP is also behind its own feature flag (`PINCHY_MCP_ENABLED`) and is the one integration type that automatically generates a per-agent skill from what you granted — see [Skills, Templates, and Capabilities](/explanation/skills-and-templates/#dynamically-generated-mcp-skills).
+
+For setup, see [Connect an MCP Server](/guides/connect-mcp/) or the worked example [Connect GitHub via MCP](/guides/connect-mcp-github/). For the full data model and audit events, see the [MCP Reference](/reference/mcp/).
+
 ## While a connection is being set up
 
 OAuth connections (Gmail, Microsoft 365) have a brief **pending** phase between clicking **Connect** and finishing the provider's sign-in. Pinchy handles that window for you:
@@ -211,6 +224,6 @@ All integration credentials are handled with the same rigor as provider API keys
 - **Encryption** — credentials are encrypted with AES-256-GCM before being stored in the database. They never appear in logs, config files, or API responses.
 - **Audit trail** — connection creation and permission changes are logged. All audit rows are HMAC-SHA256 signed.
 - **Least privilege** — each integration enforces its own permission model. Agents start with zero access and must be granted specific operations explicitly.
-- **Token isolation** — OAuth tokens and API keys stay in Pinchy's encrypted database. They are never written to the OpenClaw config file — plugins fetch them on-demand via an internal API.
+- **Token isolation** — OAuth tokens and API keys stay in Pinchy's encrypted database. They are never written to the OpenClaw config file: plugins fetch them on-demand via an internal API, and MCP connections go through a credential-injecting proxy instead (MCP has no plugin) — see [The MCP Security Boundary](/explanation/mcp-security-boundary/).
 
 See [Agent Permissions](/concepts/agent-permissions/) for the full allow-list model and how integration tools fit in.

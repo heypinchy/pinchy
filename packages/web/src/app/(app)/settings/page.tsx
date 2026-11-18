@@ -5,6 +5,7 @@ import { getLicenseStatus, isKeyFromEnv } from "@/lib/enterprise";
 import { deriveLicenseState, isLicenseActive } from "@/lib/license-state";
 import { getSeatUsage } from "@/lib/seat-usage";
 import { hasGatedConfig } from "@/lib/gated-config";
+import { isMcpEnabled } from "@/lib/feature-flags";
 import { listAdminOnlyAgents } from "@/lib/admin-only-agents";
 import { SettingsPageContent } from "@/components/settings-page-content";
 
@@ -35,6 +36,9 @@ export default async function SettingsPage({
     <SettingsPageContent
       oauthError={error}
       isAdmin={isAdmin}
+      // Runtime flag, read per request and passed down as a prop — never as a
+      // build-time NEXT_PUBLIC_* var (see lib/feature-flags.ts).
+      mcpEnabled={isMcpEnabled()}
       initialLicense={
         isAdmin
           ? {

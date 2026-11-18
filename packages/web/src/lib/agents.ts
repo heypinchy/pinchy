@@ -21,7 +21,11 @@ import {
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 import { deleteSetting } from "@/lib/settings";
 import { getUsableDefaultProvider } from "@/lib/model-resolver/usable-default-provider";
-import { getTemplate, generateAgentsMd } from "@/lib/agent-templates";
+import { getTemplate, generateAgentsMd, applyRecommendedTools } from "@/lib/agent-templates";
+import type { McpConnectionInfo } from "@/lib/agent-templates";
+import type { RecommendedTool } from "@/lib/agent-templates/types";
+import { isMcpEnabled } from "@/lib/feature-flags";
+import type { McpIntegrationData } from "@/lib/integrations/types";
 import { getPersonalityPreset, resolveGreetingMessage } from "@/lib/personality-presets";
 import { generateAvatarSeed } from "@/lib/avatar";
 import { validateAllowedPaths } from "@/lib/path-validation";
@@ -235,6 +239,8 @@ export async function updateAgent(id: string, data: UpdateAgentInput) {
 export interface AutoConfiguredConnection {
   connectionId: string;
   permissions: Array<{ model: string; operation: string }>;
+  /** MCP only: recommended tools of this connection's preset that were not granted. */
+  skippedTools?: RecommendedTool[];
 }
 
 /** The audit-relevant facts about a creation, known once the row exists. */
@@ -381,6 +387,8 @@ export type CreateAgentResult =
       autoConfiguredPermissions: AutoConfiguredConnection[];
       /** Required models no connection could grant — empty on a clean create. */
       incompletePermissions: IncompleteConnectionPermissions[];
+      /** Template-recommended MCP tools that could not be granted — empty when all were. */
+      skippedMcpTools: string[];
       // Best-effort OpenClaw runtime apply (#880): the agent row is committed
       // regardless. On regen/runtime-wait failure the create still succeeds
       // (201 at the route); the caller surfaces `runtimeWarning` to the user and
@@ -682,6 +690,65 @@ export async function createAgent(
     }
   }
 
+  // Auto-grant MCP tools from the template's recommendedTools wish-list
+  // (agent-templates/recommended-tools.ts). Unlike Odoo/email, this doesn't
+  // need a user-selected connectionId: the match is automatic — first ACTIVE
+  // connection whose preset matches each wish-list entry. A tool that isn't
+  // in that connection's synced `data.tools` (renamed/removed upstream, or
+  // no connection for the preset at all) is skipped — templates must never
+  // fail to create an agent over this. Gated behind the feature flag: with
+  // PINCHY_MCP_ENABLED off, "mcp" connections/permissions are never touched
+  // here (the entire MCP surface stays absent). The skip list is returned so
+  // the route can tell the person who just created the agent, instead of them
+  // discovering the gap when the agent says "I can't do that".
+  const skippedMcpTools: string[] = [];
+
+  if (isMcpEnabled() && template.recommendedTools?.length) {
+    const mcpConnRows = await db
+      .select()
+      .from(integrationConnections)
+      .where(
+        and(eq(integrationConnections.type, "mcp"), eq(integrationConnections.status, "active"))
+      );
+
+    const mcpConnections: McpConnectionInfo[] = mcpConnRows.flatMap((row) => {
+      const data = row.data as McpIntegrationData | null;
+      if (!data?.preset) return [];
+      return [{ id: row.id, preset: data.preset, tools: (data.tools ?? []).map((t) => t.name) }];
+    });
+
+    const { grants, skipped } = applyRecommendedTools(template.recommendedTools, mcpConnections);
+    skippedMcpTools.push(...skipped.map((rt) => rt.tool));
+
+    if (grants.length > 0) {
+      const permissionRows = grants.map((g) => ({
+        agentId: agent.id,
+        connectionId: g.connectionId,
+        model: "mcp",
+        operation: g.toolName,
+      }));
+
+      await db.insert(agentConnectionPermissions).values(permissionRows);
+
+      // One entry per connection, the same contract as Odoo/email. The skips
+      // ride along on the entry of the connection whose preset they belong
+      // to, so an analyst drilling into the row sees what was NOT granted.
+      for (const connId of [...new Set(permissionRows.map((p) => p.connectionId))]) {
+        const preset = mcpConnections.find((c) => c.id === connId)?.preset;
+        const presetSkips = skipped.filter((rt) => rt.preset === preset);
+        const entry: AutoConfiguredConnection = {
+          connectionId: connId,
+          permissions: permissionRows
+            .filter((p) => p.connectionId === connId)
+            .map((p) => ({ model: p.model, operation: p.operation })),
+          ...(presetSkips.length > 0 ? { skippedTools: presetSkips } : {}),
+        };
+        autoConfiguredPermissions.push(entry);
+        hooks?.onPermissionsConfigured?.(agent, entry);
+      }
+    }
+  }
+
   // Create workspace with personality preset's SOUL.md
   ensureWorkspace(agent.id);
   writeWorkspaceFile(agent.id, "SOUL.md", preset?.soulMd ?? "");
@@ -739,6 +806,7 @@ export async function createAgent(
     audit: auditInfo,
     autoConfiguredPermissions,
     incompletePermissions,
+    skippedMcpTools,
     runtimeWarning,
     runtimeApplyError,
   };

@@ -20,6 +20,11 @@ const nextConfig: NextConfig = {
   // resolution the bundler can't statically see).
   serverExternalPackages: ["pdfjs-dist", "node-llama-cpp"],
   allowedDevOrigins: ["local.heypinchy.com", "https://local.heypinchy.com:8443"],
+  // NOTE: only build-time constants belong here. Values in `env` are inlined
+  // into the client bundle when the image is built, so a runtime toggle must
+  // never be forwarded this way — it would freeze to CI's value and silently
+  // ignore the operator's .env. Runtime flags are read server-side per request
+  // (lib/feature-flags.ts) and passed to client components as props.
   env: {
     NEXT_PUBLIC_PINCHY_VERSION: pkg.version,
     NEXT_PUBLIC_OPENCLAW_VERSION: openclawVersion,

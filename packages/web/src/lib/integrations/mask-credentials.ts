@@ -4,6 +4,8 @@ import { maskCredentials } from "./odoo-schema";
  * Returns masked credentials based on connection type.
  * - Odoo: returns { url, db, login } (strips apiKey and uid)
  * - Web Search: returns { configured: true } (hides the API key entirely)
+ * - MCP: returns { configured: true } (hides the token entirely — a pure
+ *   secret, same shape as Web Search; no prefix or length is leaked either)
  * - IMAP: returns { imapHost, imapPort, smtpHost, smtpPort, username, security, senderName }
  *   (strips the password entirely; ports are coerced to strings to match the
  *   Record<string, string | boolean> return type; senderName defaults to "" when absent)
@@ -13,7 +15,7 @@ export function maskConnectionCredentials(
   encryptedCredentials: string,
   decrypt: (ciphertext: string) => string
 ): Record<string, string | boolean> {
-  if (type === "web-search") {
+  if (type === "web-search" || type === "mcp") {
     return { configured: true };
   }
   if (type === "imap") {

@@ -1,6 +1,6 @@
 // The settings server page hands the License tab the shared agents that are
 // Restricted with no group (#1278). Read only where the card shows them.
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { ReactElement } from "react";
 
 vi.mock("next/headers", () => ({ headers: vi.fn().mockResolvedValue(new Headers()) }));
@@ -71,5 +71,45 @@ describe("Settings server page — admin-only agents", () => {
     });
     expect((await renderProps()).initialAdminOnlyAgents).toEqual([]);
     expect(listAdminOnlyAgents).not.toHaveBeenCalled();
+  });
+});
+
+// Second place the MCP feature flag enters the client tree (settings →
+// SettingsPageContent → SettingsIntegrations → AddIntegrationDialog).
+// PINCHY_MCP_ENABLED is a server-side runtime value and must be read per
+// request, never inlined at build time.
+describe("Settings server page — MCP feature flag", () => {
+  beforeEach(() => {
+    vi.mocked(getLicenseStatus).mockResolvedValue({
+      active: false,
+      expired: false,
+      features: [],
+      ver: 1,
+      maxUsers: 0,
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("passes mcpEnabled=true to the settings content when PINCHY_MCP_ENABLED=1", async () => {
+    vi.stubEnv("PINCHY_MCP_ENABLED", "1");
+
+    const el = (await SettingsPage({ searchParams: Promise.resolve({}) })) as ReactElement<{
+      mcpEnabled: boolean;
+    }>;
+
+    expect(el.props.mcpEnabled).toBe(true);
+  });
+
+  it("passes mcpEnabled=false to the settings content when PINCHY_MCP_ENABLED is unset", async () => {
+    vi.stubEnv("PINCHY_MCP_ENABLED", undefined);
+
+    const el = (await SettingsPage({ searchParams: Promise.resolve({}) })) as ReactElement<{
+      mcpEnabled: boolean;
+    }>;
+
+    expect(el.props.mcpEnabled).toBe(false);
   });
 });

@@ -89,6 +89,7 @@ vi.mock("@/lib/audit-deferred", () => ({
 
 import { GET, PUT, DELETE } from "@/app/api/agents/[agentId]/integrations/route";
 import { NextRequest, NextResponse } from "next/server";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { agentConnectionPermissions, integrationConnections } from "@/db/schema";
 
@@ -509,6 +510,34 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
     );
   });
 
+  it("names the agent and connection, and keeps a bulk grant under the audit size cap", async () => {
+    // A server with 50 tools granted at once: listing every { model, operation }
+    // would push the detail past 2048 bytes, and truncateDetail would then
+    // replace the whole detail — agent, connection and all.
+    const tools = Array.from({ length: 50 }, (_, i) => ({ name: `tool_number_${i}` }));
+    mockSelectWhere.mockResolvedValueOnce([
+      { id: CONNECTION_ID, name: "GitHub", type: "mcp", data: { tools } },
+    ]);
+    mockTxSelectWhere.mockResolvedValueOnce([]);
+
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
+      method: "PUT",
+      body: JSON.stringify({
+        connectionId: CONNECTION_ID,
+        permissions: tools.map((t) => ({ model: "mcp", operation: t.name })),
+      }),
+    });
+    await PUT(req, makeParams(AGENT_ID));
+
+    const detail = mockAppendAuditLog.mock.calls[0][0].detail;
+    expect(detail).toMatchObject({
+      agent: { id: AGENT_ID, name: "Support Agent" },
+      connection: { id: CONNECTION_ID, name: "GitHub" },
+      changes: { added: { count: 50 }, removed: [] },
+    });
+    expect(new TextEncoder().encode(JSON.stringify(detail)).length).toBeLessThan(2048);
+  });
+
   it("wraps DELETE+INSERT in a database transaction", async () => {
     // Connection exists (validation query runs outside transaction)
     mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]); // connection exists
@@ -595,6 +624,280 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
   });
 });
 
+// T5: MCP grants are plain rows in agent_connection_permissions
+// (model:"mcp", operation:<toolName>) — no dedicated table (see D1 in
+// docs/plans/2026-06-30-mcp-port-to-main.md). These tests prove the
+// existing generic PUT/GET/DELETE path carries that shape correctly, plus
+// the two MCP-specific additions: a tool-name length cap in the schema and
+// a route-level check that the tool actually exists in the connection's
+// synced tool list.
+describe("MCP permissions via the generic agent_connection_permissions path", () => {
+  const MCP_CONNECTION = {
+    id: CONNECTION_ID,
+    type: "mcp",
+    data: { tools: [{ name: "list_issues" }, { name: "create_issue" }] },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Agent existence is the access gate's job (getAgentWithAccess), so the
+    // only select in PUT is the connection lookup.
+    mockGetAgentWithAccess.mockResolvedValue(agentRow);
+    mockSelectFrom.mockImplementation(() => ({
+      where: mockSelectWhere,
+    }));
+    mockDeleteWhere.mockResolvedValue(undefined);
+    mockInsertValues.mockResolvedValue(undefined);
+  });
+
+  it("returns 400 for an MCP tool name longer than the 128-char SEP cap", async () => {
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
+      method: "PUT",
+      body: JSON.stringify({
+        connectionId: CONNECTION_ID,
+        permissions: [{ model: "mcp", operation: "x".repeat(129) }],
+      }),
+    });
+    const res = await PUT(req, makeParams(AGENT_ID));
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(JSON.stringify(body)).toContain("128");
+  });
+
+  it("accepts an MCP tool name exactly at the 128-char cap", async () => {
+    const boundaryName = "x".repeat(128);
+    mockSelectWhere.mockResolvedValueOnce([
+      { id: CONNECTION_ID, type: "mcp", data: { tools: [{ name: boundaryName }] } },
+    ]); // connection exists
+    mockTxSelectWhere.mockResolvedValueOnce([]);
+
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
+      method: "PUT",
+      body: JSON.stringify({
+        connectionId: CONNECTION_ID,
+        permissions: [{ model: "mcp", operation: boundaryName }],
+      }),
+    });
+    const res = await PUT(req, makeParams(AGENT_ID));
+
+    expect(res.status).toBe(200);
+  });
+
+  it("accepts a granted MCP tool that exists in the connection's synced tool list", async () => {
+    mockSelectWhere.mockResolvedValueOnce([MCP_CONNECTION]); // connection exists
+    mockTxSelectWhere.mockResolvedValueOnce([]);
+
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
+      method: "PUT",
+      body: JSON.stringify({
+        connectionId: CONNECTION_ID,
+        permissions: [{ model: "mcp", operation: "list_issues" }],
+      }),
+    });
+    const res = await PUT(req, makeParams(AGENT_ID));
+
+    expect(res.status).toBe(200);
+    expect(mockTxInsertValues).toHaveBeenCalledWith([
+      expect.objectContaining({
+        agentId: AGENT_ID,
+        connectionId: CONNECTION_ID,
+        model: "mcp",
+        operation: "list_issues",
+      }),
+    ]);
+  });
+
+  it("returns 400 for an MCP grant referencing a tool the connection never synced", async () => {
+    mockSelectWhere.mockResolvedValueOnce([MCP_CONNECTION]); // connection exists
+
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
+      method: "PUT",
+      body: JSON.stringify({
+        connectionId: CONNECTION_ID,
+        permissions: [{ model: "mcp", operation: "delete_everything" }],
+      }),
+    });
+    const res = await PUT(req, makeParams(AGENT_ID));
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain("delete_everything");
+    // Must fail before the transaction runs — no partial write.
+    expect(mockTransaction).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 for a model:'mcp' permission targeting a non-MCP connection", async () => {
+    mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID, type: "odoo", data: {} }]); // connection exists, wrong type
+
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
+      method: "PUT",
+      body: JSON.stringify({
+        connectionId: CONNECTION_ID,
+        permissions: [{ model: "mcp", operation: "list_issues" }],
+      }),
+    });
+    const res = await PUT(req, makeParams(AGENT_ID));
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain("not an MCP integration");
+    expect(mockTransaction).not.toHaveBeenCalled();
+  });
+
+  it("replaces MCP permissions atomically and writes an audit diff naming the tools", async () => {
+    mockSelectWhere.mockResolvedValueOnce([MCP_CONNECTION]); // connection exists
+    mockTxSelectWhere.mockResolvedValueOnce([{ model: "mcp", operation: "list_issues" }]);
+
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
+      method: "PUT",
+      body: JSON.stringify({
+        connectionId: CONNECTION_ID,
+        permissions: [{ model: "mcp", operation: "create_issue" }],
+      }),
+    });
+    const res = await PUT(req, makeParams(AGENT_ID));
+
+    expect(res.status).toBe(200);
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
+    expect(mockAppendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "config.changed",
+        detail: expect.objectContaining({
+          action: "agent_integration_permissions_updated",
+          changes: {
+            added: [{ model: "mcp", operation: "create_issue" }],
+            removed: [{ model: "mcp", operation: "list_issues" }],
+          },
+        }),
+      })
+    );
+    // Unlike Odoo/email (delegated to the follow-up agent PATCH — see the
+    // "does not call regenerateOpenClawConfig" test above), MCP gating lives
+    // in openclaw.json itself. A freshly granted tool must become reachable
+    // immediately, not "whenever something else happens to regenerate".
+    expect(regenerateOpenClawConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it("calls regenerateOpenClawConfig when an MCP grant is REVOKED (permissions: []), not only when one is added", async () => {
+    mockSelectWhere.mockResolvedValueOnce([MCP_CONNECTION]); // connection exists
+    mockTxSelectWhere.mockResolvedValueOnce([{ model: "mcp", operation: "list_issues" }]);
+
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
+      method: "PUT",
+      body: JSON.stringify({ connectionId: CONNECTION_ID, permissions: [] }),
+    });
+    const res = await PUT(req, makeParams(AGENT_ID));
+
+    expect(res.status).toBe(200);
+    // The new permissions array itself carries no "mcp" rows — only the
+    // REPLACED (existing) set does. Without checking existingPerms too, a
+    // revoked MCP tool would stay silently allowed in openclaw.json until an
+    // unrelated regenerate happened to notice.
+    expect(regenerateOpenClawConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it("is idempotent: resubmitting the same MCP grants yields an empty added/removed diff", async () => {
+    mockSelectWhere.mockResolvedValueOnce([MCP_CONNECTION]); // connection exists
+    mockTxSelectWhere.mockResolvedValueOnce([{ model: "mcp", operation: "list_issues" }]);
+
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
+      method: "PUT",
+      body: JSON.stringify({
+        connectionId: CONNECTION_ID,
+        permissions: [{ model: "mcp", operation: "list_issues" }],
+      }),
+    });
+    const res = await PUT(req, makeParams(AGENT_ID));
+
+    expect(res.status).toBe(200);
+    expect(mockAppendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        detail: expect.objectContaining({
+          changes: { added: [], removed: [] },
+        }),
+      })
+    );
+    // The trigger keys off the added/removed DIFF, not "did the request
+    // merely mention mcp" — a true no-op resubmit must not force an
+    // unnecessary regenerate.
+    expect(regenerateOpenClawConfig).not.toHaveBeenCalled();
+  });
+
+  it("GET returns the raw MCP tool name as operation (modelName fallback is cosmetic, T8 scope)", async () => {
+    // GET reads permissions, then the connections they reference (two
+    // queries, stitched in memory).
+    mockSelectFrom
+      .mockReturnValueOnce({
+        where: vi
+          .fn()
+          .mockResolvedValue([
+            { model: "mcp", operation: "list_issues", connectionId: CONNECTION_ID },
+          ]),
+      })
+      .mockReturnValueOnce({
+        where: vi.fn().mockResolvedValue([
+          {
+            id: CONNECTION_ID,
+            name: "GitHub MCP",
+            type: "mcp",
+            data: { tools: [{ name: "list_issues" }], preset: "github" },
+          },
+        ]),
+      });
+
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`);
+    const res = await GET(req, makeParams(AGENT_ID));
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body[0].connectionType).toBe("mcp");
+    // `data.models` (the Odoo schema cache) doesn't exist for MCP connections,
+    // so the GET handler's modelName lookup falls back to the raw model
+    // literal "mcp" rather than the tool's display name. This is documented,
+    // known GET-side UI cosmetics (see plan T5/T8), not a T5 defect — the
+    // load-bearing field for T6/T7 is `operation`, which round-trips exactly.
+    expect(body[0].permissions).toEqual([
+      { model: "mcp", modelName: "mcp", operation: "list_issues" },
+    ]);
+  });
+
+  it("DELETE leaves MCP grants in place — they are managed per connection, and some may be hidden from the caller", async () => {
+    // The settings page calls this route when no Odoo/email section reports a
+    // grant. An MCP section that is not rendered (flag off, connection in
+    // auth_failed) reports nothing either, so a blanket delete would wipe
+    // grants the admin never saw. MCP grants are revoked per connection via
+    // PUT with an empty list.
+    // The mocked select answers what the DB would for the filtered query.
+    const selectWhere = vi
+      .fn()
+      .mockResolvedValue([{ model: "res.partner", operation: "read", connectionId: "conn-odoo" }]);
+    mockSelectFrom.mockImplementationOnce(() => ({ where: selectWhere }));
+
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
+      method: "DELETE",
+    });
+    const res = await DELETE(req, makeParams(AGENT_ID));
+
+    expect(res.status).toBe(200);
+    // Both the delete and the audit read must exclude MCP rows.
+    for (const where of [mockDeleteWhere.mock.calls[0][0], selectWhere.mock.calls[0][0]]) {
+      const { sql, params } = new PgDialect().sqlToQuery(where);
+      expect(sql).toMatch(/"model" <> \$\d/);
+      expect(params).toContain("mcp");
+    }
+    expect(mockAppendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        detail: expect.objectContaining({
+          action: "agent_integration_permissions_cleared",
+          removed: [{ model: "res.partner", operation: "read" }],
+        }),
+      })
+    );
+    expect(regenerateOpenClawConfig).not.toHaveBeenCalled();
+  });
+});
+
 describe("DELETE /api/agents/[agentId]/integrations", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -603,6 +906,47 @@ describe("DELETE /api/agents/[agentId]/integrations", () => {
       where: mockSelectWhere.mockResolvedValue([]),
     }));
     mockDeleteWhere.mockResolvedValue(undefined);
+  });
+
+  it("names the agent in the clear audit", async () => {
+    mockSelectFrom.mockImplementationOnce(() => ({
+      where: vi
+        .fn()
+        .mockResolvedValue([
+          { model: "res.partner", operation: "read", connectionId: CONNECTION_ID },
+        ]),
+    }));
+
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
+      method: "DELETE",
+    });
+    await DELETE(req, makeParams(AGENT_ID));
+
+    expect(mockAppendAuditLog.mock.calls[0][0].detail).toMatchObject({
+      agent: { id: AGENT_ID, name: "Support Agent" },
+    });
+  });
+
+  it("still answers 200 when the audit write fails after the grants are gone", async () => {
+    mockSelectFrom.mockImplementationOnce(() => ({
+      where: vi
+        .fn()
+        .mockResolvedValue([
+          { model: "res.partner", operation: "read", connectionId: CONNECTION_ID },
+        ]),
+    }));
+    mockAppendAuditLog.mockRejectedValueOnce(new Error("audit db down"));
+
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
+      method: "DELETE",
+    });
+    const res = await DELETE(req, makeParams(AGENT_ID));
+
+    expect(res.status).toBe(200);
+    expect(mockRecordAuditFailure).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({ eventType: "config.changed" })
+    );
   });
 
   it("forwards the read gate's refusal and deletes nothing", async () => {

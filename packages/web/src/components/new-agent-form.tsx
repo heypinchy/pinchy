@@ -35,6 +35,7 @@ import {
   validateOdooTemplate,
   type ValidationResult,
 } from "@/lib/integrations/odoo-template-validation";
+import { getMcpPreset, type McpPresetId } from "@/lib/integrations/mcp-presets";
 import { getTemplate, pickSuggestedName, type OdooTemplateConfig } from "@/lib/agent-templates";
 import { autoSelectConnection, type OdooConnection } from "@/lib/odoo-connection-selection";
 import { EMAIL_CONNECTION_TYPES } from "@/lib/integrations/oauth-providers";
@@ -51,6 +52,10 @@ interface Template {
   requiresDirectories: boolean;
   requiresOdooConnection: boolean;
   requiresEmailConnection?: boolean;
+  /** MCP preset this template needs connected — see TemplateItem. */
+  requiresMcpConnection?: McpPresetId | null;
+  /** Tool names the server auto-grants for this template at creation time. */
+  mcpRecommendedTools?: string[];
   requiresWeb?: boolean;
   webSearchConfigured?: boolean;
   odooAccessLevel?: string;
@@ -477,10 +482,10 @@ export function NewAgentForm() {
         body.connectionId = selectedConnectionId;
       }
 
-      const agent = await apiPost<{ id: string; warning?: string }, CreateAgentInput>(
-        "/api/agents",
-        body
-      );
+      const agent = await apiPost<
+        { id: string; warning?: string; skippedMcpTools?: string[] },
+        CreateAgentInput
+      >("/api/agents", body);
       // #880 — the route creates the agent even when applying it to the OC
       // runtime fails, returning a non-blocking `warning` instead of a 500.
       // Surface it as a warning toast (sonner persists across the navigation
@@ -488,6 +493,27 @@ export function NewAgentForm() {
       if (typeof agent?.warning === "string" && agent.warning.length > 0) {
         toast.warning(agent.warning);
       }
+
+      // The agent exists — a missing tool must never look like a failed
+      // create. But it must not be silent either: without this the user gets
+      // an agent quietly short of the tools its template promised and only
+      // finds out mid-conversation. Completed action + caveat → toast, not an
+      // inline error (AGENTS.md error/notification policy).
+      const skipped: string[] = agent?.skippedMcpTools ?? [];
+      if (skipped.length > 0) {
+        const agentName = values.name.trim();
+        const preset = selectedTemplateObj?.requiresMcpConnection;
+        const providerName = preset ? getMcpPreset(preset).displayName : "connection";
+        const noun = skipped.length === 1 ? "tool" : "tools";
+        // Deliberately states no cause: the server reports names only, and a
+        // skip means EITHER the preset has no active connection OR the tool
+        // wasn't in that connection's synced list. Naming the wrong one would
+        // send the user to fix the wrong thing.
+        toast.warning(`${agentName} is ready, but ${skipped.length} ${noun} couldn't be granted`, {
+          description: `Couldn't grant ${providerName} ${noun}: ${skipped.join(", ")}. Check Agent Settings → Permissions to review what ${agentName} can use.`,
+        });
+      }
+
       triggerRestart();
       router.push(`/chat/${agent.id}`);
       router.refresh();

@@ -441,10 +441,11 @@ An existing agent on one of these models keeps that setting. While the Ollama Cl
 
 ### Database migrations
 
-The migrations `0082`–`0083` run automatically on startup — no manual steps.
+The migrations `0082`–`0084` run automatically on startup — no manual steps.
 
 - `0082` — `initial` as a fourth `trigger` on `kb_index_jobs`, for the first index Pinchy starts when an agent is granted a folder nothing has indexed yet. Additive.
 - `0083` — no schema change. It marks every `.docx` the knowledge base had stopped trying to convert to be read once more, so the next index run can read its text.
+- `0084` — `mcp` as an allowed `type` on `integration_connections`, for [MCP integrations](/guides/connect-mcp/). Additive.
 
 ## Upgrading from v0.10.2 to v0.10.3
 

@@ -6,10 +6,16 @@ import { integrationConnections } from "@/db/schema";
 import { decrypt } from "@/lib/encryption";
 import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
 import { deferAuditLog } from "@/lib/audit-deferred";
+import { summarizeListForAudit } from "@/lib/audit-list-summary";
 import { fetchOdooSchema } from "@/lib/integrations/odoo-sync";
 import { resolveExternalUrlTarget } from "@/lib/integrations/url-validation";
 import { withPinnedOdoo } from "@/lib/integrations/odoo-pin";
 import { setIntegrationAuthFailed, clearIntegrationAuthError } from "@/lib/integrations/auth-state";
+import { listMcpTools, McpAuthError } from "@/lib/integrations/mcp-client";
+import { diffMcpTools } from "@/lib/integrations/mcp-tool-diff";
+import { isMcpEnabled } from "@/lib/feature-flags";
+import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import type { McpIntegrationData } from "@/lib/integrations/types";
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
 
@@ -25,6 +31,113 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
     return NextResponse.json({ error: "Connection not found" }, { status: 404 });
   }
 
+  // ── MCP sync ─────────────────────────────────────────────────────────────
+  if (connection.type === "mcp") {
+    // Flag off → behave as if the type doesn't exist, not a 500.
+    if (!isMcpEnabled()) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+    const actor = { type: "user" as const, id: session.user.id! };
+
+    try {
+      const data = connection.data as McpIntegrationData;
+      const decrypted = JSON.parse(decrypt(connection.credentials)) as { token?: unknown };
+      const token = typeof decrypted.token === "string" ? decrypted.token : "";
+
+      let after;
+      try {
+        after = await listMcpTools({
+          url: data.url,
+          transport: data.transport,
+          token,
+          extraHeaders: data.extraHeaders,
+        });
+      } catch (err) {
+        if (err instanceof McpAuthError) {
+          // A real auth failure (401/403) — the token itself is the problem,
+          // so (and only so) the connection flips to auth_failed.
+          const reason =
+            "The server rejected this token. Check that it hasn't expired and has the permissions it needs, then reconnect.";
+          // setIntegrationAuthFailed regenerates openclaw.json itself when it
+          // actually flips an MCP connection — the config filters
+          // mcp.servers/tools.allow on status, so the transition IS a config
+          // change (see auth-state.ts).
+          await setIntegrationAuthFailed({ connectionId, reason, actor });
+          return NextResponse.json({ success: false, error: reason }, { status: 200 });
+        }
+        // McpServerError (5xx/429), McpSchemaError, or a network/timeout
+        // failure — fail-safe transient: a broken or slow server is not
+        // proof the token is wrong, so status must NOT flip to auth_failed
+        // and the stored tools must NOT be overwritten. Mirrors probe.ts's
+        // mcp branch and the odoo branch below (isAuthError-gated).
+        return NextResponse.json(
+          { success: false, error: "Couldn't reach the server right now. Try again in a moment." },
+          { status: 200 }
+        );
+      }
+
+      const diff = diffMcpTools(data.tools, after);
+      const lastSyncAt = new Date().toISOString();
+
+      await db
+        .update(integrationConnections)
+        .set({ data: { ...data, tools: after, lastSyncAt }, updatedAt: new Date() })
+        .where(eq(integrationConnections.id, connectionId));
+
+      // Audit the write right after it lands: nothing after this point may
+      // leave the persisted tool list without its record.
+      deferAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "integration.synced",
+        resource: `integration:${connectionId}`,
+        detail: {
+          id: connectionId,
+          name: connection.name,
+          tools: {
+            added: summarizeListForAudit(diff.added.map((t) => t.name)),
+            removed: summarizeListForAudit(diff.removed.map((t) => t.name)),
+            total: after.length,
+          },
+        },
+        outcome: "success",
+      });
+
+      await clearIntegrationAuthError({ connectionId, actor });
+
+      // MCP is fundamentally different from Odoo/email here: its gating
+      // lives IN openclaw.json (mcp.servers + tools.allow, see build.ts /
+      // T6), not inside a runtime plugin's checkPermission. A re-sync can
+      // remove a tool this connection previously exposed — without
+      // regenerating now, an agent's already-granted-but-now-revoked tool
+      // would stay silently allowed until some unrelated regenerate
+      // happened to notice the drift. See docs/plans/2026-06-30-mcp-port-to-main.md
+      // task T6. Odoo/email intentionally do NOT do this (their sync
+      // branch below has no equivalent call) — those plugins fetch
+      // credentials and check permissions at tool-call time, so their
+      // config never encodes anything that could go stale here.
+      //
+      // The tool list is persisted by now, so a regenerate failure is not a
+      // failed sync: the next regenerate reads the persisted list. Log it and
+      // report success rather than tell the admin a write that happened did not.
+      try {
+        await regenerateOpenClawConfig();
+      } catch (err) {
+        console.error("[mcp sync] tool list saved, but regenerating openclaw.json failed:", err);
+      }
+
+      return NextResponse.json({
+        success: true,
+        tools: after.length,
+        lastSyncAt,
+        diff: { added: diff.added.length, removed: diff.removed.length },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Sync failed";
+      return NextResponse.json({ success: false, error: message }, { status: 200 });
+    }
+  }
+
+  // ── Odoo sync ────────────────────────────────────────────────────────────
   try {
     const decrypted = JSON.parse(decrypt(connection.credentials));
     const parsed = odooCredentialsSchema.safeParse(decrypted);

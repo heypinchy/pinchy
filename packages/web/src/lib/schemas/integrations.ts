@@ -4,6 +4,7 @@ import {
   odooConnectionDataSchema,
   odooUrlSchema,
 } from "@/lib/integrations/odoo-schema";
+import { mcpCreateSchema, mcpTestCredentialsSchema } from "@/lib/schemas/mcp-integration";
 
 /**
  * Request schemas for the integration-connect wizard's four routes, shared
@@ -35,6 +36,10 @@ export const testCredentialsSchema = z.discriminatedUnion("type", [
       apiKey: z.string().min(1),
     }),
   }),
+  // Same shape as POST /api/integrations — used today by the HighLevel
+  // preset to send the required `locationId` header during pre-save
+  // discovery.
+  mcpTestCredentialsSchema,
 ]);
 export type TestCredentialsInput = z.infer<typeof testCredentialsSchema>;
 
@@ -66,6 +71,7 @@ export const createIntegrationSchema = z.discriminatedUnion("type", [
     description: z.string().max(500).default(""),
     credentials: z.object({ apiKey: z.string().min(1) }),
   }),
+  mcpCreateSchema,
 ]);
 /** Pre-parse shape — `description` has a default the caller may omit. */
 export type CreateIntegrationInput = z.input<typeof createIntegrationSchema>;

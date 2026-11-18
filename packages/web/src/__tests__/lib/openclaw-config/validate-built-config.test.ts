@@ -259,4 +259,51 @@ describe("SecretRef drift guard", () => {
     const config = { plugins: { allow: [], entries: {} } };
     expect(validateBuiltConfig(config).ok).toBe(true);
   });
+
+  // MCP (T6, docs/plans/2026-06-30-mcp-port-to-main.md) is NOT a Pinchy
+  // plugin — native-mcp.ts emits a top-level `config.mcp.servers` block, not
+  // a `plugins.entries` row, so the manifest-conformance checks above never
+  // see it. The generic tree walk below is what actually protects it.
+  it("does not flag a plain gateway-token header string under config.mcp as a SecretRef", () => {
+    const config = {
+      mcp: {
+        servers: {
+          mconnabc: {
+            url: "http://pinchy:7777/api/internal/mcp-proxy/conn-abc",
+            transport: "streamable-http",
+            headers: { Authorization: "Bearer gw-bootstrap-token" },
+          },
+        },
+      },
+    };
+    const result = validateBuiltConfig(config, {});
+    expect(result.ok).toBe(true);
+  });
+
+  it("would still catch a SecretRef accidentally placed under config.mcp (regression guard)", () => {
+    // native-mcp.ts must never emit a SecretRef here — the gateway token is
+    // inlined as a plain string (Pattern C, AGENTS.md). This pins that the
+    // generic collectSecretRefs walk isn't scoped to plugins.entries only,
+    // so a future regression under config.mcp wouldn't go unnoticed.
+    const config = {
+      mcp: {
+        servers: {
+          mconnabc: {
+            url: "http://pinchy:7777/api/internal/mcp-proxy/conn-abc",
+            transport: "streamable-http",
+            headers: {
+              Authorization: { source: "file", provider: "pinchy", id: "/gateway/token" },
+            },
+          },
+        },
+      },
+    };
+    const result = validateBuiltConfig(config, {});
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(
+        result.errors.some((e) => /mcp\.servers\.mconnabc\.headers\.Authorization/.test(e))
+      ).toBe(true);
+    }
+  });
 });

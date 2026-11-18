@@ -32,6 +32,15 @@ async function deleteAllConnections(cookie: string) {
   }
 }
 
+// "Add Integration" is a link to the type-picker page; picking the Odoo tile
+// opens the connect wizard as a dialog, already on step 1.
+async function openOdooWizard(page: Page) {
+  await page.getByRole("link", { name: /add integration/i }).click();
+  await page.waitForURL(/\/settings\/integrations\/new/);
+  await page.getByRole("button", { name: /^Odoo/ }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+}
+
 test.describe.serial("Odoo Wizard Flow", () => {
   let cookie: string;
 
@@ -51,13 +60,8 @@ test.describe.serial("Odoo Wizard Flow", () => {
     // Navigate to integrations tab
     await page.goto("/settings?tab=integrations");
 
-    // Click "Add Integration"
-    await page.getByRole("button", { name: /add integration/i }).click();
-
-    // Dialog opens — select Odoo type
+    await openOdooWizard(page);
     const dialog = page.getByRole("dialog");
-    await expect(dialog).toBeVisible();
-    await dialog.getByRole("button", { name: /Odoo/ }).click();
 
     // Step 1: Connect — fill credentials
     await expect(dialog.getByText(/step 1 of 3/i)).toBeVisible();
@@ -107,11 +111,8 @@ test.describe.serial("Odoo Wizard Flow", () => {
 
     await page.goto("/settings?tab=integrations");
 
-    await page.getByRole("button", { name: /add integration/i }).click();
-
+    await openOdooWizard(page);
     const dialog = page.getByRole("dialog");
-    await expect(dialog).toBeVisible();
-    await dialog.getByRole("button", { name: /Odoo/ }).click();
 
     // Fill with wrong API key
     await dialog.getByLabel("URL").fill(ODOO_INTERNAL_URL);

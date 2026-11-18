@@ -93,6 +93,40 @@ describe("getAccessBadgeProps", () => {
     );
     expect(result).toEqual({ label: "Email · Read & Draft", variant: "green" });
   });
+
+  it("returns an amber '<Provider> · <n> tools' badge for an MCP template", () => {
+    // An MCP card without a badge silently hides that creating the agent
+    // auto-grants access to an external system, while the Odoo card next to
+    // it honestly advertises "Odoo · Read & Write". The badge IS the
+    // permission-transparency surface — it must never be blank for a
+    // template that grants anything.
+    const result = getAccessBadgeProps({
+      requiresDirectories: false,
+      requiresMcpConnection: "github",
+      mcpRecommendedTools: ["pull_request_read", "list_pull_requests", "pull_request_review_write"],
+    });
+    expect(result).toEqual({ label: "GitHub · 3 tools", variant: "amber" });
+  });
+
+  it("derives the MCP badge provider name from the preset registry, not a hardcoded string", () => {
+    // "HighLevel" only spells that way in mcp-presets.ts — a hardcoded map
+    // here would drift the moment a provider renames itself.
+    const result = getAccessBadgeProps({
+      requiresDirectories: false,
+      requiresMcpConnection: "highlevel",
+      mcpRecommendedTools: ["contacts_get"],
+    });
+    expect(result).toEqual({ label: "HighLevel · 1 tool", variant: "amber" });
+  });
+
+  it("pluralizes the MCP tool count correctly for a single tool", () => {
+    const result = getAccessBadgeProps({
+      requiresDirectories: false,
+      requiresMcpConnection: "linear",
+      mcpRecommendedTools: ["list_issues"],
+    });
+    expect(result?.label).toBe("Linear · 1 tool");
+  });
 });
 
 describe("getPermissionPreviewItems", () => {
@@ -182,6 +216,49 @@ describe("getPermissionPreviewItems", () => {
       { icon: "check", text: "Read emails from the connected mailbox" },
       { icon: "check", text: "Create draft emails" },
       { icon: "cross", text: "Cannot send emails directly" },
+    ]);
+  });
+
+  it("lists the concrete granted tool names for an MCP template", () => {
+    // The preview is where detail is wanted, and these exact names are what
+    // POST /api/agents auto-grants — so name them rather than paraphrasing.
+    const result = getPermissionPreviewItems({
+      requiresDirectories: false,
+      requiresMcpConnection: "github",
+      mcpRecommendedTools: ["pull_request_read", "list_pull_requests", "pull_request_review_write"],
+    });
+    expect(result).toEqual([
+      {
+        icon: "check",
+        text: "Use these GitHub tools: pull_request_read, list_pull_requests, pull_request_review_write",
+      },
+      { icon: "warning", text: "This agent can act in GitHub on your behalf" },
+    ]);
+  });
+
+  it("makes no claim about what an MCP agent cannot reach", () => {
+    // Deliberate honesty guard: what the agent can touch is decided by the
+    // scope of the admin's MCP token, which Pinchy does not know. A
+    // reassuring "Cannot access ..." line here would be a promise we cannot
+    // keep — unlike email/Odoo, whose limits we actually enforce.
+    const result = getPermissionPreviewItems({
+      requiresDirectories: false,
+      requiresMcpConnection: "github",
+      mcpRecommendedTools: ["pull_request_read"],
+    });
+    expect(result.some((i) => i.icon === "cross")).toBe(false);
+    expect(result.some((i) => /cannot/i.test(i.text))).toBe(false);
+  });
+
+  it("omits the tool list item when an MCP template has no recommended tools", () => {
+    // Defensive: never render a dangling "Use these GitHub tools: ".
+    const result = getPermissionPreviewItems({
+      requiresDirectories: false,
+      requiresMcpConnection: "github",
+      mcpRecommendedTools: [],
+    });
+    expect(result).toEqual([
+      { icon: "warning", text: "This agent can act in GitHub on your behalf" },
     ]);
   });
 });
@@ -436,5 +513,28 @@ describe("groupTemplatesByCategory", () => {
     const result = groupTemplatesByCategory([emailTemplate]);
     expect(result.categories).toHaveLength(1);
     expect(result.categories[0].label).toBe("Email");
+  });
+
+  it("assigns github-pr-reviewer and linear-triage to Developer Tools category", () => {
+    const githubTemplate = {
+      id: "github-pr-reviewer",
+      name: "GitHub PR Reviewer",
+      description: "Reviews pull requests",
+      requiresDirectories: false,
+      defaultTagline: "Review and summarize pull requests",
+      available: true,
+    };
+    const linearTemplate = {
+      id: "linear-triage",
+      name: "Linear Triage",
+      description: "Triages incoming issues",
+      requiresDirectories: false,
+      defaultTagline: "Triage and prioritize Linear issues",
+      available: true,
+    };
+    const result = groupTemplatesByCategory([githubTemplate, linearTemplate]);
+    expect(result.categories).toHaveLength(1);
+    expect(result.categories[0].label).toBe("Developer Tools");
+    expect(result.categories[0].templates).toHaveLength(2);
   });
 });

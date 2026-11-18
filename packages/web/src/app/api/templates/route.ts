@@ -6,11 +6,13 @@ import { integrationConnections } from "@/db/schema";
 import { AGENT_TEMPLATES } from "@/lib/agent-templates";
 import { validateOdooTemplate } from "@/lib/integrations/odoo-template-validation";
 import { getConnectionModels } from "@/lib/integrations/odoo-connection-models";
+import { getActiveMcpPresets } from "@/lib/integrations/mcp-connections";
 import { getUsableDefaultProvider } from "@/lib/model-resolver/usable-default-provider";
 import { type ProviderName } from "@/lib/providers";
 import { TemplateCapabilityUnavailableError } from "@/lib/model-resolver";
 import { resolveAvailableModelForTemplate } from "@/lib/model-resolver/resolve-available";
 import { EMAIL_CONNECTION_TYPES } from "@/lib/integrations/oauth-providers";
+import { isMcpEnabled } from "@/lib/feature-flags";
 
 export const GET = withAuth(async () => {
   const odooConnections = await db
@@ -45,9 +47,25 @@ export const GET = withAuth(async () => {
   // Determine active provider for capability-based template filtering
   const defaultProvider = (await getUsableDefaultProvider()) as ProviderName | null;
 
+  // MCP templates are gated on the feature flag AND on a per-preset
+  // connection check. When the flag is off, the entire MCP surface must be
+  // absent (D3) — filter those templates out entirely rather than merely
+  // marking them unavailable, matching how every other MCP route/UI surface
+  // behaves when `isMcpEnabled()` is false.
+  const mcpEnabled = isMcpEnabled();
+  const templateEntries = mcpEnabled
+    ? Object.entries(AGENT_TEMPLATES)
+    : Object.entries(AGENT_TEMPLATES).filter(([, template]) => !template.requiresMcpConnection);
+
+  // A template that needs the `linear` preset shouldn't look creatable when
+  // no Linear connection is active (the "Triage talks about Linear with
+  // nothing connected" trap) — unlike Odoo/email, this check is per-preset,
+  // not a single boolean, so it's driven by `getActiveMcpPresets()`.
+  const connectedMcpPresets = mcpEnabled ? await getActiveMcpPresets() : new Set<string>();
+
   // Build templates with both Odoo and capability availability
   const templates = await Promise.all(
-    Object.entries(AGENT_TEMPLATES).map(async ([id, template]) => {
+    templateEntries.map(async ([id, template]) => {
       let available = true;
       let unavailableReason: "no-connection" | "missing-modules" | null = null;
 
@@ -55,6 +73,12 @@ export const GET = withAuth(async () => {
         available = false;
         unavailableReason = "no-connection";
       } else if (template.requiresOdooConnection && !hasOdooConnection) {
+        available = false;
+        unavailableReason = "no-connection";
+      } else if (
+        template.requiresMcpConnection &&
+        !connectedMcpPresets.has(template.requiresMcpConnection)
+      ) {
         available = false;
         unavailableReason = "no-connection";
       } else if (template.odooConfig && connectionModels) {
@@ -88,6 +112,14 @@ export const GET = withAuth(async () => {
         requiresDirectories: template.pluginId === "pinchy-files",
         requiresOdooConnection: template.requiresOdooConnection ?? false,
         requiresEmailConnection: template.requiresEmailConnection ?? false,
+        // Preset string (not a boolean, unlike its Odoo/email siblings) —
+        // MCP has 8 presets, so the picker needs to know WHICH one is
+        // missing, not just that "some" connection is missing.
+        requiresMcpConnection: template.requiresMcpConnection ?? null,
+        // The tools POST /api/agents auto-grants for this template. Sent so
+        // the card can state the access up front (badge + permission
+        // preview) instead of granting an external system silently.
+        mcpRecommendedTools: (template.recommendedTools ?? []).map((rt) => rt.tool),
         requiresWeb: template.pluginId === "pinchy-web",
         webSearchConfigured: hasWebSearchConnection,
         odooAccessLevel: template.odooConfig?.accessLevel,
