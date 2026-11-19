@@ -18,6 +18,7 @@ import { existsSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { FAKE_OLLAMA_PORT } from "../shared/fake-ollama/fake-ollama-server";
 import { waitForAgentDispatchable } from "../shared/dispatch-probe";
 import { stackDbUrl } from "../shared/stack-db";
+import { pollUntil, sweepCandidatesUntil } from "../shared/poll-until";
 
 const INTEGRATION_DB_URL = stackDbUrl(5435);
 const FAKE_OLLAMA_PID_PATH = "/tmp/pinchy-fake-ollama.pid";
@@ -83,6 +84,34 @@ function startFakeOllamaProcess() {
   }
 }
 
+// The fake server is spawned detached and returns immediately; wait until it
+// really answers. Same check (`/__pinchy_fake_ollama` → ok: true) that the
+// OpenClaw-side probe below relies on.
+const FAKE_OLLAMA_READY_DEADLINE_MS = 30_000;
+const OLLAMA_REACHABLE_DEADLINE_MS = 60_000;
+const POLL_INTERVAL_MS = 500;
+
+async function waitForFakeOllamaOnHost() {
+  const res = await pollUntil(
+    async () => {
+      const r = await fetch(`http://127.0.0.1:${FAKE_OLLAMA_PORT}/__pinchy_fake_ollama`, {
+        signal: AbortSignal.timeout(1500),
+      });
+      const data = (await r.json().catch(() => null)) as { ok?: boolean } | null;
+      return r.ok && data?.ok === true
+        ? { ok: true as const, value: true }
+        : { ok: false as const, reason: `HTTP ${r.status}, ok=${String(data?.ok)}` };
+    },
+    { deadlineMs: FAKE_OLLAMA_READY_DEADLINE_MS, intervalMs: POLL_INTERVAL_MS }
+  );
+  if (!res.ok) {
+    throw new Error(
+      `[integration-setup] fake Ollama did not start listening on port ${FAKE_OLLAMA_PORT} ` +
+        `within ${FAKE_OLLAMA_READY_DEADLINE_MS / 1000}s (${res.attempts} attempts, last: ${res.reason})`
+    );
+  }
+}
+
 export default async function globalSetup() {
   // 1. Verify the integration stack is up. Refuse to silently start it for
   //    the developer — the production-image build takes minutes, and
@@ -100,7 +129,8 @@ export default async function globalSetup() {
   // 2. Start fake Ollama on the host (OpenClaw connects to it via the host
   //    gateway). Must be up before we seed the Ollama URL into Pinchy.
   startFakeOllamaProcess();
-  console.log(`[integration-setup] fake Ollama started on port ${FAKE_OLLAMA_PORT}`);
+  await waitForFakeOllamaOnHost();
+  console.log(`[integration-setup] fake Ollama listening on port ${FAKE_OLLAMA_PORT}`);
 
   // 3. Probe which URL OpenClaw can use to reach the host fake Ollama. The
   //    candidates mirror the pre-#196 logic: Docker bridge gateway,
@@ -134,7 +164,9 @@ export default async function globalSetup() {
     `http://ollama.local:${FAKE_OLLAMA_PORT}`,
   ];
   const uniqueOllamaCandidates = [...new Set(ollamaCandidates)];
-  const canReachOllamaFromOpenClaw = (url: string) => {
+  const canReachOllamaFromOpenClaw = async (
+    url: string
+  ): Promise<{ ok: true } | { ok: false; reason: string }> => {
     const probe = [
       "fetch(process.argv[1] + '/__pinchy_fake_ollama', { signal: AbortSignal.timeout(1500) })",
       ".then(async (res) => {",
@@ -149,17 +181,29 @@ export default async function globalSetup() {
         `docker compose ${COMPOSE_FILES} exec -T openclaw node -e ${JSON.stringify(probe)} ${JSON.stringify(url)}`,
         { cwd: PROJECT_ROOT, env: COMPOSE_ENV, stdio: "pipe" }
       );
-      return true;
-    } catch {
-      return false;
+      return { ok: true };
+    } catch (err) {
+      const e = err as { status?: number | null; stderr?: Buffer | string; message?: string };
+      const stderr = e.stderr?.toString().trim();
+      return {
+        ok: false,
+        reason: `exit ${e.status ?? "?"}${stderr ? `: ${stderr}` : e.message ? `: ${e.message}` : ""}`,
+      };
     }
   };
-  const ollamaLocalUrl = uniqueOllamaCandidates.find((candidate) =>
-    canReachOllamaFromOpenClaw(candidate)
-  );
-  if (!ollamaLocalUrl) {
-    throw new Error("[integration-setup] OpenClaw could not reach fake Ollama");
+  // The OpenClaw container may have been up for only a few seconds (gateway
+  // still starting, first `docker compose exec` slow), so sweep repeatedly.
+  const sweep = await sweepCandidatesUntil(uniqueOllamaCandidates, canReachOllamaFromOpenClaw, {
+    deadlineMs: OLLAMA_REACHABLE_DEADLINE_MS,
+    intervalMs: POLL_INTERVAL_MS,
+  });
+  if (!sweep.ok) {
+    const lines = Object.entries(sweep.failures).map(([c, why]) => `  ${c} -> ${why}`);
+    throw new Error(
+      `[integration-setup] OpenClaw could not reach fake Ollama within ${OLLAMA_REACHABLE_DEADLINE_MS / 1000}s:\n${lines.join("\n")}`
+    );
   }
+  const ollamaLocalUrl = sweep.candidate;
   console.log(`[integration-setup] Ollama URL reachable from OpenClaw: ${ollamaLocalUrl}`);
 
   // 4. Seed Ollama URL, default provider, and a fake Ollama-Cloud key.
