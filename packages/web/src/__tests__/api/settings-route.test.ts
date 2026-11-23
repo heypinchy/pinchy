@@ -76,14 +76,34 @@ describe("GET /api/settings", () => {
       expires: "",
     } as any);
     vi.mocked(getAllSettings).mockResolvedValueOnce([
-      { key: "default_provider", value: "anthropic", encrypted: false },
+      { key: "org.timezone", value: "Europe/Vienna", encrypted: false },
     ]);
 
     const response = await GET();
     expect(response.status).toBe(200);
 
     const body = await response.json();
-    expect(body).toEqual([{ key: "default_provider", value: "anthropic", encrypted: false }]);
+    expect(body).toEqual([{ key: "org.timezone", value: "Europe/Vienna", encrypted: false }]);
+  });
+
+  it("returns only the settings the UI reads", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+    vi.mocked(getAllSettings).mockResolvedValueOnce([
+      { key: "org.timezone", value: "Europe/Vienna", encrypted: false },
+      { key: "openclaw_gateway_token", value: "gw-token", encrypted: false },
+      { key: "plugin_secret:x", value: "plugin-secret", encrypted: false },
+      { key: "anthropic_api_key", value: "sk-secret", encrypted: true },
+    ]);
+
+    const response = await GET();
+    expect(response.status).toBe(200);
+
+    const body = await response.json();
+    expect(body).toEqual([{ key: "org.timezone", value: "Europe/Vienna", encrypted: false }]);
+    expect(JSON.stringify(body)).not.toMatch(/gw-token|plugin-secret|sk-secret/);
   });
 
   it("masks encrypted values", async () => {
@@ -92,7 +112,7 @@ describe("GET /api/settings", () => {
       expires: "",
     } as any);
     vi.mocked(getAllSettings).mockResolvedValueOnce([
-      { key: "anthropic_api_key", value: "sk-secret", encrypted: true },
+      { key: "org.timezone", value: "sk-secret", encrypted: true },
     ]);
 
     const response = await GET();
