@@ -67,7 +67,11 @@ vi.mock("@/db", () => ({
 }));
 
 vi.mock("@/db/schema", () => ({ agents: { id: "id" }, users: { id: "id" } }));
-vi.mock("drizzle-orm", () => ({ eq: vi.fn((col, val) => ({ col, val })) }));
+vi.mock("drizzle-orm", () => ({
+  eq: vi.fn((col, val) => ({ col, val })),
+  and: vi.fn((...conds) => ({ and: conds })),
+  isNull: vi.fn((col) => ({ isNull: col })),
+}));
 
 vi.mock("@/lib/budgets", () => ({
   getExhaustedBlockingBudget: vi.fn().mockResolvedValue(null),

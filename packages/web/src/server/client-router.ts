@@ -41,7 +41,7 @@ import {
   indexUploadIdsByFilename,
   attachUploadIdsToHistory,
 } from "@/server/history-upload-ids";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { isModelVisionCapable } from "@/lib/model-vision";
 import { resolveImageTurnModel, type VisionCandidate } from "@/lib/image-fallback";
 import { readExistingConfig } from "@/lib/openclaw-config/write";
@@ -345,9 +345,10 @@ export class ClientRouter {
   }
 
   private async routeMessage(clientWs: WebSocket, message: BrowserMessage): Promise<void> {
-    // Look up agent and check access
+    // Look up agent and check access. A soft-deleted agent is treated as
+    // missing, matching the REST routes (which read the `activeAgents` view).
     const agent = await db.query.agents.findFirst({
-      where: eq(agents.id, message.agentId),
+      where: and(eq(agents.id, message.agentId), isNull(agents.deletedAt)),
     });
 
     if (!agent) {

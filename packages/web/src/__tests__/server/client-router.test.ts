@@ -131,7 +131,7 @@ vi.mock("@/db", () => ({
 }));
 
 vi.mock("@/db/schema", () => ({
-  agents: { id: "id" },
+  agents: { id: "id", deletedAt: "deleted_at" },
   users: { id: "id" },
   models: { vision: "vision", provider: "provider", modelId: "modelId", tools: "tools" },
   agentDeliveredFiles: {
@@ -163,6 +163,7 @@ vi.mock("drizzle-orm", () => ({
   eq: vi.fn((col, val) => ({ col, val })),
   and: vi.fn((...conds) => ({ and: conds })),
   inArray: vi.fn((col, vals) => ({ col, vals })),
+  isNull: vi.fn((col) => ({ isNull: col })),
 }));
 
 vi.mock("@/lib/audit", async (importOriginal) => {
@@ -769,6 +770,35 @@ describe("ClientRouter", () => {
     expect(messages).toHaveLength(1);
     expect(messages[0].type).toBe("error");
     expect(messages[0].message).toBe("Agent not found");
+  });
+
+  describe("soft-deleted agents", () => {
+    // The lookup is mocked, so the fake honours the where clause the way the
+    // database would: a row with deletedAt set is invisible to a query that
+    // filters on `deleted_at IS NULL`, and visible to one that does not.
+    function seedDeletedAgent() {
+      const deleted = { ...defaultAgent, deletedAt: new Date() };
+      mockFindFirst.mockImplementation(async ({ where }: { where: unknown }) => {
+        const filtersDeleted = JSON.stringify(where).includes('"isNull":"deleted_at"');
+        return filtersDeleted ? null : deleted;
+      });
+    }
+
+    it.each([
+      ["history", { type: "history", agentId: "agent-1" }],
+      ["message", { type: "message", content: "Hi", agentId: "agent-1" }],
+      ["abort", { type: "abort", agentId: "agent-1" }],
+    ])("answers %s for a deleted agent with Agent not found", async (_name, msg) => {
+      seedDeletedAgent();
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(clientWs as any, msg as any);
+
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      expect(messages).toEqual([{ type: "error", message: "Agent not found" }]);
+      expect(mockChat).not.toHaveBeenCalled();
+      expect(mockSessionsHistory).not.toHaveBeenCalled();
+    });
   });
 
   it("answers a denied agent exactly as it answers a missing one", async () => {
