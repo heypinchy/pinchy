@@ -52,6 +52,24 @@ const {
   mockUploadedFileRows: vi.fn().mockResolvedValue([]),
 }));
 
+type MockWhere = { col: unknown; val: unknown } | { and: MockWhere[] } | { isNull: unknown };
+
+// Evaluates the where tree the drizzle-orm mock builds against a row, the way
+// the database would: eq compares the column, isNull needs it null, and an
+// unknown shape (e.g. an `or`) throws instead of passing silently.
+function matchesWhere(where: MockWhere, row: Record<string, unknown>): boolean {
+  if ("and" in where) return where.and.every((w) => matchesWhere(w, row));
+  if ("isNull" in where) return row[agentColumnKey(where.isNull)] == null;
+  if ("col" in where) return row[agentColumnKey(where.col)] === where.val;
+  throw new Error("unsupported where shape");
+}
+const COLUMN_KEYS: Record<string, string> = { id: "id", deleted_at: "deletedAt" };
+function agentColumnKey(col: unknown): string {
+  const key = COLUMN_KEYS[col as string];
+  if (!key) throw new Error(`unmapped column in where: ${String(col)}`);
+  return key;
+}
+
 vi.mock("@/lib/agent-access", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/agent-access")>();
   return {
@@ -131,7 +149,7 @@ vi.mock("@/db", () => ({
 }));
 
 vi.mock("@/db/schema", () => ({
-  agents: { id: "id" },
+  agents: { id: "id", deletedAt: "deleted_at" },
   users: { id: "id" },
   models: { vision: "vision", provider: "provider", modelId: "modelId", tools: "tools" },
   agentDeliveredFiles: {
@@ -163,6 +181,7 @@ vi.mock("drizzle-orm", () => ({
   eq: vi.fn((col, val) => ({ col, val })),
   and: vi.fn((...conds) => ({ and: conds })),
   inArray: vi.fn((col, vals) => ({ col, vals })),
+  isNull: vi.fn((col) => ({ isNull: col })),
 }));
 
 vi.mock("@/lib/audit", async (importOriginal) => {
@@ -769,6 +788,30 @@ describe("ClientRouter", () => {
     expect(messages).toHaveLength(1);
     expect(messages[0].type).toBe("error");
     expect(messages[0].message).toBe("Agent not found");
+  });
+
+  describe("soft-deleted agents", () => {
+    function seedDeletedAgent() {
+      const deleted = { ...defaultAgent, deletedAt: new Date() };
+      mockFindFirst.mockImplementation(async ({ where }: { where: MockWhere }) =>
+        matchesWhere(where, deleted) ? deleted : null
+      );
+    }
+
+    it.each([
+      ["history", { type: "history", agentId: "agent-1" }],
+      ["message", { type: "message", content: "Hi", agentId: "agent-1" }],
+    ])("answers %s for a deleted agent with Agent not found", async (_name, msg) => {
+      seedDeletedAgent();
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(clientWs as any, msg as any);
+
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      expect(messages).toEqual([{ type: "error", message: "Agent not found" }]);
+      expect(mockChat).not.toHaveBeenCalled();
+      expect(mockSessionsHistory).not.toHaveBeenCalled();
+    });
   });
 
   it("answers a denied agent exactly as it answers a missing one", async () => {
