@@ -346,9 +346,16 @@ export class ClientRouter {
 
   private async routeMessage(clientWs: WebSocket, message: BrowserMessage): Promise<void> {
     // Look up agent and check access. A soft-deleted agent is treated as
-    // missing, matching the REST routes (which read the `activeAgents` view).
+    // missing for history and sends, matching the REST routes (which read the
+    // `activeAgents` view). An abort is exempt: it only acts on the caller's
+    // own active run under their own session key, so a run that was already
+    // streaming when the agent was deleted must stay stoppable. It still goes
+    // through assertAgentAccess below.
     const agent = await db.query.agents.findFirst({
-      where: and(eq(agents.id, message.agentId), isNull(agents.deletedAt)),
+      where:
+        message.type === "abort"
+          ? eq(agents.id, message.agentId)
+          : and(eq(agents.id, message.agentId), isNull(agents.deletedAt)),
     });
 
     if (!agent) {

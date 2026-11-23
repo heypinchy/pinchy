@@ -48,7 +48,7 @@ vi.mock("@/db", () => ({
 }));
 
 vi.mock("@/db/schema", () => ({
-  agents: { id: "id" },
+  agents: { id: "id", deletedAt: "deleted_at" },
   users: { id: "id" },
 }));
 
@@ -96,6 +96,22 @@ import { SessionCache } from "@/server/session-cache";
 
 interface MockWs extends WebSocket {
   sent: string[];
+}
+
+type MockWhere = { col: unknown; val: unknown } | { and: MockWhere[] } | { isNull: unknown };
+
+// Evaluates the where tree the drizzle-orm mock builds against a row, the way
+// the database would: eq compares the column, isNull needs it null, and an
+// unknown shape (e.g. an `or`) throws instead of passing silently.
+function matchesWhere(where: MockWhere, row: Record<string, unknown>): boolean {
+  if ("and" in where) return where.and.every((w) => matchesWhere(w, row));
+  if ("isNull" in where) return row[agentColumnKey(where.isNull)] == null;
+  if ("col" in where) return row[agentColumnKey(where.col)] === where.val;
+  throw new Error("unsupported where shape");
+}
+const COLUMN_KEYS: Record<string, string> = { id: "id", deleted_at: "deletedAt" };
+function agentColumnKey(col: unknown): string {
+  return COLUMN_KEYS[col as string];
 }
 
 function createMockWs(): MockWs {
@@ -169,6 +185,24 @@ describe("ClientRouter user-triggered abort (#550)", () => {
 
     expect(mockChatAbort).toHaveBeenCalledTimes(1);
     expect(mockChatAbort).toHaveBeenCalledWith(SESSION_KEY, "run-xyz");
+  });
+
+  it("still stops the caller's own run after the agent was deleted", async () => {
+    const deleted = { ...defaultAgent, deletedAt: new Date() };
+    mockFindFirst.mockImplementation(async ({ where }: { where: MockWhere }) =>
+      matchesWhere(where, deleted) ? deleted : null
+    );
+    const ws = createMockWs();
+    registerActiveRun(activeRuns, ws, "run-xyz");
+    const router = makeRouter();
+
+    await router.handleMessage(ws, { type: "abort", agentId: "agent-1" });
+
+    expect(mockChatAbort).toHaveBeenCalledWith(SESSION_KEY, "run-xyz");
+    expect(ws.sent.map((s) => JSON.parse(s))).not.toContainEqual({
+      type: "error",
+      message: "Agent not found",
+    });
   });
 
   it("emits a chat.run_aborted audit row (actor=user, outcome=success)", async () => {

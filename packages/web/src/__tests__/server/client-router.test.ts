@@ -52,6 +52,22 @@ const {
   mockUploadedFileRows: vi.fn().mockResolvedValue([]),
 }));
 
+type MockWhere = { col: unknown; val: unknown } | { and: MockWhere[] } | { isNull: unknown };
+
+// Evaluates the where tree the drizzle-orm mock builds against a row, the way
+// the database would: eq compares the column, isNull needs it null, and an
+// unknown shape (e.g. an `or`) throws instead of passing silently.
+function matchesWhere(where: MockWhere, row: Record<string, unknown>): boolean {
+  if ("and" in where) return where.and.every((w) => matchesWhere(w, row));
+  if ("isNull" in where) return row[agentColumnKey(where.isNull)] == null;
+  if ("col" in where) return row[agentColumnKey(where.col)] === where.val;
+  throw new Error("unsupported where shape");
+}
+const COLUMN_KEYS: Record<string, string> = { id: "id", deleted_at: "deletedAt" };
+function agentColumnKey(col: unknown): string {
+  return COLUMN_KEYS[col as string];
+}
+
 vi.mock("@/lib/agent-access", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/agent-access")>();
   return {
@@ -773,21 +789,16 @@ describe("ClientRouter", () => {
   });
 
   describe("soft-deleted agents", () => {
-    // The lookup is mocked, so the fake honours the where clause the way the
-    // database would: a row with deletedAt set is invisible to a query that
-    // filters on `deleted_at IS NULL`, and visible to one that does not.
     function seedDeletedAgent() {
       const deleted = { ...defaultAgent, deletedAt: new Date() };
-      mockFindFirst.mockImplementation(async ({ where }: { where: unknown }) => {
-        const filtersDeleted = JSON.stringify(where).includes('"isNull":"deleted_at"');
-        return filtersDeleted ? null : deleted;
-      });
+      mockFindFirst.mockImplementation(async ({ where }: { where: MockWhere }) =>
+        matchesWhere(where, deleted) ? deleted : null
+      );
     }
 
     it.each([
       ["history", { type: "history", agentId: "agent-1" }],
       ["message", { type: "message", content: "Hi", agentId: "agent-1" }],
-      ["abort", { type: "abort", agentId: "agent-1" }],
     ])("answers %s for a deleted agent with Agent not found", async (_name, msg) => {
       seedDeletedAgent();
       const clientWs = createMockClientWs();
