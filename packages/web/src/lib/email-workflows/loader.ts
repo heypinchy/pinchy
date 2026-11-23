@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { db } from "@/db";
 import { agents, emailWorkflows, emailWorkflowConnections, users } from "@/db/schema";
 import { getInstancePolicy, arePersonalAutomationsPaused } from "@/lib/instance-policy";
@@ -130,7 +130,9 @@ export async function loadDispatchableWorkflows(): Promise<WorkflowLoadResult> {
     .innerJoin(agents, eq(agents.id, emailWorkflows.agentId))
     .leftJoin(users, eq(users.id, agents.ownerId))
     .leftJoin(emailWorkflowConnections, eq(emailWorkflowConnections.workflowId, emailWorkflows.id))
-    .where(eq(emailWorkflows.enabled, true));
+    // A soft-deleted agent's workflow is not dispatched: the agent is gone from
+    // the runtime, so every email would wait out the readiness deadline.
+    .where(and(eq(emailWorkflows.enabled, true), isNull(agents.deletedAt)));
 
   const units: DispatchableWorkflow[] = [];
   // Keyed by workflow id: every reason is a property of the workflow, so it

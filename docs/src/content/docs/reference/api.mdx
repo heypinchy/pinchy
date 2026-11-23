@@ -2786,7 +2786,7 @@ A failed delivery is still a `200`: the decision itself is persisted, and retryi
 
 - `403` — you are not the requester. Only the person who triggered the action can confirm it (four-eyes approval by a different admin is a planned extension, [#124](https://github.com/heypinchy/pinchy/issues/124))
 - `403` — `code: "personal_agent_disabled"`: you asked to **approve** a confirmation on your own personal agent while an admin has turned members' personal agents off. Approving would resume the run. Denying is always allowed
-- `404` — no such request
+- `404` — no such request, or you asked to **approve** a request whose agent has been deleted. A deleted agent's confirmations are also left out of `GET /api/approvals`. Denying one is still allowed
 - `409` — the request is no longer pending: already decided, already consumed, or expired
 
 ### `POST /api/internal/approvals/gate-check`

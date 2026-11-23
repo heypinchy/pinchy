@@ -282,6 +282,25 @@ describe("Automations management API", () => {
       expect(entry.detail.changes).toMatchObject({ enabled: { from: false, to: true } });
     });
 
+    it("answers 404 for a soft-deleted agent's workflow, like a workflow that does not exist", async () => {
+      asMember(OWNER);
+      const agent = await seedAgent({ isPersonal: true, ownerId: OWNER });
+      const wf = await seedWorkflow(agent.id, { enabled: false, createdBy: OWNER });
+      await db.update(agents).set({ deletedAt: new Date() }).where(eq(agents.id, agent.id));
+
+      const res = await PATCH(
+        req(`http://localhost/api/automations/${wf.id}`, {
+          method: "PATCH",
+          body: { enabled: true },
+        }),
+        routeContext({ id: wf.id })
+      );
+
+      expect(res.status).toBe(404);
+      expect((await loadWorkflow(wf.id)).enabled).toBe(false);
+      expect(deferAuditLogMock).not.toHaveBeenCalled();
+    });
+
     it("does not audit a no-op toggle", async () => {
       asMember(OWNER);
       const agent = await seedAgent({ isPersonal: true, ownerId: OWNER });

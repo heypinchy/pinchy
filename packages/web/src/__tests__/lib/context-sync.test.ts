@@ -12,13 +12,14 @@ vi.mock("@/db", () => ({
 }));
 
 vi.mock("@/db/schema", () => ({
-  agents: { isPersonal: "isPersonal", ownerId: "ownerId" },
+  agents: { isPersonal: "isPersonal", ownerId: "ownerId", deletedAt: "deletedAt" },
   users: { id: "id" },
 }));
 
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((col, val) => ({ col, val })),
   and: vi.fn((...args: unknown[]) => ({ and: args })),
+  isNull: vi.fn((col) => ({ isNull: col })),
 }));
 
 const mockGetSetting = vi.fn();
@@ -62,6 +63,15 @@ describe("syncUserContextToWorkspaces", () => {
       "USER.md",
       "I am a developer"
     );
+  });
+
+  it("only looks at agents that are not soft-deleted", async () => {
+    mockFindFirst.mockResolvedValue({ id: "user-1", context: "ctx" });
+    mockFindMany.mockResolvedValue([]);
+
+    await syncUserContextToWorkspaces("user-1");
+
+    expect(JSON.stringify(mockFindMany.mock.calls[0][0].where)).toContain('"isNull":"deletedAt"');
   });
 
   it("should handle user with no personal agents", async () => {
@@ -109,6 +119,15 @@ describe("syncOrgContextToWorkspaces", () => {
       "USER.md",
       "We are a Vienna-based team"
     );
+  });
+
+  it("only looks at agents that are not soft-deleted", async () => {
+    mockGetSetting.mockResolvedValue("ctx");
+    mockFindMany.mockResolvedValue([]);
+
+    await syncOrgContextToWorkspaces();
+
+    expect(JSON.stringify(mockFindMany.mock.calls[0][0].where)).toContain('"isNull":"deletedAt"');
   });
 
   it("should handle no shared agents", async () => {
