@@ -14,6 +14,7 @@ export async function GET() {
   const readable: readonly string[] = READABLE_ORG_SETTING_KEYS;
   const safe = all
     .filter((s) => readable.includes(s.key))
+    // Masking stays as defense in depth for a future readable key stored encrypted.
     .map((s) => ({
       ...s,
       value: s.encrypted ? "••••••••" : s.value,
