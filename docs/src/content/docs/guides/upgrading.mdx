@@ -236,9 +236,11 @@ The database backup doesn't hold the PDFs Pinchy converted Word and PowerPoint f
 
 ### Breaking changes
 
-#### `POST /api/settings` only accepts `org.timezone`
+#### `/api/settings` only reads and writes `org.timezone`
 
-The endpoint used to store any key you sent it, which let an admin write provider, domain-lock, enterprise-key or Telegram settings around the routes that own them — skipping their validation, side effects and audit entry. It now accepts `org.timezone` and answers every other key with `400`. The Settings UI only ever sent the timezone, so nothing changes there. If a script of yours posted other keys here, use the dedicated endpoint instead; the [API reference](/reference/api/) lists them.
+`GET /api/settings` used to list every row of the settings table. It now returns only `org.timezone`, in the same `{ key, value, encrypted }` shape, so the Settings UI is unaffected. If a script of yours read other settings from here, use the dedicated endpoint for that setting; the [API reference](/reference/api/) lists them.
+
+`POST /api/settings` used to store any key you sent it, which let an admin write provider, domain-lock, enterprise-key or Telegram settings around the routes that own them — skipping their validation, side effects and audit entry. It now accepts `org.timezone` and answers every other key with `400`. The Settings UI only ever sent the timezone, so nothing changes there. If a script of yours posted other keys here, use the dedicated endpoint instead; the [API reference](/reference/api/) lists them.
 
 #### `GET /api/agents/:agentId/knowledge/unsearchable` returns counts, not the document list
 

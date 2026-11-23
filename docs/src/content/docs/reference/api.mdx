@@ -1307,20 +1307,17 @@ It checks the agent's **saved** grants under `/data/` and nothing else: it takes
 
 ### `GET /api/settings`
 
-Get all application settings. Encrypted values (such as API keys) are masked in the response.
+Get the organization settings (admin only). The response lists only the settings the Settings UI reads, currently `org.timezone`. Settings an admin can change elsewhere have their own endpoints. The response is `[]` until a timezone has been saved; the effective default is UTC.
 
 **Response:**
 
 ```json
-[
-  { "key": "default_provider", "value": "anthropic", "encrypted": false },
-  { "key": "anthropic_api_key", "value": "--------", "encrypted": true }
-]
+[{ "key": "org.timezone", "value": "Europe/Vienna", "encrypted": false }]
 ```
 
 ### `POST /api/settings`
 
-Set the organisation timezone (admin only). `org.timezone` is the only key this endpoint accepts; any other key is refused with a `400` validation error. Providers, the enterprise key, the domain lock, Telegram and the member-access switches each have their own endpoint, with their own validation and audit entry.
+Set the organization timezone (admin only). `org.timezone` is the only key this endpoint accepts; any other key is refused with a `400` validation error. Providers, the enterprise key, the domain lock, Telegram and the member-access switches each have their own endpoint, with their own validation and audit entry.
 
 **Request body:**
 
