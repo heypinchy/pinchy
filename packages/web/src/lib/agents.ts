@@ -5,6 +5,7 @@ import {
   agents,
   activeAgents,
   agentConnectionPermissions,
+  emailWorkflows,
   integrationConnections,
   type AgentPluginConfig,
 } from "@/db/schema";
@@ -18,6 +19,7 @@ import {
   writeWorkspaceFileInternal,
   writeIdentityFile,
 } from "@/lib/workspace";
+import { expirePendingForAgent } from "@/lib/approvals/service";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 import { deleteSetting } from "@/lib/settings";
 import { getUsableDefaultProvider } from "@/lib/model-resolver/usable-default-provider";
@@ -146,6 +148,14 @@ export async function deleteAgent(id: string, onDeleted?: OnAgentDeleted) {
     // re-emitted into the runtime config (the Odoo/email permission loops key
     // off agentConnectionPermissions, not agents.deletedAt).
     await db.delete(agentConnectionPermissions).where(eq(agentConnectionPermissions.agentId, id));
+    // Switch off the agent's email automations. The sweep would otherwise keep
+    // loading them and every email would wait out the readiness deadline for an
+    // agent that is no longer in the runtime. Rows stay (disabled), so history
+    // and the cascade on hard delete are untouched.
+    await db.update(emailWorkflows).set({ enabled: false }).where(eq(emailWorkflows.agentId, id));
+    // Its pending confirmations are no longer actionable: approving one would
+    // resume the parked tool call of a deleted agent.
+    await expirePendingForAgent(id);
     // Clean up Telegram bot settings if this agent had a bot
     await deleteSetting(`telegram_bot_token:${id}`);
     await deleteSetting(`telegram_bot_username:${id}`);

@@ -69,6 +69,7 @@ async function loadWorkflowWithAgent(id: string) {
       enabled: emailWorkflows.enabled,
       agentId: emailWorkflows.agentId,
       agentName: agents.name,
+      agentDeletedAt: agents.deletedAt,
       isPersonal: agents.isPersonal,
       ownerId: agents.ownerId,
       // The OWNER's role, not the caller's: an admin stopping a member's
@@ -102,6 +103,9 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
 
   const workflow = await loadWorkflowWithAgent(id);
   if (!workflow) return workflowNotFound();
+  // A soft-deleted agent's workflow is as gone as the agent: the list hides it,
+  // so enabling it here would switch on something nobody can see.
+  if (workflow.agentDeletedAt) return workflowNotFound();
   if (!canManageAgentWorkflows(workflow, { id: session.user.id!, role: session.user.role })) {
     return workflowNotFound();
   }

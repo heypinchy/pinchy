@@ -929,6 +929,44 @@ describe("approval routes (integration, real DB)", () => {
     });
   });
 
+  describe("on a soft-deleted agent", () => {
+    async function pendingThenDelete() {
+      const blocked = await (await gateCheck(gateReq(gateBody()))).json();
+      await db.update(agents).set({ deletedAt: new Date() }).where(eq(agents.id, agent.id));
+      return blocked.requestId as string;
+    }
+
+    it("does not list its pending confirmation card", async () => {
+      await pendingThenDelete();
+      setSession(user);
+
+      const res = await listApprovals(new NextRequest("http://localhost/api/approvals"), {});
+
+      expect((await res.json()).approvals).toHaveLength(0);
+    });
+
+    it("refuses an approval — it would resume a run of an agent that was deleted", async () => {
+      const requestId = await pendingThenDelete();
+      setSession(user);
+
+      const res = await decide(decideReq({ decision: "approve" }), ctx(requestId));
+
+      expect(res.status).toBe(404);
+      const [row] = await db.select().from(toolApproval).where(eq(toolApproval.id, requestId));
+      expect(row.status).toBe("pending");
+      expect(gatewayRequest).not.toHaveBeenCalled();
+    });
+
+    it("still takes a denial", async () => {
+      const requestId = await pendingThenDelete();
+      setSession(user);
+
+      const res = await decide(decideReq({ decision: "deny" }), ctx(requestId));
+
+      expect(res.status).toBe(200);
+    });
+  });
+
   it("returns 404 for an unknown request id", async () => {
     setSession(user);
     const res = await decide(

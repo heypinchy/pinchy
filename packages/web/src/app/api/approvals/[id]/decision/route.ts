@@ -47,11 +47,16 @@ export const POST = withAuth<RouteContext>(async (request, { params }, session) 
   // request, so a stranger's id still gets resolveDecision's answer.
   if (decision === "approve") {
     const [pending] = await db
-      .select({ isPersonal: agents.isPersonal })
+      .select({ isPersonal: agents.isPersonal, deletedAt: agents.deletedAt })
       .from(toolApproval)
       .innerJoin(agents, eq(agents.id, toolApproval.agentId))
       .where(and(eq(toolApproval.id, id), eq(toolApproval.requesterId, session.user.id!)))
       .limit(1);
+    // A deleted agent's parked call must stay parked: same answer as an
+    // unknown request.
+    if (pending?.deletedAt) {
+      return NextResponse.json({ error: "not_found" }, { status: 404 });
+    }
     if (pending && (await isPersonalAgentPausedFor(pending, session.user.role))) {
       return NextResponse.json(PERSONAL_AGENT_DISABLED, { status: 403 });
     }

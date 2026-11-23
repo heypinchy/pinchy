@@ -413,6 +413,18 @@ export async function resolveDecision(input: ResolveDecisionInput): Promise<Reso
   return { ok: true, request: updated };
 }
 
+/** Expire every pending request of one agent, overdue or not — used when the
+ * agent is deleted, so its cards stop being actionable at once rather than at
+ * their TTL. Returns the number of rows flipped. */
+export async function expirePendingForAgent(agentId: string): Promise<number> {
+  const rows = await db
+    .update(toolApproval)
+    .set({ status: "expired", argsSummary: SETTLED_SUMMARY })
+    .where(and(eq(toolApproval.agentId, agentId), eq(toolApproval.status, "pending")))
+    .returning({ id: toolApproval.id });
+  return rows.length;
+}
+
 /** One row flipped by {@link expireStale} — enough to audit `approval.expired`. */
 export interface ExpiredApproval {
   id: string;
