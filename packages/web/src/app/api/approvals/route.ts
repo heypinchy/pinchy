@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { and, desc, eq, gt, inArray } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull } from "drizzle-orm";
 import { withAuth } from "@/lib/api-auth";
 import { db } from "@/db";
 import { toolApproval, agents } from "@/db/schema";
@@ -47,6 +47,9 @@ export const GET = withAuth(async (req, _ctx, session) => {
       and(
         eq(toolApproval.requesterId, session.user.id!),
         eq(toolApproval.status, "pending"),
+        // A soft-deleted agent's card is not actionable; approving it would
+        // resume the parked tool call of an agent that is gone.
+        isNull(agents.deletedAt),
         // Overdue rows are dead (consume + decision both check expiry); the
         // hourly sweep flips them to `expired` — never show them as actionable.
         gt(toolApproval.expiresAt, new Date())
