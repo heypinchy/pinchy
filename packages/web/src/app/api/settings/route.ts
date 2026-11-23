@@ -4,17 +4,20 @@ import { getAllSettings } from "@/lib/settings";
 import { getOrgTimezone, setOrgTimezone, isValidIanaTimezone } from "@/lib/settings-timezone";
 import { appendAuditLog } from "@/lib/audit";
 import { parseRequestBody } from "@/lib/api-validation";
-import { orgSettingSchema } from "@/lib/schemas/settings";
+import { orgSettingSchema, READABLE_ORG_SETTING_KEYS } from "@/lib/schemas/settings";
 
 export async function GET() {
   const sessionOrError = await requireAdmin();
   if (sessionOrError instanceof NextResponse) return sessionOrError;
 
   const all = await getAllSettings();
-  const safe = all.map((s) => ({
-    ...s,
-    value: s.encrypted ? "••••••••" : s.value,
-  }));
+  const readable: readonly string[] = READABLE_ORG_SETTING_KEYS;
+  const safe = all
+    .filter((s) => readable.includes(s.key))
+    .map((s) => ({
+      ...s,
+      value: s.encrypted ? "••••••••" : s.value,
+    }));
   return NextResponse.json(safe);
 }
 

@@ -22,7 +22,13 @@ import { z } from "zod";
  * key through `/api/enterprise/key`, the domain lock through
  * `/api/settings/domain`, Telegram through the agent's Telegram routes, and
  * the member-access switches through `PUT /api/settings/governance`.
+ *
+ * `GET /api/settings` reads from the same contract: it returns only the keys in
+ * `READABLE_ORG_SETTING_KEYS`, so the settings table's other rows (some stored
+ * unencrypted) never reach the browser.
  */
+export const READABLE_ORG_SETTING_KEYS = ["org.timezone"] as const;
+
 export const orgSettingSchema = z.object({
   key: z.literal("org.timezone", {
     error:

@@ -1307,15 +1307,12 @@ It checks the agent's **saved** grants under `/data/` and nothing else: it takes
 
 ### `GET /api/settings`
 
-Get all application settings. Encrypted values (such as API keys) are masked in the response.
+Get the organisation settings (admin only). The response lists only the settings the Settings UI reads, currently `org.timezone`. Other settings are not returned here; each has its own endpoint.
 
 **Response:**
 
 ```json
-[
-  { "key": "default_provider", "value": "anthropic", "encrypted": false },
-  { "key": "anthropic_api_key", "value": "--------", "encrypted": true }
-]
+[{ "key": "org.timezone", "value": "Europe/Vienna", "encrypted": false }]
 ```
 
 ### `POST /api/settings`
