@@ -61,6 +61,16 @@ vi.mock("@/lib/approvals/summary", async (importOriginal) => {
   };
 });
 
+// deleteAgent's side effects outside the database (workspace files, runtime
+// config, Telegram) are not what these tests are about.
+vi.mock("@/lib/workspace", () => ({ deleteWorkspace: vi.fn() }));
+vi.mock("@/lib/openclaw-config", () => ({
+  regenerateOpenClawConfig: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("@/lib/telegram-allow-store", () => ({
+  recalculateTelegramAllowStores: vi.fn().mockResolvedValue(undefined),
+}));
+
 const mockGetSession = vi.fn();
 vi.mock("@/lib/auth", () => ({
   getSession: (...args: unknown[]) => mockGetSession(...args),
@@ -74,6 +84,8 @@ import { GET as listApprovals } from "@/app/api/approvals/route";
 import { POST as decide } from "@/app/api/approvals/[id]/decision/route";
 import { POST as reportResolution } from "@/app/api/internal/approvals/resolution/route";
 import { MAX_PENDING_PER_REQUESTER, linkApproval } from "@/lib/approvals/service";
+import { deleteAgent } from "@/lib/agents";
+import { sweepApprovals } from "@/server/approval-sweep";
 import { setInstancePolicy } from "@/lib/instance-policy";
 import { computeArgsDigest } from "@/lib/approvals/digest";
 import { MAX_KNOWN_APPROVALS } from "@/lib/schemas/approvals";
@@ -957,13 +969,66 @@ describe("approval routes (integration, real DB)", () => {
       expect(gatewayRequest).not.toHaveBeenCalled();
     });
 
-    it("still takes a denial", async () => {
-      const requestId = await pendingThenDelete();
+    it("still takes a denial: recorded, delivered to the parked call, audited", async () => {
+      const blocked = await (
+        await gateCheck(gateReq({ ...gateBody(), toolCallId: "call_del" }))
+      ).json();
+      await linkApproval({ approvalId: "plugin:del", toolCallId: "call_del" });
+      await db.update(agents).set({ deletedAt: new Date() }).where(eq(agents.id, agent.id));
       setSession(user);
 
-      const res = await decide(decideReq({ decision: "deny" }), ctx(requestId));
+      const res = await decide(decideReq({ decision: "deny" }), ctx(blocked.requestId));
+      await flushAfter();
 
       expect(res.status).toBe(200);
+      const [row] = await db
+        .select()
+        .from(toolApproval)
+        .where(eq(toolApproval.id, blocked.requestId));
+      expect(row.status).toBe("denied");
+      expect(gatewayRequest).toHaveBeenCalledWith("plugin.approval.resolve", {
+        id: "plugin:del",
+        decision: "deny",
+      });
+      const audited = await db
+        .select()
+        .from(auditLog)
+        .where(eq(auditLog.eventType, "approval.denied"));
+      expect(audited).toHaveLength(1);
+    });
+
+    it("still gates its tool calls: gate-check blocks rather than allows", async () => {
+      // `!agent` in gate-check answers allow, so a deletedAt filter there would
+      // fail open. The deleted agent's calls must keep being confirmed.
+      await db.update(agents).set({ deletedAt: new Date() }).where(eq(agents.id, agent.id));
+
+      const res = await (await gateCheck(gateReq(gateBody()))).json();
+
+      expect(res.decision).toBe("block");
+    });
+
+    it("lets the hourly sweep expire and audit its overdue pending request", async () => {
+      // Through deleteAgent itself: whatever it does to the row must leave the
+      // sweep able to close it and write `approval.expired`.
+      const blocked = await (await gateCheck(gateReq(gateBody()))).json();
+      const requestId = blocked.requestId as string;
+      await deleteAgent(agent.id);
+      await db
+        .update(toolApproval)
+        .set({ expiresAt: new Date(Date.now() - 1000) })
+        .where(eq(toolApproval.id, requestId));
+
+      const swept = await sweepApprovals();
+      await flushAfter();
+
+      expect(swept.expired).toBe(1);
+      const [row] = await db.select().from(toolApproval).where(eq(toolApproval.id, requestId));
+      expect(row.status).toBe("expired");
+      const audited = await db
+        .select()
+        .from(auditLog)
+        .where(eq(auditLog.eventType, "approval.expired"));
+      expect(audited).toHaveLength(1);
     });
   });
 
