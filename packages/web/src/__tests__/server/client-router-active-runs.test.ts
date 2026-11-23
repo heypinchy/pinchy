@@ -51,6 +51,8 @@ vi.mock("@/db/schema", () => ({
 
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((col, val) => ({ col, val })),
+  and: vi.fn((...conds) => ({ and: conds })),
+  isNull: vi.fn((col) => ({ isNull: col })),
 }));
 
 vi.mock("@/lib/budgets", () => ({
