@@ -111,7 +111,9 @@ function matchesWhere(where: MockWhere, row: Record<string, unknown>): boolean {
 }
 const COLUMN_KEYS: Record<string, string> = { id: "id", deleted_at: "deletedAt" };
 function agentColumnKey(col: unknown): string {
-  return COLUMN_KEYS[col as string];
+  const key = COLUMN_KEYS[col as string];
+  if (!key) throw new Error(`unmapped column in where: ${String(col)}`);
+  return key;
 }
 
 function createMockWs(): MockWs {
@@ -200,6 +202,27 @@ describe("ClientRouter user-triggered abort (#550)", () => {
 
     expect(mockChatAbort).toHaveBeenCalledWith(SESSION_KEY, "run-xyz");
     expect(ws.sent.map((s) => JSON.parse(s))).not.toContainEqual({
+      type: "error",
+      message: "Agent not found",
+    });
+  });
+
+  it("still access-checks an abort for a deleted agent", async () => {
+    const deleted = { ...defaultAgent, deletedAt: new Date() };
+    mockFindFirst.mockImplementation(async ({ where }: { where: MockWhere }) =>
+      matchesWhere(where, deleted) ? deleted : null
+    );
+    mockAssertAgentAccess.mockImplementation(() => {
+      throw new Error("Access denied");
+    });
+    const ws = createMockWs();
+    registerActiveRun(activeRuns, ws, "run-xyz");
+    const router = makeRouter();
+
+    await router.handleMessage(ws, { type: "abort", agentId: "agent-1" });
+
+    expect(mockChatAbort).not.toHaveBeenCalled();
+    expect(ws.sent.map((s) => JSON.parse(s))).toContainEqual({
       type: "error",
       message: "Agent not found",
     });

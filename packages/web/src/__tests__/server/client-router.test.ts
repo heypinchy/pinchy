@@ -65,7 +65,9 @@ function matchesWhere(where: MockWhere, row: Record<string, unknown>): boolean {
 }
 const COLUMN_KEYS: Record<string, string> = { id: "id", deleted_at: "deletedAt" };
 function agentColumnKey(col: unknown): string {
-  return COLUMN_KEYS[col as string];
+  const key = COLUMN_KEYS[col as string];
+  if (!key) throw new Error(`unmapped column in where: ${String(col)}`);
+  return key;
 }
 
 vi.mock("@/lib/agent-access", async (importOriginal) => {
