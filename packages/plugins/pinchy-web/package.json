@@ -8,13 +8,13 @@
     "test:watch": "vitest"
   },
   "devDependencies": {
-    "@types/node": "^26.1.2",
+    "@types/node": "^26.6.6",
     "typescript": "^6.0.3",
     "vitest": "^4.1.12"
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
-    "linkedom": "^0.18.13",
+    "linkedom": "^0.18.15",
     "undici": "^7.30.1"
   }
 }
