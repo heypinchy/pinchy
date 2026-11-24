@@ -102,7 +102,20 @@ interface AccessValues {
   groupIds: string[];
 }
 
-type DirtyTabs = Set<"general" | "personality" | "instructions" | "permissions" | "access">;
+type DraftTab = "general" | "personality" | "instructions" | "permissions" | "access";
+type DirtyTabs = Set<DraftTab>;
+
+// The sections whose edits are drafts, saved together by the bar at the
+// bottom. Telegram, Automations and Diagnostics act immediately and have
+// nothing for that bar to save, so it only shows there while a draft section
+// still holds unsaved changes.
+const DRAFT_TABS: ReadonlySet<AgentSettingsTab> = new Set<DraftTab>([
+  "general",
+  "personality",
+  "instructions",
+  "permissions",
+  "access",
+]);
 
 // Single source of truth for which agent-settings tabs require admin (or
 // personal-agent-owner) access. Non-admin visibility is derived from this
@@ -685,23 +698,25 @@ export function AgentSettingsPageContent() {
       </div>
 
       {/* Save bar — pinned at bottom, outside scroll area */}
-      <div className="shrink-0 border-t bg-background px-4 md:px-6 py-3 flex items-center justify-between">
-        <span className="text-sm text-muted-foreground">
-          {hasDirtyTabs ? "Unsaved changes" : "All changes saved"}
-        </span>
-        <TooltipProvider>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button size="sm" onClick={handleSaveClick} disabled={!hasDirtyTabs || saving}>
-                {saving ? "Saving..." : needsRestart ? "Save & Restart" : "Save"}
-              </Button>
-            </TooltipTrigger>
-            {needsRestart && (
-              <TooltipContent>Will briefly restart the agent runtime</TooltipContent>
-            )}
-          </Tooltip>
-        </TooltipProvider>
-      </div>
+      {(DRAFT_TABS.has(activeTab) || hasDirtyTabs) && (
+        <div className="shrink-0 border-t bg-background px-4 md:px-6 py-3 flex items-center justify-between">
+          <span className="text-sm text-muted-foreground">
+            {hasDirtyTabs ? "Unsaved changes" : "All changes saved"}
+          </span>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button size="sm" onClick={handleSaveClick} disabled={!hasDirtyTabs || saving}>
+                  {saving ? "Saving..." : needsRestart ? "Save & Restart" : "Save"}
+                </Button>
+              </TooltipTrigger>
+              {needsRestart && (
+                <TooltipContent>Will briefly restart the agent runtime</TooltipContent>
+              )}
+            </Tooltip>
+          </TooltipProvider>
+        </div>
+      )}
 
       {/* Confirmation dialog for restart */}
       <AlertDialog open={showConfirmDialog} onOpenChange={setShowConfirmDialog}>

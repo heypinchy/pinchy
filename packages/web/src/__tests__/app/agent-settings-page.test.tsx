@@ -5,6 +5,8 @@ import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { AgentSettingsPageContent as AgentSettingsPage } from "@/components/agent-settings-page-content";
 import { jsonResponse } from "@/test-helpers/fetch";
+import { useSearchParams } from "next/navigation";
+import { readonlySearchParams } from "@/test-helpers/navigation";
 
 // Capture onChange callbacks from tab components
 let capturedOnChangeGeneral: ((v: unknown, isDirty: boolean) => void) | undefined;
@@ -38,6 +40,10 @@ vi.mock("@/components/agent-settings-permissions", () => ({
     _capturedOnChangePermissions = props.onChange;
     return <div data-testid="permissions-tab">Permissions</div>;
   },
+}));
+
+vi.mock("@/components/agent-settings-diagnostics", () => ({
+  AgentSettingsDiagnostics: () => <div data-testid="diagnostics-tab">Diagnostics</div>,
 }));
 
 const mockTriggerRestart = vi.fn();
@@ -112,6 +118,7 @@ describe("AgentSettingsPage", () => {
     capturedOnChangeInstructions = undefined;
     _capturedOnChangePermissions = undefined;
     mockTriggerRestart.mockClear();
+    vi.mocked(useSearchParams).mockReturnValue(readonlySearchParams());
     fetchSpy = mockFetchResponses();
   });
 
@@ -136,6 +143,35 @@ describe("AgentSettingsPage", () => {
 
     expect(screen.getByRole("button", { name: /save/i })).toBeDisabled();
     expect(screen.getByText("All changes saved")).toBeInTheDocument();
+  });
+
+  // Diagnostics, Telegram and Automations act immediately — nothing there is a
+  // draft. A bar reading "All changes saved" beside a Save button promised a
+  // step those sections do not have.
+  it("shows no save bar on a live section with nothing unsaved", async () => {
+    vi.mocked(useSearchParams).mockReturnValue(readonlySearchParams("tab=diagnostics"));
+    render(<AgentSettingsPage />);
+    await screen.findByTestId("diagnostics-tab");
+
+    expect(screen.queryByText("All changes saved")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^save/i })).not.toBeInTheDocument();
+  });
+
+  // It cannot simply vanish on live sections: an unsaved edit in General must
+  // stay in view, and savable, while the user looks at Diagnostics.
+  it("keeps the save bar on a live section while another section has unsaved changes", async () => {
+    vi.mocked(useSearchParams).mockReturnValue(readonlySearchParams("tab=diagnostics"));
+    render(<AgentSettingsPage />);
+    await screen.findByTestId("diagnostics-tab");
+
+    // General stays mounted (keepMounted), so its draft can be dirty while
+    // another section is showing — exactly a user's half-finished edit.
+    act(() => {
+      capturedOnChangeGeneral?.({ name: "Renamed" }, true);
+    });
+
+    expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^save/i })).toBeEnabled();
   });
 
   it("should show 'Save' button (not restart) when only non-restart tab is dirty", async () => {
