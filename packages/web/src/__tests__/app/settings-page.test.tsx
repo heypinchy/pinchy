@@ -4,15 +4,9 @@ import { render, screen, waitFor, act, fireEvent } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { useRouter, useSearchParams } from "next/navigation";
-import type { ReadonlyURLSearchParams } from "next/navigation";
 import { SettingsPageContent as SettingsPage } from "@/components/settings-page-content";
 import { jsonResponse } from "@/test-helpers/fetch";
-
-// useSearchParams() is typed as ReadonlyURLSearchParams; a plain URLSearchParams
-// is structurally not assignable (the readonly type drops the mutating methods)
-// but is a valid value at runtime, so the mocks cast through it.
-const readonlySearchParams = (init?: string) =>
-  new URLSearchParams(init) as unknown as ReadonlyURLSearchParams;
+import { readonlySearchParams } from "@/test-helpers/navigation";
 
 const mockToastError = vi.fn();
 vi.mock("sonner", () => ({
