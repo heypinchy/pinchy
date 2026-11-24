@@ -51,6 +51,10 @@ export async function POST(request: NextRequest) {
   // Policy lives server-side: load the agent and short-circuit ungated tools
   // so the gate adds no pending row (and the plugin can safely call this for
   // every tool). One DB read keeps the policy always-fresh — no plugin cache.
+  // Deliberately NOT filtered on `deletedAt`: `!agent` below answers `allow`, so
+  // hiding a soft-deleted agent here would fail open for a call that gate must
+  // still confirm. A deleted agent's pending cards are hidden by the list route and
+  // refused by the decision route; the hourly sweep still expires and audits them.
   const [agent] = await db
     .select({ name: agents.name, pluginConfig: agents.pluginConfig })
     .from(agents)

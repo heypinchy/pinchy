@@ -11,7 +11,7 @@
  * scheduler stays a pure cadence with no knowledge of DB or Gateway, which is
  * what lets its tests run with no mocks at all.
  */
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import type { OpenClawClient } from "openclaw-node";
 
 import { db } from "@/db";
@@ -40,10 +40,10 @@ export type SweepGatewayClient = Pick<
  */
 export const DEFAULT_READINESS_DEADLINE_MS = 30_000;
 
-/** The agent's `provider/model` ref, or null if the agent is gone. */
+/** The agent's `provider/model` ref, or null if the agent is gone (soft-deleted included). */
 export async function loadAgentModel(agentId: string): Promise<string | null> {
   const agent = await db.query.agents.findFirst({
-    where: eq(agents.id, agentId),
+    where: and(eq(agents.id, agentId), isNull(agents.deletedAt)),
     columns: { model: true },
   });
   return agent?.model ?? null;
