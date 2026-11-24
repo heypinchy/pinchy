@@ -80,13 +80,7 @@ describe("the card's marking: mid-word probes", () => {
   // a marker on an approval card costs a glance, and deciding per script and
   // per font where the form is drawn is what failed ten times.
   it("marks a joiner the core spec gives a form as well", () => {
-    for (const text of [
-      "ශ\u0DCA\u200Dරී",
-      "അവന്\u200D",
-      "क्\u200Cष",
-      "র\u200D্যাংকিং",
-      "ग्\u200D",
-    ]) {
+    for (const text of ["ශ\u0DCA\u200Dරී", "അവന്\u200D", "क्\u200Cष", "র\u200D্যাংকিং", "ग्\u200D"]) {
       expect(marked(text), text).toEqual(formatChars(text));
     }
   });
