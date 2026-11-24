@@ -17,10 +17,10 @@
     "test": "node --test scripts/*.test.mjs"
   },
   "dependencies": {
-    "@astrojs/starlight": "^0.42.6",
+    "@astrojs/starlight": "^0.43.1",
     "astro": "^7.4.13",
     "astro-loader-github-releases": "^3.0.1",
-    "mermaid": "^11.16.1"
+    "mermaid": "^12.3.0"
   },
   "pnpm": {
     "overrides": {
