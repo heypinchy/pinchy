@@ -1,8 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { mockAuthenticate, mockFetch } = vi.hoisted(() => ({
+const { mockAuthenticate, mockFetch, realFetch } = vi.hoisted(() => ({
   mockAuthenticate: vi.fn(),
   mockFetch: vi.fn(),
+  // Captured before stubGlobal swaps it out, so the one end-to-end mcp test
+  // below can do real loopback HTTP against a mock MCP server.
+  realFetch: globalThis.fetch.bind(globalThis),
 }));
 
 vi.stubGlobal("fetch", mockFetch);
@@ -35,17 +38,43 @@ vi.mock("@/lib/integrations/imap-probe", async (importActual) => {
   };
 });
 
+const mockListMcpTools = vi.fn();
+// Holds the REAL listMcpTools so the end-to-end test at the bottom of the mcp
+// block can opt back into it while every other test keeps the fast fake.
+const mcpClientActual = vi.hoisted(
+  () => ({}) as { listMcpTools?: typeof import("@/lib/integrations/mcp-client").listMcpTools }
+);
+// Only the network I/O (listMcpTools) is mocked; the typed error classes come
+// from the REAL module via importActual, exactly like the imap-probe pattern
+// above. The mcp branch of probe.ts classifies transient-vs-auth via
+// `instanceof McpAuthError` etc., so re-implementing fakes here would let the
+// real classes drift from the classification silently.
+vi.mock("@/lib/integrations/mcp-client", async (importActual) => {
+  const actual = await importActual<typeof import("@/lib/integrations/mcp-client")>();
+  mcpClientActual.listMcpTools = actual.listMcpTools;
+  return {
+    ...actual,
+    listMcpTools: (...args: unknown[]) => mockListMcpTools(...args),
+  };
+});
 // The guard's decisions are tested in url-validation.test.ts; here it is a
 // seam (and keeps these cases off the real resolver). The connection itself is
 // pinned to the target it answers; odoo-admin-routes-pinning.test.ts covers that.
 const mockResolveExternalUrlTarget = vi.fn();
+// validateExternalUrl is the same seam for the mcp branch (listMcpTools runs
+// it before connecting); it passes by default so the full-chain test below can
+// reach its loopback mock server, which the real guard always refuses.
+const mockValidateExternalUrl = vi.fn();
 vi.mock("@/lib/integrations/url-validation", () => ({
   resolveExternalUrlTarget: (...args: unknown[]) => mockResolveExternalUrlTarget(...args),
+  validateExternalUrl: (...args: unknown[]) => mockValidateExternalUrl(...args),
 }));
 
 import { fetchOdooSchema } from "@/lib/integrations/odoo-sync";
 import { probeBraveApiKey } from "@/lib/integrations/brave-probe";
 import { probeIntegrationCredentials } from "@/lib/integrations/probe";
+import { McpAuthError, McpServerError, McpSchemaError } from "@/lib/integrations/mcp-client";
+import { createMcpMockServer } from "@/test-utils/mcp-mock-server";
 import { resetInsecureMockWarningsForTest } from "@/lib/integrations/insecure-mock-base-url";
 import { odooRedirectRefusedMessage } from "@/lib/integrations/odoo-error";
 
@@ -56,6 +85,10 @@ beforeEach(() => {
     valid: true,
     url: new URL(url).origin,
     target: [{ address: "93.184.216.34", family: 4 }],
+  }));
+  mockValidateExternalUrl.mockImplementation(async (url: string) => ({
+    valid: true,
+    url: new URL(url).origin,
   }));
 });
 
@@ -572,5 +605,146 @@ describe("probeIntegrationCredentials", () => {
       if (res.success) return;
       expect(res.reason).not.toContain(validImapCreds.password);
     });
+  });
+
+  describe("mcp", () => {
+    const validData = {
+      type: "mcp" as const,
+      preset: "github" as const,
+      transport: "http" as const,
+      url: "https://api.githubcopilot.com/mcp/",
+      tools: [],
+      lastSyncAt: new Date().toISOString(),
+    };
+    const validCreds = { token: "pat-fresh-token" };
+
+    it("returns success and calls listMcpTools with url/transport/token/extraHeaders from data+credentials", async () => {
+      mockListMcpTools.mockResolvedValue([{ name: "create_issue", inputSchema: {} }]);
+      const dataWithHeaders = { ...validData, extraHeaders: { locationId: "loc_1" } };
+
+      const res = await probeIntegrationCredentials("mcp", validCreds, { data: dataWithHeaders });
+
+      expect(res).toEqual({ success: true });
+      expect(mockListMcpTools).toHaveBeenCalledWith({
+        url: validData.url,
+        transport: validData.transport,
+        token: "pat-fresh-token",
+        extraHeaders: { locationId: "loc_1" },
+      });
+    });
+
+    it("returns non-transient failure without probing when data is missing (connection.data was never persisted)", async () => {
+      const res = await probeIntegrationCredentials("mcp", validCreds, { data: null });
+
+      expect(res.success).toBe(false);
+      if (res.success) return;
+      expect(res.transient).toBeFalsy();
+      expect(mockListMcpTools).not.toHaveBeenCalled();
+    });
+
+    it("returns non-transient failure without probing when data is missing url/transport", async () => {
+      const res = await probeIntegrationCredentials("mcp", validCreds, {
+        data: { preset: "github" },
+      });
+
+      expect(res.success).toBe(false);
+      if (res.success) return;
+      expect(res.transient).toBeFalsy();
+      expect(mockListMcpTools).not.toHaveBeenCalled();
+    });
+
+    it("returns non-transient failure without probing when the token is missing", async () => {
+      const res = await probeIntegrationCredentials("mcp", {}, { data: validData });
+
+      expect(res.success).toBe(false);
+      if (res.success) return;
+      expect(res.transient).toBeFalsy();
+      expect(mockListMcpTools).not.toHaveBeenCalled();
+    });
+
+    it("returns non-transient failure on McpAuthError — the only mcp failure allowed to flip a connection to auth_failed", async () => {
+      mockListMcpTools.mockRejectedValue(new McpAuthError());
+
+      const res = await probeIntegrationCredentials("mcp", validCreds, { data: validData });
+
+      expect(res.success).toBe(false);
+      if (res.success) return;
+      expect(res.transient).toBeFalsy();
+      expect(res.reason).not.toMatch(/MCP|401/);
+    });
+
+    it("returns transient:true on McpServerError (5xx/429) — a provider hiccup, not proof the token is bad", async () => {
+      mockListMcpTools.mockRejectedValue(new McpServerError(503, "boom"));
+
+      const res = await probeIntegrationCredentials("mcp", validCreds, { data: validData });
+
+      expect(res.success).toBe(false);
+      if (res.success) return;
+      expect(res.transient).toBe(true);
+    });
+
+    it("returns transient:true on McpSchemaError (fail-safe: a broken response is not evidence the token is bad)", async () => {
+      mockListMcpTools.mockRejectedValue(new McpSchemaError("tool missing name"));
+
+      const res = await probeIntegrationCredentials("mcp", validCreds, { data: validData });
+
+      expect(res.success).toBe(false);
+      if (res.success) return;
+      expect(res.transient).toBe(true);
+    });
+
+    it("returns transient:true for a network/DNS/timeout/abort failure (fail-safe default)", async () => {
+      mockListMcpTools.mockRejectedValue(new Error("This operation was aborted"));
+
+      const res = await probeIntegrationCredentials("mcp", validCreds, { data: validData });
+
+      expect(res.success).toBe(false);
+      if (res.success) return;
+      expect(res.transient).toBe(true);
+    });
+
+    it("never includes the plaintext token in the returned reason", async () => {
+      mockListMcpTools.mockRejectedValue(
+        new Error(`connect ECONNREFUSED, sent token ${validCreds.token}`)
+      );
+
+      const res = await probeIntegrationCredentials("mcp", validCreds, { data: validData });
+
+      expect(res.success).toBe(false);
+      if (res.success) return;
+      expect(res.reason).not.toContain(validCreds.token);
+    });
+
+    // End-to-end over the REAL listMcpTools + real loopback HTTP. The tests
+    // above mock the client, so they can only prove "given an McpAuthError,
+    // probe says non-transient" — they'd stay green even if the client never
+    // produced an McpAuthError for a 403 in the first place. This one pins the
+    // whole chain a user actually hits: HTTP 403 → McpAuthError → auth_failed
+    // (not the "server unreachable, try again" lie that shipped before).
+    it("classifies a real 403 from an MCP server as a non-transient auth failure (full chain)", async () => {
+      mockFetch.mockImplementation((...args: Parameters<typeof fetch>) => realFetch(...args));
+      mockListMcpTools.mockImplementation((...args: unknown[]) =>
+        (mcpClientActual.listMcpTools as unknown as (...a: unknown[]) => Promise<unknown>)(...args)
+      );
+      const mock = await createMcpMockServer("forbidden");
+
+      try {
+        const res = await probeIntegrationCredentials(
+          "mcp",
+          { token: "under-scoped-token" },
+          { data: { ...validData, url: `http://127.0.0.1:${mock.port}/mcp` } }
+        );
+
+        expect(res.success).toBe(false);
+        if (res.success) return;
+        expect(res.transient).toBeFalsy();
+        // The message must point at the token, not at reachability.
+        expect(res.reason).toMatch(/token/i);
+        expect(res.reason).not.toMatch(/reach/i);
+      } finally {
+        await mock.close();
+        vi.unstubAllEnvs();
+      }
+    }, 10000);
   });
 });

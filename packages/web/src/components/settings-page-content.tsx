@@ -76,11 +76,19 @@ export function SettingsPageContent({
   initialLicense,
   initialAdminOnlyAgents,
   oauthError,
+  mcpEnabled = false,
 }: {
   isAdmin: boolean;
   initialLicense?: LicenseInfo;
   initialAdminOnlyAgents?: AgentRef[];
   oauthError?: string;
+  /**
+   * Runtime MCP feature flag, resolved per request by the server page and
+   * forwarded to SettingsIntegrations. Defaults to false (fail-closed): this
+   * component is a pass-through container, so an omitted flag hides the
+   * feature rather than exposing it.
+   */
+  mcpEnabled?: boolean;
 }) {
   const { data: session } = authClient.useSession();
   const pathname = usePathname();
@@ -378,7 +386,7 @@ export function SettingsPageContent({
 
             {isAdmin && (
               <TabsContent value="integrations" keepMounted>
-                <SettingsIntegrations oauthError={oauthError} />
+                <SettingsIntegrations oauthError={oauthError} mcpEnabled={mcpEnabled} />
               </TabsContent>
             )}
 

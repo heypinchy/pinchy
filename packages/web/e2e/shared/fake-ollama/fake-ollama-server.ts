@@ -821,6 +821,21 @@ interface TriggerConfig {
   arguments: Record<string, unknown>;
 }
 
+// Test-configurable dynamic tool triggers (see POST /control/tool-trigger).
+// Native MCP tool names are `<serverKey>__<tool>`, where serverKey is derived
+// from a runtime connectionId (UUID minted at connection-create time) — they
+// cannot be hard-coded in TOOL_TRIGGERS like every other plugin's tools,
+// whose names are static. The MCP E2E registers the trigger→tool mapping at
+// runtime, once it knows the connectionId, and clears it via POST /control/reset.
+const dynamicToolTriggers: TriggerConfig[] = [];
+
+function findActiveTrigger(content: string): TriggerConfig | undefined {
+  return (
+    dynamicToolTriggers.find(({ trigger }) => content.includes(trigger)) ??
+    TOOL_TRIGGERS.find(({ trigger }) => content.includes(trigger))
+  );
+}
+
 const TOOL_TRIGGERS: TriggerConfig[] = [
   {
     trigger: DOMAIN_LOCK_TOOL_TRIGGER,
@@ -1806,6 +1821,30 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
     return;
   }
 
+  // Register a runtime tool trigger (used by the MCP E2E for dynamic
+  // `<serverKey>__<tool>` names that only exist once a connectionId is
+  // minted). Body: { trigger, toolName, arguments?, response? }.
+  if (method === "POST" && url === "/control/tool-trigger") {
+    const body = await readJsonBody(req);
+    dynamicToolTriggers.push({
+      trigger: String(body.trigger),
+      toolName: String(body.toolName),
+      arguments: (body.arguments ?? {}) as Record<string, unknown>,
+      response: typeof body.response === "string" ? body.response : FAKE_RESPONSE,
+    });
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true, count: dynamicToolTriggers.length }));
+    return;
+  }
+
+  // Clear all registered dynamic tool triggers (per-test isolation).
+  if (method === "POST" && url === "/control/reset") {
+    dynamicToolTriggers.length = 0;
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
   if (method === "GET" && url === "/api/tags") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(
@@ -1854,7 +1893,7 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
 
     const lastContent = messageContent(lastUserMessage);
     recordRequestText(messages);
-    const activeTrigger = TOOL_TRIGGERS.find(({ trigger }) => lastContent.includes(trigger));
+    const activeTrigger = findActiveTrigger(lastContent);
 
     if (lastContent.includes(SKILL_READ_PROBE_TRIGGER)) {
       const reply = skillReadProbeReply(messages, hasToolResult);
@@ -2096,7 +2135,7 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
     const hasToolResult = lastRoundHasToolResult(messages);
     const lastContent = messageContent(lastUserMessage);
     recordRequestText(messages);
-    const activeTrigger = TOOL_TRIGGERS.find(({ trigger }) => lastContent.includes(trigger));
+    const activeTrigger = findActiveTrigger(lastContent);
 
     if (lastContent.includes(SKILL_READ_PROBE_TRIGGER)) {
       const reply = skillReadProbeReply(messages, hasToolResult);

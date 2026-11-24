@@ -226,6 +226,13 @@ export default defineConfig({
               slug: "guides/email-automations",
             },
             { label: "Connect Odoo", slug: "guides/connect-odoo" },
+            {
+              label: "Connect an MCP Server",
+              items: [
+                { label: "Overview", slug: "guides/connect-mcp" },
+                { label: "GitHub", slug: "guides/connect-mcp-github" },
+              ],
+            },
             { label: "Upload Files in Chat", slug: "guides/file-uploads" },
             { label: "Install as an App", slug: "guides/install-as-app" },
             {
@@ -259,6 +266,10 @@ export default defineConfig({
             {
               label: "Chat Connection States",
               slug: "explanation/chat-states",
+            },
+            {
+              label: "The MCP Security Boundary",
+              slug: "explanation/mcp-security-boundary",
             },
             { label: "Agent Settings", slug: "concepts/agent-settings" },
             { label: "Agent Permissions", slug: "concepts/agent-permissions" },
@@ -332,6 +343,7 @@ export default defineConfig({
               label: "Organization Timezone",
               slug: "reference/organization-timezone",
             },
+            { label: "MCP Integrations", slug: "reference/mcp" },
             { label: "SBOM", slug: "reference/sbom" },
             { label: "Secret Handling", slug: "security/secrets" },
           ],

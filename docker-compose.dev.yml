@@ -23,6 +23,16 @@ services:
       # used to sit here was not (#1083). Kept byte-identical to
       # `DEV_LICENSE_TOKEN` by committed-license-tokens.test.ts.
       - PINCHY_ENTERPRISE_KEY=${PINCHY_ENTERPRISE_KEY-eyJhbGciOiJFUzI1NiJ9.eyJ0eXBlIjoicGFpZCIsImZlYXR1cmVzIjpbImVudGVycHJpc2UiXSwiaXNzIjoiaGV5cGluY2h5LmNvbSIsInN1YiI6InBpbmNoeS1kZXYiLCJpYXQiOjE3NzM0ODUyMzQsImV4cCI6NDkyNzA4NTIzNH0.x6YibNzmaMdiWJb4GjksKqfvJ1y-Tu0cv-iSZWdPW5fPQIzzJyed4b8oMlBbdQN_CkRFOisjYe9Q75PC6OEZxA}
+      # MCP integration is feature-flagged behind a single server-side runtime
+      # flag (src/lib/feature-flags.ts) — no build-time / NEXT_PUBLIC_
+      # counterpart, so passing it through here (default off) is enough for a
+      # developer to exercise the native-MCP + credential-proxy flow in the
+      # dev stack without a rebuild:
+      #   PINCHY_MCP_ENABLED=1 docker compose ... up --build
+      # ALLOW_PRIVATE_URLS opts out of the SSRF guard for internal/self-hosted
+      # MCP servers; leave it off to test the guard against external servers.
+      - PINCHY_MCP_ENABLED=${PINCHY_MCP_ENABLED:-}
+      - ALLOW_PRIVATE_URLS=${ALLOW_PRIVATE_URLS:-}
     volumes:
       - ./packages/web:/app/packages/web
       - /app/packages/web/node_modules

@@ -6,15 +6,21 @@ import { integrationConnections } from "@/db/schema";
 import { encrypt, decrypt } from "@/lib/encryption";
 import { appendAuditLog, scrubEmails } from "@/lib/audit";
 import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
-import { imapEditSchema, updateConnectionSchema } from "@/lib/schemas/integration-edit";
+import {
+  imapEditSchema,
+  mcpEditSchema,
+  updateConnectionSchema,
+} from "@/lib/schemas/integration-edit";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { maskConnectionCredentials } from "@/lib/integrations/mask-credentials";
 import { probeIntegrationCredentials } from "@/lib/integrations/probe";
 import { getOAuthProvider } from "@/lib/integrations/oauth-providers";
 import { clearIntegrationAuthError } from "@/lib/integrations/auth-state";
+import type { McpIntegrationData } from "@/lib/integrations/types";
 import { z } from "zod";
 import { parseRequestBody, formatValidationError } from "@/lib/api-validation";
 import {
+  auditableOrigin,
   capForAudit,
   integrationDestinationChange,
   secretRequiredMessage,
@@ -22,6 +28,7 @@ import {
   type DestinationChanges,
 } from "@/lib/secret-destination";
 import { refreshPluginConfig } from "@/lib/integrations/refresh-plugin-config";
+import { isMcpEnabled } from "@/lib/feature-flags";
 
 /**
  * Audit form of a destination diff: email-shaped tokens scrubbed from every
@@ -47,6 +54,9 @@ const credentialSchemas: Record<string, z.ZodType> = {
   // drift. Ports coerce to number so the merged blob keeps numeric ports — the
   // pinchy-email plugin asserts a strict `typeof number` shape.
   imap: imapEditSchema,
+  // MCP credential edit = token rotation. extraHeaders (e.g. HighLevel's
+  // locationId) stays on connection.data and is reused during re-discovery.
+  mcp: mcpEditSchema,
 };
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
@@ -85,6 +95,13 @@ export const PATCH = withAdmin<RouteContext>(async (request, { params }, session
 
   if (!existing) {
     return NextResponse.json({ error: "Connection not found" }, { status: 404 });
+  }
+  // With the flag off an MCP connection does not exist as far as the API is
+  // concerned (lib/feature-flags.ts), so neither a rename nor a credential
+  // edit may reach it — the edit would probe the external server with the
+  // stored token. Checked before the body is parsed, so a rename is gated too.
+  if (existing.type === "mcp" && !isMcpEnabled()) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
   const parsed = await parseRequestBody(updateConnectionSchema, request);
@@ -226,8 +243,12 @@ export const PATCH = withAdmin<RouteContext>(async (request, { params }, session
     // ("leave empty to keep current" pattern).
     const merged = { ...existingDecoded, ...parsedCredentials };
 
-    // Probe before persisting.
-    const probe = await probeIntegrationCredentials(existing.type, merged);
+    // Probe before persisting. `existing.data` is passed through so the mcp
+    // branch can read the stored url/transport/extraHeaders — every other
+    // branch ignores it.
+    const probe = await probeIntegrationCredentials(existing.type, merged, {
+      data: existing.data as Record<string, unknown> | null,
+    });
     if (!probe.success) {
       // The submitted secret was sent and refused. Nothing changed, but a
       // failed credential edit — above all one aimed at a new destination — is
@@ -304,6 +325,16 @@ export const PATCH = withAdmin<RouteContext>(async (request, { params }, session
       },
       outcome: "success",
     });
+
+    // No config regenerate here, for any type. The only config-relevant thing
+    // a credential edit can do is recover an MCP connection from auth_failed
+    // (build.ts filters mcp.servers/tools.allow to status==="active"), and
+    // clearIntegrationAuthError above already triggers that at the status
+    // transition itself — see auth-state.ts. Nothing else in a credential edit
+    // reaches openclaw.json: for MCP, mcpEditSchema is token-only and the
+    // token is fetched by the proxy per request rather than emitted into the
+    // config; for every other type, credentials were never in the config
+    // either.
   }
 
   return NextResponse.json({
@@ -332,14 +363,39 @@ export const DELETE = withAdmin<RouteContext>(async (_req, { params }, session) 
   // provider intentionally leaves the stored app credentials in place. Admins manage
   // the app explicitly via the "Connected apps" section (Edit/Reset).
 
+  // MCP: snapshot the server identity before it's unrecoverable. AGENTS.md
+  // requires delete events to carry what the deleted row can no longer answer
+  // — for an MCP connection that's *which external endpoint* the agents could
+  // reach, which is the whole question a CISO brings to this log. Only the
+  // origin: the URL's path or query can carry a secret, and the row is
+  // immutable. The token stays in the encrypted credentials blob.
+  const mcpData = existing.type === "mcp" ? (existing.data as McpIntegrationData | null) : null;
+  const mcpIdentity = mcpData
+    ? {
+        preset: mcpData.preset,
+        transport: mcpData.transport,
+        origin: auditableOrigin(mcpData.url ?? ""),
+      }
+    : undefined;
+
   await appendAuditLog({
     actorType: "user",
     actorId: session.user.id!,
     eventType: "integration.deleted",
     resource: `integration:${connectionId}`,
-    detail: { id: connectionId, name: scrubEmails(existing.name), type: existing.type },
+    detail: {
+      id: connectionId,
+      name: scrubEmails(existing.name),
+      type: existing.type,
+      ...mcpIdentity,
+    },
     outcome: "success",
   });
+
+  // MCP gating lives entirely in openclaw.json (mcp.servers + tools.allow), so
+  // the deleted connection's server entry and every agent's tools.allow names
+  // for it are dropped by the refreshPluginConfig() above — the per-request
+  // proxy 404 (the Gone-Contract) is a safety net, not the cleanup.
 
   return NextResponse.json({ success: true });
 });

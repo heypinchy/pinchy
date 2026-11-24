@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("next/headers", () => ({
   headers: vi.fn().mockResolvedValue(new Headers()),
@@ -134,6 +134,11 @@ vi.mock("@/lib/integrations/oauth-settings", () => ({
   deleteOAuthSettings: vi.fn().mockResolvedValue(undefined),
 }));
 
+const mockRegenerateOpenClawConfig = vi.fn().mockResolvedValue(undefined);
+vi.mock("@/lib/openclaw-config", () => ({
+  regenerateOpenClawConfig: (...args: unknown[]) => mockRegenerateOpenClawConfig(...args),
+}));
+
 import { NextRequest } from "next/server";
 
 function makeRequest(path: string, options?: ConstructorParameters<typeof NextRequest>[1]) {
@@ -173,10 +178,12 @@ describe("PATCH /api/integrations/[connectionId] — credential probe", () => {
     );
 
     expect(response.status).toBe(200);
-    // Probe was called with merged credentials
+    // Probe was called with merged credentials, plus the connection's `data`
+    // column as the third arg (mcp-only concern; every other type ignores it).
     expect(mockProbeIntegrationCredentials).toHaveBeenCalledWith(
       "odoo",
-      expect.objectContaining({ apiKey: "new-secret-key" })
+      expect.objectContaining({ apiKey: "new-secret-key" }),
+      { data: null }
     );
     // DB update was called
     expect(mockUpdateSet).toHaveBeenCalled();
@@ -202,6 +209,10 @@ describe("PATCH /api/integrations/[connectionId] — credential probe", () => {
     expect(mockAppendAuditLog).not.toHaveBeenCalledWith(
       expect.objectContaining({ eventType: "integration.updated" })
     );
+    // Odoo's gating is a runtime plugin checkPermission, never baked into
+    // openclaw.json — rotating its credentials doesn't need a regenerate
+    // (unlike MCP, see the "mcp connections" describe block below).
+    expect(mockRegenerateOpenClawConfig).not.toHaveBeenCalled();
   });
 
   it("PATCH with both name AND credentials emits BOTH integration.updated and integration.credentials_updated", async () => {
@@ -530,7 +541,8 @@ describe("PATCH /api/integrations/[connectionId] — credential probe", () => {
       expect(response.status).toBe(200);
       expect(mockProbeIntegrationCredentials).toHaveBeenCalledWith(
         "odoo",
-        expect.objectContaining({ login: "bob", apiKey: "secret-key" })
+        expect.objectContaining({ login: "bob", apiKey: "secret-key" }),
+        { data: null }
       );
     });
 
@@ -550,7 +562,8 @@ describe("PATCH /api/integrations/[connectionId] — credential probe", () => {
       expect(response.status).toBe(200);
       expect(mockProbeIntegrationCredentials).toHaveBeenCalledWith(
         "odoo",
-        expect.objectContaining({ url: "https://odoo2.example.com", apiKey: "fresh-key" })
+        expect.objectContaining({ url: "https://odoo2.example.com", apiKey: "fresh-key" }),
+        { data: null }
       );
       const entry = mockAppendAuditLog.mock.calls.find(
         (c) => (c[0] as { eventType?: string }).eventType === "integration.credentials_updated"
@@ -657,7 +670,8 @@ describe("PATCH /api/integrations/[connectionId] — credential probe", () => {
           smtpPort: 587,
           username: "team@example.com",
           password: "new-app-password",
-        })
+        }),
+        { data: null }
       );
       // Persisted blob keeps numeric ports.
       const encryptedPayload = mockEncrypt.mock.calls[0]?.[0] as string;
@@ -802,7 +816,8 @@ describe("PATCH /api/integrations/[connectionId] — credential probe", () => {
         expect(response.status).toBe(200);
         expect(mockProbeIntegrationCredentials).toHaveBeenCalledWith(
           "imap",
-          expect.objectContaining({ imapHost: "imap2.example.com", password: "fresh-password" })
+          expect.objectContaining({ imapHost: "imap2.example.com", password: "fresh-password" }),
+          { data: null }
         );
         expect(mockAppendAuditLog).toHaveBeenCalledWith(
           expect.objectContaining({
@@ -851,7 +866,8 @@ describe("PATCH /api/integrations/[connectionId] — credential probe", () => {
       expect(response.status).toBe(200);
       expect(mockProbeIntegrationCredentials).toHaveBeenCalledWith(
         "imap",
-        expect.objectContaining({ senderName: "Team Support" })
+        expect.objectContaining({ senderName: "Team Support" }),
+        { data: null }
       );
       const encryptedPayload = mockEncrypt.mock.calls[0]?.[0] as string;
       const persisted = JSON.parse(encryptedPayload);
@@ -904,6 +920,130 @@ describe("PATCH /api/integrations/[connectionId] — credential probe", () => {
       expect(response.status).toBe(400);
       expect(mockProbeIntegrationCredentials).not.toHaveBeenCalled();
       expect(mockUpdateSet).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("mcp connections", () => {
+    const mockMcpData = {
+      type: "mcp",
+      preset: "github",
+      transport: "http",
+      url: "https://api.githubcopilot.com/mcp/",
+      tools: [],
+      lastSyncAt: "2026-01-01T00:00:00.000Z",
+    };
+    const mockMcpConnection = {
+      ...mockOdooConnection,
+      id: "conn-mcp-1",
+      type: "mcp",
+      name: "GitHub",
+      data: mockMcpData,
+    };
+    const existingMcpCredentials = { token: "old-token" };
+
+    beforeEach(() => {
+      vi.stubEnv("PINCHY_MCP_ENABLED", "1");
+      mockSelectWhere.mockResolvedValue([mockMcpConnection]);
+      mockDecrypt.mockReturnValue(JSON.stringify(existingMcpCredentials));
+      mockUpdateSet.mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([mockMcpConnection]),
+        }),
+      });
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("returns 404 with the MCP flag off, before probing, writing or auditing", async () => {
+      vi.stubEnv("PINCHY_MCP_ENABLED", undefined);
+      const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+      const response = await PATCH(
+        makeRequest("/api/integrations/conn-mcp-1", {
+          method: "PATCH",
+          body: JSON.stringify({ name: "Renamed", credentials: { token: "new-token" } }),
+        }),
+        { params: Promise.resolve({ connectionId: "conn-mcp-1" }) }
+      );
+
+      expect(response.status).toBe(404);
+      expect(mockProbeIntegrationCredentials).not.toHaveBeenCalled();
+      expect(mockUpdateSet).not.toHaveBeenCalled();
+      expect(mockAppendAuditLog).not.toHaveBeenCalled();
+    });
+
+    it("PATCH with a rotated token validates via mcpEditSchema, probes with connection.data as the third arg, and persists", async () => {
+      const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+      const response = await PATCH(
+        makeRequest("/api/integrations/conn-mcp-1", {
+          method: "PATCH",
+          body: JSON.stringify({ credentials: { token: "new-token" } }),
+        }),
+        { params: Promise.resolve({ connectionId: "conn-mcp-1" }) }
+      );
+
+      expect(response.status).toBe(200);
+      // The probe registry (probe.ts) needs connection.data to reach the
+      // stored url/transport/extraHeaders — the route must pass it through.
+      expect(mockProbeIntegrationCredentials).toHaveBeenCalledWith(
+        "mcp",
+        expect.objectContaining({ token: "new-token" }),
+        { data: mockMcpData }
+      );
+      const encryptedPayload = mockEncrypt.mock.calls[0]?.[0] as string;
+      expect(JSON.parse(encryptedPayload).token).toBe("new-token");
+      // The PATCH itself must NOT regenerate openclaw.json. For MCP a
+      // credential edit can only change the token (mcpEditSchema is
+      // token-only), and the token never enters the config — the proxy
+      // fetches it per request — so the emitted config is byte-identical.
+      // The one config-relevant thing a credential edit CAN do is recover the
+      // connection from auth_failed, and that regen is triggered by
+      // clearIntegrationAuthError at the status transition itself (see
+      // auth-state.ts + auth-state.test.ts). auth-state is mocked here, so
+      // this asserts the route adds nothing of its own on top.
+      expect(mockRegenerateOpenClawConfig).not.toHaveBeenCalled();
+    });
+
+    it("PATCH with an unknown key in credentials is rejected by mcpEditSchema (strict) before probing", async () => {
+      const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+      const response = await PATCH(
+        makeRequest("/api/integrations/conn-mcp-1", {
+          method: "PATCH",
+          body: JSON.stringify({ credentials: { token: "new-token", extraHeaders: {} } }),
+        }),
+        { params: Promise.resolve({ connectionId: "conn-mcp-1" }) }
+      );
+
+      expect(response.status).toBe(400);
+      expect(mockProbeIntegrationCredentials).not.toHaveBeenCalled();
+      expect(mockUpdateSet).not.toHaveBeenCalled();
+    });
+
+    it("PATCH with bad token credentials returns 400 with reason and writes nothing", async () => {
+      mockProbeIntegrationCredentials.mockResolvedValue({
+        success: false,
+        reason: "The server rejected this token. Check that it's still valid, then reconnect.",
+      });
+
+      const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+      const response = await PATCH(
+        makeRequest("/api/integrations/conn-mcp-1", {
+          method: "PATCH",
+          body: JSON.stringify({ credentials: { token: "bad-token" } }),
+        }),
+        { params: Promise.resolve({ connectionId: "conn-mcp-1" }) }
+      );
+      const body = await response.json();
+
+      expect(response.status).toBe(400);
+      expect(body.error).toMatch(/rejected this token/);
+      expect(mockUpdateSet).not.toHaveBeenCalled();
+      expect(mockRegenerateOpenClawConfig).not.toHaveBeenCalled();
     });
   });
 

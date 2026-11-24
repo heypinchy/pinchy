@@ -247,7 +247,10 @@ Create a new agent. **Admin only.** The agent inherits default tool permissions 
 }
 ```
 
-**Response:** `201 Created` with the created agent object.
+**Response:** `201 Created` with the created agent object, plus two fields:
+
+- `warning` (string, optional): present only when the agent was created but something about it needs attention, such as permissions a template could not grant in full, or a runtime apply that failed. The New Agent form shows it as a toast.
+- `skippedMcpTools` (string[]): the recommended [MCP](/reference/mcp/) tools the template could not auto-grant, because no active connection of the matching preset exists or the connection hasn't synced that tool. Always present; empty for templates without recommended MCP tools.
 
 **Errors:**
 
@@ -345,6 +348,8 @@ database but not the runtime still leaves a trace — including the
 ### `DELETE /api/agents/:id`
 
 Delete an agent. **Admin only.** Personal agents (auto-created Smithers) cannot be deleted.
+
+The agent is soft-deleted: its chat history and audit entries stay readable, and usage still lists it as "(deleted)". Its integration permissions and its Telegram bot connection are removed in the same step, so nothing it was granted stays usable.
 
 **Response:** `200 OK`
 
@@ -2234,7 +2239,7 @@ This is a full replace, not a merge: the previous permission rows for this agent
 
 ### `DELETE /api/agents/:agentId/integrations`
 
-Remove all integration permissions for this agent, across every connection. Used when a connection is cleared from the agent's Permissions tab. **Admin only.**
+Remove this agent's Odoo and email permissions, across every connection. Used when a connection is cleared from the agent's Permissions tab. MCP tool grants are left in place: revoke those per connection with `PUT` and an empty `permissions` array. **Admin only.**
 
 **Errors:**
 

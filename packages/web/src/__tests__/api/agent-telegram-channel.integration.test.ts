@@ -43,9 +43,26 @@ vi.mock("@/lib/auth", () => ({
 }));
 
 const mockUpdateTelegramChannelConfig = vi.fn();
+const mockRegenerateOpenClawConfig = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/lib/openclaw-config", () => ({
   updateTelegramChannelConfig: (...args: unknown[]) => mockUpdateTelegramChannelConfig(...args),
+  regenerateOpenClawConfig: (...args: unknown[]) => mockRegenerateOpenClawConfig(...args),
 }));
+
+// The two calls out to Telegram's API. Everything else in @/lib/telegram —
+// including which stored bot tokens still count — runs for real.
+vi.mock("@/lib/telegram", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/telegram")>();
+  return {
+    ...actual,
+    validateTelegramBotToken: vi.fn(async (token: string) => ({
+      valid: true,
+      botId: Number(token.split(":")[0]),
+      botUsername: `${token.split(":")[0]}_bot`,
+    })),
+    probeTelegramPollingConflict: vi.fn().mockResolvedValue({ conflict: false }),
+  };
+});
 
 const mockClearAllowStoreForAccount = vi.fn();
 const mockRecalculateTelegramAllowStores = vi.fn().mockResolvedValue(undefined);
@@ -60,7 +77,7 @@ vi.mock("@/lib/telegram-allow-store", () => ({
 import { db } from "@/db";
 import { users, agents, channelLinks, settings, auditLog } from "@/db/schema";
 import { setSetting } from "@/lib/settings";
-import { DELETE } from "@/app/api/agents/[agentId]/channels/telegram/route";
+import { DELETE, POST } from "@/app/api/agents/[agentId]/channels/telegram/route";
 
 // ── Fixtures / helpers ───────────────────────────────────────────────────
 
@@ -110,6 +127,14 @@ async function seedChannelLink(userId: string, channelUserId: string) {
 function makeRequest() {
   return new NextRequest("http://localhost/api/agents/agent-1/channels/telegram", {
     method: "DELETE",
+  });
+}
+
+function makePostRequest(botToken: string) {
+  return new NextRequest("http://localhost/api/agents/agent-1/channels/telegram", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ botToken }),
   });
 }
 
@@ -218,5 +243,86 @@ describe("DELETE /api/agents/[agentId]/channels/telegram (real DB)", () => {
     expect(auditRows).toHaveLength(1);
     const detail = auditRows[0].detail as Record<string, unknown>;
     expect(detail.channelLinksCleared).toBe(0);
+  });
+
+  // A token left behind by an agent that was soft-deleted before deleting an
+  // agent also removed its Telegram settings. That agent's bot runs nowhere:
+  // the config build skips deleted agents.
+  it("Case C — a deleted agent's leftover token does not count as a remaining bot", async () => {
+    const formerOwner = await seedUser({ role: "member" });
+    const deletedAgent = await seedPersonalAgent(formerOwner.id, {
+      name: "Former Smithers",
+      deletedAt: new Date(),
+    });
+    await seedTelegramBot(deletedAgent.id, "999999");
+
+    const owner = await seedUser({ role: "member" });
+    const agent = await seedPersonalAgent(owner.id);
+    await seedTelegramBot(agent.id, "111111");
+    await seedChannelLink(owner.id, "tg-owner");
+
+    mockGetSession.mockResolvedValue({
+      user: { id: owner.id, email: owner.email, role: "member" },
+    });
+
+    const resp = await DELETE(makeRequest(), makeParams(agent.id));
+    expect(resp.status).toBe(200);
+
+    const remainingLinks = await db
+      .select()
+      .from(channelLinks)
+      .where(eq(channelLinks.channel, "telegram"));
+    expect(remainingLinks).toHaveLength(0);
+
+    const auditRows = await db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.eventType, "channel.deleted"));
+    expect((auditRows[0].detail as Record<string, unknown>).channelLinksCleared).toBe(1);
+  });
+});
+
+describe("POST /api/agents/[agentId]/channels/telegram (real DB)", () => {
+  it("connects a bot whose token is only left behind by a deleted agent", async () => {
+    // The usual case: a deactivated user's Smithers ran the main bot, and the
+    // admin now connects that same bot to their own Smithers.
+    const formerOwner = await seedUser({ role: "member" });
+    const deletedAgent = await seedPersonalAgent(formerOwner.id, {
+      name: "Former Smithers",
+      deletedAt: new Date(),
+    });
+    await seedTelegramBot(deletedAgent.id, "999999");
+
+    const admin = await seedUser({ role: "admin" });
+    const agent = await seedPersonalAgent(admin.id);
+
+    mockGetSession.mockResolvedValue({
+      user: { id: admin.id, email: admin.email, role: "admin" },
+    });
+
+    const resp = await POST(makePostRequest("999999:new-secret"), makeParams(agent.id));
+    expect(resp.status).toBe(200);
+
+    const stored = await db
+      .select()
+      .from(settings)
+      .where(eq(settings.key, `telegram_bot_token:${agent.id}`));
+    expect(stored).toHaveLength(1);
+  });
+
+  it("still refuses a bot a live agent already uses", async () => {
+    const otherOwner = await seedUser({ role: "member" });
+    const otherAgent = await seedPersonalAgent(otherOwner.id, { name: "Other Smithers" });
+    await seedTelegramBot(otherAgent.id, "999999");
+
+    const admin = await seedUser({ role: "admin" });
+    const agent = await seedPersonalAgent(admin.id);
+
+    mockGetSession.mockResolvedValue({
+      user: { id: admin.id, email: admin.email, role: "admin" },
+    });
+
+    const resp = await POST(makePostRequest("999999:new-secret"), makeParams(agent.id));
+    expect(resp.status).toBe(409);
   });
 });

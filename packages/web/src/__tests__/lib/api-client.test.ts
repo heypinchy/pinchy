@@ -203,6 +203,35 @@ describe("apiPost", () => {
     }
   });
 
+  it("exposes the full parsed error body on ApiError.body, beyond the Zod-shaped .details field", async () => {
+    // Some routes (e.g. MCP discovery failures) ship structured fields other
+    // than Zod's flattened fieldErrors/formErrors — callers that need those
+    // fields (like the MCP connect dialog's `code`/`detail`) read them off
+    // .body rather than overloading .details with a second shape.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        mockResponse({
+          ok: false,
+          status: 502,
+          body: {
+            error: "MCP discovery failed",
+            detail: "fetch failed: ECONNREFUSED",
+            code: "network",
+          },
+        })
+      )
+    );
+    try {
+      await apiPost("/api/integrations", {});
+      expect.fail("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(ApiError);
+      const body = (e as ApiError).body as { detail?: string; code?: string };
+      expect(body.detail).toBe("fetch failed: ECONNREFUSED");
+      expect(body.code).toBe("network");
+    }
+  });
   it("exposes the whole parsed error payload on ApiError.body", async () => {
     // The escape hatch for routes that answer a field beyond
     // `{ error, message, details }` — /api/setup/provider sends a `docs` link

@@ -4,6 +4,7 @@ import {
   validateTelegramBotToken,
   hasMainTelegramBot,
   probeTelegramPollingConflict,
+  getLiveTelegramBotTokens,
 } from "@/lib/telegram";
 import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
 import { appendAuditLog } from "@/lib/audit";
@@ -13,8 +14,8 @@ import {
   recalculateTelegramAllowStores,
 } from "@/lib/telegram-allow-store";
 import { db } from "@/db";
-import { channelLinks, settings } from "@/db/schema";
-import { eq, like } from "drizzle-orm";
+import { channelLinks } from "@/db/schema";
+import { eq } from "drizzle-orm";
 import { parseRequestBody } from "@/lib/api-validation";
 import { setBotTokenSchema } from "@/lib/schemas/telegram";
 import { getAgentWithAccess } from "@/lib/agent-access";
@@ -118,17 +119,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ age
   }
 
   // Check for duplicate bot token — Telegram only allows one getUpdates consumer per token.
-  // Compare bot IDs (first part of token: "<botId>:<secret>") across all configured agents.
-  const existingTokenSettings = await db
-    .select()
-    .from(settings)
-    .where(like(settings.key, "telegram_bot_token:%"));
+  // Compare bot IDs (first part of token: "<botId>:<secret>") across all live agents.
+  const liveBotTokens = await getLiveTelegramBotTokens();
 
   const newBotId = botToken.split(":")[0];
-  for (const row of existingTokenSettings) {
-    if (row.key === `telegram_bot_token:${agentId}`) continue; // same agent, allow re-connect
-    const existingToken = await getSetting(row.key);
-    if (existingToken && existingToken.split(":")[0] === newBotId) {
+  for (const [otherAgentId, existingToken] of liveBotTokens) {
+    if (otherAgentId === agentId) continue; // same agent, allow re-connect
+    if (existingToken.split(":")[0] === newBotId) {
       return NextResponse.json(
         { error: "This bot token is already in use by another agent" },
         { status: 409 }
@@ -281,12 +278,9 @@ export const DELETE = withAuth<{ params: Promise<{ agentId: string }> }>(
     // pairings without re-pairing. The org-wide "Remove Telegram for everyone"
     // already clears channel_links; this closes the per-agent-removal path where
     // every bot is gone individually but the links persisted.
-    const remainingBotTokens = await db
-      .select()
-      .from(settings)
-      .where(like(settings.key, "telegram_bot_token:%"));
+    const remainingBotTokens = await getLiveTelegramBotTokens();
     let channelLinksCleared = 0;
-    if (remainingBotTokens.length === 0) {
+    if (remainingBotTokens.size === 0) {
       const clearedLinks = await db
         .delete(channelLinks)
         .where(eq(channelLinks.channel, "telegram"))

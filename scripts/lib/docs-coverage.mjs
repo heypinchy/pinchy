@@ -68,6 +68,8 @@ export const API_DOC_EXEMPTIONS = {
   "/api/internal/usage/record":
     "gateway-only usage ingress, mirrors internal/audit/*",
   "/api/internal/channel-messages": "gateway-only channel-capture ingress",
+  "/api/internal/mcp-proxy/{}":
+    "gateway-only MCP credential-injecting proxy for OpenClaw's native mcp.servers, authed by the bootstrap gateway token",
   "/api/internal/settings/context":
     "gateway-only org-context write (PUT) for the pinchy-context plugin",
   "/api/internal/users/{}/context":

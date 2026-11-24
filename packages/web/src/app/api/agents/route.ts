@@ -67,6 +67,7 @@ export const POST = withAdmin(async (request, _ctx, session) => {
           agentId: agent.id,
           connectionId: entry.connectionId,
           permissions: entry.permissions,
+          ...(entry.skippedTools ? { skippedTools: entry.skippedTools } : {}),
         },
         outcome: "success",
       }),
@@ -104,7 +105,8 @@ export const POST = withAdmin(async (request, _ctx, session) => {
     return NextResponse.json(result.error.body, { status: result.error.status });
   }
 
-  const { agent, runtimeWarning, runtimeApplyError, incompletePermissions } = result;
+  const { agent, runtimeWarning, runtimeApplyError, incompletePermissions, skippedMcpTools } =
+    result;
 
   // The agent row is committed (audited success above) but never reached the
   // runtime (#880). Record a distinct failure event so the trail shows "created
@@ -152,5 +154,8 @@ export const POST = withAdmin(async (request, _ctx, session) => {
       .filter(Boolean)
       .join(" ") || undefined;
 
-  return NextResponse.json({ ...agent, warning }, { status: 201 });
+  // `skippedMcpTools` is always present (empty for non-MCP templates) so the
+  // client never has to distinguish "no skips" from "old server"; the form
+  // raises a non-blocking toast naming the recommended MCP tools it lacks.
+  return NextResponse.json({ ...agent, warning, skippedMcpTools }, { status: 201 });
 });

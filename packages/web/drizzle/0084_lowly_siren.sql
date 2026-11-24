@@ -1,0 +1,2 @@
+ALTER TABLE "integration_connections" DROP CONSTRAINT "integration_connections_type_check";--> statement-breakpoint
+ALTER TABLE "integration_connections" ADD CONSTRAINT "integration_connections_type_check" CHECK ("integration_connections"."type" IN ('odoo', 'web-search', 'google', 'microsoft', 'imap', 'mcp'));

@@ -137,6 +137,7 @@ pnpm -C packages/web test:e2e:telegram
 pnpm -C packages/web test:e2e:odoo
 pnpm -C packages/web test:e2e:web
 pnpm -C packages/web test:e2e:email
+pnpm -C packages/web test:e2e:mcp
 pnpm -C packages/web test:integration
 ```
 

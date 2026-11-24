@@ -6,12 +6,35 @@ import { resolveExternalUrlTarget } from "@/lib/integrations/url-validation";
 import { withPinnedOdoo } from "@/lib/integrations/odoo-pin";
 import { parseRequestBody } from "@/lib/api-validation";
 import { testCredentialsSchema } from "@/lib/schemas/integrations";
+import { listMcpTools, mcpErrorCodeFromError } from "@/lib/integrations/mcp-client";
+import { isMcpEnabled } from "@/lib/feature-flags";
 import { describeOdooError } from "@/lib/integrations/odoo-error";
 import { authenticateOdoo, readOdooVersion } from "@/lib/integrations/odoo-calls";
 
 export const POST = withAdmin(async (request) => {
   const parsed = await parseRequestBody(testCredentialsSchema, request);
   if ("error" in parsed) return parsed.error;
+
+  if (parsed.data.type === "mcp") {
+    // Flag off → behave as if the type doesn't exist, not a 500.
+    if (!isMcpEnabled()) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+    const { url, transport, token, extraHeaders } = parsed.data;
+    try {
+      const tools = await listMcpTools({ url, transport, token, extraHeaders });
+      return NextResponse.json({ success: true, tools });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // `code` lets the dialog render a human-friendly, preset-aware message
+      // (mcp-error-messages.ts) instead of showing the raw protocol error;
+      // `error` stays available as a debugging detail for custom MCP servers.
+      return NextResponse.json({
+        success: false,
+        error: message,
+        code: mcpErrorCodeFromError(err),
+      });
+    }
+  }
 
   if (parsed.data.type === "web-search") {
     try {

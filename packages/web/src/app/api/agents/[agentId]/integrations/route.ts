@@ -1,13 +1,16 @@
 import { NextResponse } from "next/server";
-import { eq, and, inArray } from "drizzle-orm";
+import { eq, and, ne, inArray } from "drizzle-orm";
 import { withAdmin } from "@/lib/api-auth";
 import { getAgentWithAccess } from "@/lib/agent-access";
 import { db } from "@/db";
 import { agentConnectionPermissions, integrationConnections } from "@/db/schema";
 import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
+import { summarizeListForAudit } from "@/lib/audit-list-summary";
 import { parseRequestBody } from "@/lib/api-validation";
 import { setAgentIntegrationsSchema } from "@/lib/schemas/agent-integrations";
+import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import type { McpIntegrationData } from "@/lib/integrations/types";
 
 type RouteContext = { params: Promise<{ agentId: string }> };
 
@@ -126,6 +129,7 @@ export const PUT = withAdmin<RouteContext>(async (request, { params }, session) 
   const { connectionId, permissions } = parsed.data;
 
   let existingPerms: { model: string; operation: string }[];
+  let connectionName: string;
   try {
     // Validate connection exists
     const connRows = await db
@@ -134,6 +138,46 @@ export const PUT = withAdmin<RouteContext>(async (request, { params }, session) 
       .where(eq(integrationConnections.id, connectionId));
     if (connRows.length === 0) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 });
+    }
+    connectionName = connRows[0].name;
+
+    // MCP grants (model:"mcp") name a tool on THIS specific connection —
+    // unlike Odoo/email operations, which are a fixed, model-independent
+    // vocabulary, MCP tool names come from a third-party server and only
+    // make sense against the connection that discovered them. `connRows` is
+    // already loaded above, so this costs no extra query.
+    //
+    // This is write-time UX hardening (an honest 400 instead of a silently
+    // inert grant) — it is NOT a substitute for read-time gating. A later
+    // re-sync (POST .../sync) can remove a tool from `data.tools` *after*
+    // the grant below is written, and this route has no way to catch that
+    // drift. T6 (build.ts) MUST intersect grants against the connection's
+    // *current* data.tools before emitting `tools.allow`, and T7's skill
+    // body must be derived from that same intersection — never from the raw
+    // grant rows — or a revoked tool stays silently exposed.
+    const mcpPermissions = permissions.filter((p) => p.model === "mcp");
+    if (mcpPermissions.length > 0) {
+      const connection = connRows[0];
+      if (connection.type !== "mcp") {
+        return NextResponse.json(
+          { error: "Connection is not an MCP integration" },
+          { status: 400 }
+        );
+      }
+      const syncedTools = new Set(
+        ((connection.data as McpIntegrationData | null)?.tools ?? []).map((t) => t.name)
+      );
+      const unknownTools = mcpPermissions
+        .map((p) => p.operation)
+        .filter((toolName) => !syncedTools.has(toolName));
+      if (unknownTools.length > 0) {
+        return NextResponse.json(
+          {
+            error: `Unknown MCP tool(s), not present in the connection's synced tool list: ${unknownTools.join(", ")}`,
+          },
+          { status: 400 }
+        );
+      }
     }
 
     // Atomic replace: read existing → delete → insert within a single transaction
@@ -182,9 +226,20 @@ export const PUT = withAdmin<RouteContext>(async (request, { params }, session) 
     );
   }
 
-  // Config regeneration is NOT done here — the caller (agent settings save flow)
-  // triggers it via the agent PATCH, which reads the already-updated permissions
-  // from the DB. This avoids double config writes and OpenClaw restarts.
+  // Config regeneration is NOT done here for Odoo/email — the caller (agent
+  // settings save flow) triggers it via the agent PATCH, which reads the
+  // already-updated permissions from the DB. This avoids double config
+  // writes and OpenClaw restarts for those types, whose gating is a runtime
+  // plugin checkPermission and never depends on config content.
+  //
+  // MCP is different (see docs/plans/2026-06-30-mcp-port-to-main.md task
+  // T6): its ENTIRE gating lives in openclaw.json (mcp.servers +
+  // tools.allow, build.ts). Without regenerating here, a freshly granted
+  // tool stays unusable — and worse, a REVOKED tool stays silently allowed
+  // — until some unrelated regenerate happens to notice. So this route
+  // regenerates immediately whenever an "mcp" row is touched on either side
+  // of the replace (added, removed, or both) — checking only the new
+  // `permissions` array would miss a pure revocation (permissions: []).
 
   // Build audit diff
   const oldSet = new Set(existingPerms.map((p) => `${p.model}:${p.operation}`));
@@ -214,8 +269,10 @@ export const PUT = withAdmin<RouteContext>(async (request, { params }, session) 
     detail: {
       action: "agent_integration_permissions_updated",
       agentId,
+      agent: { id: agentId, name: agentOrError.name },
       connectionId,
-      changes: { added, removed },
+      connection: { id: connectionId, name: connectionName },
+      changes: { added: summarizeListForAudit(added), removed: summarizeListForAudit(removed) },
     },
     outcome: "success",
   };
@@ -225,13 +282,19 @@ export const PUT = withAdmin<RouteContext>(async (request, { params }, session) 
     recordAuditFailure(err, auditEntry);
   }
 
+  const touchesMcp = added.some((p) => p.model === "mcp") || removed.some((p) => p.model === "mcp");
+  if (touchesMcp) {
+    await regenerateOpenClawConfig();
+  }
+
   return NextResponse.json({ success: true });
 });
 
 /**
  * DELETE /api/agents/[agentId]/integrations
  *
- * Remove ALL integration permissions for this agent (used when connection is cleared).
+ * Remove this agent's Odoo/email integration permissions (used when the settings
+ * page reports none). MCP grants are left alone, see below.
  *
  * Gated like its siblings. It, too, checked nothing before: an unknown id was
  * answered `200 {success:true}` and given a `config.changed` audit row claiming
@@ -243,23 +306,25 @@ export const DELETE = withAdmin<RouteContext>(async (_req, { params }, session) 
   const agentOrError = await getAgentWithAccess(agentId, session.user.id!, session.user.role);
   if (agentOrError instanceof NextResponse) return agentOrError;
 
-  // Get existing permissions for audit log
-  const existingPerms = await db
-    .select()
-    .from(agentConnectionPermissions)
-    .where(eq(agentConnectionPermissions.agentId, agentId));
+  // MCP grants are not cleared here. They are managed per connection (PUT
+  // with an empty list revokes them), and the settings page calls this route
+  // when no Odoo/email section reports a grant — an MCP section that is not
+  // rendered (flag off, connection in auth_failed) reports nothing either, so
+  // a blanket delete would wipe grants the admin never saw.
+  const notMcp = and(
+    eq(agentConnectionPermissions.agentId, agentId),
+    ne(agentConnectionPermissions.model, "mcp")
+  );
 
-  // Delete all permissions for this agent
-  await db
-    .delete(agentConnectionPermissions)
-    .where(eq(agentConnectionPermissions.agentId, agentId));
+  const existingPerms = await db.select().from(agentConnectionPermissions).where(notMcp);
+  await db.delete(agentConnectionPermissions).where(notMcp);
 
-  // Config regeneration is NOT done here — see PUT handler comment.
-
-  // Audit log
+  // Config regeneration is NOT done here — see PUT handler comment. The rows
+  // cleared here are Odoo/email grants, gated at tool-call time.
   const removed = existingPerms.map((p) => ({ model: p.model, operation: p.operation }));
 
-  await appendAuditLog({
+  // The rows are gone; an audit-write failure must not turn that into a 500.
+  const auditEntry: AuditLogEntry = {
     actorType: "user",
     actorId: session.user.id!,
     eventType: "config.changed",
@@ -267,10 +332,16 @@ export const DELETE = withAdmin<RouteContext>(async (_req, { params }, session) 
     detail: {
       action: "agent_integration_permissions_cleared",
       agentId,
-      removed,
+      agent: { id: agentId, name: agentOrError.name },
+      removed: summarizeListForAudit(removed),
     },
     outcome: "success",
-  });
+  };
+  try {
+    await appendAuditLog(auditEntry);
+  } catch (err) {
+    recordAuditFailure(err, auditEntry);
+  }
 
   return NextResponse.json({ success: true });
 });

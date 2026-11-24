@@ -247,7 +247,7 @@ describe("audit: DELETE /api/users/[userId]", () => {
       eventType: "user.deleted",
       resource: "user:user-1",
       outcome: "success",
-      detail: { name: "Deleted User" },
+      detail: { name: "Deleted User", personalAgents: [] },
     });
   });
 

@@ -68,4 +68,34 @@ describe("maskConnectionCredentials", () => {
       expect(JSON.stringify(masked)).not.toContain(imapCredentials.password);
     });
   });
+
+  describe("mcp", () => {
+    function fakeDecrypt(ciphertext: string): string {
+      return ciphertext;
+    }
+
+    it("returns only { configured: true } and never the token (a pure secret, same as web-search)", () => {
+      const encrypted = JSON.stringify({ token: "pat-super-secret-token" });
+
+      const masked = maskConnectionCredentials("mcp", encrypted, fakeDecrypt);
+
+      expect(masked).toEqual({ configured: true });
+      expect(JSON.stringify(masked)).not.toContain("pat-super-secret-token");
+    });
+
+    it("does not fall through to the odoo-style default masker (regression guard)", () => {
+      // Without a dedicated mcp branch, mcp credentials fall into the odoo
+      // default masker, which picks { url, db, login } by name and silently
+      // returns undefined for all three on a bare { token } blob — the same
+      // failure mode the imap branch guards against above.
+      const encrypted = JSON.stringify({ token: "pat-token" });
+
+      const masked = maskConnectionCredentials("mcp", encrypted, fakeDecrypt);
+
+      expect(masked.url).toBeUndefined();
+      expect(masked.db).toBeUndefined();
+      expect(masked.login).toBeUndefined();
+      expect(masked.configured).toBe(true);
+    });
+  });
 });

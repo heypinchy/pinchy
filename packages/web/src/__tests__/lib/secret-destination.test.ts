@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   canonicalDestinationUrl,
   auditableDestinationUrl,
+  auditableOrigin,
   baseUrlDestinationChange,
   integrationDestinationChange,
   capForAudit,
@@ -37,6 +38,18 @@ describe("auditableDestinationUrl", () => {
 
   it("names an unparseable URL instead of echoing it", () => {
     expect(auditableDestinationUrl("::nope::")).toBe("(unparseable URL)");
+  });
+});
+
+describe("auditableOrigin", () => {
+  it("keeps scheme, host and port only — userinfo, path and query can all carry a secret", () => {
+    expect(
+      auditableOrigin("https://user:pw@hooks.example.com:8443/mcp/s3cr3t/sse?api_key=abc")
+    ).toBe("https://hooks.example.com:8443");
+  });
+
+  it("names an unparseable URL instead of echoing it", () => {
+    expect(auditableOrigin("::nope::")).toBe("(unparseable URL)");
   });
 });
 

@@ -6,6 +6,7 @@ vi.mock("fs", async (importOriginal) => {
   const existsSyncMock = vi.fn().mockReturnValue(false);
   const mkdirSyncMock = vi.fn();
   const rmSyncMock = vi.fn();
+  const readdirSyncMock = vi.fn();
   return {
     ...actual,
     default: {
@@ -14,20 +15,28 @@ vi.mock("fs", async (importOriginal) => {
       existsSync: existsSyncMock,
       mkdirSync: mkdirSyncMock,
       rmSync: rmSyncMock,
+      readdirSync: readdirSyncMock,
     },
     writeFileSync: writeFileSyncMock,
     existsSync: existsSyncMock,
     mkdirSync: mkdirSyncMock,
     rmSync: rmSyncMock,
+    readdirSync: readdirSyncMock,
   };
 });
 
-import { writeFileSync, mkdirSync, rmSync } from "fs";
-import { writeWorkspaceSkill, removeWorkspaceSkill, getWorkspaceSkillPath } from "@/lib/workspace";
+import { writeFileSync, mkdirSync, rmSync, readdirSync } from "fs";
+import {
+  writeWorkspaceSkill,
+  removeWorkspaceSkill,
+  getWorkspaceSkillPath,
+  listWorkspaceSkillIds,
+} from "@/lib/workspace";
 
 const mockedWriteFileSync = vi.mocked(writeFileSync);
 const mockedMkdirSync = vi.mocked(mkdirSync);
 const mockedRmSync = vi.mocked(rmSync);
+const mockedReaddirSync = vi.mocked(readdirSync);
 
 describe("workspace skills", () => {
   beforeEach(() => {
@@ -114,6 +123,48 @@ describe("workspace skills", () => {
     it("rejects an invalid skillId", () => {
       expect(() => removeWorkspaceSkill("agent-1", "../escape")).toThrow(/invalid skill/i);
       expect(mockedRmSync).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("listWorkspaceSkillIds", () => {
+    it("returns the directory names under skills/", () => {
+      mockedReaddirSync.mockReturnValue([
+        { name: "web-search", isDirectory: () => true },
+        { name: "email", isDirectory: () => true },
+        { name: "mcp-conn-abc", isDirectory: () => true },
+      ] as unknown as ReturnType<typeof readdirSync>);
+
+      const ids = listWorkspaceSkillIds("agent-1");
+
+      expect(mockedReaddirSync).toHaveBeenCalledWith(
+        expect.stringMatching(/\/workspaces\/agent-1\/skills$/),
+        { withFileTypes: true }
+      );
+      expect(ids).toEqual(["web-search", "email", "mcp-conn-abc"]);
+    });
+
+    it("excludes non-directory entries", () => {
+      mockedReaddirSync.mockReturnValue([
+        { name: "web-search", isDirectory: () => true },
+        { name: "stray-file.txt", isDirectory: () => false },
+      ] as unknown as ReturnType<typeof readdirSync>);
+
+      expect(listWorkspaceSkillIds("agent-1")).toEqual(["web-search"]);
+    });
+
+    it("returns an empty array when the skills/ directory does not exist", () => {
+      mockedReaddirSync.mockImplementation(() => {
+        const err = new Error("ENOENT: no such file or directory");
+        (err as NodeJS.ErrnoException).code = "ENOENT";
+        throw err;
+      });
+
+      expect(listWorkspaceSkillIds("agent-1")).toEqual([]);
+    });
+
+    it("rejects an invalid agentId", () => {
+      expect(() => listWorkspaceSkillIds("../escape")).toThrow(/invalid agentid/i);
+      expect(mockedReaddirSync).not.toHaveBeenCalled();
     });
   });
 });

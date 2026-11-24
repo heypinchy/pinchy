@@ -85,6 +85,7 @@ export const POST = withApiKey(["agents:write"], async (req, _ctx, key) => {
           agentId: agent.id,
           connectionId: entry.connectionId,
           permissions: entry.permissions,
+          ...(entry.skippedTools ? { skippedTools: entry.skippedTools } : {}),
           apiKey: { id: key.keyId, name: key.name },
         },
         outcome: "success",

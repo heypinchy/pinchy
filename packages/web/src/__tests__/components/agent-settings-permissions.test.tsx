@@ -18,6 +18,13 @@ type SectionOnChange = (
 ) => void;
 let capturedOdooOnChange: SectionOnChange | null = null;
 let capturedWebSearchOnChange: ((v: AgentPluginConfig["pinchy-web"]) => void) | null = null;
+let capturedMcpOnChange:
+  | ((
+      v: Array<{ connectionId: string; permissions: Array<{ model: string; operation: string }> }>,
+      isDirty: boolean
+    ) => void)
+  | null = null;
+let capturedMcpConnections: unknown[] | null = null;
 let capturedEmailOnChange = null as SectionOnChange | null;
 
 vi.mock("@/lib/model-vision", () => ({
@@ -132,12 +139,32 @@ vi.mock("@/components/email-permission-section", () => ({
   },
 }));
 
+vi.mock("@/components/mcp-permission-section", () => ({
+  McpPermissionSection: ({
+    connections,
+    onChange,
+  }: {
+    agentId: string;
+    connections: unknown[];
+    onChange: (
+      v: Array<{ connectionId: string; permissions: Array<{ model: string; operation: string }> }>,
+      d: boolean
+    ) => void;
+  }) => {
+    capturedMcpOnChange = onChange;
+    capturedMcpConnections = connections;
+    return <div data-testid="mcp-section">MCP Section</div>;
+  },
+}));
+
 beforeEach(() => {
   mockUseGrantedFolders.mockReset();
   mockUseGrantedFolders.mockReturnValue(undefined);
   capturedOdooOnChange = null;
   capturedEmailOnChange = null;
   capturedWebSearchOnChange = null;
+  capturedMcpOnChange = null;
+  capturedMcpConnections = null;
   capturedReindexProps = null;
 });
 
@@ -709,6 +736,198 @@ describe("AgentSettingsPermissions", () => {
 
       expect(screen.queryByText("Email")).not.toBeInTheDocument();
       expect(screen.queryByTestId("email-section")).not.toBeInTheDocument();
+    });
+  });
+
+  describe("MCP section", () => {
+    const mcpConnection = { id: "conn-mcp", name: "GitHub MCP", type: "mcp", status: "active" };
+
+    it("hides the MCP section when mcpEnabled is not passed, even with an active MCP connection", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={defaultAgent}
+          directories={defaultDirectories}
+          connections={[mcpConnection]}
+          isAdmin={true}
+          onChange={vi.fn()}
+        />
+      );
+
+      expect(screen.queryByText("MCP")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("mcp-section")).not.toBeInTheDocument();
+    });
+
+    it("hides the MCP section when mcpEnabled=false, even with an active MCP connection", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={defaultAgent}
+          directories={defaultDirectories}
+          connections={[mcpConnection]}
+          isAdmin={true}
+          mcpEnabled={false}
+          onChange={vi.fn()}
+        />
+      );
+
+      expect(screen.queryByText("MCP")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("mcp-section")).not.toBeInTheDocument();
+    });
+
+    it("hides the MCP section when mcpEnabled=true but there are no MCP connections", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={defaultAgent}
+          directories={defaultDirectories}
+          connections={[odooConnection]}
+          isAdmin={true}
+          mcpEnabled={true}
+          onChange={vi.fn()}
+        />
+      );
+
+      expect(screen.queryByText("MCP")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("mcp-section")).not.toBeInTheDocument();
+    });
+
+    it("shows the MCP section when mcpEnabled=true and an active MCP connection exists", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={defaultAgent}
+          directories={defaultDirectories}
+          connections={[mcpConnection]}
+          isAdmin={true}
+          mcpEnabled={true}
+          onChange={vi.fn()}
+        />
+      );
+
+      expect(screen.getByText("MCP")).toBeInTheDocument();
+      expect(screen.getByTestId("mcp-section")).toBeInTheDocument();
+    });
+
+    it("excludes an auth_failed MCP connection from the section (build.ts only serves status=active)", () => {
+      const authFailedMcp = { ...mcpConnection, status: "auth_failed" };
+      render(
+        <AgentSettingsPermissions
+          agent={defaultAgent}
+          directories={defaultDirectories}
+          connections={[authFailedMcp]}
+          isAdmin={true}
+          mcpEnabled={true}
+          onChange={vi.fn()}
+        />
+      );
+
+      // No active MCP connections remain after the auth_failed filter, so the
+      // whole section (heading included) is hidden — matches Odoo/Email's
+      // "section absent when nothing to show" behavior.
+      expect(screen.queryByText("MCP")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("mcp-section")).not.toBeInTheDocument();
+    });
+
+    it("passes only active MCP connections through to McpPermissionSection", () => {
+      const activeMcp = { ...mcpConnection, id: "conn-mcp-active" };
+      const authFailedMcp = { ...mcpConnection, id: "conn-mcp-broken", status: "auth_failed" };
+      render(
+        <AgentSettingsPermissions
+          agent={defaultAgent}
+          directories={defaultDirectories}
+          connections={[activeMcp, authFailedMcp]}
+          isAdmin={true}
+          mcpEnabled={true}
+          onChange={vi.fn()}
+        />
+      );
+
+      expect(capturedMcpConnections).toEqual([activeMcp]);
+    });
+
+    it("includes MCP entries reported by McpPermissionSection in the onChange integrations array", async () => {
+      const onChange = vi.fn();
+      render(
+        <AgentSettingsPermissions
+          agent={defaultAgent}
+          directories={defaultDirectories}
+          connections={[mcpConnection]}
+          isAdmin={true}
+          mcpEnabled={true}
+          onChange={onChange}
+        />
+      );
+
+      await waitFor(() => expect(capturedMcpOnChange).not.toBeNull());
+      act(() =>
+        capturedMcpOnChange!(
+          [{ connectionId: "conn-mcp", permissions: [{ model: "mcp", operation: "list_repos" }] }],
+          true
+        )
+      );
+
+      await waitFor(() => {
+        expect(onChange).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            integrations: [
+              {
+                connectionId: "conn-mcp",
+                permissions: [{ model: "mcp", operation: "list_repos" }],
+              },
+            ],
+          }),
+          true
+        );
+      });
+    });
+
+    it("marks the permissions tab dirty when only the MCP section is dirty", async () => {
+      const onChange = vi.fn();
+      render(
+        <AgentSettingsPermissions
+          agent={defaultAgent}
+          directories={defaultDirectories}
+          connections={[mcpConnection]}
+          isAdmin={true}
+          mcpEnabled={true}
+          onChange={onChange}
+        />
+      );
+
+      await waitFor(() => expect(capturedMcpOnChange).not.toBeNull());
+      onChange.mockClear();
+      act(() => capturedMcpOnChange!([], true));
+
+      await waitFor(() => {
+        const lastCall = onChange.mock.calls[onChange.mock.calls.length - 1];
+        expect(lastCall[1]).toBe(true);
+      });
+    });
+
+    it("does not add MCP operations to allowedTools (MCP gating lives in tools.allow via build.ts, not the agent row)", async () => {
+      const onChange = vi.fn();
+      render(
+        <AgentSettingsPermissions
+          agent={defaultAgent}
+          directories={defaultDirectories}
+          connections={[mcpConnection]}
+          isAdmin={true}
+          mcpEnabled={true}
+          onChange={onChange}
+        />
+      );
+
+      await waitFor(() => expect(capturedMcpOnChange).not.toBeNull());
+      act(() =>
+        capturedMcpOnChange!(
+          [{ connectionId: "conn-mcp", permissions: [{ model: "mcp", operation: "list_repos" }] }],
+          true
+        )
+      );
+
+      await waitFor(() => {
+        expect(onChange).toHaveBeenLastCalledWith(
+          expect.objectContaining({ allowedTools: [] }),
+          true
+        );
+      });
     });
   });
 
@@ -1431,6 +1650,39 @@ describe("AgentSettingsPermissions", () => {
         expect(values.integrationsLoaded).toBe(true);
         expect(values.allowedTools).not.toContain("odoo_read");
         expect(values.allowedTools).not.toContain("email_read");
+      });
+    });
+
+    // MCP grants live only in agent_connection_permissions, so an empty
+    // integrations list read as "loaded" sends DELETE-all and wipes them. The
+    // shown MCP section counts as unreported until it answers, like Odoo/email.
+    it("does not report integrationsLoaded while a shown MCP section has not reported", async () => {
+      const onChange = vi.fn();
+      render(
+        <AgentSettingsPermissions
+          agent={defaultAgent}
+          directories={defaultDirectories}
+          connections={[{ id: "conn-mcp", name: "GitHub MCP", type: "mcp", status: "active" }]}
+          isAdmin={true}
+          mcpEnabled={true}
+          onChange={onChange}
+        />
+      );
+
+      await userEvent.click(screen.getByLabelText("Create files"));
+
+      await waitFor(() => {
+        const [values] = onChange.mock.calls[onChange.mock.calls.length - 1];
+        expect(values.integrations).toEqual([]);
+        expect(values.integrationsLoaded).toBe(false);
+      });
+
+      await waitFor(() => expect(capturedMcpOnChange).not.toBeNull());
+      act(() => capturedMcpOnChange!([], false));
+
+      await waitFor(() => {
+        const [values] = onChange.mock.calls[onChange.mock.calls.length - 1];
+        expect(values.integrationsLoaded).toBe(true);
       });
     });
   });

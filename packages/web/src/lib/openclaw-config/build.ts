@@ -44,8 +44,11 @@ import {
   writeWorkspaceSkill,
   writeMailboxContext,
   ensureWorkspace,
+  listWorkspaceSkillIds,
+  removeWorkspaceSkill,
 } from "@/lib/workspace";
 import { getSkillBody, isKnownSkill, parseSkillFrontmatter, type SkillId } from "@/lib/skills";
+import { mcpSkillId, buildMcpSkillBody } from "@/lib/skills/mcp-skill";
 import { resolveBootstrapCaps } from "./bootstrap-caps";
 import {
   CONFIG_PATH,
@@ -113,6 +116,9 @@ import { buildAgentsBlock, preserveTalkBlock } from "./agent-roster";
 import { buildGatewayBlock } from "./gateway";
 import { aggregateEmailPermissionsByAgent, buildEmailAgentConfigs } from "./email-agent-config";
 import { personalAgentsByOwner, telegramDirectTarget } from "@/lib/telegram-routing";
+import { isMcpEnabled } from "@/lib/feature-flags";
+import { buildNativeMcp, type NativeMcpConnectionInput } from "./native-mcp";
+import type { McpIntegrationData, McpTool } from "@/lib/integrations/types";
 
 /**
  * Plugins that register a conversation hook, and so get
@@ -188,6 +194,26 @@ function buildManagedLlamaCppProvider(): Record<string, unknown> {
       idleStopMs: 600_000,
     },
   };
+}
+
+/**
+ * The base URL OpenClaw uses to call back into Pinchy: every `pinchy-*` plugin
+ * entry's `apiBaseUrl` (credentials fetch, usage reporting, audit, transcript)
+ * and the `mcp.servers.<key>.url` proxy target all resolve through here.
+ *
+ * `PINCHY_INTERNAL_URL` is the operator override (used when Pinchy isn't
+ * reachable at the compose service name, e.g. split hosts or the E2E stacks);
+ * otherwise we address the `pinchy` compose service on `PORT`, defaulting to
+ * 7777.
+ *
+ * Single source of truth ON PURPOSE: this exact fallback chain was previously
+ * inlined verbatim at 8 separate emission sites in this file. Changing the
+ * default port or the env-var name meant editing all 8, and a missed one would
+ * only surface at runtime as a plugin that can't reach Pinchy. Exported for
+ * unit testing, same rationale as `rewriteOllamaHostForOpenClaw` below.
+ */
+export function internalApiBaseUrl(): string {
+  return process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`;
 }
 
 /**
@@ -445,7 +471,15 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
   // See loadAgentConnectionPermissions for why this is two queries + an
   // in-memory reconstruction rather than a single `.innerJoin()` (#OOM
   // fan-out fix, v0.9.0 release verification).
-  const allPermissions = await loadAgentConnectionPermissions(db);
+  //
+  // Grant rows outlive a soft delete, so they are cut to live agents here,
+  // once, for every consumer below: a deleted agent's grants must not keep an
+  // MCP server (and its credential-injecting proxy route) or an email/Odoo
+  // config alive.
+  const liveAgentIds = new Set(liveAgents.map((a) => a.id));
+  const allPermissions = (await loadAgentConnectionPermissions(db)).filter((row) =>
+    liveAgentIds.has(row.agent_connection_permissions.agentId)
+  );
 
   // Aggregate email permissions per agent, then derive the per-agent
   // pinchy-email plugin config (emitted into plugins.entries further down).
@@ -1057,8 +1091,7 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     entries["pinchy-files"] = {
       enabled: true,
       config: {
-        apiBaseUrl:
-          process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
+        apiBaseUrl: internalApiBaseUrl(),
         gatewayToken: gatewayTokenString,
         ...(visionModel ? { visionModel } : {}),
         agents: pluginConfigs["pinchy-files"],
@@ -1107,8 +1140,7 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     entries["pinchy-context"] = {
       enabled: true,
       config: {
-        apiBaseUrl:
-          process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
+        apiBaseUrl: internalApiBaseUrl(),
         gatewayToken: gatewayTokenString,
         agents: contextPluginAgents,
       },
@@ -1121,8 +1153,7 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     entries["pinchy-knowledge"] = {
       enabled: true,
       config: {
-        apiBaseUrl:
-          process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
+        apiBaseUrl: internalApiBaseUrl(),
         gatewayToken: gatewayTokenString,
         agents: knowledgePluginAgents,
       },
@@ -1135,7 +1166,7 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
   entries["pinchy-audit"] = {
     enabled: true,
     config: {
-      apiBaseUrl: process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
+      apiBaseUrl: internalApiBaseUrl(),
       gatewayToken: gatewayTokenString,
     },
   };
@@ -1147,7 +1178,7 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
   entries["pinchy-transcript"] = {
     enabled: true,
     config: {
-      apiBaseUrl: process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
+      apiBaseUrl: internalApiBaseUrl(),
       gatewayToken: gatewayTokenString,
     },
   };
@@ -1158,7 +1189,7 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
   entries["pinchy-approvals"] = {
     enabled: true,
     config: {
-      apiBaseUrl: process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
+      apiBaseUrl: internalApiBaseUrl(),
       gatewayToken: gatewayTokenString,
     },
   };
@@ -1251,8 +1282,7 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     entries["pinchy-odoo"] = {
       enabled: true,
       config: {
-        apiBaseUrl:
-          process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
+        apiBaseUrl: internalApiBaseUrl(),
         gatewayToken: gatewayTokenString,
         agents: odooAgentConfigs,
       },
@@ -1296,8 +1326,7 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     entries["pinchy-web"] = {
       enabled: true,
       config: {
-        apiBaseUrl:
-          process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
+        apiBaseUrl: internalApiBaseUrl(),
         gatewayToken: gatewayTokenString,
         ...(webConn ? { connectionId: webConn.id } : {}),
         agents: webAgentConfigs,
@@ -1312,12 +1341,214 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     entries["pinchy-email"] = {
       enabled: true,
       config: {
-        apiBaseUrl:
-          process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
+        apiBaseUrl: internalApiBaseUrl(),
         gatewayToken: gatewayTokenString,
         agents: emailAgentConfigs,
       },
     };
+  }
+
+  // Dynamic per-connection MCP skills (D2, T7). Populated below, ONLY when
+  // the feature flag is on and a connection has surviving grants — see
+  // mcp-skill.ts's module doc. Declared here (outside `if (isMcpEnabled())`)
+  // so the cleanup pass after that block can see it even when the map stays
+  // empty — e.g. the flag is off, or every MCP connection/grant was removed
+  // — which is exactly the "connection gone → skill gone" case (D2) and its
+  // generalization "flag off → no dynamic skills survive either".
+  const liveMcpSkillIdsByAgent = new Map<string, Set<string>>();
+
+  // Collect MCP integration configs (native OpenClaw mcp.servers + Pinchy's
+  // credential-injecting proxy — see native-mcp.ts's module doc for the full
+  // rationale). Unlike Odoo/email, MCP is NOT a Pinchy plugin: there is no
+  // runtime checkPermission gate inside a plugin, so `mcp.servers` +
+  // `tools.allow` in THIS config are the only enforcement point. Behind the
+  // feature flag (D3) so a disabled deployment never emits the section or any
+  // MCP tool name, even if grant rows still exist in the DB.
+  if (isMcpEnabled()) {
+    // Reuses `allPermissions` (already joined agent_connection_permissions +
+    // integration_connections above for the email/odoo sections) instead of a
+    // second query — MCP grants are ordinary rows with model:"mcp" (D1). A
+    // connection with zero surviving grants needs no mcp.servers entry at
+    // all: no agent would have a matching tools.allow name, so registering it
+    // would just be a wasted upstream connection attempt for OpenClaw's own
+    // dynamic tool discovery.
+    //
+    // Connections must be `status === "active"` — `allPermissions` only
+    // excludes `pending` (shared with email/odoo), but auth_failed is
+    // different for MCP than for Odoo/email: those fetch credentials lazily
+    // at tool-call time and let the upstream API produce its own error, so a
+    // stale connection degrades gracefully without any config change. MCP's
+    // gating lives IN this config — an auth_failed connection would still get
+    // a live mcp.servers entry, so OpenClaw would keep attempting (and
+    // failing) the initialize handshake on every reload. Filtering here keeps
+    // the config honest about what's actually reachable.
+    const mcpConnectionsById = new Map<string, typeof integrationConnections.$inferSelect>();
+    const mcpAgentToolsByConn = new Map<string, Record<string, string[]>>();
+
+    for (const row of allPermissions) {
+      const perm = row.agent_connection_permissions;
+      const conn = row.integration_connections;
+      if (perm.model !== "mcp") continue;
+      if (conn.type !== "mcp" || conn.status !== "active") continue;
+
+      mcpConnectionsById.set(conn.id, conn);
+
+      // DRIFT FILTER: a grant only survives into tools.allow if the tool is
+      // STILL present in the connection's most recently synced data.tools. A
+      // re-sync (POST .../sync) can remove a tool from data.tools after the
+      // grant row was written — the permissions route's own tool-existence
+      // check (T5) only guards the moment of granting, not later drift.
+      // Without this intersection, a revoked tool would stay silently
+      // allowed until some unrelated regenerate happened to notice — this IS
+      // that check, on every regenerate.
+      const syncedTools = new Set(
+        ((conn.data as McpIntegrationData | null)?.tools ?? []).map((t) => t.name)
+      );
+      if (!syncedTools.has(perm.operation)) continue;
+
+      if (!mcpAgentToolsByConn.has(conn.id)) mcpAgentToolsByConn.set(conn.id, {});
+      const agentTools = mcpAgentToolsByConn.get(conn.id)!;
+      if (!agentTools[perm.agentId]) agentTools[perm.agentId] = [];
+      agentTools[perm.agentId].push(perm.operation);
+    }
+
+    // Every entry in mcpAgentToolsByConn was only created immediately before
+    // pushing its first surviving tool above, so by construction it always
+    // has at least one agent with at least one tool — a connection whose
+    // every grant drift-filtered out simply never got an entry at all,
+    // which is exactly what keeps it out of mcp.servers below.
+    const nativeInputs: NativeMcpConnectionInput[] = [];
+    for (const [connId, agentTools] of mcpAgentToolsByConn) {
+      const conn = mcpConnectionsById.get(connId)!;
+      const data = (conn.data ?? {}) as McpIntegrationData;
+      nativeInputs.push({
+        id: connId,
+        transport: data.transport ?? "http",
+        agentTools,
+      });
+    }
+
+    if (nativeInputs.length > 0) {
+      const proxyBaseUrl = internalApiBaseUrl();
+      const native = buildNativeMcp(nativeInputs, {
+        proxyBaseUrl,
+        gatewayToken: gatewayTokenString,
+      });
+      config.mcp = { servers: native.servers };
+
+      // Merge the per-agent MCP tool allowlist into
+      // agents.entries.<id>.tools.allow, APPENDED after computeAllowedTools()'s
+      // fail-closed base — never replacing it. buildAgentsBlock assigns
+      // `agentEntries` to config.agents.entries by reference, so mutating the
+      // entries here is reflected in the emitted config.
+      for (const [agentId, agentEntry] of Object.entries(agentEntries)) {
+        const allow = native.toolAllowByAgent[agentId];
+        if (!allow || allow.length === 0) continue;
+        const tools = (agentEntry.tools as Record<string, unknown>) ?? {};
+        const existingAllow = (tools.allow as string[] | undefined) ?? [];
+        agentEntry.tools = { ...tools, allow: [...existingAllow, ...allow] };
+      }
+
+      // Dynamic per-connection skills (D2, T7): one SKILL.md per (agent,
+      // connection) pair with surviving grants, built from EXACTLY the same
+      // drift-filtered mcpAgentToolsByConn intersection used for
+      // tools.allow above — a tool that isn't allowed never appears in the
+      // skill body either. Never written to agents.skills (DB) — dynamic,
+      // not persisted.
+      // List each dynamic skill in pinchy-files' `## Skills` block, the same
+      // way the DB skills are listed above: OpenClaw 2026.9 renders its own
+      // skills section only when the built-in `read` tool is visible, which
+      // tools.allow denies, so agents.entries.<id>.skills alone never reaches
+      // the prompt. The skills directory is granted READ-ONLY, never
+      // write_paths.
+      const listSkillInFilesConfig = (agentId: string, skillId: string, description: string) => {
+        const filesConfig = pluginConfigs["pinchy-files"]?.[agentId] as
+          Record<string, unknown> | undefined;
+        if (!filesConfig) return;
+        const workspaceSkills = `${getOpenClawWorkspacePath(agentId)}/skills`;
+        const allowed = (filesConfig.allowed_paths as string[] | undefined) ?? [];
+        if (!allowed.includes(workspaceSkills)) {
+          filesConfig.allowed_paths = [...allowed, workspaceSkills];
+        }
+        filesConfig.skills = [
+          ...((filesConfig.skills as unknown[] | undefined) ?? []),
+          { name: skillId, description, location: `${workspaceSkills}/${skillId}/SKILL.md` },
+        ];
+      };
+
+      for (const [connId, agentTools] of mcpAgentToolsByConn) {
+        const conn = mcpConnectionsById.get(connId)!;
+        const data = (conn.data ?? {}) as McpIntegrationData;
+        // `?? []` is defense-in-depth, matching the DRIFT FILTER's own
+        // `?.tools ?? []` above — by construction every connId reaching
+        // this loop already had a matching entry in data.tools (that's
+        // exactly what let it survive into mcpAgentToolsByConn), so this
+        // guard should never actually be exercised.
+        const toolsByName = new Map((data.tools ?? []).map((t) => [t.name, t]));
+        const skillId = mcpSkillId(connId);
+
+        for (const [agentId, toolNames] of Object.entries(agentTools)) {
+          const grantedTools = toolNames
+            .map((name) => toolsByName.get(name))
+            .filter((t): t is McpTool => t !== undefined);
+          const body = buildMcpSkillBody({ id: conn.id, name: conn.name }, grantedTools);
+          writeWorkspaceSkill(agentId, skillId, body);
+          listSkillInFilesConfig(agentId, skillId, parseSkillFrontmatter(body).description);
+
+          if (!liveMcpSkillIdsByAgent.has(agentId)) liveMcpSkillIdsByAgent.set(agentId, new Set());
+          liveMcpSkillIdsByAgent.get(agentId)!.add(skillId);
+        }
+      }
+
+      // Append the dynamic skill ids AFTER the KNOWN_SKILLS validation loop
+      // earlier in this function (the `for (const id of rawSkills)` block
+      // that throws on an unknown id) — these ids are never in KNOWN_SKILLS
+      // by design (D2: derived from connections, not authored source), so
+      // running them through that validation would throw on every agent
+      // with an MCP grant. `agentEntries` is the same object referenced by
+      // config.agents.entries (see the tools.allow append above for the same
+      // by-reference-mutation rationale).
+      for (const [agentId, agentEntry] of Object.entries(agentEntries)) {
+        const ids = liveMcpSkillIdsByAgent.get(agentId);
+        if (!ids || ids.size === 0) continue;
+        const existingSkills = (agentEntry.skills as string[] | undefined) ?? [];
+        agentEntry.skills = [...existingSkills, ...ids];
+      }
+    }
+  }
+
+  // Clean up stale `mcp-*` skill directories (D2: "connection gone → skill
+  // gone"). Runs for every live agent regardless of whether isMcpEnabled()
+  // or any connection currently has grants — liveMcpSkillIdsByAgent is empty
+  // in both of those cases, so this naturally also cleans up left-over
+  // skill directories if the feature flag is toggled off after having been
+  // on. Verified against OpenClaw's own skill loader
+  // (node_modules/openclaw/dist/workspace-CD16JXyF.js: filterSkillEntries
+  // already excludes any skill whose frontmatter `name` is absent from
+  // agents.list[].skills, for EVERY skill source including
+  // "openclaw-workspace" — so a stale file is invisible to the model even
+  // before this runs) — this pass is defense-in-depth against workspace
+  // litter and a future regression that stops emitting the allowlist
+  // explicitly, not the sole correctness mechanism. Scoped to the `mcp-`
+  // namespace ONLY: web-search/email and anything else on disk is never
+  // touched.
+  for (const agent of liveAgents) {
+    if (agent.deletedAt) continue;
+    const liveIds = liveMcpSkillIdsByAgent.get(agent.id) ?? new Set<string>();
+    for (const onDiskId of listWorkspaceSkillIds(agent.id)) {
+      if (!onDiskId.startsWith("mcp-")) continue;
+      if (liveIds.has(onDiskId)) continue;
+      try {
+        removeWorkspaceSkill(agent.id, onDiskId);
+      } catch (err) {
+        // Defensive: a directory name that somehow doesn't satisfy
+        // assertValidSkillId (e.g. external tampering) must not crash the
+        // whole config regenerate over one piece of litter.
+        console.warn(
+          `[openclaw-config] Failed to remove stale MCP skill directory "${onDiskId}" for agent ${agent.id}: ${String(err)}`
+        );
+      }
+    }
   }
 
   // Build the allow list. Two requirements:

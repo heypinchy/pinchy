@@ -1,0 +1,494 @@
+/**
+ * MCP client — lists tools from a remote MCP server over HTTP or SSE transport.
+ *
+ * Typed errors:
+ *   McpAuthError   — server returned 401 or 403 (see the class for why both)
+ *   McpServerError — server returned 5xx (includes status code + body for audit log)
+ *   McpSchemaError — response was valid JSON but a tool was missing `name`
+ *
+ * SSRF protection: resolveExternalUrlTarget() classifies the URL's addresses
+ * before any network request, and every request then connects to exactly those
+ * addresses (address pinning), so a second DNS lookup cannot answer differently.
+ * Timeout: defaults to 10 seconds, overrideable for tests.
+ *
+ * Implementation note: We use direct JSON-RPC fetch rather than the MCP SDK's
+ * Client class for HTTP transport because the SDK's StreamableHTTPClientTransport
+ * creates its own internal AbortController and does not propagate the signal from
+ * requestInit to its fetch calls. Direct fetch gives us full abort signal control.
+ * For SSE transport we use the SDK transport as SSE requires event-source handling.
+ */
+
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
+import type { McpTool } from "./types";
+import type { McpErrorCode } from "./mcp-error-messages";
+import { resolveExternalUrlTarget } from "./url-validation";
+import {
+  createPinnedAgent,
+  fetchWithPinnedAgent,
+  type PinnedTarget,
+} from "@/lib/pinned-connection";
+import { RESERVED_HEADERS } from "./mcp-shared";
+
+// ---------------------------------------------------------------------------
+// Typed error subclasses
+// ---------------------------------------------------------------------------
+
+/**
+ * The token is the problem — raised for both 401 (rejected outright) and 403
+ * (authenticated, but missing the scope it needs). Both are fixed the same
+ * way: the user fetches a new, properly scoped token and reconnects, so both
+ * belong on the auth_failed path. This mirrors main's microsoft probe branch,
+ * which also treats 401 and 403 as one "reconnect" case. Keep the message
+ * status-agnostic — callers render it, and it covers both codes.
+ */
+export class McpAuthError extends Error {
+  constructor(message = "MCP server rejected the token") {
+    super(message);
+    this.name = "McpAuthError";
+  }
+}
+
+export class McpServerError extends Error {
+  readonly statusCode: number;
+  readonly body: string;
+
+  constructor(statusCode: number, body: string) {
+    super(`MCP server returned ${statusCode}: ${body}`);
+    this.name = "McpServerError";
+    this.statusCode = statusCode;
+    this.body = body;
+  }
+}
+
+export class McpSchemaError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "McpSchemaError";
+  }
+}
+
+/**
+ * Map a caught error onto the stable wire code the API routes ship to the
+ * browser. The dialog renders these via mcp-error-messages.ts — users never
+ * see the raw protocol error unless they run a custom server. Anything that
+ * is not one of our typed errors (DNS failure, refused connection, abort on
+ * timeout) is by definition a network-level failure.
+ */
+export function mcpErrorCodeFromError(err: unknown): McpErrorCode {
+  if (err instanceof McpAuthError) return "unauthorized";
+  if (err instanceof McpServerError) return "server_error";
+  if (err instanceof McpSchemaError) return "schema";
+  return "network";
+}
+
+// ---------------------------------------------------------------------------
+// Options
+// ---------------------------------------------------------------------------
+
+export interface ListMcpToolsOptions {
+  url: string;
+  transport: "http" | "sse";
+  token: string;
+  /**
+   * Extra HTTP headers to send alongside `Authorization: Bearer <token>`.
+   * Used today by the HighLevel preset (sends `locationId` Sub-Account ID).
+   * Reserved header names (Authorization, Content-Type, Accept) cannot be
+   * overridden — they are set by the client.
+   */
+  extraHeaders?: Record<string, string>;
+}
+
+// Re-exported from mcp-shared.ts (a client-safe module with no SDK import) so
+// existing server-side importers of RESERVED_HEADERS from this file — the
+// credential proxy route and the create-route's schema — don't need to
+// change. New client-safe consumers (e.g. lib/schemas/mcp-integration.ts)
+// should import RESERVED_HEADERS from ./mcp-shared directly instead of from
+// here, to avoid pulling the MCP SDK into a client bundle.
+export { RESERVED_HEADERS } from "./mcp-shared";
+
+export function sanitiseExtraHeaders(extra?: Record<string, string>): Record<string, string> {
+  if (!extra) return {};
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(extra)) {
+    if (RESERVED_HEADERS.has(k.toLowerCase())) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Implementation
+// ---------------------------------------------------------------------------
+
+const DEFAULT_TIMEOUT_MS = 10_000;
+
+/**
+ * Lists tools exposed by a remote MCP server.
+ *
+ * @param opts  Connection options (url, transport type, bearer token)
+ * @param signal  Optional external AbortSignal (e.g. from a request context)
+ * @param timeoutMs  Override the default 10-second timeout (for tests)
+ */
+export async function listMcpTools(
+  opts: ListMcpToolsOptions,
+  signal?: AbortSignal,
+  timeoutMs: number = DEFAULT_TIMEOUT_MS
+): Promise<McpTool[]> {
+  // SSRF protection — must happen before any network activity
+  const validation = await resolveExternalUrlTarget(opts.url);
+  if (!validation.valid) {
+    throw new Error(`Invalid MCP server URL: ${validation.error}`);
+  }
+  const pinned = originPinnedFetch(validation.url, validation.target);
+
+  // Build an AbortController for the timeout
+  const timeoutController = new AbortController();
+  const timeoutId = setTimeout(() => timeoutController.abort(), timeoutMs);
+
+  // Merge caller signal with our timeout signal
+  const combinedSignal = signal
+    ? mergeSignals(signal, timeoutController.signal)
+    : timeoutController.signal;
+
+  try {
+    if (opts.transport === "http") {
+      return await listToolsViaHttp(opts, combinedSignal, pinned.fetch);
+    } else {
+      return await listToolsViaSse(opts, combinedSignal, pinned.fetch);
+    }
+  } finally {
+    clearTimeout(timeoutId);
+    await pinned.close();
+  }
+}
+
+type FetchFn = (url: string | URL, init?: RequestInit) => Promise<Response>;
+
+/**
+ * A fetch that connects only to `target`, the addresses the SSRF guard
+ * classified for `origin`, and refuses any other origin.
+ *
+ * The origin check is not redundant with the pin. The pinned agent answers
+ * EVERY host name with the checked addresses, and an address literal needs no
+ * lookup at all — so a request to another origin (an SSE `endpoint` event, a
+ * redirect) would either borrow a pin meant for a different name or skip the
+ * pin entirely. Neither was checked.
+ *
+ * Redirects are never followed by the fetch itself (see `fetchWithPinnedAgent`);
+ * the SDK's same-origin redirect handling stays inside this origin.
+ */
+export function originPinnedFetch(
+  origin: string,
+  target: PinnedTarget
+): { fetch: FetchFn; close: () => Promise<void> } {
+  const agent = createPinnedAgent(target);
+  const allowed = new URL(origin).origin;
+  return {
+    fetch: async (url, init = {}) => {
+      const href = url instanceof URL ? url.href : url;
+      if (new URL(href).origin !== allowed) {
+        throw new Error(
+          `Refused a request to ${new URL(href).origin}: only the checked origin ${allowed} may be reached.`
+        );
+      }
+      return fetchWithPinnedAgent(href, init, agent);
+    },
+    // Graceful: waits for requests in flight (the fire-and-forget
+    // `notifications/initialized` included), then drops the sockets.
+    close: () => agent.close().catch(() => {}),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// HTTP transport — direct JSON-RPC (gives full AbortSignal control)
+// ---------------------------------------------------------------------------
+
+interface JsonRpcResponse {
+  jsonrpc: string;
+  id: number;
+  result?: unknown;
+  error?: { code: number; message: string };
+}
+
+async function listToolsViaHttp(
+  opts: ListMcpToolsOptions,
+  signal: AbortSignal,
+  fetch: FetchFn
+): Promise<McpTool[]> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Accept: "application/json, text/event-stream",
+    Authorization: `Bearer ${opts.token}`,
+    ...sanitiseExtraHeaders(opts.extraHeaders),
+  };
+
+  // Step 1: initialize
+  const initResponse = await fetchJsonRpc(
+    opts.url,
+    {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2024-11-05",
+        capabilities: {},
+        clientInfo: { name: "pinchy-mcp-client", version: "1.0.0" },
+      },
+    },
+    headers,
+    signal,
+    fetch
+  );
+
+  // Extract session ID if provided (Streamable HTTP spec)
+  const sessionId = initResponse.headers.get("mcp-session-id");
+
+  if (sessionId) {
+    headers["mcp-session-id"] = sessionId;
+  }
+
+  await parseJsonRpcBody(initResponse);
+
+  // Step 2: send initialized notification (fire and forget per spec)
+  const notifyHeaders = { ...headers };
+  fetch(opts.url, {
+    method: "POST",
+    headers: notifyHeaders,
+    body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
+    signal,
+  }).catch(() => {
+    // Notification response is optional — ignore errors
+  });
+
+  // Step 3: list tools
+  const toolsResponse = await fetchJsonRpc(
+    opts.url,
+    {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/list",
+      params: {},
+    },
+    headers,
+    signal,
+    fetch
+  );
+
+  const toolsBody = await parseJsonRpcBody(toolsResponse);
+  return validateAndMapTools(toolsBody);
+}
+
+async function fetchJsonRpc(
+  url: string,
+  payload: object,
+  headers: Record<string, string>,
+  signal: AbortSignal,
+  fetch: FetchFn
+): Promise<Response> {
+  const response = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(payload),
+    signal,
+  });
+
+  // 403 belongs here with 401: the request reached the server fine, the token
+  // just isn't good enough. Without this it would fall through, trip over the
+  // error body as a bogus JSON-RPC error, and get reported as "couldn't reach
+  // the server" — untrue, and it left the connection marked healthy.
+  if (response.status === 401 || response.status === 403) {
+    throw new McpAuthError();
+  }
+
+  if (response.status >= 500 && response.status < 600) {
+    const body = await response.text().catch(() => `HTTP ${response.status}`);
+    throw new McpServerError(response.status, body);
+  }
+
+  return response;
+}
+
+async function parseJsonRpcBody(response: Response): Promise<unknown> {
+  // The Streamable HTTP transport may return 202 Accepted for notifications
+  if (response.status === 202) {
+    return null;
+  }
+
+  const contentType = response.headers.get("content-type") ?? "";
+
+  // Handle SSE responses from Streamable HTTP (GET-based SSE streams)
+  if (contentType.includes("text/event-stream")) {
+    return parseFirstSseEvent(response);
+  }
+
+  const text = await response.text();
+  if (!text.trim()) return null;
+
+  let parsed: JsonRpcResponse;
+  try {
+    parsed = JSON.parse(text) as JsonRpcResponse;
+  } catch {
+    throw new McpSchemaError(`MCP server returned non-JSON response: ${text.slice(0, 200)}`);
+  }
+
+  if (parsed.error) {
+    throw new Error(`MCP error ${parsed.error.code}: ${parsed.error.message}`);
+  }
+
+  return parsed.result;
+}
+
+async function parseFirstSseEvent(response: Response): Promise<unknown> {
+  const text = await response.text();
+  // Parse SSE format: lines starting with "data: "
+  for (const line of text.split("\n")) {
+    if (line.startsWith("data: ")) {
+      const data = line.slice(6).trim();
+      try {
+        const parsed = JSON.parse(data) as JsonRpcResponse;
+        if (parsed.error) {
+          throw new Error(`MCP error ${parsed.error.code}: ${parsed.error.message}`);
+        }
+        return parsed.result;
+      } catch (e) {
+        if (
+          e instanceof McpAuthError ||
+          e instanceof McpServerError ||
+          e instanceof McpSchemaError
+        ) {
+          throw e;
+        }
+        throw new McpSchemaError(`MCP server returned invalid SSE data: ${data.slice(0, 200)}`);
+      }
+    }
+  }
+  throw new McpSchemaError("MCP server SSE response contained no data event");
+}
+
+// ---------------------------------------------------------------------------
+// SSE transport — uses SDK (SSE requires event-source handling)
+// ---------------------------------------------------------------------------
+
+async function listToolsViaSse(
+  opts: ListMcpToolsOptions,
+  signal: AbortSignal,
+  fetch: FetchFn
+): Promise<McpTool[]> {
+  const serverUrl = new URL(opts.url);
+  const requestInit: RequestInit = {
+    headers: {
+      Authorization: `Bearer ${opts.token}`,
+      ...sanitiseExtraHeaders(opts.extraHeaders),
+    },
+  };
+
+  const client = new Client({ name: "pinchy-mcp-client", version: "1.0.0" }, { capabilities: {} });
+
+  // `fetch` carries both the stream and the POSTs, so the SDK never resolves
+  // the host itself.
+  const transport = new SSEClientTransport(serverUrl, { requestInit, fetch });
+
+  // Wire up abort: if signal fires, close the transport
+  const abortHandler = () => {
+    transport.close().catch(() => {});
+  };
+  signal.addEventListener("abort", abortHandler, { once: true });
+
+  try {
+    await client.connect(transport);
+
+    if (signal.aborted) {
+      throw new DOMException("Aborted", "AbortError");
+    }
+
+    const result = await client.listTools();
+    return validateAndMapTools(result);
+  } catch (err) {
+    throw translateSdkError(err);
+  } finally {
+    signal.removeEventListener("abort", abortHandler);
+    await client.close().catch(() => {});
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
+
+interface RawTool {
+  name?: unknown;
+  description?: string;
+  inputSchema?: Record<string, unknown>;
+}
+
+function validateAndMapTools(result: unknown): McpTool[] {
+  if (!result || typeof result !== "object") {
+    throw new McpSchemaError("MCP tools/list result is not an object");
+  }
+
+  const asResult = result as { tools?: unknown };
+  if (!Array.isArray(asResult.tools)) {
+    throw new McpSchemaError("MCP tools/list result missing 'tools' array");
+  }
+
+  return asResult.tools.map((tool: RawTool, index: number) => {
+    if (typeof tool.name !== "string" || tool.name.length === 0) {
+      throw new McpSchemaError(
+        `MCP server returned a tool at index ${index} without a valid 'name' field: ${JSON.stringify(tool)}`
+      );
+    }
+    return {
+      name: tool.name,
+      description: tool.description,
+      inputSchema: (tool.inputSchema ?? {}) as Record<string, unknown>,
+    };
+  });
+}
+
+function translateSdkError(err: unknown): Error {
+  if (
+    err instanceof McpAuthError ||
+    err instanceof McpServerError ||
+    err instanceof McpSchemaError
+  ) {
+    return err;
+  }
+
+  if (err instanceof Error) {
+    // The SDK's SseError carries the HTTP status on `.code`.
+    const asHttpErr = err as Error & { code?: unknown };
+    if (typeof asHttpErr.code === "number") {
+      const statusCode = asHttpErr.code;
+      // Same 401/403 pairing as the HTTP transport above — the transport a
+      // connection happens to use must not change how we classify its errors.
+      if (statusCode === 401 || statusCode === 403) return new McpAuthError();
+      if (statusCode >= 500 && statusCode < 600) {
+        return new McpServerError(statusCode, err.message);
+      }
+    }
+
+    if (err.name === "$ZodError" || err.constructor?.name === "$ZodError") {
+      return new McpSchemaError(`MCP server returned invalid tool schema: ${err.message}`);
+    }
+
+    return err;
+  }
+
+  return new Error(String(err));
+}
+
+/**
+ * Merges two AbortSignals — aborts when either fires.
+ */
+function mergeSignals(a: AbortSignal, b: AbortSignal): AbortSignal {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (a.aborted || b.aborted) {
+    controller.abort();
+  } else {
+    a.addEventListener("abort", abort, { once: true });
+    b.addEventListener("abort", abort, { once: true });
+  }
+  return controller.signal;
+}
