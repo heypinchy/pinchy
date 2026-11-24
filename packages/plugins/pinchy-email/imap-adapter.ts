@@ -275,10 +275,18 @@ function toSummary(m: FetchMessageObject, path: string): EmailSummary {
     from: envelope?.from?.[0]?.address ?? "",
     to: envelope?.to?.map((a) => a.address ?? "").join(", ") ?? "",
     subject: envelope?.subject ?? "",
-    date: envelope?.date ? new Date(envelope.date).toISOString() : "",
+    date: toIsoDate(envelope?.date),
     snippet: "",
     unread: !(m.flags?.has("\\Seen") ?? false),
   };
+}
+
+// imapflow passes a Date header it could not parse through as its raw string;
+// a blank date beats a RangeError that fails the whole listing.
+function toIsoDate(value: Date | string | undefined): string {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toISOString();
 }
 
 // Default IMAP/SMTP ports for the GreenMail E2E mock, used only when the

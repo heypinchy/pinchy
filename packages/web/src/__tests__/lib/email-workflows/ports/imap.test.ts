@@ -93,6 +93,31 @@ describe("IMAP port — mapImapMessage", () => {
     expect(mapped.date).toBe("2026-07-15T10:30:00.000Z");
   });
 
+  it("falls back to internalDate when the Date header is unparseable", () => {
+    // imapflow hands an unparseable Date header through as its raw string
+    // instead of a Date. Calling toISOString() on it threw, and the lister
+    // dropped the whole message as poison.
+    const mapped = mapImapMessage({
+      uid: 8,
+      folder: "INBOX",
+      envelope: { subject: "broken date header", date: "next Tuesday-ish" },
+      internalDate: new Date("2026-07-16T08:00:00.000Z"),
+    });
+
+    expect(mapped.date).toBe("2026-07-16T08:00:00.000Z");
+  });
+
+  it("yields a blank date when neither the header nor internalDate parse", () => {
+    const mapped = mapImapMessage({
+      uid: 9,
+      folder: "INBOX",
+      envelope: { date: "garbage" },
+      internalDate: "also garbage",
+    });
+
+    expect(mapped.date).toBe("");
+  });
+
   it("yields blank fields rather than undefined for a bare envelope", () => {
     // The lister's normalize handles blank To/Cc (it drops empty tokens); what it
     // cannot handle is `undefined` reaching `.split()`.

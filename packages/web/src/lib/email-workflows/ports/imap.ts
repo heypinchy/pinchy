@@ -69,13 +69,14 @@ export function mapImapMessage(input: {
   folder: string;
   envelope?: MessageEnvelopeObject;
   bodyStructure?: MessageStructureObject;
-  internalDate?: Date;
+  internalDate?: Date | string;
 }): EmailReadResult {
   const { uid, folder, envelope, bodyStructure, internalDate } = input;
   // A message with no Date header still has an IMAP INTERNALDATE. Without this
   // fallback the lister would reject it as unparseable and its poison-message
-  // isolation would silently drop a real email.
-  const date = envelope?.date ?? internalDate;
+  // isolation would silently drop a real email. imapflow passes a value it
+  // could not parse through as its raw string, so only a Date counts.
+  const date = [envelope?.date, internalDate].find((d): d is Date => d instanceof Date);
   return {
     id: String(uid),
     from: formatAddressList(envelope?.from),
