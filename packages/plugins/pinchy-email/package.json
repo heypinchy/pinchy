@@ -10,11 +10,11 @@
   "dependencies": {
     "googleapis": "^173.0.0",
     "imapflow": "^1.6.5",
-    "mailparser": "^3.10.0",
-    "nodemailer": "^10.1.4"
+    "mailparser": "^3.15.0",
+    "nodemailer": "^10.6.1"
   },
   "devDependencies": {
-    "@types/node": "^26.1.2",
+    "@types/node": "^26.6.6",
     "typescript": "^6.0.3",
     "vitest": "^4.1.12"
   }
