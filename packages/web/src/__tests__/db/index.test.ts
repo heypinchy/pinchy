@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 
 // Mock postgres-js so importing db/index doesn't open a real connection.
 const { endMock, postgresMock, drizzleMock } = vi.hoisted(() => {
@@ -16,15 +16,15 @@ vi.mock("drizzle-orm/postgres-js", () => ({ drizzle: drizzleMock }));
 
 import { closeDb } from "@/db";
 
-describe("db client pool + closeDb (#263)", () => {
-  beforeEach(() => {
-    // Don't clear postgresMock — its import-time call records the pool config.
-    endMock.mockClear();
-  });
+// postgres() runs once, when @/db is imported above. Vitest clears every
+// mock's call history before each test (`clearMocks` defaults to true), so the
+// import-time call is captured here, before the first test runs.
+const postgresImportCalls = [...postgresMock.mock.calls];
 
+describe("db client pool + closeDb (#263)", () => {
   it("configures an explicit pool (max/idle_timeout/connect_timeout)", () => {
-    expect(postgresMock).toHaveBeenCalledTimes(1);
-    const [, options] = postgresMock.mock.calls[0];
+    expect(postgresImportCalls).toHaveLength(1);
+    const [, options] = postgresImportCalls[0];
     expect(options).toMatchObject({ max: 20, idle_timeout: 30, connect_timeout: 10 });
   });
 
