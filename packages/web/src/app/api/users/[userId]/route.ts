@@ -2,10 +2,11 @@ import { NextRequest, NextResponse, after } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
 import { users, agents, sessions } from "@/db/schema";
-import { eq, and, count } from "drizzle-orm";
+import { eq, and, count, isNull } from "drizzle-orm";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { deleteWorkspace } from "@/lib/workspace";
 import { softDeleteAgentRows } from "@/lib/agent-soft-delete";
+import { summarizeListForAudit } from "@/lib/audit-list-summary";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 import { parseRequestBody } from "@/lib/api-validation";
 import { updateUserSchema } from "@/lib/schemas/users";
@@ -92,11 +93,12 @@ export async function DELETE(
     return NextResponse.json({ error: "Cannot deactivate your own account" }, { status: 400 });
   }
 
-  // Find user's personal agents to soft-delete and clean up workspaces
+  // Find user's personal agents to soft-delete and clean up workspaces. One
+  // deleted earlier stays as it is: its deletion was audited back then.
   const personalAgents = await db
-    .select({ id: agents.id })
+    .select({ id: agents.id, name: agents.name })
     .from(agents)
-    .where(and(eq(agents.ownerId, userId), eq(agents.isPersonal, true)));
+    .where(and(eq(agents.ownerId, userId), eq(agents.isPersonal, true), isNull(agents.deletedAt)));
 
   // Atomic deactivation: the ban, the session revocation, and the personal-
   // agent soft-delete (with its grants and bot settings) must commit or roll back together. As standalone
@@ -187,7 +189,12 @@ export async function DELETE(
     // GDPR Art. 17: never record the email here. The audit log is
     // HMAC-signed and append-only, so we cannot redact later. userId
     // is in `resource`; name is enough for human-readable diffing.
-    detail: { name: deactivated.name },
+    // The personal agents go with the account, and with them their
+    // integration grants and Telegram bot, so the row names them.
+    detail: {
+      name: deactivated.name,
+      personalAgents: summarizeListForAudit(personalAgents),
+    },
     outcome: "success",
   });
 

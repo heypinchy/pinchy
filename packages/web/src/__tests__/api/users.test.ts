@@ -1,3 +1,4 @@
+import { PgDialect } from "drizzle-orm/pg-core";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
 
@@ -393,7 +394,53 @@ describe("DELETE /api/users/[userId]", () => {
     expect(appendAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: "user.deleted",
-        detail: { name: "Test User" },
+        detail: { name: "Test User", personalAgents: [] },
+      })
+    );
+  });
+
+  it("names the personal agents it soft-deleted in the user.deleted audit detail", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as never);
+
+    const personalAgentsWhere = vi.fn().mockResolvedValue([
+      { id: "agent-1", name: "Smithers" },
+      { id: "agent-2", name: "Research" },
+    ]);
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({ where: personalAgentsWhere }),
+    } as never);
+
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: "user-1", name: "Test User" }]),
+      }),
+    } as never);
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }),
+    } as never);
+
+    const request = new NextRequest("http://localhost:7777/api/users/user-1", { method: "DELETE" });
+    await DELETE(request, { params: Promise.resolve({ userId: "user-1" }) });
+
+    // An agent deleted earlier is not deleted again, and not reported again.
+    const { sql: whereSql } = new PgDialect().sqlToQuery(personalAgentsWhere.mock.calls[0][0]);
+    expect(whereSql).toContain('"deleted_at" is null');
+
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "user.deleted",
+        detail: {
+          name: "Test User",
+          personalAgents: [
+            { id: "agent-1", name: "Smithers" },
+            { id: "agent-2", name: "Research" },
+          ],
+        },
       })
     );
   });
