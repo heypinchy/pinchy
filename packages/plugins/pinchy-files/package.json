@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.3",
-    "better-sqlite3": "^12.11.1",
+    "better-sqlite3": "^13.2.0",
     "exceljs": "^4.4.0",
     "mammoth": "^1.12.0",
     "pdfjs-dist": "^6.2.108",
