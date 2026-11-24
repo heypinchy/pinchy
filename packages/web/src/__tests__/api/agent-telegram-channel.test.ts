@@ -21,7 +21,9 @@ vi.mock("@/lib/auth", () => ({
 const mockValidateTelegramBotToken = vi.fn();
 const mockHasMainTelegramBot = vi.fn().mockResolvedValue(true);
 const mockProbeTelegramPollingConflict = vi.fn().mockResolvedValue({ conflict: false });
+const mockGetLiveTelegramBotTokens = vi.fn().mockResolvedValue(new Map());
 vi.mock("@/lib/telegram", () => ({
+  getLiveTelegramBotTokens: (...args: unknown[]) => mockGetLiveTelegramBotTokens(...args),
   validateTelegramBotToken: (...args: unknown[]) => mockValidateTelegramBotToken(...args),
   hasMainTelegramBot: (...args: unknown[]) => mockHasMainTelegramBot(...args),
   probeTelegramPollingConflict: (...args: unknown[]) => mockProbeTelegramPollingConflict(...args),
@@ -418,18 +420,9 @@ describe("POST /api/agents/[agentId]/channels/telegram", () => {
 
   it("returns 409 when bot token is already used by another agent", async () => {
     // Simulate another agent already using this bot (same bot ID "123456")
-    vi.mocked(db.select).mockReturnValueOnce({
-      from: vi.fn().mockReturnValue({
-        where: vi
-          .fn()
-          .mockResolvedValue([{ key: "telegram_bot_token:agent-2", value: "encrypted" }]),
-      }),
-    } as never);
-    // getSetting returns the existing agent's token with the same bot ID
-    vi.mocked(getSetting).mockImplementation(async (key: string) => {
-      if (key === "telegram_bot_token:agent-2") return "123456:OTHER-secret";
-      return null;
-    });
+    mockGetLiveTelegramBotTokens.mockResolvedValueOnce(
+      new Map([["agent-2", "123456:OTHER-secret"]])
+    );
 
     const response = await POST(makeRequest({ botToken: "123456:ABC-token" }), {
       params: mockParams,
@@ -474,17 +467,9 @@ describe("POST /api/agents/[agentId]/channels/telegram", () => {
   });
 
   it("does not probe for a polling conflict when the token is already used by another agent", async () => {
-    vi.mocked(db.select).mockReturnValueOnce({
-      from: vi.fn().mockReturnValue({
-        where: vi
-          .fn()
-          .mockResolvedValue([{ key: "telegram_bot_token:agent-2", value: "encrypted" }]),
-      }),
-    } as never);
-    vi.mocked(getSetting).mockImplementation(async (key: string) => {
-      if (key === "telegram_bot_token:agent-2") return "123456:OTHER-secret";
-      return null;
-    });
+    mockGetLiveTelegramBotTokens.mockResolvedValueOnce(
+      new Map([["agent-2", "123456:OTHER-secret"]])
+    );
 
     await POST(makeRequest({ botToken: "123456:ABC-token" }), { params: mockParams });
 
@@ -496,13 +481,7 @@ describe("POST /api/agents/[agentId]/channels/telegram", () => {
     // THIS deployment is the (only) poller. Probing getUpdates here races our
     // own poller and can false-positive with a 409, wrongly rejecting a
     // legitimate re-connect as an "another deployment" conflict. So skip it.
-    vi.mocked(db.select).mockReturnValueOnce({
-      from: vi.fn().mockReturnValue({
-        where: vi
-          .fn()
-          .mockResolvedValue([{ key: "telegram_bot_token:agent-1", value: "encrypted" }]),
-      }),
-    } as never);
+    mockGetLiveTelegramBotTokens.mockResolvedValueOnce(new Map([["agent-1", "123456:ABC-token"]]));
     vi.mocked(getSetting).mockImplementation(async (key: string) => {
       if (key === "telegram_bot_token:agent-1") return "123456:ABC-token";
       return null;
@@ -696,7 +675,7 @@ describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
   });
 
   it("clears stale channel_links when the last Telegram bot is removed (#476 gap 3)", async () => {
-    // db.select().from().where() is mocked to resolve [] → no bot remains.
+    // getLiveTelegramBotTokens resolves an empty map → no bot remains.
     vi.mocked(db.delete).mockReturnValueOnce({
       where: vi.fn().mockReturnValue({
         returning: vi.fn().mockResolvedValue([{ id: "link-1" }, { id: "link-2" }]),
@@ -724,11 +703,7 @@ describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
   });
 
   it("does not clear channel_links when other Telegram bots remain (#476 gap 3)", async () => {
-    vi.mocked(db.select).mockReturnValueOnce({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue([{ key: "telegram_bot_token:other" }]),
-      }),
-    } as any);
+    mockGetLiveTelegramBotTokens.mockResolvedValueOnce(new Map([["other", "654321:OTHER"]]));
 
     const response = await DELETE(new NextRequest("http://localhost"), {
       params: mockParams,

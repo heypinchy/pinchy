@@ -1,7 +1,7 @@
 import { db } from "@/db";
 import { agents } from "@/db/schema";
 import { and, eq, isNull } from "drizzle-orm";
-import { getSettingsByPrefix } from "@/lib/settings";
+import { getSettingsByKeys, getSettingsByPrefix } from "@/lib/settings";
 
 interface TelegramValidationSuccess {
   valid: true;
@@ -99,6 +99,29 @@ export async function probeTelegramPollingConflict(token: string): Promise<{ con
  * for per-agent Telegram bot setup: users can only pair via the main bot,
  * so additional agent bots are unreachable without one.
  */
+/**
+ * Bot tokens of live agents, keyed by agent id.
+ *
+ * A token stored for a soft-deleted agent is no bot: the config build skips
+ * deleted agents, so nothing polls it. Such tokens exist from before deleting
+ * an agent also removed its Telegram settings, and counting them would refuse
+ * that same bot on another agent and keep the last real bot's removal from
+ * clearing the channel links.
+ */
+export async function getLiveTelegramBotTokens(): Promise<Map<string, string>> {
+  const liveAgents = await db.query.agents.findMany({
+    where: isNull(agents.deletedAt),
+    columns: { id: true },
+  });
+  const tokens = await getSettingsByKeys(liveAgents.map((a) => `telegram_bot_token:${a.id}`));
+  const byAgent = new Map<string, string>();
+  for (const { id } of liveAgents) {
+    const token = tokens.get(`telegram_bot_token:${id}`);
+    if (token) byAgent.set(id, token);
+  }
+  return byAgent;
+}
+
 export async function hasMainTelegramBot(): Promise<boolean> {
   const personalAgents = await db.query.agents.findMany({
     // A deleted agent's bot is no main bot: a deactivated user's Smithers
