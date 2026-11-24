@@ -159,6 +159,21 @@ describe("renderAuditPdf", () => {
     expect(buf.subarray(0, 4).toString()).toBe("%PDF");
   });
 
+  it("puts a 'Page i of n' footer on every page of a multi-page report", async () => {
+    // An auditor printing the export needs each sheet to say where it sits in
+    // the report. pdfkit only lets the footer loop revisit earlier pages when
+    // the document buffers them; without that it stamps the last page alone.
+    const manyRows = Array.from({ length: 200 }, (_, i) => makeRow({ id: i }));
+    const buf = await renderAuditPdf(manyRows);
+
+    const pageCount = buf.toString("latin1").match(/\/Type \/Page\b/g)?.length ?? 0;
+    expect(pageCount).toBeGreaterThan(1);
+    const text = extractPdfStreamText(buf);
+    for (let page = 1; page <= pageCount; page++) {
+      expect(text).toContain(`Page ${page} of ${pageCount}`);
+    }
+  });
+
   it("does not crash with failure rows that have error messages", async () => {
     const buf = await renderAuditPdf([
       makeRow({

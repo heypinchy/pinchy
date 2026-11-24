@@ -64,6 +64,9 @@ export function renderAuditPdf(
       size: "A4",
       layout: "landscape",
       margin: 36,
+      // The footer loop below revisits every page to stamp "Page i of n";
+      // pdfkit only keeps earlier pages addressable when they are buffered.
+      bufferPages: true,
       info: {
         Title: "Pinchy Audit Trail Report",
         Author: "Pinchy",
@@ -201,7 +204,11 @@ export function renderAuditPdf(
     const range = doc.bufferedPageRange();
     for (let i = 0; i < range.count; i++) {
       doc.switchToPage(range.start + i);
-      const bottom = doc.page.height - doc.page.margins.bottom + 10;
+      // The footer sits inside the bottom margin. With the margin in place,
+      // pdfkit reads text there as overflow and starts a new blank page.
+      const marginBottom = doc.page.margins.bottom;
+      const bottom = doc.page.height - marginBottom + 10;
+      doc.page.margins.bottom = 0;
       doc
         .font("Helvetica")
         .fontSize(8)
@@ -216,6 +223,7 @@ export function renderAuditPdf(
           }
         )
         .fillColor("black");
+      doc.page.margins.bottom = marginBottom;
     }
 
     doc.end();
