@@ -158,10 +158,10 @@ function renderPdf(
     const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
     const colWidth = pageWidth / columns.length;
 
-    // pdfkit's `text()` word-wraps within `width` regardless of `lineBreak`
-    // (that option only skips auto-computing a *default* width when none is
-    // passed — pdfkit@0.19.1's LineWrapper never reads `options.lineBreak`
-    // once a width is given, verified against its source and empirically).
+    // pdfkit's `text()` word-wraps within `width` whatever `lineBreak` says:
+    // `lineBreak: false` only skips auto-computing a *default* width, and since
+    // 0.21 the LineWrapper reads the option solely to choose between breaking
+    // anywhere and `lineBreak: "whitespace"`, never to stop wrapping.
     // Worse, without an explicit `height`, a wrapped cell's `maxY` defaults
     // to the *page* bottom, so `ellipsis` never engages and pdfkit will
     // happily auto-paginate mid-cell for a long enough string. Bounding both

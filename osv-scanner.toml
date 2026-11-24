@@ -67,34 +67,30 @@
 # reported the entries as UNUSED (it exits 1 on that), and neither package is
 # flagged any more. Re-add with a fresh reason if either comes back.
 
-# A medium DoS advisory published 2026-10-27 whose fix exists only in a major
-# not every consumer declares: minimatch GHSA-g3hv-75wg-m249 (fixed 11.0.1). It
-# is not in the range `pnpm audit --audit-level=high --prod` fails on, so it
-# needs no `ignoreGhsas` mirror. Overriding past the declared range was
-# rejected: minimatch 3 -> 11 under eslint is the brace-expansion 5 failure
-# again, and openclaw pins minimatch 10.2.6 EXACTLY, which
-# openclaw-runtime-closure.test.ts refuses to see moved across a major.
+# A medium DoS advisory published 2026-10-27, fixed only in a major openclaw
+# does not declare: minimatch GHSA-g3hv-75wg-m249 (fixed 11.0.1). GitHub
+# narrowed it to >=7.0.0 on 2026-11-04, so eslint's minimatch@3 and
+# readdir-glob's @5 are outside it; the one copy in range is 10.2.6, which
+# openclaw pins EXACTLY and openclaw-runtime-closure.test.ts refuses to see
+# moved across a major. It is not in the range `pnpm audit
+# --audit-level=high --prod` fails on, so it needs no `ignoreGhsas` mirror.
 #
-# Its sibling, glob GHSA-3g3m-2fjr-6pw4, was retired 2026-11-24: the major sweep
-# dropped every glob in the affected range (rimraf@5 left with gaxios 8,
-# openclaw 2026.9.2 no longer pulls glob 13), and the glob@7.2.3 that remains
-# predates AbortSignal support, so osv-scanner no longer flags it.
+# Its sibling, glob GHSA-3g3m-2fjr-6pw4 (>=9.0.0 <=14.0.1), was retired
+# 2026-11-24: the only copy in range was glob@10.5.0 under rimraf@5, which left
+# with gaxios 8, and the remaining glob@7.2.3 (exceljs) is below the range.
 #
 # Reachability, which is the criterion (see the docs-only entry below): the
 # amplification is in firstPhasePreProcess() at optimizationLevel >= 2, and
 # minimatch defaults to 1. openclaw imports minimatch (not inlined) and calls it
 # with `{ dot: true }` / `{ nocase: true }` on tool-policy and model-id
-# patterns, level 1; the dev-only copies (eslint's minimatch@3) match
-# code-authored config globs. minimatch@3.1.5 under glob@7.2.3 and
-# minimatch@5.1.9 under readdir-glob both arrive via exceljs > archiver, which
-# builds its patterns in its own code. No pattern reaches it from an
-# unauthenticated request. ignoreUntil forces the question again once
-# archiver/eslint/openclaw move.
+# patterns, level 1, over patterns from config and code. No pattern reaches it
+# from an unauthenticated request. ignoreUntil forces the question again once
+# openclaw moves.
 
 [[IgnoredVulns]]
 id = "GHSA-g3hv-75wg-m249"
 ignoreUntil = 2026-12-15
-reason = "minimatch 3.1.5 / 5.1.9 / 10.2.6, globparts amplification in firstPhasePreProcess() at optimizationLevel >= 2 (medium); fixed only in 11.0.1, a major no remaining dependent declares (3 -> 11 under eslint is the brace-expansion 5 breakage again). minimatch defaults to optimizationLevel 1 and the direct callers pass code- or config-authored patterns and no level: openclaw tool-policy/model-id matching; dev-only eslint routes (@eslint/config-array, @eslint/eslintrc, eslint-config-next, eslint-plugin-import, eslint-plugin-jsx-a11y, eslint-plugin-react); exceljs (archiver > archiver-utils > glob@7 and archiver > readdir-glob, patterns from archiver's own calls). No request-supplied pattern reaches it."
+reason = "minimatch >=7.0.0 <11.0.1 (resolved 10.2.6), globparts amplification in firstPhasePreProcess() at optimizationLevel >= 2 (medium); fixed only in 11.0.1, outside the exact version openclaw pins. openclaw is the only route: it imports minimatch and calls it at the default optimizationLevel 1 with config- and code-authored tool-policy and model-id patterns. No request-supplied pattern reaches it."
 
 # picomatch has no fixed release at all (every version <= 4.0.7 is affected),
 # so there is nothing to bump to. The ReDoS needs an attacker-chosen glob
