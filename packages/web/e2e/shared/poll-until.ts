@@ -1,6 +1,6 @@
 // Deadline-bounded polling for E2E setup code. The exit condition belongs to
 // the caller's probe, so it can be the very check the rest of setup relies on
-// (AGENTS.md § "No Untracked Sleeps In E2E"); the clock is injectable so the
+// (agent-rules/testing.md § "No Untracked Sleeps In E2E"); the clock is injectable so the
 // retry/deadline logic is unit-testable without waiting.
 
 export type AttemptResult<T> = { ok: true; value: T } | { ok: false; reason: string };
@@ -14,6 +14,13 @@ export interface PollOptions {
 
 export type PollResult<T> =
   { ok: true; value: T; attempts: number } | { ok: false; reason: string; attempts: number };
+
+function describeError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const cause = (err as { cause?: { code?: string; message?: string } }).cause;
+  const detail = cause?.code ?? cause?.message;
+  return detail ? `${err.message} (${detail})` : err.message;
+}
 
 const realSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -32,7 +39,7 @@ export async function pollUntil<T>(
       if (res.ok) return { ok: true, value: res.value, attempts };
       reason = res.reason;
     } catch (err) {
-      reason = err instanceof Error ? err.message : String(err);
+      reason = describeError(err);
     }
     if (now() - start + intervalMs > deadlineMs) return { ok: false, reason, attempts };
     await sleep(intervalMs);

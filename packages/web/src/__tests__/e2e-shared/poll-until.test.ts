@@ -50,9 +50,19 @@ describe("pollUntil", () => {
     });
     expect(res.ok).toBe(false);
     if (res.ok) return;
-    expect(res.reason).toBe(`fail #${res.attempts}`);
-    expect(res.attempts).toBeGreaterThan(1);
-    expect(clock.now()).toBeLessThanOrEqual(550);
+    expect(res.attempts).toBe(5);
+    expect(res.reason).toBe("fail #5");
+    expect(clock.now()).toBe(400);
+  });
+
+  it("makes a final attempt when elapsed + interval equals the deadline", async () => {
+    const clock = fakeClock();
+    const res = await pollUntil(async () => ({ ok: false as const, reason: "x" }), {
+      deadlineMs: 400,
+      intervalMs: 100,
+      ...clock,
+    });
+    expect(res.ok === false && res.attempts).toBe(5);
   });
 
   it("treats a throwing attempt as a failure carrying its message", async () => {
@@ -97,13 +107,15 @@ describe("sweepCandidatesUntil", () => {
 
   it("on timeout lists every candidate with its last failure reason", async () => {
     const clock = fakeClock();
+    const calls: Record<string, number> = { a: 0, b: 0 };
     const res = await sweepCandidatesUntil(
       ["a", "b"],
-      async (c) => ({ ok: false, reason: `reason for ${c}` }),
+      async (c) => ({ ok: false, reason: `reason for ${c} #${++calls[c]}` }),
       { deadlineMs: 300, intervalMs: 100, ...clock }
     );
     expect(res.ok).toBe(false);
     if (res.ok) return;
-    expect(res.failures).toEqual({ a: "reason for a", b: "reason for b" });
+    // 300ms / 100ms → 4 sweeps; the report must carry the LAST one, not the first.
+    expect(res.failures).toEqual({ a: "reason for a #4", b: "reason for b #4" });
   });
 });

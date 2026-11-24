@@ -12,7 +12,7 @@
 //   PINCHY_VERSION=local pnpm -C packages/web test:integration
 //
 // For CI: the integration job starts the stack before invoking Playwright.
-import { execSync, spawn } from "child_process";
+import { execSync, spawn, type ChildProcess } from "child_process";
 import path from "path";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { FAKE_OLLAMA_PORT } from "../shared/fake-ollama/fake-ollama-server";
@@ -82,6 +82,7 @@ function startFakeOllamaProcess() {
   if (child.pid) {
     writeFileSync(FAKE_OLLAMA_PID_PATH, String(child.pid));
   }
+  return child;
 }
 
 // The fake server is spawned detached and returns immediately; wait until it
@@ -91,9 +92,14 @@ const FAKE_OLLAMA_READY_DEADLINE_MS = 30_000;
 const OLLAMA_REACHABLE_DEADLINE_MS = 60_000;
 const POLL_INTERVAL_MS = 500;
 
-async function waitForFakeOllamaOnHost() {
+async function waitForFakeOllamaOnHost(child: ChildProcess) {
+  let exited: string | null = null;
+  child.once("exit", (code, signal) => {
+    exited = `exited with ${code ?? signal} before listening`;
+  });
   const res = await pollUntil(
     async () => {
+      if (exited) throw new Error(`fake Ollama process ${exited}`);
       const r = await fetch(`http://127.0.0.1:${FAKE_OLLAMA_PORT}/__pinchy_fake_ollama`, {
         signal: AbortSignal.timeout(1500),
       });
@@ -128,8 +134,8 @@ export default async function globalSetup() {
 
   // 2. Start fake Ollama on the host (OpenClaw connects to it via the host
   //    gateway). Must be up before we seed the Ollama URL into Pinchy.
-  startFakeOllamaProcess();
-  await waitForFakeOllamaOnHost();
+  const fakeOllama = startFakeOllamaProcess();
+  await waitForFakeOllamaOnHost(fakeOllama);
   console.log(`[integration-setup] fake Ollama listening on port ${FAKE_OLLAMA_PORT}`);
 
   // 3. Probe which URL OpenClaw can use to reach the host fake Ollama. The
@@ -170,16 +176,17 @@ export default async function globalSetup() {
     const probe = [
       "fetch(process.argv[1] + '/__pinchy_fake_ollama', { signal: AbortSignal.timeout(1500) })",
       ".then(async (res) => {",
-      "  if (!res.ok) process.exit(1);",
+      "  if (!res.ok) { console.error('HTTP ' + res.status); process.exit(1); }",
       "  const data = await res.json().catch(() => null);",
-      "  process.exit(data?.ok === true ? 0 : 1);",
+      "  if (data?.ok !== true) { console.error('ok=' + String(data?.ok)); process.exit(1); }",
+      "  process.exit(0);",
       "})",
-      ".catch(() => process.exit(1))",
+      ".catch((e) => { console.error(String(e?.cause?.code ?? e?.cause?.message ?? e?.name ?? e)); process.exit(1); })",
     ].join("");
     try {
       execSync(
         `docker compose ${COMPOSE_FILES} exec -T openclaw node -e ${JSON.stringify(probe)} ${JSON.stringify(url)}`,
-        { cwd: PROJECT_ROOT, env: COMPOSE_ENV, stdio: "pipe" }
+        { cwd: PROJECT_ROOT, env: COMPOSE_ENV, stdio: "pipe", timeout: 10_000 }
       );
       return { ok: true };
     } catch (err) {
@@ -187,7 +194,7 @@ export default async function globalSetup() {
       const stderr = e.stderr?.toString().trim();
       return {
         ok: false,
-        reason: `exit ${e.status ?? "?"}${stderr ? `: ${stderr}` : e.message ? `: ${e.message}` : ""}`,
+        reason: `exit ${e.status ?? "?"}${stderr ? `: ${stderr}` : ""}${e.status == null && e.message ? ` (${e.message.split("\n")[0]})` : ""}`,
       };
     }
   };
