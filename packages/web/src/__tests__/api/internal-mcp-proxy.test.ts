@@ -206,6 +206,84 @@ describe("MCP credential proxy route", () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
+  describe("tools/call is limited to granted tools", () => {
+    // build.ts advertises only granted tools to each agent (tools.allow), but
+    // that filter lives in OpenClaw. The upstream token reaches this proxy
+    // for the whole connection, so a call for an ungranted tool on the same
+    // server must stop here too — not only in the model's tool list.
+    const call = (name: string, id: number | string = 7) => ({
+      jsonrpc: "2.0",
+      id,
+      method: "tools/call",
+      params: { name, arguments: {} },
+    });
+
+    it("forwards a call for a tool a live agent is granted", async () => {
+      const res = await POST(makeRequest(call("create_issue")), { params });
+      expect(res.status).toBe(200);
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("answers a call for an ungranted tool with a JSON-RPC error and never forwards it", async () => {
+      const res = await POST(makeRequest(call("list_repos", "req-9")), { params });
+      expect(global.fetch).not.toHaveBeenCalled();
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toMatchObject({
+        jsonrpc: "2.0",
+        id: "req-9",
+        error: { code: -32602 },
+      });
+      expect(body.error.message).toContain("list_repos");
+    });
+
+    it("rejects a call for a tool that only a drifted grant names", async () => {
+      // legacy_search was granted, then removed upstream by a re-sync; the
+      // row survives but the tool is no longer in data.tools.
+      grantRows = [{ operation: "create_issue" }, { operation: "legacy_search" }];
+      const res = await POST(makeRequest(call("legacy_search")), { params });
+      expect(global.fetch).not.toHaveBeenCalled();
+      expect((await res.json()).error.code).toBe(-32602);
+    });
+
+    it("passes protocol traffic other than tools/call through", async () => {
+      const res = await POST(
+        makeRequest({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+        { params }
+      );
+      expect(res.status).toBe(200);
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("rejects a batch that smuggles an ungranted call next to a granted one", async () => {
+      const res = await POST(makeRequest([call("create_issue", 1), call("list_repos", 2)]), {
+        params,
+      });
+      expect(res.status).toBe(403);
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it("rejects a call without a tool name", async () => {
+      const res = await POST(
+        makeRequest({ jsonrpc: "2.0", id: 3, method: "tools/call", params: {} }),
+        { params }
+      );
+      expect(global.fetch).not.toHaveBeenCalled();
+      expect((await res.json()).error.code).toBe(-32602);
+    });
+
+    it("rejects a POST body that is not JSON instead of forwarding it unread", async () => {
+      const req = new NextRequest("http://pinchy:7777/api/internal/mcp-proxy/conn-1", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${GATEWAY_TOKEN}`, "content-type": "application/json" },
+        body: '{"jsonrpc":"2.0","method":"tools/call"',
+      });
+      const res = await POST(req, { params });
+      expect(res.status).toBe(400);
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+  });
+
   it("blocks an upstream URL that targets a private/internal address (SSRF, no fetch)", async () => {
     mockDbSelectResult(
       makeConn({

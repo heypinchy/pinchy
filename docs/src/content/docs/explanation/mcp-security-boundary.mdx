@@ -19,7 +19,9 @@ OpenClaw opens its MCP session against that URL, using only the gateway bootstra
 
 Before it forwards anything, the proxy checks the same two things the config generator does when it decides whether OpenClaw gets a server entry at all: the connection must be active, and at least one agent that still exists must hold a grant on a tool the connection still offers. A connection whose credentials failed, or whose last grant was revoked while an OpenClaw session still remembers the old entry, gets a `403` — the stored token only travels on behalf of a connection some agent is allowed to use.
 
-This is a byte-level passthrough, not a reimplementation of MCP: the proxy doesn't parse or understand the JSON-RPC payload, it just swaps the authentication header and forwards everything else — including long-lived streaming responses — without buffering.
+The proxy also reads each tool call before forwarding it. A call for a tool that no agent is granted on that connection never reaches the server; the agent gets an "unknown tool" error back instead. OpenClaw already shows each agent only its own granted tools, so this is a second wall, not the first: it holds even if something inside the OpenClaw container talks to the proxy directly. The proxy can't tell agents apart — they share one connection entry — so this wall knows only "granted to some agent on this connection". Which agent may use which tool is still enforced by OpenClaw.
+
+Apart from that one check, this is a byte-level passthrough, not a reimplementation of MCP: the proxy swaps the authentication header and forwards everything else unchanged — including long-lived streaming responses — without buffering them.
 
 ## The third-party token never lands in `openclaw.json`
 

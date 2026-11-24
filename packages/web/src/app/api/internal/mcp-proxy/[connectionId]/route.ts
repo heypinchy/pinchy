@@ -10,7 +10,8 @@
 // stream the MCP request/response to/from the real upstream. The third-party
 // token therefore never lands in openclaw.json — it lives only in Pinchy's
 // encrypted DB + this process's memory. OpenClaw's bundled MCP SDK speaks the
-// protocol; this route is a byte-level passthrough that only swaps auth.
+// protocol; this route forwards it byte for byte and only swaps auth — after
+// reading a POST body once to refuse a tools/call for an ungranted tool.
 import { NextRequest, NextResponse } from "next/server";
 import { validateGatewayToken } from "@/lib/gateway-auth";
 import { db } from "@/db";
@@ -57,6 +58,61 @@ const STRIP_RESPONSE_HEADERS = new Set([
   "connection",
   "transfer-encoding",
 ]);
+
+// MCP's error code for an unknown tool (spec: "Unknown tools: -32602").
+const JSONRPC_INVALID_PARAMS = -32602;
+
+function toolCallName(message: unknown): { isCall: boolean; name?: string } {
+  if (!message || typeof message !== "object") return { isCall: false };
+  const m = message as { method?: unknown; params?: { name?: unknown } };
+  if (m.method !== "tools/call") return { isCall: false };
+  const name = m.params?.name;
+  return { isCall: true, name: typeof name === "string" ? name : undefined };
+}
+
+/**
+ * Returns a response that refuses the request when it carries a tools/call for
+ * a tool outside `granted`, or null to let it through. A single call gets a
+ * JSON-RPC error with its own id, so the agent sees a tool error and the MCP
+ * session stays usable. A batch with one refused call is refused whole —
+ * forwarding the rest would need re-serialising the payload, and no MCP client
+ * Pinchy ships batches tool calls.
+ */
+function checkToolCalls(body: ArrayBuffer, granted: ReadonlySet<string>): Response | null {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(new TextDecoder().decode(body));
+  } catch {
+    // An unreadable body cannot be checked, so it is not forwarded either.
+    return NextResponse.json({ error: "MCP request body is not JSON" }, { status: 400 });
+  }
+
+  const messages = Array.isArray(payload) ? payload : [payload];
+  const refused = messages
+    .map(toolCallName)
+    .filter((c) => c.isCall && !(c.name !== undefined && granted.has(c.name)));
+  if (refused.length === 0) return null;
+
+  if (Array.isArray(payload)) {
+    return NextResponse.json(
+      { error: "Batch contains a call for a tool no agent is granted" },
+      { status: 403 }
+    );
+  }
+  const id = (payload as { id?: unknown }).id ?? null;
+  const name = refused[0].name;
+  return NextResponse.json({
+    jsonrpc: "2.0",
+    id,
+    error: {
+      code: JSONRPC_INVALID_PARAMS,
+      message:
+        name === undefined
+          ? "tools/call without a tool name"
+          : `Tool "${name}" is not granted to any agent on this connection`,
+    },
+  });
+}
 
 async function proxy(request: NextRequest, connectionId: string): Promise<Response> {
   if (!validateGatewayToken(request.headers)) {
@@ -139,8 +195,28 @@ async function proxy(request: NextRequest, connectionId: string): Promise<Respon
   // The DB already filters by tool name; re-check here so a stale row can never
   // count as a grant on a tool the connection no longer has.
   const synced = new Set(syncedToolNames);
-  if (!grants.some((g) => synced.has(g.operation))) {
+  const grantedTools = new Set(grants.map((g) => g.operation).filter((op) => synced.has(op)));
+  if (grantedTools.size === 0) {
     return NextResponse.json({ error: "No agent is granted this connection" }, { status: 403 });
+  }
+
+  const method = request.method;
+  const hasBody = method !== "GET" && method !== "HEAD";
+  const body = hasBody ? await request.arrayBuffer() : undefined;
+
+  // Per-tool gate. OpenClaw advertises each agent only its granted tools
+  // (tools.allow), but that filter lives in the OpenClaw container, and the
+  // token this proxy injects covers the whole upstream connection. So a
+  // tools/call for a tool no live agent is granted stops here as well.
+  //
+  // This is the one place the proxy reads the JSON-RPC payload; everything
+  // else is still forwarded byte for byte. The gate is the union of every live
+  // agent's grants on this connection: OpenClaw shares one mcp.servers entry
+  // per connection, so the proxy cannot tell which agent is calling — telling
+  // agents apart stays OpenClaw's tools.allow.
+  if (body && body.byteLength > 0) {
+    const verdict = checkToolCalls(body, grantedTools);
+    if (verdict) return verdict;
   }
   const upstreamUrl = data.url;
   if (!upstreamUrl) {
@@ -193,10 +269,6 @@ async function proxy(request: NextRequest, connectionId: string): Promise<Respon
     headers.set(key, value);
   }
   headers.set("Authorization", `Bearer ${token}`);
-
-  const method = request.method;
-  const hasBody = method !== "GET" && method !== "HEAD";
-  const body = hasBody ? await request.arrayBuffer() : undefined;
 
   let upstream: Response;
   try {
