@@ -1,6 +1,6 @@
 import { db } from "@/db";
 import { agents } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { getSettingsByPrefix } from "@/lib/settings";
 
 interface TelegramValidationSuccess {
@@ -101,7 +101,9 @@ export async function probeTelegramPollingConflict(token: string): Promise<{ con
  */
 export async function hasMainTelegramBot(): Promise<boolean> {
   const personalAgents = await db.query.agents.findMany({
-    where: eq(agents.isPersonal, true),
+    // A deleted agent's bot is no main bot: a deactivated user's Smithers
+    // must not keep unlocking per-agent bot setup.
+    where: and(eq(agents.isPersonal, true), isNull(agents.deletedAt)),
     columns: { id: true },
   });
   if (personalAgents.length === 0) return false;

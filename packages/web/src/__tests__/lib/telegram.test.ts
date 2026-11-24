@@ -253,6 +253,14 @@ describe("hasMainTelegramBot", () => {
     await expect(hasMainTelegramBot()).resolves.toBe(false);
   });
 
+  it("ignores soft-deleted personal agents — a deactivated user's bot runs nowhere", async () => {
+    mockFindMany.mockResolvedValueOnce([]);
+    await hasMainTelegramBot();
+    const where = mockFindMany.mock.calls[0][0].where;
+    const { PgDialect } = await import("drizzle-orm/pg-core");
+    expect(new PgDialect().sqlToQuery(where).sql).toMatch(/"deleted_at" is null/);
+  });
+
   it("returns true when a personal agent has a telegram bot token", async () => {
     mockFindMany.mockResolvedValueOnce([{ id: "smithers-1" }, { id: "smithers-2" }]);
     mockSettings.set("telegram_bot_token:smithers-2", "123456:ABC-token");
