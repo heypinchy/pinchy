@@ -611,7 +611,7 @@ export async function getGreenmailMailboxMessages(address: string): Promise<
         from: msg.envelope?.from?.[0]?.address ?? "",
         to: msg.envelope?.to?.map((a) => a.address).join(", ") ?? "",
         subject: msg.envelope?.subject ?? "",
-        date: msg.envelope?.date ? new Date(msg.envelope.date).toISOString() : null,
+        date: msg.envelope?.date instanceof Date ? msg.envelope.date.toISOString() : null,
         seen: msg.flags?.has("\\Seen") ?? false,
       });
     }

@@ -118,6 +118,19 @@ describe("IMAP port — mapImapMessage", () => {
     expect(mapped.date).toBe("");
   });
 
+  it("skips an Invalid Date instead of throwing on it", () => {
+    // `new Date("garbage")` is still `instanceof Date`, and toISOString() on it
+    // throws a RangeError that the lister would read as a poison message.
+    const mapped = mapImapMessage({
+      uid: 10,
+      folder: "INBOX",
+      envelope: { date: new Date("garbage") },
+      internalDate: new Date("2026-07-17T08:00:00.000Z"),
+    });
+
+    expect(mapped.date).toBe("2026-07-17T08:00:00.000Z");
+  });
+
   it("yields blank fields rather than undefined for a bare envelope", () => {
     // The lister's normalize handles blank To/Cc (it drops empty tokens); what it
     // cannot handle is `undefined` reaching `.split()`.
