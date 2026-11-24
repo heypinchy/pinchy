@@ -67,8 +67,10 @@ export async function startMemoryAuditWatcher(
     // Tests override via `usePolling: false` so events come from inotify/
     // fsevents and aren't subject to event-loop starvation under parallel
     // vitest load (see PR #403 CI flake history).
-    usePolling: deps.usePolling ?? true,
-    interval: deps.pollingInterval ?? 250,
+    // "auto" is chokidar's own pick (fs.watch / fsevents), which is what the
+    // pre-6 `usePolling: false` meant.
+    backend: (deps.usePolling ?? true) ? "polling" : "auto",
+    pollingInterval: deps.pollingInterval ?? 250,
     // Wait for writes to settle before firing add/change — prevents emitting
     // on partial writes during editor saves or atomic-replace flows.
     awaitWriteFinish: { stabilityThreshold: deps.stabilityThreshold ?? 200, pollInterval: 50 },
