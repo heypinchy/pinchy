@@ -19,7 +19,7 @@ import {
   writeIdentityFile,
 } from "@/lib/workspace";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
-import { deleteSetting } from "@/lib/settings";
+import { softDeleteAgentRows } from "@/lib/agent-soft-delete";
 import { getUsableDefaultProvider } from "@/lib/model-resolver/usable-default-provider";
 import { getTemplate, generateAgentsMd, applyRecommendedTools } from "@/lib/agent-templates";
 import type { McpConnectionInfo } from "@/lib/agent-templates";
@@ -124,20 +124,17 @@ export type OnAgentDeleted = (agent: typeof agents.$inferSelect) => void;
 /**
  * Soft-delete an agent and clean up everything hanging off it.
  *
- * `onDeleted` fires the moment the soft-delete is committed. That timing is
- * the contract: the UPDATE below commits on its own, and every step after it —
- * workspace removal, the grant delete, two `deleteSetting` calls, the OpenClaw
- * regen, the Telegram recalculation — runs outside that transaction and can
- * throw. A caller that awaits this function before registering its audit
- * loses the record of exactly those deletions: the agent is gone, the request
- * 500s, and nothing says who removed it. Pinned by agents-delete.test.ts.
+ * The soft-delete, the grant removal and the Telegram bot settings commit in
+ * one transaction (`softDeleteAgentRows`). `onDeleted` fires the moment that
+ * commits. That timing is the contract: every step after it — workspace
+ * removal, the OpenClaw regen, the Telegram recalculation — runs outside the
+ * transaction and can throw. A caller that awaits this function before
+ * registering its audit loses the record of exactly those deletions: the
+ * agent is gone, the request 500s, and nothing says who removed it. Pinned by
+ * agents-delete.test.ts.
  */
 export async function deleteAgent(id: string, onDeleted?: OnAgentDeleted) {
-  const [updated] = await db
-    .update(agents)
-    .set({ deletedAt: new Date() })
-    .where(eq(agents.id, id))
-    .returning();
+  const [updated] = await db.transaction((tx) => softDeleteAgentRows(tx, [id]));
 
   if (updated) {
     // Committed, and everything below can throw. Record it now.
@@ -146,13 +143,6 @@ export async function deleteAgent(id: string, onDeleted?: OnAgentDeleted) {
     // yields to the event loop rather than blocking it, but the ordering
     // relative to the rest of this cleanup tail is unchanged.
     await deleteWorkspace(id);
-    // Remove the agent's integration grants at the DB level so they can't be
-    // re-emitted into the runtime config (the Odoo/email permission loops key
-    // off agentConnectionPermissions, not agents.deletedAt).
-    await db.delete(agentConnectionPermissions).where(eq(agentConnectionPermissions.agentId, id));
-    // Clean up Telegram bot settings if this agent had a bot
-    await deleteSetting(`telegram_bot_token:${id}`);
-    await deleteSetting(`telegram_bot_username:${id}`);
     // Both run whichever fails. The recalculation rewrites every list from
     // scratch, so the deleted bot's list goes first and the bot answers no one
     // while it still runs; the regenerate then takes it out of the config.

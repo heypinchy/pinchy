@@ -349,6 +349,8 @@ database but not the runtime still leaves a trace — including the
 
 Delete an agent. **Admin only.** Personal agents (auto-created Smithers) cannot be deleted.
 
+The agent is soft-deleted: its chat history and audit entries stay readable, and usage still lists it as "(deleted)". Its integration permissions and its Telegram bot connection are removed in the same step, so nothing it was granted stays usable.
+
 **Response:** `200 OK`
 
 ```json

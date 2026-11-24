@@ -15,7 +15,11 @@ vi.mock("@/db", () => {
     }),
   });
   const deleteMock = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
-  return { db: { update: updateMock, delete: deleteMock } };
+  const db: Record<string, unknown> = { update: updateMock, delete: deleteMock };
+  // Runs the callback against the same mocks, so tx.update / tx.delete are
+  // the db.update / db.delete each test configures.
+  db.transaction = vi.fn(async (cb: (tx: unknown) => unknown) => cb(db));
+  return { db };
 });
 
 vi.mock("@/lib/openclaw-config", () => ({
@@ -35,7 +39,7 @@ vi.mock("@/lib/settings", () => ({
 }));
 
 import { deleteAgent } from "@/lib/agents";
-import { agents, agentConnectionPermissions } from "@/db/schema";
+import { agents, agentConnectionPermissions, settings } from "@/db/schema";
 import { db } from "@/db";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
@@ -234,5 +238,40 @@ describe("deleteAgent — soft-delete", () => {
     // ...but its integration grants are removed at the DB level so they can't
     // be re-emitted into the runtime config.
     expect(db.delete).toHaveBeenCalledWith(agentConnectionPermissions);
+  });
+
+  // The soft-delete, the grant removal and the bot settings commit together.
+  // Outside one transaction, a failing grant delete left an agent that was
+  // gone from the UI while its grants still opened its connections.
+  it("soft-deletes the row and drops its grants and Telegram settings in one transaction", async () => {
+    let insideTransaction = false;
+    const inTransaction: unknown[] = [];
+    vi.mocked(db.transaction).mockImplementationOnce((async (cb: (tx: unknown) => unknown) => {
+      insideTransaction = true;
+      try {
+        return await cb(db);
+      } finally {
+        insideTransaction = false;
+      }
+    }) as never);
+    vi.mocked(db.update).mockImplementationOnce(((table: unknown) => {
+      if (insideTransaction) inTransaction.push(table);
+      return {
+        set: vi.fn().mockReturnThis(),
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: "agent-1", name: "Test" }]),
+        }),
+      };
+    }) as never);
+    vi.mocked(db.delete).mockImplementation(((table: unknown) => {
+      if (insideTransaction) inTransaction.push(table);
+      return { where: vi.fn().mockResolvedValue(undefined) };
+    }) as never);
+
+    await deleteAgent("agent-1");
+
+    expect(inTransaction).toEqual(
+      expect.arrayContaining([agents, agentConnectionPermissions, settings])
+    );
   });
 });

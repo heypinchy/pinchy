@@ -2,9 +2,10 @@ import { NextRequest, NextResponse, after } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
 import { users, agents, sessions } from "@/db/schema";
-import { eq, and, count, inArray } from "drizzle-orm";
+import { eq, and, count } from "drizzle-orm";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { deleteWorkspace } from "@/lib/workspace";
+import { softDeleteAgentRows } from "@/lib/agent-soft-delete";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 import { parseRequestBody } from "@/lib/api-validation";
 import { updateUserSchema } from "@/lib/schemas/users";
@@ -98,7 +99,7 @@ export async function DELETE(
     .where(and(eq(agents.ownerId, userId), eq(agents.isPersonal, true)));
 
   // Atomic deactivation: the ban, the session revocation, and the personal-
-  // agent soft-delete must commit or roll back together. As standalone
+  // agent soft-delete (with its grants and bot settings) must commit or roll back together. As standalone
   // statements, a failure partway through (e.g. the session delete) would
   // leave the user already banned with sessions and agents untouched, or vice
   // versa — an inconsistent, partially-deactivated account. The filesystem
@@ -121,19 +122,13 @@ export async function DELETE(
     // delete sessions.
     await tx.delete(sessions).where(eq(sessions.userId, userId));
 
-    // Soft-delete every personal agent in one batched update instead of one
-    // per agent.
-    if (personalAgents.length > 0) {
-      await tx
-        .update(agents)
-        .set({ deletedAt: new Date() })
-        .where(
-          inArray(
-            agents.id,
-            personalAgents.map((a) => a.id)
-          )
-        );
-    }
+    // Soft-delete every personal agent in one batched update, and drop their
+    // grants and Telegram bot settings with it: a deactivated user's agents
+    // must not keep a connection or a bot open (`softDeleteAgentRows`).
+    await softDeleteAgentRows(
+      tx,
+      personalAgents.map((a) => a.id)
+    );
 
     return row;
   });

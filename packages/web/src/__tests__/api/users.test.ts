@@ -90,7 +90,7 @@ import { appendAuditLog } from "@/lib/audit";
 import { getAuditWriteFailedCount, resetAuditWriteFailedCount } from "@/lib/audit-deferred";
 import { findUnknownOriginUsers } from "@/lib/user-provenance";
 import { db } from "@/db";
-import { users, sessions, agents } from "@/db/schema";
+import { users, sessions, agents, agentConnectionPermissions, settings } from "@/db/schema";
 
 // ── GET /api/users ───────────────────────────────────────────────────────
 
@@ -549,7 +549,7 @@ describe("DELETE /api/users/[userId]", () => {
     // Mock: update for personal agent soft-delete
     vi.mocked(db.update).mockReturnValueOnce({
       set: vi.fn().mockReturnThis(),
-      where: vi.fn().mockResolvedValue(undefined),
+      where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }),
     } as never);
 
     const request = new NextRequest("http://localhost:7777/api/users/user-1", {
@@ -589,7 +589,7 @@ describe("DELETE /api/users/[userId]", () => {
     // Mock: one batched update soft-deletes both personal agents (#…, N+1 fix)
     vi.mocked(db.update).mockReturnValueOnce({
       set: vi.fn().mockReturnThis(),
-      where: vi.fn().mockResolvedValue(undefined),
+      where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }),
     } as never);
 
     const request = new NextRequest("http://localhost:7777/api/users/user-1", {
@@ -625,7 +625,7 @@ describe("DELETE /api/users/[userId]", () => {
     } as never);
 
     const agentUpdateSet = vi.fn().mockReturnThis();
-    const agentUpdateWhere = vi.fn().mockResolvedValue(undefined);
+    const agentUpdateWhere = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) });
     vi.mocked(db.update).mockReturnValueOnce({
       set: agentUpdateSet,
       where: agentUpdateWhere,
@@ -668,7 +668,7 @@ describe("DELETE /api/users/[userId]", () => {
 
     vi.mocked(db.update).mockReturnValueOnce({
       set: vi.fn().mockReturnThis(),
-      where: vi.fn().mockResolvedValue(undefined),
+      where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }),
     } as never);
 
     const request = new NextRequest("http://localhost:7777/api/users/user-1", {
@@ -683,6 +683,61 @@ describe("DELETE /api/users/[userId]", () => {
     expect(db.transaction).toHaveBeenCalledTimes(1);
     expect(db.update).toHaveBeenCalled();
     expect(db.delete).toHaveBeenCalledWith(sessions);
+  });
+
+  it("drops the personal agents' grants and Telegram bot settings inside the deactivation transaction", async () => {
+    // A soft-deleted agent's grants would otherwise outlive it: the MCP proxy
+    // and the credentials route read grants, and a bot token left behind keeps
+    // a deactivated user's Telegram bot configured.
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ id: "agent-1" }]),
+      }),
+    } as never);
+
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: "user-1", name: "Test User" }]),
+      }),
+    } as never);
+
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }),
+    } as never);
+
+    let insideTransaction = false;
+    const deletedInTransaction: unknown[] = [];
+    // clearAllMocks keeps implementations, so put the default back below.
+    const defaultDelete = vi.mocked(db.delete).getMockImplementation()!;
+    vi.mocked(db.delete).mockImplementation(((table: unknown) => {
+      if (insideTransaction) deletedInTransaction.push(table);
+      return { where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }) };
+    }) as never);
+    vi.mocked(db.transaction).mockImplementationOnce((async (cb: (tx: unknown) => unknown) => {
+      insideTransaction = true;
+      try {
+        return await cb(db);
+      } finally {
+        insideTransaction = false;
+      }
+    }) as never);
+
+    const response = await DELETE(
+      new NextRequest("http://localhost:7777/api/users/user-1", { method: "DELETE" }),
+      { params: Promise.resolve({ userId: "user-1" }) }
+    );
+    vi.mocked(db.delete).mockImplementation(defaultDelete);
+
+    expect(response.status).toBe(200);
+    expect(deletedInTransaction).toContain(agentConnectionPermissions);
+    expect(deletedInTransaction).toContain(settings);
   });
 
   it("does not ban the user when the session revocation fails inside the transaction (atomicity)", async () => {
@@ -768,7 +823,7 @@ describe("DELETE /api/users/[userId]", () => {
 
     vi.mocked(db.update).mockReturnValueOnce({
       set: vi.fn().mockReturnThis(),
-      where: vi.fn().mockResolvedValue(undefined),
+      where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }),
     } as never);
 
     // test-setup.ts mocks next/server's after() to run its callback
@@ -840,7 +895,7 @@ describe("DELETE /api/users/[userId]", () => {
 
     vi.mocked(db.update).mockReturnValueOnce({
       set: vi.fn().mockReturnThis(),
-      where: vi.fn().mockResolvedValue(undefined),
+      where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }),
     } as never);
 
     // A deletion that is still in flight — the whole question is whether the
@@ -909,7 +964,7 @@ describe("DELETE /api/users/[userId]", () => {
     // Mock: update for personal agent soft-delete
     vi.mocked(db.update).mockReturnValueOnce({
       set: vi.fn().mockReturnThis(),
-      where: vi.fn().mockResolvedValue(undefined),
+      where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }),
     } as never);
 
     const request = new NextRequest("http://localhost:7777/api/users/user-1", {
