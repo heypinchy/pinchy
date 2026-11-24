@@ -3,11 +3,14 @@ import { publicHopOf, readRequestHostFromHeaders } from "@/server/forwarded-host
 import { normalizeLockableHost } from "@/lib/domain-validation";
 
 /**
- * The origin a link in an email points at.
+ * The origin every invite and reset link points at — the one an admin copies
+ * from the dialog and the one an email carries. Both come from here, so the
+ * two can never disagree.
  *
- * The copy-link path builds its link in the browser from
- * `window.location.origin` (lib/invite-url.ts). An email is built on the
- * server, so it needs the same answer there:
+ * Built on the server rather than from `window.location.origin`: the host the
+ * admin happens to browse is not necessarily one the recipient can reach. An
+ * admin working inside Citrix reaches Pinchy through an internal hostname, and
+ * a link built from that host opens nowhere for the person it is sent to.
  *
  * 1. The locked domain (Settings → Security), when set. It is the one origin
  *    an admin configured on purpose, and it makes the link independent of a

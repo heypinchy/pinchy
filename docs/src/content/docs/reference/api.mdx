@@ -1877,7 +1877,7 @@ Reactivate a deactivated user. **Admin only.**
 
 ### `POST /api/users/:id/reset`
 
-Generate a password reset token for a user. The admin constructs the reset URL from the returned token: `{origin}/invite/{token}`.
+Generate a password reset token for a user. The response carries the ready-made reset link as `url`.
 
 **Request body (optional):** the route also accepts no body at all.
 
@@ -1890,6 +1890,7 @@ Generate a password reset token for a user. The admin constructs the reset URL f
 ```json
 {
   "token": "abc123...",
+  "url": "https://pinchy.example.com/invite/abc123...",
   "emailDelivery": { "sent": true }
 }
 ```
@@ -1924,6 +1925,7 @@ Create an invite for a new user. Returns the full invite object including a plai
 {
   "id": "uuid",
   "token": "abc123...",
+  "url": "https://pinchy.example.com/invite/abc123...",
   "email": "bob@example.com",
   "role": "member",
   "type": "invite",
@@ -1933,9 +1935,9 @@ Create an invite for a new user. Returns the full invite object including a plai
 }
 ```
 
-The admin constructs the invite URL from the returned token: `{origin}/invite/{token}`.
+`url` is the invite link, built by the server: on the locked [domain](#domain-lock-admin-only) when one is set (`https://<domain>/invite/<token>`), otherwise on the host the request arrived on. The reset endpoint above builds its `url` the same way, and so does the link in an invitation or reset email — the link you copy and the link that is emailed are always the same.
 
-With `sendEmail: true` the response also carries `emailDelivery`: `{ "sent": true }`, or `{ "sent": false, "error": "<what went wrong>" }` when the mail server refused or couldn't be reached, or no mailer is configured (`"Email delivery isn't set up."`). The status stays `201` and the token is returned in both cases, because the invite already exists — a failed send never loses it. The link in the email uses the locked domain when one is set (`https://<domain>`), otherwise the host the request arrived on.
+With `sendEmail: true` the response also carries `emailDelivery`: `{ "sent": true }`, or `{ "sent": false, "error": "<what went wrong>" }` when the mail server refused or couldn't be reached, or no mailer is configured (`"Email delivery isn't set up."`). The status stays `201` and the token is returned in both cases, because the invite already exists — a failed send never loses it.
 
 **Errors:**
 

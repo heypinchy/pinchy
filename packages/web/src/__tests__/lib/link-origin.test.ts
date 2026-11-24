@@ -6,7 +6,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("@/lib/domain", () => ({ getDomain: vi.fn() }));
 
 import { getDomain } from "@/lib/domain";
-import { resolveLinkOrigin } from "@/lib/system-mail/link-origin";
+import { resolveLinkOrigin } from "@/lib/link-origin";
 
 function req(headers: Record<string, string>) {
   return new Request("http://pinchy:7777/api/users/invite", { method: "POST", headers });
