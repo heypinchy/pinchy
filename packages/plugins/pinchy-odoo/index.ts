@@ -1,6 +1,7 @@
+import { refusingUnknownParams } from "./unknown-params";
 import { readFile, stat } from "./io";
 import { basename, extname } from "path";
-import { OdooClient, type OdooDomain } from "odoo-node";
+import type { OdooClient, OdooDomain } from "odoo-node";
 import { checkPermission, type Permissions } from "./permissions";
 import {
   decodeRef,
@@ -16,12 +17,16 @@ import {
   requestCredentials,
   trackMutations,
 } from "./credential-client";
+import { describeOdooError } from "./odoo-error";
+import { checkedTarget, type PinnedTarget } from "./pinned-target";
+import { pinOdooClient } from "./pinned-fetch";
 
 const WORKSPACE_ROOT = "/root/.openclaw/workspaces";
 
 // The two Pinchy-internal calls this plugin makes (credentials fetch,
 // auth-failure report) are bounded inside credential-client.ts. The Odoo
-// calls themselves go through odoo-node, not fetch() here.
+// calls themselves go through odoo-node, pinned to the addresses Pinchy
+// checked (pinned-fetch.ts).
 
 // 25 MB matches Odoo's default `web.max_file_upload_size` setting. Keeps the
 // plugin process from OOMing on a single attachment (readFile + base64 string
@@ -213,25 +218,34 @@ async function fetchCredentials(
   gatewayToken: string,
   connectionId: string,
   agentId: string
-): Promise<OdooCredentials> {
-  const data = (await requestCredentials({
+): Promise<{ creds: OdooCredentials; target: PinnedTarget }> {
+  const data = await requestCredentials({
     apiBaseUrl,
     gatewayToken,
     connectionId,
     agentId,
     label: "Odoo",
-  })) as { credentials?: unknown };
+  });
   assertCredentialsShape(data.credentials);
-  return data.credentials;
+  // Pinchy answers the addresses it checked the URL's host against. Without
+  // them there is nothing to pin to, and resolving the name here would be
+  // exactly the second lookup a rebinding resolver waits for — so refuse.
+  // The route answers an Odoo URL it cannot check with a 403 or 503, never a
+  // 200, so a 200 without them comes from a Pinchy older than this plugin.
+  const target = checkedTarget(data, "url");
+  if (!target) {
+    throw new Error(
+      "pinchy-odoo: Pinchy did not send the addresses it checked for this connection's Odoo URL, so the Odoo tools will not connect to it. Pinchy and its agent runtime (the openclaw container) are most likely on different versions — run both from the same Pinchy release."
+    );
+  }
+  return { creds: data.credentials, target };
 }
 
-function createClient(creds: OdooCredentials): OdooClient {
-  return new OdooClient({
-    url: creds.url,
-    db: creds.db,
-    uid: creds.uid,
-    apiKey: creds.apiKey,
-  });
+function createClient(creds: OdooCredentials, target: PinnedTarget): OdooClient {
+  return pinOdooClient(
+    { url: creds.url, db: creds.db, uid: creds.uid, apiKey: creds.apiKey },
+    target
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1103,6 +1117,105 @@ function codeTokenOf(lookup: RelationLookup): string | null {
   return head || null;
 }
 
+/** The records whose `code` equals `code`, compared case-insensitively. */
+function recordsWithCode(code: string, records: OdooRecord[]): OdooRecord[] {
+  const wanted = normalizeLookupText(code);
+  return records.filter((record) => {
+    const value = recordText(record, "code");
+    return value !== null && normalizeLookupText(value) === wanted;
+  });
+}
+
+/** Case-insensitive, with every run of whitespace read as one space. */
+function normalizeNameText(value: string): string {
+  return normalizeLookupText(value).replace(/\s+/g, " ");
+}
+
+/**
+ * One separator a model writes between a code and its name — `"600000 -
+ * Expenses"`, `"6000 : Office supplies"` — and the space around it. Only the
+ * first: a second one belongs to the name. One written onto the code
+ * (`"6000: Office supplies"`) is part of the code token, which then matches no
+ * record, and the lookup is refused.
+ */
+const CODE_NAME_SEPARATOR = /^\s*[-–—:|/]\s*/;
+
+/** The name a lookup claims beside a code, without the separator before it. */
+function claimedNameText(value: string): string {
+  return value.trim().replace(CODE_NAME_SEPARATOR, "").trim();
+}
+
+/**
+ * The record a lookup names by code and name together, once the code is known
+ * to match: the `"<code> <name>"` string and the
+ * explicit `{lookup: {code, name}}`. The name beside the code
+ * is a claim about the record: resolved on the code alone, `"6000 Bank fees"`
+ * would book to account 6000 whatever it is called, so the card would read
+ * "Bank fees" while the effect was "Office supplies". The claim has to hold — case, spacing and one separator
+ * aside — or the lookup is refused with the name the code actually carries, so
+ * the model can send the exact name or the record's ref. Two records that
+ * share the code (the multi-company case) are told apart by the same name.
+ */
+function matchByCodeAndName(
+  field: OdooField,
+  lookup: RelationLookup,
+  code: string,
+  claimedName: string,
+  coded: OdooRecord[]
+): number {
+  const wanted = normalizeNameText(claimedName);
+  const named = coded.filter((record) => {
+    const name = recordText(record, "name");
+    return name !== null && normalizeNameText(name) === wanted;
+  });
+  const ids = uniqueIds(named);
+  if (ids.length === 1) return ids[0];
+  if (ids.length > 1) throw new Error(formatMultiMatchError(field, { ...lookup, code }, named));
+  const label = field.string ?? field.name;
+  const actual = [
+    ...new Set(coded.map((record) => recordText(record, "name")).filter((name) => name !== null)),
+  ];
+  const carries =
+    actual.length > 0 ? actual.map((name) => JSON.stringify(name)).join(" or ") : "unnamed";
+  const source = lookup.code ? `code "${code}"` : `"${lookup.name}"`;
+  throw new Error(
+    `Could not resolve ${field.name} from ${source}: ${label} ${code} is ${carries}, ` +
+      `not ${JSON.stringify(claimedName)}. Provide an exact ${label} name or ref.`
+  );
+}
+
+/**
+ * The refusal for an explicit code that no candidate carries, naming the code
+ * of the record the name beside it does name, if any — so the model can send
+ * a code and a name of the same record, or its ref.
+ */
+function unknownCodeError(
+  field: OdooField,
+  code: string,
+  claimedName: string,
+  records: OdooRecord[]
+): string {
+  const label = field.string ?? field.name;
+  const wanted = normalizeNameText(claimedName);
+  const namedCodes = [
+    ...new Set(
+      records
+        .filter((record) => {
+          const name = recordText(record, "name");
+          return name !== null && normalizeNameText(name) === wanted;
+        })
+        .map((record) => recordText(record, "code"))
+        .filter((value): value is string => value !== null)
+    ),
+  ];
+  const named =
+    namedCodes.length > 0 ? ` (${JSON.stringify(claimedName)} is ${namedCodes.join(" or ")})` : "";
+  return (
+    `Could not resolve ${field.name} from code "${code}": no ${label} has code ${code}${named}. ` +
+    `Provide an exact ${label} name or ref.`
+  );
+}
+
 /**
  * The single record whose `code` equals `code`, or `null` when none does.
  * Compared case-insensitively, like every other text match here — the domain
@@ -1120,11 +1233,7 @@ function matchByCode(
   code: string,
   records: OdooRecord[]
 ): number | null {
-  const wanted = normalizeLookupText(code);
-  const matches = records.filter((record) => {
-    const value = recordText(record, "code");
-    return value !== null && normalizeLookupText(value) === wanted;
-  });
+  const matches = recordsWithCode(code, records);
   const ids = uniqueIds(matches);
   if (ids.length === 1) return ids[0];
   if (ids.length > 1) throw new Error(formatMultiMatchError(field, { ...lookup, code }, matches));
@@ -1135,7 +1244,10 @@ function matchByCode(
  * Pick the one record a lookup names, in order of how much the caller actually
  * told us (heypinchy/pinchy#1197, precedence corrected in the #1206 review):
  *
- * 1. An explicit `{lookup: {code}}` names the column it means. Nothing beats it.
+ * 1. An explicit `{lookup: {code}}` names the column it means. Nothing beats it
+ *    — but a `name` beside it must be the record's name too
+ *    (`matchByCodeAndName`), or the lookup is refused; so is a code beside a
+ *    name that no record carries, except on `res.country` (`unknownCodeError`).
  * 2. An exact `name`/`display_name` match. This sits ABOVE the derived code
  *    token on purpose: the token is a guess about the input's shape, an exact
  *    name is not. With the order reversed, `"IT Infrastructure"` resolves to
@@ -1144,7 +1256,8 @@ function matchByCode(
  * 3. The leading token, which is the `"<code> <name>"` form a chart of accounts
  *    prints, and a bare code. Reached only once an exact name has failed, so
  *    the composite form that carries a disambiguating name still resolves when
- *    two companies share a code.
+ *    two companies share a code. The name after the code must be the record's
+ *    name (`matchByCodeAndName`): a code never overrides a name it contradicts.
  */
 function resolveReferenceFromRecords(
   field: OdooField,
@@ -1155,8 +1268,26 @@ function resolveReferenceFromRecords(
   const input = lookup.code ?? lookup.name ?? "";
 
   if (lookup.code) {
+    // A name beside the code is a claim about the record, exactly as in the
+    // string form below — never ignored.
+    const claimedName = lookup.name ? claimedNameText(lookup.name) : "";
+    const coded = claimedName ? recordsWithCode(lookup.code, records) : [];
+    if (coded.length > 0) {
+      return matchByCodeAndName(field, lookup, lookup.code, claimedName, coded);
+    }
     const byExplicitCode = matchByCode(field, lookup, lookup.code, records);
     if (byExplicitCode !== null) return byExplicitCode;
+    // A code no record carries is a claim the records contradict, just as a
+    // name is: `{code: "6000", name: "Bank fees"}`
+    // fell through to the exact-name branch and booked to 6100 "Bank fees"
+    // while the card read 6000 — and the string "6000 Bank fees" was refused.
+    // `res.country` alone keeps the fall-through: a country is identified by
+    // its name, its code is an ISO 3166-1 alpha-2 key models misremember in
+    // well-known ways ("UK" for GB, "EL" for GR), and a code that names no
+    // country points at no other record the name could be confused with.
+    if (claimedName && field.relation !== "res.country") {
+      throw new Error(unknownCodeError(field, lookup.code, claimedName, records));
+    }
   }
 
   if (!lookup.name) {
@@ -1182,6 +1313,11 @@ function resolveReferenceFromRecords(
 
   const codeToken = codeTokenOf(lookup);
   if (codeToken) {
+    const claimedName = lookup.code ? "" : claimedNameText(lookup.name.slice(codeToken.length));
+    const coded = claimedName ? recordsWithCode(codeToken, records) : [];
+    if (coded.length > 0) {
+      return matchByCodeAndName(field, lookup, codeToken, claimedName, coded);
+    }
     const byCodeToken = matchByCode(field, lookup, codeToken, records);
     if (byCodeToken !== null) return byCodeToken;
   }
@@ -1364,8 +1500,8 @@ export function assertNoCrossCompanyRefs(values: Record<string, unknown>): void 
 
 // Depth cap for the cross-company guard's tuple recursion — a defensive
 // bound against a pathologically deep/self-referential nested structure,
-// mirroring the bound `normalizeMany2OneValues` already applies to its own
-// nested walk (one level today). Generous enough for any real Odoo o2m/m2m
+// mirroring the bound `normalizeMany2OneValues` applies to its own
+// nested walk (MAX_X2MANY_DEPTH, two levels). Generous enough for any real Odoo o2m/m2m
 // nesting while still stopping unbounded recursion.
 const MAX_CROSS_COMPANY_DEPTH = 8;
 
@@ -1591,9 +1727,12 @@ async function searchRelationByName(
  *   `res.country` (`_rec_name` is `name`) it would match nothing `name`
  *   doesn't. The client-side matcher still compares both.
  * - BOTH are OR-ed rather than letting `code` win, because
- *   `resolveReferenceFromRecords` falls through from a failed code match to
- *   its exact-name branch. A code-only domain never fetches the records that
- *   fallback needs, so a wrong code would make a correct name unresolvable.
+ *   `resolveReferenceFromRecords` reads the name leg's records after a failed
+ *   code match: it falls through to its exact-name branch for a code token
+ *   (only a guess about the input's shape) and for an explicit `res.country`
+ *   code, and an explicit code elsewhere is refused naming the code the name
+ *   does carry (`unknownCodeError`). A code-only domain never fetches those
+ *   records, so a wrong code would make a correct name unresolvable.
  *
  * `null` is the neither case (`{lookup: {}}`, or a non-string `name` that
  * `parseLookup` drops). An `ilike ""` there is `LIKE '%%'`, i.e. every row —
@@ -1720,6 +1859,44 @@ async function resolveRelationValue(
   return resolveReferenceFromRecords(field, lookup, getSearchReadRecords(result));
 }
 
+// How many command-tuple levels `normalizeMany2OneValues` descends: the
+// parent's x2many (level 1) and the x2many fields inside its line values
+// (level 2). Odoo realistically needs no more.
+const MAX_X2MANY_DEPTH = 2;
+
+/**
+ * An x2many value must be explicit command tuples (or empty). Odoo would
+ * silently rewrite shorthand — `false` into a clear (code 5), a bare id list
+ * into `[6, 0, list]`, a boolean code into 0/1 — and each rewrite can destroy
+ * data (a bare list of lines unlinks every other line) while skipping the
+ * per-code grant check. So nothing is rewritten here: anything that is not a
+ * well-formed command list is refused with a hint at the right tuple.
+ */
+function assertX2manyCommands(fieldName: string, value: unknown): unknown[] {
+  const invalid = (hint: string): never => {
+    throw new Error(`Invalid value for "${fieldName}": ${hint}`);
+  };
+  if (Array.isArray(value)) {
+    if (value.length === 0) return value;
+    if (value.every((c) => Array.isArray(c) && Number.isInteger(c[0]) && c[0] >= 0 && c[0] <= 6)) {
+      return value;
+    }
+    if (!Array.isArray(value[0])) {
+      if (value.some(isRecord)) {
+        return invalid(
+          "wrap each new line as [0, 0, {…}], or edit an existing one with [1, ref, {…}]."
+        );
+      }
+      return invalid(
+        "to replace the linked records, use [[6, 0, [ids]]]; to link one, use [[4, id]]."
+      );
+    }
+  } else if (value === false || value == null) {
+    return invalid("to clear it, use [[5]].");
+  }
+  return invalid("use command tuples such as [[6, 0, [ids]]] (or [[5]] to clear).");
+}
+
 export async function normalizeMany2OneValues(
   client: OdooClient,
   connectionId: string,
@@ -1731,7 +1908,36 @@ export async function normalizeMany2OneValues(
   fieldsCache: FieldsCache = new Map()
 ): Promise<{ values: Record<string, unknown>; fields: OdooField[] }> {
   const fields = await loadFields(client, model, fieldsCache);
-  if (fields.length === 0) return { values, fields };
+  if (fields.length === 0) {
+    // No schema means no relation fields to walk, so a command list in the
+    // values would reach Odoo with its per-code grant checks skipped. Refuse
+    // it; plain values (and raw-id-only shapes with no command lists) pass.
+    // Only nested levels: a top-level empty schema keeps its long-standing
+    // pass-through for well-formed raw-id command lists (arg-robustness tests).
+    if (depth >= 1 && Object.values(values).some((v) => Array.isArray(v) && v.length > 0)) {
+      throw new Error(
+        `Cannot check x2many commands for ${model}: the schema for ${model} came back ` +
+          `empty, so the per-command permission checks cannot run. ` +
+          `Re-check the connection to Odoo and try again.`
+      );
+    }
+    return { values, fields };
+  }
+
+  // Past the walk's depth nothing is checked, so nothing may pass: refuse any
+  // x2many that holds commands (or an invalid shape) BEFORE spending lookups.
+  if (depth >= MAX_X2MANY_DEPTH) {
+    for (const field of fields) {
+      if (field.type !== "one2many" && field.type !== "many2many") continue;
+      if (!(field.name in values)) continue;
+      if (assertX2manyCommands(field.name, values[field.name]).length === 0) continue;
+      throw new Error(
+        `x2many commands nested deeper than ${MAX_X2MANY_DEPTH} levels are not supported ` +
+          `(found commands for "${field.name}" on ${model}). Save this record first, then set ` +
+          `"${field.name}" with odoo_write on ${model} using the id it returns.`
+      );
+    }
+  }
 
   const normalized = { ...values };
 
@@ -1775,23 +1981,26 @@ export async function normalizeMany2OneValues(
     );
   }
 
-  // One nesting level down (#615; many2many follow-up): resolve m2o fields
-  // inside one2many AND many2many command tuples (e.g. account.move
+  // Nested x2many command tuples (#615; many2many follow-up): resolve m2o
+  // fields inside one2many AND many2many command tuples (e.g. account.move
   // `line_ids: [[0, 0, { account_id: "…" }]]`, or a many2many `tax_ids: [[4,
-  // "…"]]`). The nested m2o values get the same ref decoding + company
-  // scoping as top-level fields, inheriting the parent's `scopeCompanyId`
-  // (the lines belong to the same company). Bounded to depth 1 — Odoo's
-  // command tuples can nest arbitrarily, but one level covers the
-  // account.move line_ids case; deeper nesting is left to a future change to
-  // avoid unbounded recursion through self-referential models.
-  if (depth < 1) {
+  // "…"]]`) with the same ref decoding + company scoping as top-level fields,
+  // inheriting the parent's `scopeCompanyId`. The walk goes MAX_X2MANY_DEPTH
+  // (two) levels: a line's own x2many fields —
+  // `invoice_line_ids: [[0, 0, { tax_ids: [[6, 0, [ref]]] }]]` — are walked
+  // too, re-entering `normalizeCommandTuples`, so the per-code grant checks
+  // apply to THEIR relation model (account.tax here). Stopping at one level
+  // shipped the ref/name verbatim to Odoo ("invalid input syntax for type
+  // integer"). The cap bounds the walk by the input's depth, not the schema.
+  // Past it nothing passes verbatim (a command there would skip the grant
+  // check, e.g. a code-2 delete): that is rejected up front, see above.
+  if (depth < MAX_X2MANY_DEPTH) {
     for (const field of fields) {
       const kind =
         field.type === "one2many" ? "one2many" : field.type === "many2many" ? "many2many" : null;
       if (kind === null || !field.relation) continue;
       if (!(field.name in normalized)) continue;
-      const commands = normalized[field.name];
-      if (!Array.isArray(commands)) continue;
+      const commands = assertX2manyCommands(field.name, normalized[field.name]);
       normalized[field.name] = await normalizeCommandTuples(
         client,
         connectionId,
@@ -2106,6 +2315,26 @@ async function resolveActivityTypeByName(client: OdooClient, name: string): Prom
     );
   }
   return id;
+}
+
+/**
+ * The `assignee` as the tools use it: a user NAME is trimmed (a model pads
+ * names freely, and the lookup is an exact match), a ref is taken exactly as
+ * sent. A ref with whitespace around it is refused rather than trimmed into
+ * the ref: the confirmation card shows a string as the
+ * record it names only when the string IS the ref, so `" " + ref` was shown
+ * as opaque text while the activity went to the record the ref names.
+ */
+function assigneeParam(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  if (trimmed !== value && isIntegrationRef(trimmed)) {
+    throw new Error(
+      "`assignee` has whitespace around its _pinchy_ref. Pass the ref exactly as odoo_read " +
+        "returned it, with nothing before or after it."
+    );
+  }
+  return trimmed;
 }
 
 /**
@@ -2865,6 +3094,11 @@ function permissionDenied(
 
 function isOdooAccessError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
+  // An HTTP-level failure (odoo-node: status in `code`, no `data`) is the
+  // server refusing the request — "HTTP 405: Method Not Allowed" — not Odoo
+  // refusing this user a model.
+  const { code, data } = error as Error & { code?: unknown; data?: unknown };
+  if (typeof code === "number" && code >= 100 && data === undefined) return false;
   const msg = error.message.toLowerCase();
   return (
     msg.includes("accesserror") ||
@@ -2884,15 +3118,18 @@ function errorResult(
       `Odoo denied permission to ${op} on ${context.model}. The Odoo user's permissions may have changed since the last sync. An admin can re-sync the connection in Settings > Integrations to update available permissions.`
     );
   }
-  const message = error instanceof Error ? error.message : "Unknown error";
+  // Classify on the raw message, show the described one: `describeOdooError`
+  // rewrites the failures the model cannot act on.
+  const raw = error instanceof Error ? error.message : "";
+  const message = describeOdooError(error);
   // A relation field (many2one) that received a display name instead of an id
   // surfaces from Postgres as "invalid input syntax for type integer: <text>".
   // That raw DB error is not actionable for the model, so append what to do:
   // resolve the name to an id/ref first (production: Penny repeatedly sent
   // account_id: "7600 Office supplies …" and got only the bare Postgres error).
-  if (/invalid input syntax for type integer:/i.test(message)) {
+  if (/invalid input syntax for type integer:/i.test(raw)) {
     return toolError(
-      `Error: ${message.trim()}\n\nThis usually means a relation field (e.g. account_id, partner_id, journal_id) was given a display name or text instead of a numeric id. Look the record up with odoo_read to get its id, then pass that id or the _pinchy_ref it returns — never the display name.`
+      `Error: ${message}\n\nThis usually means a relation field (e.g. account_id, partner_id, journal_id) was given a display name or text instead of a numeric id. Look the record up with odoo_read to get its id, then pass that id or the _pinchy_ref it returns — never the display name.`
     );
   }
   return toolError(`Error: ${message}`);
@@ -2969,7 +3206,9 @@ const plugin = {
   name: "Pinchy Odoo",
   description: "Odoo ERP integration with model-level permissions.",
 
-  register(api: PluginApi) {
+  register(pluginApi: PluginApi) {
+    // Every tool refuses a parameter it does not declare (unknown-params.ts).
+    const api = refusingUnknownParams(pluginApi);
     const pluginConfig = api.pluginConfig;
     const agentConfigs = pluginConfig?.agents ?? {};
     const apiBaseUrl = pluginConfig?.apiBaseUrl ?? "";
@@ -3008,8 +3247,13 @@ const plugin = {
       const key = credentialCacheKey(agentId, config.connectionId);
       const hit = cache.get(key);
       if (hit && hit.expiresAt > Date.now()) return hit.client;
-      const creds = await fetchCredentials(apiBaseUrl, gatewayToken, config.connectionId, agentId);
-      const client = createClient(creds);
+      const { creds, target } = await fetchCredentials(
+        apiBaseUrl,
+        gatewayToken,
+        config.connectionId,
+        agentId
+      );
+      const client = createClient(creds, target);
       cache.set(key, {
         client,
         expiresAt: Date.now() + CREDENTIALS_TTL_MS,
@@ -3030,8 +3274,9 @@ const plugin = {
      * Run an Odoo call with one transparent retry on auth failure.
      * Odoo throws an `AccessDenied` / 401-shaped error when the apiKey is
      * stale (rotated, revoked, expired). We invalidate the cache and
-     * fetch fresh credentials once — if it still fails, surface to the
-     * user.
+     * fetch fresh credentials once — if that is refused for its credentials
+     * too, report the connection as auth-failed; any other failure surfaces
+     * to the user like a first-attempt error.
      *
      * `isAuthError` is the shared classifier (#1077); the client is wrapped
      * so a closure that already completed a write is never re-run.
@@ -3063,13 +3308,19 @@ const plugin = {
             })
           );
         } catch (retryErr) {
-          const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+          // Fresh credentials and the retry still failed — but only an auth
+          // error says those credentials are bad. A 502, a non-JSON page or a
+          // ValidationError from the model's arguments would otherwise flip a
+          // healthy connection to auth_failed, and nothing clears that.
+          if (!isAuthError(retryErr)) throw retryErr;
+          // Pinchy stores the reason as the connection's last error and audits
+          // it, so it gets the same treatment as a tool result.
           await postAuthFailure({
             apiBaseUrl,
             connectionId: config.connectionId,
             gatewayToken,
             pluginId: "pinchy-odoo",
-            reason: retryMsg,
+            reason: describeOdooError(retryErr),
           });
           throw retryErr;
         }
@@ -4057,6 +4308,7 @@ const plugin = {
               if (typeof dueDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) {
                 return errorResult(new Error("`dueDate` is required in YYYY-MM-DD format."));
               }
+              const assigneeRequested = assigneeParam(params.assignee);
 
               const decoded = decodeTargetRef(config.connectionId, target);
               const targetModel = decoded.model;
@@ -4079,8 +4331,6 @@ const plugin = {
                     ? await resolveActivityTypeByName(client, activityTypeRequested)
                     : await resolveDefaultActivityTypeId(client);
 
-                const assigneeRequested =
-                  typeof params.assignee === "string" ? params.assignee.trim() : "";
                 const userId =
                   assigneeRequested.length > 0
                     ? await resolveAssigneeUserId(client, config.connectionId, assigneeRequested)
@@ -4258,7 +4508,7 @@ const plugin = {
                 );
               }
               const dueDateRaw = typeof params.dueDate === "string" ? params.dueDate.trim() : "";
-              const assigneeRaw = typeof params.assignee === "string" ? params.assignee.trim() : "";
+              const assigneeRaw = assigneeParam(params.assignee);
               if (dueDateRaw.length === 0 && assigneeRaw.length === 0) {
                 return errorResult(
                   new Error(
@@ -5166,7 +5416,7 @@ const plugin = {
           name: "odoo_delete",
           label: "Odoo Delete",
           description:
-            "Permanently delete records from Odoo. Pass the `_pinchy_ref` of every record to delete in `targets` (from `odoo_read` or `odoo_create`) — raw numeric IDs are NOT accepted, so you can only delete records you have actually looked up. Deleting cannot be undone: read the records first, show the user what you are about to remove, and delete only after they confirm.",
+            "Permanently delete records from Odoo. Pass the `_pinchy_ref` of every record to delete in `targets` (from `odoo_read` or `odoo_create`) — raw numeric IDs are NOT accepted, so you can only delete records you have actually looked up. There is no `ids` parameter. Deleting cannot be undone: read the records first, show the user what you are about to remove, and delete only after they confirm.",
           parameters: {
             type: "object",
             properties: {
@@ -5198,22 +5448,6 @@ const plugin = {
                 return permissionDenied("delete", model);
               }
 
-              // pinchy#1078: raw ids were how a hallucinated delete reached
-              // Odoo. `ids: [40]` needs no prior read, so nothing tied a delete
-              // to a record the model had actually seen — while every other
-              // governed write tool already spoke refs. Refusing loudly (rather
-              // than quietly accepting ids alongside targets) is the whole
-              // point: a silent fallback is a one-parameter route back to the
-              // hole this closes.
-              if (params.ids !== undefined) {
-                return errorResult(
-                  new Error(
-                    "Raw numeric IDs are not accepted for odoo_delete. Read the records with " +
-                      "`odoo_read` first and pass the `_pinchy_ref` each one carries in `targets` — " +
-                      "that is what keeps a delete to records that were actually looked up."
-                  )
-                );
-              }
               // The `{item: …}` array-serialization artifact reaches `targets`
               // exactly as it reaches `values` elsewhere (see hasItemWrappedArray);
               // caught here so the model gets the actionable shape error rather

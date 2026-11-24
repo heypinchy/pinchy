@@ -79,6 +79,41 @@ export const auditAfterHook = createAuthMiddleware(async (ctx) => {
 });
 
 /**
+ * The ONLY Better Auth endpoints an HTTP client may reach, by declared path.
+ *
+ * `app/api/auth/[...all]/route.ts` mounts the whole Better Auth handler, so
+ * every endpoint the core and our plugins (admin, apiKey) register is a live
+ * route unless the `hooks.before` guard below refuses it. An allowlist, not a
+ * blocklist: the blocklist this replaced closed sign-up, admin/* and the
+ * account-mutation endpoints and still missed /verify-password — a password
+ * oracle for anyone holding a stolen session. A Better Auth upgrade that adds
+ * an endpoint is closed by construction here; the drift guard in
+ * auth-client-surface.integration.test.ts enumerates `auth.api` to prove it.
+ *
+ * Established by what actually calls /api/auth/* (grep the repo for
+ * `authClient.` and `/api/auth/`):
+ */
+export const CLIENT_REACHABLE_AUTH_PATHS: ReadonlySet<string> = new Set([
+  // Login page (authClient.signIn.email); e2e + screenshot seed helpers.
+  "/sign-in/email",
+  // Logout button and the settings profile (authClient.signOut).
+  "/sign-out",
+  // authClient.useSession — the session atom's fetch and its refresh.
+  "/get-session",
+]);
+// Deliberately absent although harmless-looking: `/ok` (nothing probes it;
+// the container healthcheck is /api/health) and `/error` (Better Auth's error
+// page for OAuth/email-verification redirects, flows Pinchy does not use).
+
+/**
+ * The guard's refusal: the same bodyless 404 Better Auth's router gives a
+ * route that does not exist, rather than an `APIError`'s JSON body.
+ */
+function clientNotFound(): Response {
+  return new Response(null, { status: 404, statusText: "Not Found" });
+}
+
+/**
  * Hardened rate-limit config for Better Auth (see issue #239).
  *
  * Better Auth's defaults (3 req / 10s per IP on `/sign-in/*`) are too weak
@@ -124,6 +159,18 @@ export function getAuthRateLimitConfig(): BetterAuthRateLimitOptions {
     // order, so exact paths are listed BEFORE their corresponding wildcard
     // entries — `/sign-in/email` matches first; the `/sign-in/*` fallback
     // covers any future sub-path (OAuth, magic-link, passkey) we add.
+    //
+    // What these rules can and cannot do — read before relying on one:
+    //   - They run in the HTTP router's `onRequest`, keyed on the URL path,
+    //     BEFORE route matching and before `hooks.before`. Server-side
+    //     `auth.api.*` calls never pass through them (setup, invite claim,
+    //     /api/users/me/password — which is why that route has its own
+    //     limiter, lib/password-change-rate-limiter.ts).
+    //   - Of the paths below, only `/sign-in/email` is open to clients
+    //     (CLIENT_REACHABLE_AUTH_PATHS). For every other one the rule merely
+    //     caps how fast a client collects the guard's 404 — and, being path-
+    //     keyed, answers 429 once that cap is hit. They are kept as a second
+    //     layer: re-opening one of these endpoints must not ship it unthrottled.
     customRules: {
       // Pre-auth — brute-force / credential-stuffing protection
       // The window is shared with the login page, which tells the user how long
@@ -298,40 +345,65 @@ export const auth = betterAuth({
   },
   hooks: {
     before: createAuthMiddleware(async (ctx) => {
-      // C1 (#572 whole-branch review, CRITICAL): registering the apiKey()
-      // plugin above mounts FIVE endpoints as ordinary Better Auth routes —
-      // /api-key/create|update|delete|get|list. Those are exactly the
-      // plugin's path-carrying endpoints; the two it declares via
-      // `createAuthEndpoint.serverOnly` (verifyApiKey and
-      // deleteAllExpiredApiKeys) carry no path, so they were never HTTP
-      // surface to begin with — see the ctx.path note below.
+      // Allowlist guard. A CLIENT request — one that came through the HTTP
+      // router, which always sets `ctx.request` — to any endpoint outside
+      // CLIENT_REACHABLE_AUTH_PATHS gets a 404. That closes, among others:
       //
-      // Since app/api/auth/[...all]/route.ts mounts the whole auth handler,
-      // those five are live at /api/auth/api-key/* for ANY authenticated
-      // session, not just admins — bypassing our audited, admin-gated
-      // /api/settings/api-keys route entirely (no admin check, no
-      // api_key.created/deleted audit row).
+      //   /sign-up/*  open self-registration: any unauthenticated client got a
+      //               "member" account + session (invites and seat limits
+      //               bypassed). Users are created ONLY server-side
+      //               (auth.api.signUpEmail in lib/setup.ts and
+      //               app/api/invite/claim/route.ts).
+      //   /admin/*    impersonate-user, set-role, set-user-password,
+      //               remove-user, create-user, … — unaudited, and they bypass
+      //               Pinchy's guarantee that personal agents stay private
+      //               even from admins. Pinchy manages users via /api/users/*.
+      //   /update-user, /change-password, /change-email, /delete-user
+      //               unvalidated, unaudited account mutation. Pinchy has
+      //               /api/users/me, /api/users/me/password, /api/users/:id.
+      //   /verify-password
+      //               "is this the password?" for the session's own user,
+      //               outside the sign-in rate limit — a password oracle for a
+      //               stolen session.
+      //   /api-key/*  C1 (#572 whole-branch review, CRITICAL): the apiKey()
+      //               plugin's create/update/delete/get/list routes, live for
+      //               ANY session, bypassing the admin-gated, audited
+      //               /api/settings/api-keys route.
+      //   …and whatever else the core and plugins register (sessions, OAuth,
+      //   password reset, email verification). Not listed one by one, on
+      //   purpose: a list is what missed /verify-password.
       //
-      // Pinchy issues/revokes keys ONLY via /api/settings/api-keys (withAdmin
-      // + audited). Block every CLIENT request to /api-key/* here — a 404,
-      // not a 403/401, so the mounted-but-forbidden sub-path stays invisible
-      // rather than confirming a governed route exists.
+      // `ctx.path` is the endpoint's DECLARED path (dispatchAuthEndpoint sets
+      // it before running hooks), never the raw URL, so query strings and path
+      // tricks cannot reach a closed endpoint under an allowlisted name.
       //
-      // `ctx.request || ctx.headers` is the SAME discriminator the plugin's
-      // own create/update handlers use internally (see
-      // @better-auth/api-key/dist/index.mjs: `isClientRequest = ctx.request
-      // || ctx.headers`) to tell a browser/HTTP client request apart from a
-      // trusted server-side call. Our own server-side call —
-      // `auth.api.createApiKey({ body })` in
-      // app/api/settings/api-keys/route.ts — passes neither `request` nor
-      // `headers`, so it is unaffected by this guard. `ctx.path` for that
-      // call is `"/api-key/create"`; for the server-only `verifyApiKey` call
-      // (used by every /api/v1 request via withApiKey) `ctx.path` is `"/"` —
-      // server-only endpoints take no path, which is also why they are not
-      // part of the HTTP surface above — so it never matches this prefix
-      // check either. Verified empirically against the real Better Auth
-      // dispatch pipeline, not just read from source.
-      if (ctx.path.startsWith("/api-key/") && (ctx.request || ctx.headers)) {
+      // Discriminator is `ctx.request` ONLY, not `ctx.headers`: a server-side
+      // call carries no request, and /api/users/me/password calls
+      // `auth.api.changePassword({ headers })` with the caller's headers
+      // forwarded — it must keep working.
+      //
+      // The answer is the router's own not-found shape (bodyless 404), so the
+      // guard does not advertise itself with a JSON body. It is NOT
+      // indistinguishable from a path that does not exist, and nothing should
+      // claim so: Better Auth's rate limiter and origin check run before the
+      // hook, so a closed path can still answer 429 (path-keyed rule) or 403
+      // (cookie-carrying POST from an untrusted Origin) where a missing route
+      // would say 404.
+      if (ctx.request && !CLIENT_REACHABLE_AUTH_PATHS.has(ctx.path)) {
+        return clientNotFound();
+      }
+
+      // The one server-side refusal. The apiKey() plugin's own create/update
+      // handlers treat `ctx.request || ctx.headers` as "client request"
+      // (@better-auth/api-key/dist/index.mjs: `isClientRequest`), so a
+      // server-side call that forwards a caller's headers to /api-key/* is
+      // refused too. Pinchy's own call — `auth.api.createApiKey({ body })` in
+      // app/api/settings/api-keys/route.ts — passes neither and is
+      // unaffected. The server-only `verifyApiKey` (every /api/v1 request via
+      // withApiKey) declares no path, so `ctx.path` there is "/" and never
+      // matches. Verified against the real dispatch pipeline, not just read
+      // from source.
+      if (ctx.path.startsWith("/api-key/") && ctx.headers) {
         throw new APIError("NOT_FOUND", { message: "Not found" });
       }
     }),

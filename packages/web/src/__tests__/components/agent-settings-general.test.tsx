@@ -167,7 +167,37 @@ describe("AgentSettingsGeneral", () => {
         />
       );
       expect(screen.getByText("Shared agent")).toBeInTheDocument();
+    });
+
+    it("says memory is shared across the team when the agent has memory", () => {
+      render(
+        <AgentSettingsGeneral
+          agent={{ ...defaultAgent, isPersonal: false, allowedTools: ["pinchy_memory"] }}
+          providers={defaultProviders}
+          onChange={vi.fn()}
+        />
+      );
       expect(screen.getByText(/memory from all user conversations is shared/i)).toBeInTheDocument();
+    });
+
+    it("does not claim shared memory when the agent has no memory", () => {
+      // Custom Agents start without the Memory permission (#1275).
+      render(
+        <AgentSettingsGeneral
+          agent={{ ...defaultAgent, isPersonal: false, allowedTools: [] }}
+          providers={defaultProviders}
+          onChange={vi.fn()}
+        />
+      );
+      expect(screen.queryByText(/memory from all user conversations/i)).not.toBeInTheDocument();
+      expect(screen.getByText(/doesn't keep memory/i)).toBeInTheDocument();
+      // Uploads and created files persist in the agent's workspace whatever
+      // the Memory permission says. The agent reads them in every member's
+      // chats; members can't download each other's uploads themselves.
+      expect(
+        screen.getByText(/files in its workspace in every member's conversations/i)
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/nothing carries over/i)).not.toBeInTheDocument();
     });
 
     it("should show 'Personal agent' for personal agents", () => {

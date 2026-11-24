@@ -20,6 +20,11 @@ import { defineConfig } from "@playwright/test";
  *     as `models`, scoped to the KB groundedness sweep instead of the
  *     invoice scenarios.
  *
+ *   EVAL_MODE=kb-language — kb/answer-language/kb-language-eval.spec.ts
+ *     (#1296). German documents, questions in other languages; grades only
+ *     which language the answer is written in. Needs ANTHROPIC_API_KEY for
+ *     its default candidates.
+ *
  * Every pattern below is ANCHORED (`(^|\/)...\.spec\.ts$`), not a bare
  * substring regex: an earlier unanchored `/eval-models\.spec\.ts/` would
  * also match `kb/kb-eval-models.spec.ts` (a real substring of that path),
@@ -39,7 +44,9 @@ import { defineConfig } from "@playwright/test";
  * budget; this is the Playwright-level floor.
  */
 const EVAL_MODE =
-  process.env.EVAL_MODE === "models" || process.env.EVAL_MODE === "kb-models"
+  process.env.EVAL_MODE === "models" ||
+  process.env.EVAL_MODE === "kb-models" ||
+  process.env.EVAL_MODE === "kb-language"
     ? process.env.EVAL_MODE
     : "selftest";
 
@@ -47,6 +54,7 @@ const TEST_MATCH_BY_MODE: Record<string, RegExp> = {
   selftest: /(^|\/)eval-selftest\.spec\.ts$/,
   models: /(^|\/)eval-models\.spec\.ts$/,
   "kb-models": /(^|\/)kb-eval-models\.spec\.ts$/,
+  "kb-language": /(^|\/)kb-language-eval\.spec\.ts$/,
 };
 
 export default defineConfig({

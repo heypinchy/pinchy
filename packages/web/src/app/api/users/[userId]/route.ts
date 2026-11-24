@@ -5,10 +5,15 @@ import { users, agents, sessions } from "@/db/schema";
 import { eq, and, count, inArray } from "drizzle-orm";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { deleteWorkspace } from "@/lib/workspace";
-import { appendAuditLog } from "@/lib/audit";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 import { parseRequestBody } from "@/lib/api-validation";
 import { updateUserSchema } from "@/lib/schemas/users";
+import { getUserSocketRegistry } from "@/server/user-sockets";
+import { getActiveRunsSingleton } from "@/server/active-runs-singleton";
+import { getOpenClawClient } from "@/server/openclaw-client";
+import { abortRunsOfUser, followUpDepsFor } from "@/server/abort-runs";
+import { deferAuditLog } from "@/lib/audit-deferred";
+import { auditChatId } from "@/lib/session-key";
 
 export async function PATCH(
   request: NextRequest,
@@ -53,16 +58,14 @@ export async function PATCH(
   // Update role
   await db.update(users).set({ role }).where(eq(users.id, userId));
 
-  after(() =>
-    appendAuditLog({
-      actorType: "user",
-      actorId: session.user.id!,
-      eventType: "user.role_updated",
-      resource: `user:${userId}`,
-      detail: { changes: { role: { from: user.role, to: role } }, userName: user.name },
-      outcome: "success",
-    })
-  );
+  deferAuditLog({
+    actorType: "user",
+    actorId: session.user.id!,
+    eventType: "user.role_updated",
+    resource: `user:${userId}`,
+    detail: { changes: { role: { from: user.role, to: role } }, userName: user.name },
+    outcome: "success",
+  });
 
   // Telegram routing depends on the role while members may not use a personal
   // agent: a member gets no peer binding (openclaw-config/build.ts). Rebuild
@@ -139,19 +142,59 @@ export async function DELETE(
     return NextResponse.json({ error: "User not found" }, { status: 404 });
   }
 
-  after(() =>
-    appendAuditLog({
+  // Deleting the session rows refuses the next WebSocket upgrade, but a chat
+  // the user already has open was authenticated once, at its upgrade, and
+  // would keep working — agent tools included. Close those sockets now; the
+  // registry also makes ClientRouter refuse a frame still in flight.
+  getUserSocketRegistry().revoke(userId);
+
+  // Closing a socket only detaches it from the run it was listening to:
+  // OpenClaw keeps executing a run it already accepted — tools included —
+  // until it ends on its own. Stop every chat run of theirs the way the stop
+  // button does. Awaited, so the admin's "done" means the aborts went out.
+  // A gateway that can't be reached shows up as a `failure` row, not as a
+  // failed deactivation: the account is deactivated either way. An abort that
+  // stopped nothing is followed up after the response, as this admin
+  // (`abort-runs.ts`): a run OpenClaw had not accepted yet can still start.
+  const abortedRuns = await abortRunsOfUser(userId, {
+    activeRuns: getActiveRunsSingleton(),
+    chatAbort: (sessionKey, runId) => getOpenClawClient().chatAbort(sessionKey, runId),
+    requestedBy: session.user.id!,
+    followUp: followUpDepsFor(() => getOpenClawClient()),
+  });
+  for (const aborted of abortedRuns) {
+    deferAuditLog({
       actorType: "user",
       actorId: session.user.id!,
-      eventType: "user.deleted",
-      resource: `user:${userId}`,
-      // GDPR Art. 17: never record the email here. The audit log is
-      // HMAC-signed and append-only, so we cannot redact later. userId
-      // is in `resource`; name is enough for human-readable diffing.
-      detail: { name: deactivated.name },
-      outcome: "success",
-    })
-  );
+      eventType: "chat.run_aborted",
+      resource: `agent:${aborted.agent.id}`,
+      // No `sessionKey`: a web-chat key is `agent:<id>:direct:<userId>`, the
+      // deactivated user's raw id, and `detail` is out of crypto-erasure's
+      // reach (#824). The agent, the chat and the runId identify the run; the
+      // user is the `resource` of this request's `user.deleted` row.
+      detail: {
+        agent: aborted.agent,
+        chatId: auditChatId(aborted.sessionKey),
+        // Null while pending: the trail must not point at a runId the gateway
+        // never issued.
+        runId: aborted.runId ?? null,
+        reason: "account_deactivated",
+      },
+      outcome: aborted.outcome,
+    });
+  }
+
+  deferAuditLog({
+    actorType: "user",
+    actorId: session.user.id!,
+    eventType: "user.deleted",
+    resource: `user:${userId}`,
+    // GDPR Art. 17: never record the email here. The audit log is
+    // HMAC-signed and append-only, so we cannot redact later. userId
+    // is in `resource`; name is enough for human-readable diffing.
+    detail: { name: deactivated.name },
+    outcome: "success",
+  });
 
   // Cleanup workspaces (filesystem, not DB — deliberately outside the
   // transaction above).

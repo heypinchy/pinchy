@@ -157,6 +157,35 @@ describe("pinchy-context plugin", () => {
     expect(result.content[0].text).toContain("the limit is 16,000 characters");
   });
 
+  // A 401 from Pinchy (the shared gateway token was momentarily unreadable)
+  // means the user's context was NOT saved. That must reach the audit trail
+  // as a failure — details.error, the one signal that survives OpenClaw's
+  // stripping of isError (#404) — whatever the body looks like.
+  it.each([
+    [
+      "a JSON error",
+      () => new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 }),
+    ],
+    ["an HTML page", () => new Response("<html>401</html>", { status: 401 })],
+  ])("save_user_context reports a 401 with %s as a failed save", async (_label, response) => {
+    const api = createMockApi(defaultConfig);
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = mockRegisterTool.mock.calls.find(
+      (call: any[]) => call[1]?.name === "pinchy_save_user_context"
+    )?.[0];
+    const tool = factory({ agentId: "agent-1" });
+
+    global.fetch = vi.fn().mockResolvedValueOnce(response());
+
+    const result = await tool.execute("call-1", { content: "..." });
+    expect(result.isError).toBe(true);
+    expect(result.details.error).toEqual(expect.any(String));
+    expect(result.details.error.length).toBeGreaterThan(0);
+    expect(result.content[0].text).not.toMatch(/saved\./);
+  });
+
   // OpenClaw strips the MCP `isError` flag before forwarding the tool result
   // to /api/internal/audit/tool-use, so details.error is the audit route's
   // only remaining failure signal (#404). Without it a failed save is

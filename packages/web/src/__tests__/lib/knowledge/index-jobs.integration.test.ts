@@ -14,9 +14,12 @@ import {
   enqueueIndexJob,
   finishIndexJob,
   getLatestIndexJobForAgent,
+  getLatestPlannedIndexJobForAgent,
   recordIndexJobProgress,
+  recordIndexJobFolderPlan,
   requeueOrphanedIndexJobs,
 } from "@/lib/knowledge/index-jobs";
+import { OFFICE_ARTIFACT_FORMAT_VERSION } from "@/lib/knowledge/office-artifacts";
 
 const ORG_ID = "org-index-jobs-test";
 
@@ -247,6 +250,24 @@ describe("kb index job store", () => {
     expect(latest?.finishedAt).toBeInstanceOf(Date);
   });
 
+  // The rules the run converted Office documents under. A run finished under
+  // earlier rules converted nothing under these, so it is no reason to leave
+  // its folders' superseded documents for a day (office-format-upgrade.ts).
+  it("records the Office artifact format the run converted under", async () => {
+    const agent = await makeAgent();
+    await enqueueIndexJob(enqueueArgs(agent.id));
+    const job = await claimNextIndexJob();
+    expect(job?.artifactFormatVersion).toBeNull();
+
+    await finishIndexJob(job!.id, {
+      outcome: "succeeded",
+      counts: { indexed: 1, skipped: 0, removed: 0, unsearchable: 0, failed: 0, archived: 0 },
+    });
+
+    const latest = await getLatestIndexJobForAgent(agent.id);
+    expect(latest?.artifactFormatVersion).toBe(OFFICE_ARTIFACT_FORMAT_VERSION);
+  });
+
   // A systemic failure (embedding endpoint down) still processed some files
   // before it died. Those counts are the operator's only evidence of how far
   // the run got, so a failure must not throw them away.
@@ -283,6 +304,7 @@ describe("kb index job store", () => {
       totalBytes: 42_000_000,
       counts: { ...zeroCounts(), indexed: 30 },
     });
+    await recordIndexJobFolderPlan(job!.id, [{ folder: "/data/hr", files: 42 }]);
 
     const requeued = await requeueOrphanedIndexJobs();
 
@@ -299,6 +321,8 @@ describe("kb index job store", () => {
     // re-derived yet would put the progress bar somewhere it has not been.
     expect(latest).toMatchObject({ processedBytes: 0, totalBytes: null });
     expect(latest?.counts).toBeNull();
+    // The plan goes too: the resumed run re-discovers, and its queue may differ.
+    expect(latest?.folderPlan).toBeNull();
     expect(await claimNextIndexJob()).not.toBeNull();
   });
 
@@ -323,6 +347,27 @@ describe("kb index job store", () => {
 
     expect((await getLatestIndexJobForAgent(agent.id))?.id).toBe(second.job.id);
     expect(await getLatestIndexJobForAgent(other.id)).toBeNull();
+  });
+});
+
+describe("getLatestPlannedIndexJobForAgent", () => {
+  beforeEach(async () => {
+    await db.delete(kbIndexJobs);
+  });
+
+  // A pending job has no plan yet; the folder counts then come from the run before.
+  it("skips a newer job that has not recorded a plan", async () => {
+    const agent = await makeAgent();
+    await enqueueIndexJob(enqueueArgs(agent.id));
+    const first = await claimNextIndexJob();
+    await recordIndexJobFolderPlan(first!.id, [{ folder: "/data/hr", files: 3 }]);
+    await finishIndexJob(first!.id, { outcome: "succeeded", counts: zeroCounts() });
+    await enqueueIndexJob(enqueueArgs(agent.id));
+
+    const planned = await getLatestPlannedIndexJobForAgent(agent.id);
+
+    expect(planned?.id).toBe(first!.id);
+    expect(planned?.folderPlan).toEqual([{ folder: "/data/hr", files: 3 }]);
   });
 });
 

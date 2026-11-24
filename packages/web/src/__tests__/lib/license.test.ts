@@ -153,12 +153,19 @@ describe("validateLicense", () => {
     expect(status.active).toBe(false);
   });
 
-  it("calculates daysRemaining correctly", async () => {
+  it("counts a 7-day key issued now as 7 days, not 6 (#1278)", async () => {
+    // Rounding down showed "6 days remaining" on a trial issued seconds ago.
     const { validateLicense } = await import("@/lib/license");
     const token = await createTestToken({}, "7d");
     const status = await validateLicense(token, testPublicKeyPem);
-    expect(status.daysRemaining).toBeGreaterThanOrEqual(6);
-    expect(status.daysRemaining).toBeLessThanOrEqual(7);
+    expect(status.daysRemaining).toBe(7);
+  });
+
+  it("counts a partial last day as a day — 0 only once the key has expired", async () => {
+    const { validateLicense } = await import("@/lib/license");
+    const token = await createTestToken({}, "1h");
+    const status = await validateLicense(token, testPublicKeyPem);
+    expect(status.daysRemaining).toBe(1);
   });
 
   it("returns type from token claims", async () => {

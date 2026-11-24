@@ -63,25 +63,21 @@ describe("full-vision providers (all models in DB)", () => {
 });
 
 describe("Ollama cloud vision models (from DB seed)", () => {
-  it("returns true for kimi-k2.5", () => {
-    expect(isModelVisionCapable("ollama-cloud/kimi-k2.5")).toBe(true);
-  });
-
-  it("returns true for mistral-large-3:675b", () => {
-    expect(isModelVisionCapable("ollama-cloud/mistral-large-3:675b")).toBe(true);
+  it("no longer reports kimi-k2.5 or mistral-large-3:675b as vision (retired 2026-11-16)", () => {
+    // Ollama stopped serving both (`pnpm models:discover`, 2026-11-16), so they
+    // left the catalog and the seed no longer carries a capability row.
+    expect(isModelVisionCapable("ollama-cloud/kimi-k2.5")).toBe(false);
+    expect(isModelVisionCapable("ollama-cloud/mistral-large-3:675b")).toBe(false);
   });
 
   it("returns true for minimax-m3", () => {
     expect(isModelVisionCapable("ollama-cloud/minimax-m3")).toBe(true);
   });
 
-  it("returns true for qwen3.5:397b since the 2026-07-30 re-probe", () => {
-    // This asserted FALSE until 2026-07-30, because the live endpoint used to
-    // accept images and hallucinate their contents — worse than a rejection,
-    // since it looks like a working answer. A 2026-07-30 re-probe with 512x512
-    // fixtures read the number and colour correctly in 6/6 trials, so the
-    // catalog flag flipped and so does this expectation.
-    expect(isModelVisionCapable("ollama-cloud/qwen3.5:397b")).toBe(true);
+  it("no longer reports qwen3.5:397b as vision (retired 2026-11-16)", () => {
+    // It was vision:true from the 2026-07-30 re-probe (6/6 trials) until Ollama
+    // stopped serving it; the seed row left with the catalog entry.
+    expect(isModelVisionCapable("ollama-cloud/qwen3.5:397b")).toBe(false);
   });
 
   it("returns true for kimi-k2.7-code since the 2026-07-30 re-probe", () => {
@@ -95,9 +91,8 @@ describe("Ollama cloud vision models (from DB seed)", () => {
 
   it("returns true for kimi-k2.6", () => {
     // Replaces the old qwen3-vl:235b(-instruct) block — Ollama dropped both
-    // from the cloud catalog (2026-06-17). kimi-k2.5 / minimax-m3 /
-    // mistral-large-3 already have their own dedicated cases above; kimi-k2.6
-    // was the one vision model still lacking one.
+    // from the cloud catalog (2026-06-17). minimax-m3 already has its own
+    // dedicated case above; kimi-k2.6 was the one vision model still lacking one.
     expect(isModelVisionCapable("ollama-cloud/kimi-k2.6")).toBe(true);
   });
 
@@ -115,8 +110,8 @@ describe("Ollama cloud vision models (from DB seed)", () => {
     expect(isModelVisionCapable("ollama-cloud/devstral-small-2:24b")).toBe(false);
   });
 
-  it("returns false for a model without vision (e.g. deepseek-v4-pro)", () => {
-    expect(isModelVisionCapable("ollama-cloud/deepseek-v4-pro")).toBe(false);
+  it("returns false for a model without vision (e.g. glm-5.2)", () => {
+    expect(isModelVisionCapable("ollama-cloud/glm-5.2")).toBe(false);
   });
 
   it("returns false for tool-capable cloud models that are text-only", () => {

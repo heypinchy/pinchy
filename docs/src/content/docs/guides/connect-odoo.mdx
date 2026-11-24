@@ -36,7 +36,7 @@ The API key inherits the Odoo permissions of the user who created it. If you wan
 2. Click **Add Integration** and select **Odoo**
 3. Enter:
    - **URL** — your Odoo instance URL (e.g. `https://erp.yourcompany.com`)
-   - **Database** — auto-detected after you enter the URL, or enter it manually
+   - **Database** — auto-detected after you enter the URL, or enter it manually. If Pinchy can't list the databases, it says why below the field, for example that Odoo didn't answer in time
    - **Email** — the email of the Odoo user whose API key you created
    - **API Key** — the key you copied in step 1
 4. Click **Connect**
@@ -152,7 +152,7 @@ If your Odoo database hosts more than one `res.company`, Pinchy adds two layers 
 
 **Company-aware disambiguation in reads.** `odoo_read` transparently augments the requested field list with `company_id` for company-scoped models (`res.partner`, `account.fiscal.position`, and similar), so the agent always has the company context it needs for the next decision without bloating the prompt with extra field lists. Encoded `_pinchy_ref` references carry an optional `companyId` and `companyLabel`, and the human-readable label is suffixed with the company name (`"ACME Bookkeeping [Company A]"`) when ambiguity exists.
 
-**Clearer many2one collisions.** When an `odoo_create` or `odoo_write` lookup matches more than one record across companies, the error explains the multi-company collision instead of returning a generic "multiple matches" string — so the agent can retry with a `company_id` constraint rather than guessing. This resolution also covers many2one fields nested one level inside inline one2many lines — for example the `account_id` on each `account.move` journal line — company-scoped to the parent record, so booking a multi-line journal entry doesn't require the agent to pre-resolve every line by hand.
+**Clearer many2one collisions.** When an `odoo_create` or `odoo_write` lookup matches more than one record across companies, the error explains the multi-company collision instead of returning a generic "multiple matches" string — so the agent can retry with a `company_id` constraint rather than guessing. This resolution also covers many2one fields nested one level inside inline one2many lines — for example the `account_id` on each `account.move` journal line — company-scoped to the parent record, so booking a multi-line journal entry doesn't require the agent to pre-resolve every line by hand. References and names inside a line's own many2many or one2many fields (for example `tax_ids` on a vendor-bill line) are resolved too, with the same per-operation permission checks against the nested model; commands nested deeper than two levels are rejected rather than passed to Odoo unchecked. One2many and many2many fields accept only command tuples. Shorthand such as `false` or a bare list of ids is rejected with a hint showing the right tuple (`[[5]]` to clear, `[[6, 0, [ids]]]` to replace, `[0, 0, {…}]` for a new line), because Odoo would otherwise rewrite it into a clear or replace that can drop linked records.
 
 The stock **Finance Controller** and **Bookkeeper** templates also include guidance that teaches the agent to disambiguate multi-company records up front. (Finance Controller suggests **Penny** as one of its agent names, so you may see this agent under that name.) Newly-created agents pick this up automatically; existing agents keep their stored `AGENTS.md` until you recreate them, but the runtime cross-company guard applies regardless.
 
@@ -184,10 +184,29 @@ outright, that record is used, even when its first word happens to be another
 record's code — so an analytic account called "IT Infrastructure" is never
 mistaken for whatever carries the code "IT".
 
+**The name after a code has to match.** In the `"<code> <name>"` form, the
+name is checked against the record the code finds, ignoring case, extra spaces
+and one separator between the two — `"6000 - Office supplies"`, `"6000 : Office
+supplies"` and `"6000 | Office supplies"` all read as `"6000 Office supplies"`.
+A separator written onto the code itself, as in `"6000: Office supplies"`,
+makes `6000:` the code, which no account carries, so that lookup is refused.
+`"6000 Bank fees"` is refused when account 6000 is called "Office supplies",
+and the refusal names what 6000 actually is, so the agent can send the exact
+name or a reference. Otherwise the confirmation card would read "Bank fees"
+while the booking went to Office supplies. The same holds when the agent names
+the code and the name separately, as `{"lookup": {"code": "6000", "name":
+"Bank fees"}}`: the name has to be account 6000's, and an account 6000 has to
+exist — when none does, the lookup is refused rather than resolved by the name
+alone, and the refusal names the code of the account that is called "Bank
+fees". Countries are the one exception: `{"lookup": {"code": "XX", "name":
+"Austria"}}` resolves to Austria, because a country is known by its name and a
+code that names no country points at no other one. A bare code makes no claim
+about the name and resolves as before.
+
 **A code that two companies share reports the collision** rather than picking
 one, and names both companies. Adding `company_id` to the same create scopes the
-lookup and resolves it; so does the fully qualified `"<code> <name>"` form, when
-the names differ.
+lookup and resolves it; so does the fully qualified `"<code> <name>"` form, or
+`{"lookup": {"code": …, "name": …}}`, when the names differ.
 
 ## Duplicate vendor bills
 
@@ -232,17 +251,44 @@ read-write finance templates carry.
 
 Pinchy fetches the URL you enter from its own server, so an admin who can add a connection can point it at anything that server can reach. That's why we only connect to a URL that lands on a public address — and we check the address it actually resolves to, not just how the hostname reads. A name like `erp.yourcompany.com` pointing at `10.0.0.5` is the same request as typing `10.0.0.5` directly.
 
-If your Odoo genuinely lives on your own network — on `10.x`, `172.16–31.x`, `192.168.x`, or an IPv6 unique-local range — set the environment variable on the Pinchy container and restart it:
+If your Odoo genuinely lives on your own network — on `10.x`, `172.16–31.x`, `192.168.x`, a Tailscale address (`100.x`), an IPv6 unique-local address, or any other of the [private ranges](/reference/network-address-checks/#private-ranges) — add this line to your `.env`:
 
 ```bash
 ALLOW_PRIVATE_URLS=1
 ```
 
+Then run `docker compose up -d` so the Pinchy container picks it up.
+
+That opens your private network and nothing else. Loopback, link-local, the cloud metadata endpoints and the reserved ranges stay blocked either way — `localhost`, `127.0.0.1`, `::1`, `0.0.0.0/8`, `169.254.169.254`, the documentation ranges, multicast and the rest of the [always-refused list](/reference/network-address-checks/#always-refused). No Odoo server lives there, so there's nothing to trade off. It's the same two-tier switch [`ALLOW_PRIVATE_MAIL_HOSTS`](/guides/connect-email-imap/#mail-servers-on-your-own-network) is for mail servers, and a hostname is still resolved and checked with it set.
+
 :::caution
-`ALLOW_PRIVATE_URLS=1` turns the address check off completely, including for loopback and the cloud-metadata address `169.254.169.254`. It is not the two-tier switch that [`ALLOW_PRIVATE_MAIL_HOSTS`](/guides/connect-email-imap/#mail-servers-on-your-own-network) is for mail servers. Set it only on an instance whose admins you'd trust with that reach anyway.
+With the flag set, an admin who can add an Odoo connection can point Pinchy at anything on your private network, not only at Odoo — including the other containers of the Pinchy stack, such as the agent runtime (`openclaw`) and the database (`db`), which Docker's network reaches by name. Set it only on an instance whose admins you'd trust with that reach anyway.
 :::
 
-The same check runs everywhere a URL is accepted, not only on the first connect: adding a connection, editing one, testing credentials, listing databases, previewing a sync, and re-syncing the schema. So a blocked address can't be stored and quietly reconnected to later.
+The same check runs everywhere a URL is accepted — adding a connection, editing one, testing credentials, listing databases, previewing a sync, re-syncing the schema — and again every time a saved connection is used: before an agent's Odoo tools receive the connection, and before **Test connection** contacts it. Because the check runs again on every use, a connection saved under older rules, or before the flag was removed, can't quietly keep reaching an address that's refused now. The check also refuses a host name that doesn't resolve at all, with a message that names the host, rather than guessing it's a typo and waving it through. A lookup that merely fails for the moment (a DNS timeout, an unreachable resolver) is not a refusal: Pinchy says the lookup failed temporarily and to try again, and the agent's tool reports the same without a denial in the audit trail. And whenever Pinchy itself contacts your Odoo (testing credentials, listing databases, previewing or re-syncing the schema, **Test connection**), it connects to the very address it just checked instead of looking the name up a second time. The agent's Odoo tools keep a connection they already fetched for up to 5 minutes, so after removing `ALLOW_PRIVATE_URLS` run `docker compose up -d --force-recreate openclaw` if a stricter rule must apply at once. A refusal says why and leaves the connection's credentials alone; the agent's tool reports it, and the audit trail records it as `integration.credentials_denied` with the reason `destination-blocked`.
+
+Developing against an Odoo on your own machine? On OrbStack, `host.docker.internal` — and `ollama.local`, which our `docker-compose.yml` maps to the same host gateway — resolves to `0.250.250.254`, inside `0.0.0.0/8`, and is refused whatever you set: use the Odoo container's name or your machine's LAN address. Docker Desktop and Linux's `host-gateway` answer with a private address, where the flag is enough.
+
+:::note
+Two things to know about how the check and the connection after it fit together.
+
+- **DNS rebinding is covered.** Whenever Pinchy contacts your Odoo itself — listing databases, testing credentials, previewing and syncing the schema, **Test connection** — it sends the request to the address it just checked, so a DNS server that answers differently the second time can't redirect it. The agent's Odoo tools do the same: each time they fetch the connection, Pinchy hands them the addresses it checked, and they connect only to those.
+- **A name only the agent runtime knows.** Pinchy runs the check in its own container; the Odoo tools connect from the agent runtime's (`openclaw`). Our `docker-compose.yml` gives both containers the same extra host names, so `ollama.local` — the Docker host — is checked as the Docker host's address. If you add `extra_hosts` entries of your own to the `openclaw` service, add them to `pinchy` too: the check refuses a name it can't resolve, and a saved connection that fails it stops working.
+  :::
+
+The check reads the URL you enter, not where Odoo's answers point — so Pinchy never follows a redirect. Following one would hand the request to an address nobody checked, such as `169.254.169.254`, and a `307` or `308` would carry the API key along. Odoo's JSON-RPC never redirects, so listing databases, testing, syncing and the agent's Odoo tools all refuse one and name its status. The usual cause is an `http://` URL in front of a proxy that redirects to `https://`: enter the address Odoo is actually served from.
+
+An answer that isn't JSON-RPC is never quoted back — not to you, and not to the agent or the person chatting with it: Pinchy reports its status and content type, or simply that it wasn't JSON-RPC. An error in JSON-RPC's own format is passed on, on one line and shortened, because that's Odoo saying what went wrong.
+
+When **Test connection**, or saving changes to a connection, gets no Odoo answer at all — a redirect, an error from a proxy, a network failure, or something that isn't JSON-RPC — it says your login and API key weren't checked, rather than calling them wrong, and it doesn't mark the connection as needing new credentials. The same goes when the login works but no model can be read because the Odoo user has read access to none of them, or because every model call fails for a reason other than access: **Test connection** says why and doesn't mark the connection — re-entering the API key wouldn't fix it; granting the Odoo user read rights, or fixing what the model calls run into, does. The connection is marked when Odoo refuses the login, when no model can be read and Odoo answered at least one model call with an access error, or when the login itself fails in a way Pinchy can't classify.
+
+An Odoo that takes the connection and then never answers — a hung server, or a proxy or firewall in front of it that holds the request — doesn't keep you waiting for minutes. Every request Pinchy sends your Odoo from the web app (testing credentials, listing databases, previewing or re-syncing the schema, saving changes to a connection, **Test connection**) gives up after 60 seconds and says Odoo did not answer in time. A healthy Odoo answers these in well under a second, so the limit is there for a request that isn't going to be answered. If a proxy in front of Odoo gives up sooner, you see its error instead, such as `HTTP 504: Gateway Timeout`.
+
+A connection that fails before Odoo can answer at all says what happened, with the system's error code in brackets: Odoo refused the connection (`ECONNREFUSED`), the connection was closed or could not be opened, Pinchy has no route to the server, or Pinchy did not accept Odoo's TLS certificate (`CERT_HAS_EXPIRED`, for example).
+
+A schema sync treats either one as the connection failing, not as a model to leave out. Once a model check fails without an answer from Odoo itself, no further check starts, the ones already running finish, and the sync fails. It saves nothing, so the connection keeps the model list it had: a partial list would quietly take models away from your agents. A model Odoo itself reports it doesn't have, because its app isn't installed, is still just left out.
+
+The agent's own Odoo tools wait up to 120 seconds per request, since a large search can legitimately take longer.
 
 ## Re-syncing when Odoo permissions change
 

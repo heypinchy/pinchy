@@ -18,7 +18,7 @@
 // `resolve-agent.ts` all end on some form of "do not add a caller that consults
 // this predicate without a visibility gate in front of it".
 //
-// Which is exactly the shape AGENTS.md § "A Hand-Maintained List That Mirrors
+// Which is exactly the shape agent-rules/docs.md § "A Hand-Maintained List That Mirrors
 // Code Will Be Wrong" catalogues: three paragraphs asserting a property, and
 // nothing reading the code to see whether it holds. The sibling guard
 // `agent-route-access-gate.test.ts` says outright that its scope is the

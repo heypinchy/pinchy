@@ -1,7 +1,8 @@
 name: Configure Docker Hub mirror
 description: >
-  Sidesteps Docker Hub's 200 pulls/6h authenticated rate limit (which CI hit
-  consistently as of 2026-05-01) by pulling the Docker Hub library images
+  Sidesteps Docker Hub's pull rate limit (CI hit it consistently as of
+  2026-05-01 even when authenticated, at 200 pulls/6h; anonymous pulls get
+  less) by pulling the Docker Hub library images
   Pinchy depends on directly from mirror.gcr.io and re-tagging them locally.
   After this action runs, `docker compose pull` / `up` finds the images in
   the local cache and never touches docker.io.
@@ -10,8 +11,19 @@ description: >
   silently falls back to docker.io on any mirror miss / lookup hiccup. That
   fallback still consumes rate-limit quota — verified in CI runs 25224536490
   and 25222971253 where `db Error toomanyrequests` fired even with
-  registry-mirrors set. Pre-pulling makes the docker.io path literally
-  unreachable for the images we control.
+  registry-mirrors set. Pre-pulling keeps the docker.io path out of the
+  normal run for the images we control.
+
+  mirror.gcr.io itself has transient misses ("could not fetch content
+  descriptor sha256:… from remote: not found" — three CI runs lost in one
+  afternoon), so pull-via-mirror.sh retries each mirror pull with backoff and
+  only then, as a last resort, pulls that one image from docker.io with a
+  ::warning::. That fallback is authenticated only if the job logged in to
+  Docker Hub BEFORE this action (the ci.yml jobs that log in do); otherwise it
+  is anonymous, with Docker Hub's tighter anonymous limit, and can itself be
+  rate-limited. A likely success still beats failing the job on a mirror
+  blip; the warning keeps it from becoming the quiet norm. Retries are plain
+  log lines, so the ~10-annotations-per-step cap cannot drop that warning.
 runs:
   using: composite
   steps:
@@ -43,10 +55,8 @@ runs:
         else
           # shellcheck disable=SC2086 # word-splitting is intentional here
           echo "Pre-pulling docker.io library image(s) via mirror.gcr.io:" $images
-          while IFS= read -r image; do
-            docker pull "mirror.gcr.io/library/${image}"
-            docker tag "mirror.gcr.io/library/${image}" "${image}"
-          done <<< "$images"
+          # shellcheck disable=SC2086 # one argument per discovered image
+          bash "$GITHUB_ACTION_PATH/pull-via-mirror.sh" $images
         fi
 
         # Same idea for docker.io *namespaced* (non-library) images, e.g.
@@ -66,8 +76,6 @@ runs:
         else
           # shellcheck disable=SC2086 # word-splitting is intentional here
           echo "Pre-pulling docker.io namespaced image(s) via mirror.gcr.io:" $namespaced_images
-          while IFS= read -r image; do
-            docker pull "mirror.gcr.io/${image}"
-            docker tag "mirror.gcr.io/${image}" "${image}"
-          done <<< "$namespaced_images"
+          # shellcheck disable=SC2086 # one argument per discovered image
+          bash "$GITHUB_ACTION_PATH/pull-via-mirror.sh" $namespaced_images
         fi

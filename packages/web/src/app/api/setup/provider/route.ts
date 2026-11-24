@@ -1,4 +1,5 @@
-import { NextRequest, NextResponse, after } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { deferAuditLog } from "@/lib/audit-deferred";
 import { requireAdmin } from "@/lib/api-auth";
 import {
   validateProviderKey,
@@ -19,7 +20,6 @@ import { SMITHERS_MODEL_HINT } from "@/lib/personal-agent";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
 import { eq } from "drizzle-orm";
-import { appendAuditLog } from "@/lib/audit";
 import { parseRequestBody } from "@/lib/api-validation";
 import { setupProviderSchema } from "@/lib/schemas/providers";
 import { docsUrl } from "@/components/docs-link";
@@ -265,15 +265,13 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  after(() =>
-    appendAuditLog({
-      actorType: "user",
-      actorId: sessionOrError.user.id!,
-      eventType: "config.changed",
-      outcome: "success",
-      detail,
-    })
-  );
+  deferAuditLog({
+    actorType: "user",
+    actorId: sessionOrError.user.id!,
+    eventType: "config.changed",
+    outcome: "success",
+    detail,
+  });
 
   return NextResponse.json({ success: true, warning: runtimeWarning, agentId });
 }

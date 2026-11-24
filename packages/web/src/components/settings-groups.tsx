@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -35,6 +35,7 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
 import {
+  apiGet,
   apiPost,
   apiPatch,
   apiPut,
@@ -44,7 +45,7 @@ import {
   extractFieldErrors,
 } from "@/lib/api-client";
 import type { CreateGroupInput } from "@/lib/schemas/groups";
-import type { LicenseState } from "@/lib/license-state";
+import { useLicenseStatus } from "@/hooks/use-license-status";
 
 interface Group {
   id: string;
@@ -75,12 +76,15 @@ export function SettingsGroups({ refreshKey, isAdmin = true }: SettingsGroupsPro
   const [groups, setGroups] = useState<Group[]>([]);
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
+  // The first load failed, so the list on screen would be a false "no groups".
+  const [loadFailed, setLoadFailed] = useState(false);
+  const loaded = useRef(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [editGroup, setEditGroup] = useState<Group | null>(null);
   const [deleteGroupId, setDeleteGroupId] = useState<string | null>(null);
-  const [isEnterprise, setIsEnterprise] = useState<boolean | null>(null);
-  const [licenseState, setLicenseState] = useState<LicenseState>("community");
-  const [licensePeriodEnd, setLicensePeriodEnd] = useState<string | null>(null);
+  const { license } = useLicenseStatus({ refreshKey, notifyOnFailure: true });
+  // null = unknown: stay in the loading state rather than show the upgrade card.
+  const isEnterprise = license?.enterprise ?? null;
 
   // Form state
   const [formName, setFormName] = useState("");
@@ -91,46 +95,46 @@ export function SettingsGroups({ refreshKey, isAdmin = true }: SettingsGroupsPro
   // before each save attempt so stale errors never linger.
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
-  useEffect(() => {
-    fetch("/api/enterprise/status")
-      .then((res) => (res.ok ? res.json() : { enterprise: false }))
-      .then((data) => {
-        setIsEnterprise(data.enterprise);
-        if (data.state) setLicenseState(data.state);
-        setLicensePeriodEnd(data.paidUntil ?? data.expiresAt ?? null);
-      })
-      .catch(() => setIsEnterprise(false));
-  }, [refreshKey]);
-
-  const fetchData = useCallback(async () => {
+  // `signal` is passed by the effect, which aborts it on cleanup. The refreshes
+  // after a mutation pass none: they run to completion like the mutation did.
+  const fetchData = useCallback(async (signal?: AbortSignal) => {
     try {
-      const [groupsRes, usersRes] = await Promise.all([fetch("/api/groups"), fetch("/api/users")]);
-      if (groupsRes.ok) {
-        setGroups(await groupsRes.json());
-      }
-      if (usersRes.ok) {
-        const data = await usersRes.json();
-        setUsers(data.users);
-      }
+      const [groupsData, usersData] = await Promise.all([
+        apiGet<Group[]>("/api/groups", { signal }),
+        apiGet<{ users: User[] }>("/api/users", { signal }),
+      ]);
+      if (signal?.aborted) return;
+      setGroups(groupsData);
+      setUsers(usersData.users);
+      loaded.current = true;
+      setLoadFailed(false);
+    } catch (err) {
+      // Classify on the signal alone: an abort's error is not reliably an
+      // AbortError (see audit-log-table.tsx).
+      if (signal?.aborted) return;
+      // The tab is mounted in the background, so a toast about the first load
+      // is gone before anyone opens it: that one stands where the list would.
+      // A failed refresh leaves the loaded list up and says so in a toast.
+      if (loaded.current) toast.error(errorMessage(err, "Failed to load groups"));
+      else setLoadFailed(true);
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
+    const { signal } = controller;
     if (isEnterprise) {
       void Promise.resolve().then(() => {
-        if (!cancelled) void fetchData();
+        if (!signal.aborted) void fetchData(signal);
       });
     } else if (isEnterprise === false) {
       void Promise.resolve().then(() => {
-        if (!cancelled) setLoading(false);
+        if (!signal.aborted) setLoading(false);
       });
     }
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [isEnterprise, fetchData]);
 
   function openCreateDialog() {
@@ -145,17 +149,14 @@ export function SettingsGroups({ refreshKey, isAdmin = true }: SettingsGroupsPro
     setFormName(group.name);
     setFormDescription(group.description || "");
     setFieldErrors({});
-    // Fetch current members for this group
+    // A dialog opened with no members checked would save that and remove
+    // every member, so it opens only once the current members are known.
     try {
-      const res = await fetch(`/api/groups/${group.id}/members`);
-      if (res.ok) {
-        const members: GroupMember[] = await res.json();
-        setFormMemberIds(members.map((m) => m.userId));
-      } else {
-        setFormMemberIds([]);
-      }
-    } catch {
-      setFormMemberIds([]);
+      const members = await apiGet<GroupMember[]>(`/api/groups/${group.id}/members`);
+      setFormMemberIds(members.map((m) => m.userId));
+    } catch (err) {
+      toast.error(errorMessage(err, "Couldn't load this group's members. Please try again."));
+      return;
     }
     setEditGroup(group);
   }
@@ -265,8 +266,8 @@ export function SettingsGroups({ refreshKey, isAdmin = true }: SettingsGroupsPro
         description="Create groups to control which users can access which agents. Organize your team into departments like Engineering, Marketing, or HR, and assign agent access per group."
         campaign="groups"
         isAdmin={isAdmin}
-        licenseState={licenseState}
-        periodEnd={licensePeriodEnd}
+        licenseState={license?.state ?? "community"}
+        periodEnd={license?.paidUntil ?? license?.expiresAt ?? null}
       />
     );
   }
@@ -333,10 +334,14 @@ export function SettingsGroups({ refreshKey, isAdmin = true }: SettingsGroupsPro
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle>Groups</CardTitle>
-          <Button onClick={openCreateDialog}>New Group</Button>
+          {!loadFailed && <Button onClick={openCreateDialog}>New Group</Button>}
         </CardHeader>
         <CardContent>
-          {groups.length === 0 ? (
+          {loadFailed ? (
+            <p role="alert" className="text-sm text-red-600">
+              We couldn&apos;t load your groups. Reload the page to try again.
+            </p>
+          ) : groups.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               No groups yet. Create one to get started.
             </p>
@@ -373,29 +378,36 @@ export function SettingsGroups({ refreshKey, isAdmin = true }: SettingsGroupsPro
 
               {/* Desktop table */}
               <div className="hidden lg:block">
-                <Table className="table-fixed">
+                {/* Auto layout: Members and Actions keep their natural width
+                    (headers and cells don't wrap), Description takes the rest
+                    and truncates. Percentage and fixed widths both broke on a
+                    narrow card — "Members" ran into "Actions", or Description
+                    shrank to nothing. */}
+                <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead className="w-[25%]">Name</TableHead>
-                      <TableHead className="w-[40%]">Description</TableHead>
-                      <TableHead className="w-[10%]">Members</TableHead>
-                      <TableHead className="w-[25%]">Actions</TableHead>
+                      <TableHead>Name</TableHead>
+                      <TableHead className="w-full">Description</TableHead>
+                      <TableHead>Members</TableHead>
+                      <TableHead className="text-right">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {groups.map((group) => (
                       <TableRow key={group.id}>
-                        <TableCell className="font-medium truncate" title={group.name}>
-                          {group.name}
+                        <TableCell className="font-medium">
+                          <div className="max-w-48 truncate" title={group.name}>
+                            {group.name}
+                          </div>
                         </TableCell>
                         <TableCell
-                          className="text-muted-foreground truncate"
+                          className="text-muted-foreground w-full max-w-0 truncate"
                           title={group.description || undefined}
                         >
                           {group.description || "\u2014"}
                         </TableCell>
                         <TableCell>{group.memberCount}</TableCell>
-                        <TableCell className="space-x-2">
+                        <TableCell className="space-x-2 text-right">
                           <Button variant="outline" size="sm" onClick={() => openEditDialog(group)}>
                             Edit
                           </Button>

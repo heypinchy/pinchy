@@ -141,7 +141,7 @@ describe("evaluateGate", () => {
   // has no failure mode that looks like a bug: the call simply never returns,
   // and a Pinchy container mid-deploy — or a blackhole that swallows packets
   // without an RST — stalls the whole install with nothing in any log naming
-  // the cause. Exactly what AGENTS.md §"Every plugin fetch() passes a signal"
+  // the cause. Exactly what agent-rules/plugins.md §"Every plugin fetch() passes a signal"
   // exists to prevent; the gate escaped that guard for as long as it reached
   // fetch through an injected parameter, which the scan cannot follow.
   it("bounds the gate-check request with an abort signal", async () => {

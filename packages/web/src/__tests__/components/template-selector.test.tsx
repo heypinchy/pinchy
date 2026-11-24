@@ -227,6 +227,9 @@ describe("TemplateSelector", () => {
     const link = screen.getByText(/Set up connection/);
     expect(link).toBeInTheDocument();
     expect(link.closest("a")).toHaveAttribute("href", "/settings?tab=integrations");
+    // A link inside the collapsible's <button> is a nested interactive
+    // control (axe `nested-interactive`, #1300): it sits beside the trigger.
+    expect(link.closest("button")).toBeNull();
   });
 
   it("expands to show unavailable template cards on trigger click", () => {

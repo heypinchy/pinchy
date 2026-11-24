@@ -73,7 +73,7 @@ import {
   writeScorecard,
   pendingPairs,
   corpusFromEnv,
-  noackCorpusDir,
+  customerCorpusDir,
   retrievedSourcesFromAuditEntries,
   infraErrorRun,
   sweepShouldAbort,
@@ -121,11 +121,11 @@ const RESULT_LABEL = "kb-groundedness-sweep";
 const NEAR_DUPLICATE_GROUPS = nearDuplicatePathGroups();
 
 /**
- * The (local-only, guarded) real Noack corpus path. `corpusFromEnv()` already
+ * The (local-only, guarded) real customer corpus path. `corpusFromEnv()` already
  * enforces the opt-in (KB_EVAL_CORPUS_DIR set, never in CI) before this is
  * ever called — see run-kb-eval.ts's doc comments. NOT WIRED TO A REAL
  * INGEST PIPELINE in this task: the synthetic corpus's committed-embeddings
- * seeding above deliberately avoids a live embedder, but the Noack corpus is
+ * seeding above deliberately avoids a live embedder, but the customer corpus is
  * real, non-public content with no committed embeddings fixture (by design —
  * it must never be checked in), so seeding it for real requires the full
  * `ingestDirectory` pipeline (`src/lib/knowledge/ingest.ts`) with a live
@@ -133,15 +133,15 @@ const NEAR_DUPLICATE_GROUPS = nearDuplicatePathGroups();
  * binds to whatever `DATABASE_URL` is in ITS process — not necessarily this
  * external Playwright process's `stackDbUrl`-mapped port). Left as an
  * explicit, loud failure rather than a silent no-op corpus so a `--corpus=
- * noack` run never quietly measures against an empty index. Wiring a real
+ * customer` run never quietly measures against an empty index. Wiring a real
  * local ingest path is follow-up work, not required for Task 3.4's keyless
  * code (the orchestrator's dry-run only exercises `--corpus=synthetic`).
  */
-function seedNoackCorpus(): never {
-  const dir = noackCorpusDir();
+function seedCustomerCorpus(): never {
+  const dir = customerCorpusDir();
   throw new Error(
-    `--corpus=noack (KB_EVAL_CORPUS_DIR=${dir}) has no wired ingest path in this harness yet — ` +
-      "seeding real Noack documents requires running src/lib/knowledge/ingest.ts's ingestDirectory " +
+    `--corpus=customer (KB_EVAL_CORPUS_DIR=${dir}) has no wired ingest path in this harness yet — ` +
+      "seeding real customer documents requires running src/lib/knowledge/ingest.ts's ingestDirectory " +
       "from inside the stack (it binds to @/db) with a live embedder, not this external Playwright " +
       "process. Use --corpus=synthetic (default) for the harness's own committed corpus."
   );
@@ -293,7 +293,7 @@ test.describe("KB Eval Harness Layer 3: groundedness sweep (real Ollama Cloud)",
     if (corpus === "synthetic") {
       await seedSyntheticCorpus(dbUrl);
     } else {
-      seedNoackCorpus(); // always throws — see its doc comment.
+      seedCustomerCorpus(); // always throws — see its doc comment.
     }
 
     const candidates = candidateModelsFromEnv(DEFAULT_KB_CANDIDATES);

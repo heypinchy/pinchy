@@ -26,6 +26,48 @@ function recordAdvertisedTools(payload: Record<string, unknown>): void {
     if (typeof name === "string") advertisedToolNames.add(name);
   }
 }
+// The full text of the most recent chat request — every message, system prompt
+// included — joined. Lets a test assert what OpenClaw actually put in front of
+// the model (e.g. that an agent's skill index reached its system prompt), which
+// no response or audit row can show.
+let lastRequestText = "";
+
+function recordRequestText(messages: unknown[]): void {
+  lastRequestText = messages.map(messageContent).join("\n");
+}
+
+// Skill-read probe: on the trigger, the fake model does what the `## Skills`
+// block (pinchy-files/skills-prompt.ts) tells a real one to — reads the first
+// skill's SKILL.md with `pinchy_read` at the exact <location> its system prompt
+// lists — then answers once the body comes back. With no skill in the prompt it
+// answers SKILL_READ_PROBE_NO_SKILLS instead of calling a tool.
+const SKILL_READ_PROBE_TRIGGER = "E2E_SKILL_READ_PROBE";
+const SKILL_READ_PROBE_DONE = "Skill instructions loaded.";
+const SKILL_READ_PROBE_NO_SKILLS = "No skill is listed in my system prompt.";
+
+// Searches every message rather than role "system" alone: OpenAI-style
+// requests may carry the system prompt as role "developer".
+function firstSkillLocation(messages: unknown[]): string | undefined {
+  return messages
+    .map(messageContent)
+    .join("\n")
+    .match(/<location>([^<]+)<\/location>/)?.[1];
+}
+
+export type SkillReadProbeReply =
+  { toolCall: { name: "pinchy_read"; arguments: { path: string } } } | { text: string };
+
+/** What the fake model answers a skill-read probe; shared by both chat surfaces. */
+export function skillReadProbeReply(
+  messages: unknown[],
+  hasToolResult: boolean
+): SkillReadProbeReply {
+  const location = firstSkillLocation(messages);
+  if (!location) return { text: SKILL_READ_PROBE_NO_SKILLS };
+  if (hasToolResult) return { text: SKILL_READ_PROBE_DONE };
+  return { toolCall: { name: "pinchy_read", arguments: { path: location } } };
+}
+
 // Default response asserted by the integration test suite. The setup-wizard
 // E2E container overrides this via FAKE_OLLAMA_RESPONSE so its spec can
 // assert the same canonical "Sure, happy to help..." reply as the other
@@ -316,7 +358,11 @@ const WORKSPACE_DELETE_RESPONSE = "File deleted: coverage probe complete.";
 // under the agent's workbench and hands it back to the user as a download via
 // the #703 delivery path. The probe args below render a 1-row CSV.
 const GENERATE_FILE_TRIGGER = "E2E_GENERATE_FILE_TOOL";
-const GENERATE_FILE_RESPONSE = "File generated: coverage probe complete.";
+// The second line is what a real model writes after handing over a file:
+// OpenClaw's system prompt asks for a `MEDIA:<path>` line per attachment. The
+// chat must not show it (#1298) — the spec asserts that, live and on reload.
+const GENERATE_FILE_RESPONSE =
+  "File generated: coverage probe complete.\nMEDIA:/root/.openclaw/workspaces/e2e/workbench/e2e-export.csv";
 // An uploaded PDF must be analyzed via pinchy_read (pinchy-files' own PDF
 // subsystem), NOT OpenClaw's built-in `pdf` tool — which fails "Unknown model"
 // because it resolves only against the per-agent catalog (v0.5.8 finding).
@@ -1754,6 +1800,12 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
     return;
   }
 
+  if (method === "GET" && url === "/__pinchy_fake_ollama/last-request-text") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ text: lastRequestText }));
+    return;
+  }
+
   if (method === "GET" && url === "/api/tags") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(
@@ -1801,7 +1853,18 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
     const hasToolResult = lastRoundHasToolResult(messages);
 
     const lastContent = messageContent(lastUserMessage);
+    recordRequestText(messages);
     const activeTrigger = TOOL_TRIGGERS.find(({ trigger }) => lastContent.includes(trigger));
+
+    if (lastContent.includes(SKILL_READ_PROBE_TRIGGER)) {
+      const reply = skillReadProbeReply(messages, hasToolResult);
+      if ("toolCall" in reply) {
+        writeNdjsonToolCall(res, reply.toolCall.name, reply.toolCall.arguments, messages);
+      } else {
+        streamTextResponse(res, reply.text, countUserMessages(messages));
+      }
+      return;
+    }
 
     if (activeTrigger && !hasToolResult) {
       const { promptTokens, completionTokens } = getUsageTokens(countUserMessages(messages));
@@ -2032,7 +2095,18 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
       .find((message) => (message as { role?: unknown })?.role === "user");
     const hasToolResult = lastRoundHasToolResult(messages);
     const lastContent = messageContent(lastUserMessage);
+    recordRequestText(messages);
     const activeTrigger = TOOL_TRIGGERS.find(({ trigger }) => lastContent.includes(trigger));
+
+    if (lastContent.includes(SKILL_READ_PROBE_TRIGGER)) {
+      const reply = skillReadProbeReply(messages, hasToolResult);
+      if ("toolCall" in reply) {
+        streamOpenAiToolCalls(res, reply.toolCall.name, reply.toolCall.arguments);
+      } else {
+        streamOpenAiText(res, reply.text, countUserMessages(messages));
+      }
+      return;
+    }
 
     if (activeTrigger && !hasToolResult) {
       streamOpenAiToolCalls(res, activeTrigger.toolName, activeTrigger.arguments);
@@ -2261,6 +2335,9 @@ export const FAKE_OLLAMA_FILES_LS_TOOL_RESPONSE = FILES_LS_RESPONSE;
 export const FAKE_OLLAMA_FILES_READ_DOCX_TOOL_TRIGGER = FILES_READ_DOCX_TRIGGER;
 export const FAKE_OLLAMA_FILES_READ_DOCX_TOOL_RESPONSE = FILES_READ_DOCX_RESPONSE;
 export const FAKE_OLLAMA_FILES_READ_DOCX_PATH = FILES_READ_DOCX_PATH;
+export const FAKE_OLLAMA_SKILL_READ_PROBE_TRIGGER = SKILL_READ_PROBE_TRIGGER;
+export const FAKE_OLLAMA_SKILL_READ_PROBE_DONE = SKILL_READ_PROBE_DONE;
+export const FAKE_OLLAMA_SKILL_READ_PROBE_NO_SKILLS = SKILL_READ_PROBE_NO_SKILLS;
 export const FAKE_OLLAMA_CONTEXT_SAVE_USER_TOOL_TRIGGER = CONTEXT_SAVE_USER_TRIGGER;
 export const FAKE_OLLAMA_CONTEXT_SAVE_USER_TOOL_RESPONSE = CONTEXT_SAVE_USER_RESPONSE;
 export const FAKE_OLLAMA_ODOO_LIST_MODELS_TOOL_TRIGGER = ODOO_LIST_MODELS_TRIGGER;
@@ -2409,6 +2486,7 @@ export function startFakeOllama(port: number = FAKE_OLLAMA_PORT): Promise<number
       reject(new Error("[fake-ollama] already started; call stopFakeOllama() first"));
       return;
     }
+    lastRequestText = "";
     const s = http.createServer(handleRequest);
     const onStartupError = (err: Error) => {
       // listen() failed (e.g. EADDRINUSE) — surface it as a rejection and leave

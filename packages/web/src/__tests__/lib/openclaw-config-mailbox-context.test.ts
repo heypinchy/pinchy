@@ -1,0 +1,577 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+// Mailbox context generation during regenerateOpenClawConfig. The context
+// lives in the agent's IDENTITY.md since OpenClaw 2026.9 stopped loading
+// TOOLS.md (see writeMailboxContext in workspace.ts).
+//
+// The fs mock here is STATEFUL (fileStore): writes land in an in-memory map
+// and reads consult it first. That is load-bearing for two scenarios:
+//   - the ordering guarantee: getAgentBootstrapSizes must see the
+//     mailbox section written earlier in the SAME regeneration, and
+//   - the stale-content transition: a second regeneration against the
+//     state the first one left behind — the "pre-existing data" test class
+//     required by agent-rules/testing.md ("Test Migrations Against Pre-Existing Data").
+
+const { fileStore } = vi.hoisted(() => ({ fileStore: new Map<string, string>() }));
+
+vi.mock("fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("fs")>();
+  const writeFileSyncMock = vi.fn((p: unknown, content: unknown) => {
+    fileStore.set(String(p), String(content));
+  });
+  const readFileSyncMock = vi.fn();
+  const existsSyncMock = vi.fn().mockReturnValue(true);
+  const mkdirSyncMock = vi.fn();
+  const renameSyncMock = vi.fn((from: unknown, to: unknown) => {
+    const content = fileStore.get(String(from));
+    if (content !== undefined) fileStore.set(String(to), content);
+    fileStore.delete(String(from));
+  });
+  const rmSyncMock = vi.fn((p: unknown) => {
+    fileStore.delete(String(p));
+  });
+  const unlinkSyncMock = vi.fn((p: unknown) => {
+    fileStore.delete(String(p));
+  });
+  const chmodSyncMock = vi.fn();
+  return {
+    ...actual,
+    default: {
+      ...actual,
+      writeFileSync: writeFileSyncMock,
+      readFileSync: readFileSyncMock,
+      existsSync: existsSyncMock,
+      mkdirSync: mkdirSyncMock,
+      renameSync: renameSyncMock,
+      rmSync: rmSyncMock,
+      unlinkSync: unlinkSyncMock,
+      chmodSync: chmodSyncMock,
+    },
+    writeFileSync: writeFileSyncMock,
+    readFileSync: readFileSyncMock,
+    existsSync: existsSyncMock,
+    mkdirSync: mkdirSyncMock,
+    renameSync: renameSyncMock,
+    rmSync: rmSyncMock,
+    unlinkSync: unlinkSyncMock,
+    chmodSync: chmodSyncMock,
+  };
+});
+
+// OpenAI-compatible custom providers (#894) are DB-backed and now queried
+// during config regeneration. The shared @/db mock here returns agent rows
+// for every table, so stub this module to an empty list to keep the test hermetic.
+vi.mock("@/lib/openai-compatible-providers", () => ({
+  listOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
+  listProvidersWithApiKeys: vi.fn().mockResolvedValue([]),
+}));
+
+vi.mock("@/db", () => ({
+  db: {
+    select: vi.fn().mockImplementation(() => ({
+      from: vi.fn().mockImplementation(() =>
+        Object.assign(Promise.resolve([]), {
+          innerJoin: vi.fn().mockReturnValue(
+            Object.assign(Promise.resolve([]), {
+              where: vi.fn().mockResolvedValue([]),
+            })
+          ),
+          where: vi.fn().mockResolvedValue([]),
+        })
+      ),
+    })),
+  },
+}));
+
+vi.mock("@/lib/settings", () => ({
+  getSetting: vi.fn().mockResolvedValue(null),
+  getSettingsByPrefix: vi.fn().mockResolvedValue(new Map()),
+  setSetting: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("@/lib/encryption", () => ({
+  decrypt: (val: string) => val,
+  encrypt: (val: string) => val,
+  getOrCreateSecret: vi.fn().mockReturnValue(Buffer.alloc(32)),
+}));
+
+vi.mock("@/server/restart-state", () => ({
+  restartState: { notifyRestart: vi.fn() },
+}));
+
+vi.mock("@/lib/migrate-onboarding", () => ({
+  migrateExistingSmithers: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("@/lib/openclaw-secrets", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/openclaw-secrets")>();
+  return {
+    ...actual,
+    writeSecretsFile: vi.fn(),
+    readSecretsFile: vi.fn().mockReturnValue({}),
+  };
+});
+
+vi.mock("@/lib/provider-models", () => ({
+  getDefaultModel: vi.fn(async () => "anthropic/claude-haiku-4-5-20251001"),
+}));
+
+import { readFileSync, writeFileSync, rmSync } from "fs";
+import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { db } from "@/db";
+import { mockJoinedPermissionsDb } from "@/test-helpers/db-mock";
+import { generateMailboxContent } from "@/lib/workspace";
+import {
+  OPENCLAW_DEFAULT_BOOTSTRAP_MAX_CHARS,
+  BOOTSTRAP_HEADROOM_CHARS,
+} from "@/lib/openclaw-config/bootstrap-caps";
+
+const mockedReadFileSync = vi.mocked(readFileSync);
+const mockedDb = vi.mocked(db);
+
+const CONFIG_PATH = "/openclaw-config/openclaw.json";
+const gatewayConfig = {
+  gateway: { mode: "local", bind: "lan", auth: { token: "gw-token-123" } },
+};
+
+function identityMdPath(agentId: string): string {
+  return `/openclaw-config/workspaces/${agentId}/IDENTITY.md`;
+}
+
+/** Where an earlier Pinchy (OpenClaw ≤ 2026.7) wrote the mailbox context. */
+function legacyToolsMdPath(agentId: string): string {
+  return `/openclaw-config/workspaces/${agentId}/TOOLS.md`;
+}
+
+function getWrittenConfig(): Record<string, unknown> & {
+  agents: { entries: Record<string, Record<string, unknown>> };
+  plugins?: { entries?: Record<string, { config: Record<string, unknown> }> };
+} {
+  const written = fileStore.get(CONFIG_PATH);
+  if (!written) throw new Error("openclaw.json was never written");
+  return JSON.parse(written);
+}
+
+interface PermissionRow {
+  agent_connection_permissions: {
+    agentId: string;
+    connectionId: string;
+    model: string;
+    operation: string;
+  };
+  integration_connections: Record<string, unknown>;
+}
+
+function emailConnection(
+  id: string,
+  overrides: Partial<Record<string, unknown>> = {}
+): Record<string, unknown> {
+  return {
+    id,
+    type: "microsoft",
+    name: `Mailbox ${id}`,
+    description: "",
+    credentials: "{}",
+    data: { emailAddress: `${id}@example.com`, provider: "microsoft" },
+    status: "active",
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  };
+}
+
+function emailPermission(
+  agentId: string,
+  connection: Record<string, unknown>,
+  operation: string
+): PermissionRow {
+  return {
+    agent_connection_permissions: {
+      agentId,
+      connectionId: connection.id as string,
+      model: "email",
+      operation,
+    },
+    integration_connections: connection,
+  };
+}
+
+/**
+ * Wire the db mock: agents table, `agentConnectionPermissions` bare
+ * (`loadAgentConnectionPermissions`'s two-query fan-out fix — see
+ * @/test-helpers/db-mock), and `integrationConnections` for both the
+ * de-duplicated active connections and (on a later call) web-search
+ * connections.
+ */
+function mockDb(
+  agentsData: Array<Record<string, unknown>>,
+  permissionsData: PermissionRow[],
+  webSearchConnections: Array<Record<string, unknown>> = []
+) {
+  mockedDb.select.mockReturnValue(
+    mockJoinedPermissionsDb(agentsData, permissionsData, webSearchConnections) as never
+  );
+}
+
+function agentRow(id: string, overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id,
+    name: `Agent ${id}`,
+    model: "anthropic/claude-haiku-4-5-20251001",
+    allowedTools: [],
+    pluginConfig: null,
+    ownerId: null,
+    createdAt: new Date(),
+    ...overrides,
+  };
+}
+
+describe("regenerateOpenClawConfig mailbox context", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fileStore.clear();
+    // Reads: workspace/bootstrap files come from the stateful store; the
+    // openclaw.json cold-start read falls back to a minimal gateway config;
+    // everything else is ENOENT (missing bootstrap files are skipped).
+    mockedReadFileSync.mockImplementation((p) => {
+      const path = String(p);
+      const stored = fileStore.get(path);
+      if (stored !== undefined) return stored;
+      if (path.endsWith("openclaw.json")) return JSON.stringify(gatewayConfig);
+      const err = new Error(`ENOENT: no such file or directory, open '${path}'`);
+      (err as NodeJS.ErrnoException).code = "ENOENT";
+      throw err;
+    });
+  });
+
+  it("writes the connected mailbox address, label, and granted operations", async () => {
+    const conn = emailConnection("conn-ms-1", { name: "Support Inbox" });
+    mockDb(
+      [agentRow("hermes")],
+      [
+        emailPermission("hermes", conn, "read"),
+        emailPermission("hermes", conn, "search"),
+        emailPermission("hermes", conn, "send"),
+      ]
+    );
+
+    await regenerateOpenClawConfig();
+
+    const mailboxSection = fileStore.get(identityMdPath("hermes"));
+    expect(mailboxSection).toBeDefined();
+    expect(mailboxSection).toContain("## Connected Email");
+    expect(mailboxSection).toContain("conn-ms-1@example.com");
+    expect(mailboxSection).toContain("Support Inbox");
+    expect(mailboxSection).toContain("read and search messages");
+    expect(mailboxSection).toContain("send email");
+    // The mailbox identity disclaimer (shared agents serve multiple users).
+    expect(mailboxSection).toContain("not necessarily the personal address of the user");
+  });
+
+  it("falls back to the connection name when data.emailAddress is absent", async () => {
+    const conn = emailConnection("conn-noaddr", { name: "Legacy Mailbox", data: null });
+    mockDb([agentRow("hermes")], [emailPermission("hermes", conn, "read")]);
+
+    await regenerateOpenClawConfig();
+
+    const mailboxSection = fileStore.get(identityMdPath("hermes"));
+    expect(mailboxSection).toContain("### Legacy Mailbox");
+  });
+
+  it("removes the mailbox section when email permissions are revoked (pre-existing data transition)", async () => {
+    const conn = emailConnection("conn-old", { name: "Old Mailbox" });
+    mockDb([agentRow("hermes")], [emailPermission("hermes", conn, "read")]);
+    await regenerateOpenClawConfig();
+    expect(fileStore.get(identityMdPath("hermes"))).toContain("conn-old@example.com");
+
+    // Permissions removed in the DB; the workspace still carries the old
+    // mailbox section from the previous regeneration (pre-existing state).
+    mockDb([agentRow("hermes")], []);
+    await regenerateOpenClawConfig();
+
+    expect(fileStore.get(identityMdPath("hermes")) ?? "").not.toContain("## Connected Email");
+    // Nothing on disk mentions the revoked mailbox any more.
+    for (const [, content] of fileStore) {
+      expect(content).not.toContain("conn-old@example.com");
+    }
+  });
+
+  it("removes the TOOLS.md an earlier Pinchy wrote on upgrade (pre-existing data)", async () => {
+    // OpenClaw 2026.9 no longer loads TOOLS.md, and `openclaw doctor --fix`
+    // would merge a stale one into the user's AGENTS.md. The first
+    // regeneration after the upgrade moves the context and drops the file.
+    fileStore.set(legacyToolsMdPath("hermes"), "## Connected Email\n\n### old@example.com\n");
+    fileStore.set(legacyToolsMdPath("plain"), "## Connected Email\n\n### gone@example.com\n");
+    const conn = emailConnection("conn-now", { name: "Current Mailbox" });
+    mockDb([agentRow("hermes"), agentRow("plain")], [emailPermission("hermes", conn, "read")]);
+
+    await regenerateOpenClawConfig();
+
+    expect(fileStore.has(legacyToolsMdPath("hermes"))).toBe(false);
+    expect(fileStore.has(legacyToolsMdPath("plain"))).toBe(false);
+    expect(fileStore.get(identityMdPath("hermes"))).toContain("conn-now@example.com");
+  });
+
+  it("sizes bootstrap caps from the mailbox section written in the SAME regeneration (ordering)", async () => {
+    // A mailbox section larger than OpenClaw's 12k default per-file cap. If the file
+    // were written AFTER getAgentBootstrapSizes ran, the caps would lag one
+    // regeneration behind and this (first) regen would emit no caps at all.
+    const hugeLabel = "L".repeat(15_000);
+    const conn = emailConnection("conn-big", { name: hugeLabel });
+    mockDb([agentRow("big-email-agent")], [emailPermission("big-email-agent", conn, "read")]);
+
+    await regenerateOpenClawConfig();
+
+    const expectedSection = generateMailboxContent([
+      { address: "conn-big@example.com", label: hugeLabel, operations: ["read"] },
+    ]);
+    expect(fileStore.get(identityMdPath("big-email-agent"))).toBe(expectedSection);
+
+    const config = getWrittenConfig();
+    const entry = config.agents.entries["big-email-agent"];
+    expect(entry?.bootstrapMaxChars).toBe(
+      expectedSection.trimEnd().length + BOOTSTRAP_HEADROOM_CHARS
+    );
+    expect(entry?.bootstrapMaxChars as number).toBeGreaterThan(
+      OPENCLAW_DEFAULT_BOOTSTRAP_MAX_CHARS
+    );
+  });
+
+  it("keeps Odoo and web plugin configs untouched for an agent with email + Odoo + web (multi-integration safety)", async () => {
+    const emailConn = emailConnection("conn-mail", { name: "Multi Mailbox" });
+    const odooConn = {
+      id: "conn-odoo-1",
+      type: "odoo",
+      name: "Odoo Prod",
+      description: "",
+      credentials: "{}",
+      data: null,
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const webConn = {
+      id: "conn-web-1",
+      type: "web-search",
+      name: "Brave Search",
+      description: "",
+      credentials: "{}",
+      data: null,
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    mockDb(
+      [agentRow("multi", { allowedTools: ["pinchy_web_search", "email_read"] })],
+      [
+        emailPermission("multi", emailConn, "read"),
+        {
+          agent_connection_permissions: {
+            agentId: "multi",
+            connectionId: "conn-odoo-1",
+            model: "res.partner",
+            operation: "read",
+          },
+          integration_connections: odooConn,
+        },
+      ],
+      [webConn]
+    );
+
+    await regenerateOpenClawConfig();
+
+    // The mailbox section lists only the email mailbox — no Odoo/web leakage.
+    const mailboxSection = fileStore.get(identityMdPath("multi"))!;
+    expect(mailboxSection).toContain("conn-mail@example.com");
+    expect(mailboxSection).not.toContain("Odoo");
+    expect(mailboxSection).not.toContain("Brave");
+
+    // The Odoo and web plugin configs are exactly what the pre-mailbox-context
+    // pipeline emitted — the mailbox context feature must not interfere.
+    const config = getWrittenConfig();
+    expect(config.plugins?.entries?.["pinchy-odoo"]?.config.agents).toEqual({
+      multi: {
+        connectionId: "conn-odoo-1",
+        permissions: { "res.partner": ["read"] },
+        modelNames: {},
+      },
+    });
+    expect(config.plugins?.entries?.["pinchy-web"]?.config.agents).toEqual({
+      multi: { tools: ["pinchy_web_search"] },
+    });
+    expect(config.plugins?.entries?.["pinchy-web"]?.config.connectionId).toBe("conn-web-1");
+    expect(config.plugins?.entries?.["pinchy-email"]?.config.agents).toEqual({
+      multi: {
+        connectionId: "conn-mail",
+        permissions: { email: ["read"] },
+        // "read" includes email_search AND email_get_attachment — the UI never
+        // writes a separate "search" operation row, and downloading an
+        // attachment is part of reading a mailbox (see getEmailToolsForOperations).
+        tools: ["email_list", "email_read", "email_search", "email_get_attachment"],
+      },
+    });
+  });
+
+  it("lists exactly the connection the plugin serves when an agent has multiple email connections, and warns", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const connA = emailConnection("conn-alpha", { name: "Alpha Mailbox" });
+    const connB = emailConnection("conn-beta", { name: "Beta Mailbox" });
+    mockDb(
+      [agentRow("dual", { name: "Dual Mailbox Agent" })],
+      [emailPermission("dual", connA, "read"), emailPermission("dual", connB, "send")]
+    );
+
+    await regenerateOpenClawConfig();
+
+    // The runtime serves the FIRST connection (first-wins connectionId with
+    // ops merged across all connections). The mailbox section must mirror exactly that —
+    // context and runtime can never diverge.
+    const config = getWrittenConfig();
+    const emailAgentConfig = config.plugins?.entries?.["pinchy-email"]?.config.agents as Record<
+      string,
+      { connectionId: string; tools: string[] }
+    >;
+    expect(emailAgentConfig.dual.connectionId).toBe("conn-alpha");
+    expect(emailAgentConfig.dual.tools).toContain("email_send");
+
+    const mailboxSection = fileStore.get(identityMdPath("dual"))!;
+    expect(mailboxSection).toContain("conn-alpha@example.com");
+    expect(mailboxSection).not.toContain("conn-beta@example.com");
+    // Merged ops are what the runtime actually grants — the section says so too.
+    expect(mailboxSection).toContain("send email");
+
+    // The silent first-wins pick is surfaced to operators, naming the agent.
+    const multiConnWarning = warn.mock.calls.find((c) =>
+      String(c[0]).includes("Dual Mailbox Agent")
+    );
+    expect(multiConnWarning).toBeDefined();
+    expect(String(multiConnWarning![0])).toContain("email connections");
+    warn.mockRestore();
+  });
+
+  it("regenerates cleanly for an agent with no integrations at all (no mailbox file, no crash)", async () => {
+    mockDb([agentRow("plain")], []);
+
+    await regenerateOpenClawConfig();
+
+    expect(fileStore.has(identityMdPath("plain"))).toBe(false);
+    expect(fileStore.has(legacyToolsMdPath("plain"))).toBe(false);
+    const config = getWrittenConfig();
+    expect(config.plugins?.entries?.["pinchy-email"]).toBeUndefined();
+    expect(config.agents.entries["plain"]).toBeDefined();
+  });
+});
+
+describe("regenerateOpenClawConfig — an unwritable workspace is not fatal (#1095)", () => {
+  // writeFileReclaiming repairs the case where the FILE is root-owned: the
+  // directory entry can be replaced via rename, which the directory's owner is
+  // allowed to do. It says so itself, and it names the case it cannot repair —
+  // when the DIRECTORY is what Pinchy may not write, the temp write is denied
+  // too and the error propagates. That needs root, and root only arrives on the
+  // OpenClaw-side tick, which reaches an instance when its image is upgraded.
+  //
+  // Until then this loop decides the blast radius. Unguarded, one agent's EACCES
+  // aborts regenerateOpenClawConfig BEFORE the openclaw.json write — so the
+  // symptom is not "one agent's mailbox context is stale" but every agent's runtime
+  // config frozen and pinchy-email absent. That is #1095 as it actually shipped.
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fileStore.clear();
+    mockedReadFileSync.mockImplementation((p) => {
+      const path = String(p);
+      const stored = fileStore.get(path);
+      if (stored !== undefined) return stored;
+      if (path.endsWith("openclaw.json")) return JSON.stringify(gatewayConfig);
+      const err = new Error(`ENOENT: no such file or directory, open '${path}'`);
+      (err as NodeJS.ErrnoException).code = "ENOENT";
+      throw err;
+    });
+  });
+
+  /**
+   * Model a root-owned workspace DIRECTORY: every write under it is denied,
+   * including the sibling temp file writeFileReclaiming falls back to. Denying
+   * only IDENTITY.md would let the reclaim rescue it and prove nothing.
+   */
+  function denyWritesUnder(agentId: string): void {
+    const dir = `/openclaw-config/workspaces/${agentId}/`;
+    const write = vi.mocked(writeFileSync);
+    const passthrough = write.getMockImplementation();
+    write.mockImplementation(((p: unknown, ...rest: unknown[]) => {
+      if (String(p).startsWith(dir)) {
+        const err = new Error(`EACCES: permission denied, open '${String(p)}'`);
+        (err as NodeJS.ErrnoException).code = "EACCES";
+        throw err;
+      }
+      return (passthrough as (...a: unknown[]) => unknown)(p, ...rest);
+    }) as never);
+  }
+
+  it("still pushes openclaw.json — with pinchy-email — when one workspace is locked", async () => {
+    const conn = emailConnection("conn-locked", { name: "Locked Mailbox" });
+    mockDb([agentRow("hermes")], [emailPermission("hermes", conn, "read")]);
+    denyWritesUnder("hermes");
+
+    await expect(regenerateOpenClawConfig()).resolves.not.toThrow();
+
+    // The point of the whole change: the grant the user just made reaches the
+    // runtime even though the file explaining it could not be written.
+    const config = getWrittenConfig();
+    expect(config.plugins?.entries?.["pinchy-email"]).toBeDefined();
+    expect(config.agents.entries["hermes"]).toBeDefined();
+  });
+
+  it("names the agent and quotes the errno rather than failing silently", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const conn = emailConnection("conn-locked", { name: "Locked Mailbox" });
+    mockDb([agentRow("hermes")], [emailPermission("hermes", conn, "read")]);
+    denyWritesUnder("hermes");
+
+    await regenerateOpenClawConfig();
+
+    const relevant = warn.mock.calls
+      .map((c) => String(c[0]))
+      .find((m) => m.includes("mailbox context"));
+    expect(relevant).toBeDefined();
+    expect(relevant).toContain("hermes");
+    // A warning that hides the errno is the log line that cost #1095 two days.
+    expect(relevant).toContain("EACCES");
+    warn.mockRestore();
+  });
+
+  it("keeps every OTHER agent's mailbox context when one workspace is locked", async () => {
+    const locked = emailConnection("conn-locked", { name: "Locked Mailbox" });
+    const fine = emailConnection("conn-fine", { name: "Fine Mailbox" });
+    mockDb(
+      [agentRow("hermes"), agentRow("iris")],
+      [emailPermission("hermes", locked, "read"), emailPermission("iris", fine, "read")]
+    );
+    denyWritesUnder("hermes");
+
+    await regenerateOpenClawConfig();
+
+    expect(fileStore.get(identityMdPath("hermes"))).toBeUndefined();
+    expect(fileStore.get(identityMdPath("iris"))).toContain("conn-fine@example.com");
+  });
+
+  it("survives an unwritable REMOVAL too", async () => {
+    // writeMailboxContext DELETES the TOOLS.md an earlier Pinchy wrote. rmSync's
+    // `force` swallows ENOENT, never EACCES.
+    const rm = vi.mocked(rmSync);
+    const passthrough = rm.getMockImplementation();
+    rm.mockImplementation(((p: unknown, ...rest: unknown[]) => {
+      if (String(p) === legacyToolsMdPath("plain")) {
+        const err = new Error(`EACCES: permission denied, unlink '${String(p)}'`);
+        (err as NodeJS.ErrnoException).code = "EACCES";
+        throw err;
+      }
+      return (passthrough as (...a: unknown[]) => unknown)(p, ...rest);
+    }) as never);
+    mockDb([agentRow("plain")], []);
+
+    await expect(regenerateOpenClawConfig()).resolves.not.toThrow();
+
+    expect(getWrittenConfig().agents.entries["plain"]).toBeDefined();
+  });
+});

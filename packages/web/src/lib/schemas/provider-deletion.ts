@@ -33,4 +33,12 @@ export interface DeletionPreviewResponse {
   /** The namespaced model written to every affected agent (`anthropic/…`). */
   targetModel: string | null;
   affectedAgents: AffectedAgent[];
+  /**
+   * The error the DELETE would answer with, verbatim, or `null` when it would
+   * go ahead: the last configured provider, or the last usable one (every
+   * other provider is a custom one whose base URL is refused). The dialog
+   * shows it and keeps Remove disabled instead of letting the admin click
+   * into a 400.
+   */
+  refusal: string | null;
 }

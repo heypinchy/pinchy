@@ -11,7 +11,7 @@
  * 2026-07-16 regressions captured in
  * `src/__tests__/lib/agent-templates/knowledge-base.test.ts`:
  *   - Block-A: the answer cited only [1] inline, but the Sources list ALSO
- *     carried "[2] Quality File 2012_4.pdf — p. 169" — a chunk
+ *     carried "[2] Quality Handbook 2012.pdf — p. 169" — a chunk
  *     `knowledge_search` returned but the answer never used. A
  *     listed-but-uncited source makes a single-source claim look
  *     independently corroborated (`source-uncited`).
@@ -19,7 +19,7 @@
  *     only [1], [2], [5], [8] — [4] was unresolvable, a dead end for the
  *     reader (`citation-unresolved`).
  *   - The bare-filename regression: Block-A's own uncited entry
- *     ("Quality File 2012_4.pdf") is also an example of citing a bare
+ *     ("Quality Handbook 2012.pdf") is also an example of citing a bare
  *     filename instead of the full path `knowledge_search` handed the model —
  *     unfindable in a deep corpus and ambiguous across same-named files in
  *     different folders (`path-not-cited`).

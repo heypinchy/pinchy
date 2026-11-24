@@ -22,7 +22,7 @@ describe("checkPermission", () => {
     expect(checkPermission({}, "email", "read")).toBe(false);
   });
 
-  // MIGRATION TEST (AGENTS.md § "Test Migrations Against Pre-Existing Data"):
+  // MIGRATION TEST (agent-rules/testing.md § "Test Migrations Against Pre-Existing Data"):
   // pre-#328 agent template creation could persist a standalone (email,
   // "search") permission row with NO accompanying "read" row (see
   // packages/web/src/lib/tool-registry.ts EMAIL_OPERATIONS comment for the
@@ -59,7 +59,7 @@ describe("checkPermission", () => {
     });
   });
 
-  // MIGRATION TEST (AGENTS.md § "Test Migrations Against Pre-Existing Data"):
+  // MIGRATION TEST (agent-rules/testing.md § "Test Migrations Against Pre-Existing Data"):
   // "list" is the OTHER legacy per-tool operation pre-#328 template creation
   // could persist (alongside "search" above), and unlike "search" it had NO
   // alias at all until now — a standalone (email, "list") row denied every

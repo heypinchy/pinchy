@@ -12,7 +12,7 @@ import { readSiteUrl } from "./generate-llms-txt.mjs";
  * reads them back against `dist/`, so the claim being checked is the one that
  * matters: every page docs.heypinchy.com serves is in the index an AI crawler
  * fetches, and every entry in that index is a page the site really serves.
- * Same rule as the X-Frame-Options gate in AGENTS.md — assert what a concrete
+ * Same rule as the X-Frame-Options gate in agent-rules/web-routes.md — assert what a concrete
  * URL resolves to, not what a source file asked for.
  *
  * Both directions are checked, and the second one is the worse: an

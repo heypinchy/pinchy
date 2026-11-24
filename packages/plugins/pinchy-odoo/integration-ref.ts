@@ -6,6 +6,25 @@ const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 12;
 const DEFAULT_SECRETS_PATH = "/openclaw-secrets/secrets.json";
 const HEX_64 = /^[0-9a-fA-F]{64}$/;
+/**
+ * A ref exactly as {@link encodeRef} writes it: the prefix, unpadded base64url,
+ * and nothing after it. Checked before decoding because Node's base64url
+ * decoder is lenient — it stops at the first `=` and drops whatever follows,
+ * skips whitespace, and ignores the unused bits of the last character — so
+ * `<valid ref>=\n\n<any text>` decodes to the same record. Pinchy's
+ * confirmation card shows a decoded ref as the record it names; a lenient
+ * decode here would let the text after it reach this tool unseen. Pinchy's
+ * own decoder (`approvals/call-models.ts`) applies the
+ * same rule.
+ */
+const REF_SHAPE = /^pinchy_ref:v1:[A-Za-z0-9_-]+$/;
+
+/** True only for the exact string {@link encodeRef} would produce for its bytes. */
+function isCanonicalRef(ref: string): boolean {
+  if (!REF_SHAPE.test(ref)) return false;
+  const body = ref.slice(PREFIX.length);
+  return Buffer.from(body, "base64url").toString("base64url") === body;
+}
 
 export interface IntegrationRefPayload {
   integrationType: "odoo";
@@ -23,7 +42,8 @@ export interface IntegrationRefPayload {
 
 /**
  * Thrown by {@link decodeRef} whenever the ref string itself cannot be
- * decoded — bad prefix, truncated/corrupted base64url payload, a failed
+ * decoded — bad prefix, anything but the exact unpadded base64url encodeRef
+ * writes (padding, trailing text), truncated/corrupted payload, a failed
  * AES-GCM auth tag check, unparsable JSON, or a payload that fails shape
  * validation. Distinct from "decoded fine but doesn't match this deployment"
  * (see `decodeOdooRefForConnection` in index.ts), which throws a plain
@@ -175,7 +195,7 @@ export function encodeRef(payload: IntegrationRefPayload): string {
 }
 
 export function decodeRef(ref: string): IntegrationRefPayload {
-  if (!ref.startsWith(PREFIX)) {
+  if (!isCanonicalRef(ref)) {
     throw new MalformedIntegrationRefError();
   }
 

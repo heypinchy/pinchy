@@ -61,6 +61,10 @@ import { useChatSessionRetryHistory } from "@/components/chat-session-provider";
 import { DiagnosticsExportDialog } from "@/components/diagnostics-export-dialog";
 import { useAgentsContext } from "@/components/agents-provider";
 import { normalizeStarterPrompts } from "@/lib/schemas/starter-prompts";
+import {
+  NewConversationPrompts,
+  StarterPromptChips,
+} from "@/components/assistant-ui/new-conversation";
 import { Progress } from "@/components/ui/progress";
 import type { PendingUpload } from "@/hooks/use-ws-runtime";
 import { RetryButton } from "@/components/chat/retry-button";
@@ -71,6 +75,7 @@ import { useShareIntake } from "@/components/share/use-share-intake";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { canOfferInstructionHandoff, stashInstructionDraft } from "@/lib/instruction-handoff";
+import { KnowledgeFirstIndexNotice } from "@/components/chat/knowledge-first-index-notice";
 
 function formatTimestamp(iso: string): string {
   const date = new Date(iso);
@@ -94,10 +99,11 @@ function formatTimestamp(iso: string): string {
 const MessageTimestamp: FC = () => {
   const timestamp = useMessage((s) => s.metadata?.custom?.timestamp as string | undefined);
   if (!timestamp) return null;
-  return <span className="text-xs text-muted-foreground/60">{formatTimestamp(timestamp)}</span>;
+  return <span className="text-xs text-muted-foreground">{formatTimestamp(timestamp)}</span>;
 };
 
 const ThreadInner: FC<{ isReconcilingMessages: boolean }> = ({ isReconcilingMessages }) => {
+  const agentId = useContext(AgentIdContext);
   return (
     <ThreadPrimitive.Viewport className="aui-thread-viewport relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth px-4 pt-4">
       {!isReconcilingMessages && (
@@ -113,6 +119,8 @@ const ThreadInner: FC<{ isReconcilingMessages: boolean }> = ({ isReconcilingMess
             }}
           />
 
+          <NewConversationPrompts />
+
           {/* At the end of the conversation, because that is where the parked
               run stands (#1132). Inside the viewport rather than the sticky
               footer, so it scrolls with the thread like any other turn. */}
@@ -122,6 +130,9 @@ const ThreadInner: FC<{ isReconcilingMessages: boolean }> = ({ isReconcilingMess
 
       <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mx-auto mt-auto flex w-full max-w-(--thread-max-width) flex-col gap-4 overflow-visible rounded-t-3xl bg-background pb-4 md:pb-6">
         <ThreadScrollToBottom />
+        {/* Above the composer, where it is read before the question it would
+            otherwise answer "nothing found" to (#1280). */}
+        {agentId && <KnowledgeFirstIndexNotice agentId={agentId} />}
         <Composer />
       </ThreadPrimitive.ViewportFooter>
     </ThreadPrimitive.Viewport>
@@ -209,24 +220,14 @@ export const ThreadWelcome: FC = () => {
     // Every agent has a greetingMessage at the schema level, so the server
     // always sends an opening assistant bubble — that's the welcome. A second
     // hardcoded "How can I help you today?" would be redundant and would flash
-    // briefly during the React-state ↔ assistant-ui store sync window. So we
-    // only render the per-agent starter prompts (#570) as clickable chips when
-    // configured; with none set, this stays null as before.
+    // briefly during the React-state ↔ assistant-ui store sync window.
+    // Normally the greeting lands, the thread is no longer empty, and the
+    // starter prompts render below it (NewConversationPrompts, #1275). This
+    // branch only covers a ready thread with no greeting at all.
     if (starterPrompts.length === 0) return null;
     return (
       <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col items-center justify-center gap-4">
-        <div className="flex flex-wrap items-center justify-center gap-2 px-4">
-          {starterPrompts.map((prompt) => (
-            <ThreadPrimitive.Suggestion
-              key={prompt}
-              prompt={prompt}
-              send
-              className="max-w-full rounded-2xl border px-4 py-1.5 text-sm break-words text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            >
-              {prompt}
-            </ThreadPrimitive.Suggestion>
-          ))}
-        </div>
+        <StarterPromptChips prompts={starterPrompts} />
       </div>
     );
   }
@@ -269,18 +270,27 @@ export const ThreadWelcome: FC = () => {
 
   if (chatStatus.kind === "unavailable") {
     const { reason } = chatStatus;
+    // The banner under the thread carries the detail and the buttons; this is
+    // the headline for an empty thread. Nothing here asks for a reload — we
+    // keep retrying (#1422).
     const message =
       reason === "disconnected"
         ? "Reconnecting to the agent..."
-        : reason === "configuring"
-          ? "Just a moment — getting things ready..."
-          : "We couldn't reconnect. Please reload to continue.";
+        : reason === "offline"
+          ? "You're offline."
+          : reason === "rejected"
+            ? "Waiting for a free connection..."
+            : reason === "upstreamDown"
+              ? "Waiting for the agent to come back..."
+              : reason === "unreachable"
+                ? "Still trying to reach Pinchy..."
+                : "Just a moment — getting things ready...";
 
     return (
       <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
         <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-center">
           <div className="flex flex-col items-center gap-3">
-            {reason === "disconnected" && (
+            {reason !== "configuring" && reason !== "offline" && (
               <div
                 data-testid="loading-spinner"
                 className="size-8 animate-spin rounded-full border-2 border-muted-foreground/20 border-t-muted-foreground"
@@ -308,7 +318,7 @@ export const ThreadWelcome: FC = () => {
           <p className="text-sm font-medium text-muted-foreground">Starting agent...</p>
           <p
             data-testid="startup-message"
-            className="text-xs text-muted-foreground/60 transition-opacity duration-300"
+            className="text-xs text-muted-foreground transition-opacity duration-300"
           >
             {STARTUP_MESSAGES[messageIndex]}
           </p>

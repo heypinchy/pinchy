@@ -14,10 +14,11 @@
 // injects `RunAgent`: the production port is built from decrypted connection
 // credentials and is out of this brick's scope.
 //
-// The suite runs against the ephemeral integration Postgres with no truncate
-// between tests, and the sweep deliberately loads EVERY enabled workflow — so
-// each test scopes its assertions to the rows it seeded itself, and its fake port
-// hands back an empty mailbox for any connection it does not own.
+// The suite runs against the ephemeral integration Postgres (emptied between
+// tests by the integration reset), and the sweep deliberately loads EVERY
+// enabled workflow — so each test scopes its assertions to the rows it seeded
+// itself, and its fake port hands back an empty mailbox for any connection it
+// does not own.
 import { describe, it, expect, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 

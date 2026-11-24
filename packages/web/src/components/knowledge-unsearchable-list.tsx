@@ -1,19 +1,22 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import { ChevronRight } from "lucide-react";
 
 import { apiGet } from "@/lib/api-client";
+// Types only: the module itself queries the database and must never reach the
+// client bundle.
+import type {
+  NoTextCause,
+  UnsearchableDocumentsResult,
+  UnsearchableGroup,
+  UnsearchableSummary,
+} from "@/lib/knowledge/unsearchable";
 
-/** One document the index holds but cannot search. Mirrors the route's projection. */
-interface UnsearchableDocument {
-  sourcePath: string;
-  status: "active" | "archived";
-}
-
-interface UnsearchableResponse {
-  documents: UnsearchableDocument[];
-  /** The untruncated count — `documents` may be capped by the route. */
-  total: number;
+/** The route's summary answer. */
+interface SummaryResponse extends UnsearchableSummary {
+  /** Whether the agent has `knowledge_search`. Only then does Pinchy convert waiting files again on its own. */
+  searchesIndex: boolean;
 }
 
 export interface KnowledgeUnsearchableListProps {
@@ -33,6 +36,8 @@ export interface KnowledgeUnsearchableListProps {
    * doesn't have to hold a ref to this component.
    */
   reloadKey?: string;
+  /** Called with the number of documents that have no readable text, so the section's badge can agree with this list. */
+  onNoTextCount?: (count: number) => void;
 }
 
 /**
@@ -40,16 +45,21 @@ export interface KnowledgeUnsearchableListProps {
  *
  * The reindex summary counts them; this names them. A count nobody can expand
  * is the silent half of a known gap — the agent answers "I found nothing" and
- * the reader hears a statement about the world rather than about the index. On
- * the corpus that motivated this, 19 of 25 such documents were certifications:
- * exactly what a technical-sales team asks about all day.
+ * the reader hears a statement about the world rather than about the index.
+ *
+ * A corpus can hold thousands of them (#1364), so the list is read the way an
+ * admin works through it: the count first, the folders behind it, one folder's
+ * files at a time, and the whole list as a CSV download.
  */
 export function KnowledgeUnsearchableList({
   agentId,
   announceNone,
   reloadKey,
+  onNoTextCount,
 }: KnowledgeUnsearchableListProps) {
-  const [result, setResult] = useState<UnsearchableResponse | null>(null);
+  const [summary, setSummary] = useState<SummaryResponse | null>(null);
+  const [open, setOpen] = useState(false);
+  const listId = useId();
   const url = `/api/agents/${agentId}/knowledge/unsearchable`;
 
   // Monotonic ticket, same reasoning as the reindex section's status reads: a
@@ -61,19 +71,25 @@ export function KnowledgeUnsearchableList({
     const seq = ++fetchSeq.current;
     void (async () => {
       try {
-        const res = await apiGet<UnsearchableResponse>(url);
-        if (seq === fetchSeq.current) setResult(res);
+        const res = await apiGet<SummaryResponse>(url);
+        if (seq === fetchSeq.current) {
+          setSummary(res);
+          onNoTextCount?.(res.totals.no_text);
+        }
       } catch {
         // A failed read stays silent rather than claiming an all-clear. No
         // toast either: this panel is a detail beside the reindex control, and
         // an unreachable API already surfaces there.
       }
     })();
+    // onNoTextCount is a state setter in practice; re-reading on its identity
+    // would be a request per parent render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [url, reloadKey]);
 
-  if (!result) return null;
+  if (!summary) return null;
 
-  if (result.total === 0) {
+  if (summary.total === 0) {
     if (!announceNone) return null;
     return (
       <p className="text-sm text-muted-foreground">
@@ -82,7 +98,11 @@ export function KnowledgeUnsearchableList({
     );
   }
 
-  const hidden = result.total - result.documents.length;
+  const noText = summary.totals.no_text;
+  const awaiting = summary.totals.awaiting_conversion;
+  const them = awaiting === 1 ? "it" : "them";
+  const documentsWord = summary.total === 1 ? "the document" : `the ${summary.total} documents`;
+  const multiRoot = new Set(summary.groups.map((g) => g.root)).size > 1;
 
   return (
     <div className="space-y-2">
@@ -91,28 +111,264 @@ export function KnowledgeUnsearchableList({
           is `skipped`, not recounted as unsearchable — while this number covers
           everything in scope. So "4 unsearchable" over "25 documents…" is the
           normal case, and without the scope named it reads as a contradiction. */}
-      <p className="text-sm text-amber-600 dark:text-amber-500">
-        {result.total === 1
-          ? "1 document in this agent's folders is indexed but holds no searchable text"
-          : `${result.total} documents in this agent's folders are indexed but hold no searchable text`}{" "}
-        — nearly always scans. Your agent won&apos;t find anything in them, so it will answer that
-        it found nothing. Reading text from scans is on the roadmap.
-      </p>
-      <ul className="max-h-48 space-y-1 overflow-y-auto rounded-md border p-2">
-        {result.documents.map((doc) => (
-          <li key={doc.sourcePath} className="flex items-baseline gap-2 text-sm">
-            {/* The full path, not the basename: two folders can hold the same
-                filename, and the path is what lets an admin go and look. */}
-            <span className="font-mono text-xs break-all">{doc.sourcePath}</span>
-            {doc.status === "archived" && (
-              <span className="text-muted-foreground shrink-0 text-xs">archived</span>
-            )}
-          </li>
-        ))}
+      {noText > 0 && (
+        <div className="space-y-1 text-sm text-amber-700 dark:text-amber-400">
+          <p>
+            {noText === 1
+              ? "1 document in this agent's folders is indexed but holds no searchable text"
+              : `${noText} documents in this agent's folders are indexed but hold no searchable text`}{" "}
+            — nearly always scans. Your agent won&apos;t find anything in them, so it will answer
+            that it found nothing.
+          </p>
+          {/* Why, per cause, as the server measured it (#1362). "No vision
+              model" is the wrong advice when reading scans is switched off:
+              a model would change nothing until it is switched on. */}
+          {CAUSE_ORDER.map((cause) => {
+            const count = summary.causes[cause];
+            return count > 0 ? (
+              <CauseSentence key={cause} cause={cause} count={count} of={noText} />
+            ) : null;
+          })}
+        </div>
+      )}
+      {awaiting > 0 && (
+        <p className="text-sm text-muted-foreground">
+          {awaiting === 1
+            ? "1 Word or PowerPoint file in this agent's folders is waiting to be converted again."
+            : `${awaiting} Word or PowerPoint files in this agent's folders are waiting to be converted again.`}{" "}
+          An update to Pinchy changed how such files are converted, and search leaves {them} out
+          until then.{" "}
+          {/* Pinchy queues that run itself only for agents that search the
+              index (office-format-upgrade.ts). For any other agent, nothing
+              runs until somebody reindexes. */}
+          {summary.searchesIndex
+            ? `Pinchy converts ${them} again on its own.`
+            : `A reindex converts ${them}.`}
+        </p>
+      )}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+        <button
+          type="button"
+          className="font-medium text-foreground underline underline-offset-4"
+          aria-expanded={open}
+          aria-controls={listId}
+          onClick={() => setOpen((o) => !o)}
+        >
+          {open
+            ? `Hide ${summary.total === 1 ? "the document" : "the documents"}`
+            : `Show ${documentsWord}`}
+        </button>
+        <a
+          href={`${url}/csv`}
+          download
+          className="font-medium text-foreground underline underline-offset-4"
+        >
+          Download the list
+        </a>
+      </div>
+      {open && (
+        <div id={listId} className="space-y-1">
+          {summary.groups.length === 1 ? (
+            // One folder: its name adds nothing the rows don't already say.
+            <GroupDocuments
+              url={url}
+              group={summary.groups[0]}
+              multiRoot={multiRoot}
+              reloadKey={reloadKey}
+            />
+          ) : (
+            summary.groups.map((group) => (
+              <GroupSection
+                key={`${group.root}\u0000${group.folder ?? ""}`}
+                url={url}
+                group={group}
+                multiRoot={multiRoot}
+                reloadKey={reloadKey}
+              />
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The order the causes are explained in: what an admin can change first. */
+const CAUSE_ORDER: readonly NoTextCause[] = [
+  "ocr_off",
+  "no_vision_model",
+  "read_next_run",
+  "vision_failed",
+  "read_refused",
+  "read_blank",
+];
+
+function CauseSentence({ cause, count, of }: { cause: NoTextCause; count: number; of: number }) {
+  // "It"/"They" when one cause covers every no-text document; "N of them"
+  // when they differ, so the shares add up in front of the reader.
+  const subject = count === of ? (count === 1 ? "It" : "They") : `${count} of them`;
+  const one = count === 1;
+  const them = one ? "it" : "them";
+
+  switch (cause) {
+    case "ocr_off":
+      return (
+        <p>
+          {subject} can&apos;t be read yet: reading scans is switched off on this server (
+          <code className="font-mono text-xs">PINCHY_KB_OCR</code>). Once it&apos;s switched on, the
+          next run reads {them}.
+        </p>
+      );
+    case "no_vision_model":
+      return (
+        <p>
+          {subject} can&apos;t be read yet: no vision model is available to read scans. Make one
+          available and the next run reads {them}.
+        </p>
+      );
+    case "read_next_run":
+      return (
+        <p>
+          {subject} will be read on the next run: a vision model can read {them} now, an older
+          version of Pinchy read {them}, or the last attempt didn&apos;t finish.
+        </p>
+      );
+    case "vision_failed":
+      return (
+        <p>
+          {subject} couldn&apos;t be read: the vision model failed on every attempt, five runs in a
+          row. Configure a different vision model, or replace the file, and the next run reads{" "}
+          {them} again.
+        </p>
+      );
+    case "read_refused":
+      return (
+        <p>
+          {subject} couldn&apos;t be read: {one ? "the file" : "each file"} is too large, damaged,
+          or not what its name says, or is a workbook with nothing visible in it. The server log
+          names each refused file and the reason. A file that&apos;s replaced is read again on the
+          next run.
+        </p>
+      );
+    case "read_blank":
+      return (
+        <p>
+          {subject} {one ? "was" : "were"} read in full and {one ? "holds" : "hold"} no text — a
+          blank page, a picture without words, or a scan too faint to make out.
+        </p>
+      );
+  }
+}
+
+/** The last segment of a granted directory: `/data/certs` → `certs`. */
+function rootName(root: string): string {
+  return root.split("/").filter(Boolean).pop() ?? root;
+}
+
+function groupLabel(group: UnsearchableGroup, multiRoot: boolean): string {
+  if (group.folder === null) return `Directly in ${rootName(group.root)}`;
+  // Two grants can hold folders of the same name.
+  return multiRoot ? `${rootName(group.root)}/${group.folder}` : group.folder;
+}
+
+interface GroupProps {
+  url: string;
+  group: UnsearchableGroup;
+  multiRoot: boolean;
+  reloadKey?: string;
+}
+
+function GroupSection(props: GroupProps) {
+  const [open, setOpen] = useState(false);
+  const panelId = useId();
+  const { group, multiRoot } = props;
+
+  return (
+    <div>
+      <button
+        type="button"
+        className="flex w-full items-center gap-1 rounded-sm py-0.5 text-left text-sm hover:bg-muted/50"
+        aria-expanded={open}
+        aria-controls={panelId}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <ChevronRight
+          aria-hidden="true"
+          className={`size-4 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-90" : ""}`}
+        />
+        <span className="font-medium break-all">{groupLabel(group, multiRoot)}</span>{" "}
+        <span className="text-muted-foreground tabular-nums">{group.count}</span>
+      </button>
+      {open && (
+        <div id={panelId} className="pl-5">
+          <GroupDocuments {...props} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** One group's documents, fetched when it is shown and again after each finished run. */
+function GroupDocuments({ url, group, multiRoot, reloadKey }: GroupProps) {
+  const [page, setPage] = useState<UnsearchableDocumentsResult | null>(null);
+  const [failed, setFailed] = useState(false);
+  const fetchSeq = useRef(0);
+
+  const query = `?root=${encodeURIComponent(group.root)}${
+    group.folder === null ? "" : `&folder=${encodeURIComponent(group.folder)}`
+  }`;
+
+  useEffect(() => {
+    const seq = ++fetchSeq.current;
+    void (async () => {
+      try {
+        const res = await apiGet<UnsearchableDocumentsResult>(url + query);
+        if (seq === fetchSeq.current) {
+          setPage(res);
+          setFailed(false);
+        }
+      } catch {
+        if (seq === fetchSeq.current) setFailed(true);
+      }
+    })();
+  }, [url, query, reloadKey]);
+
+  // A folder that failed to load must not read as an empty one.
+  if (failed && !page) {
+    return <p className="text-sm text-muted-foreground">Couldn&apos;t load these documents.</p>;
+  }
+  if (!page) return null;
+
+  return (
+    <div className="space-y-1">
+      <ul className="max-h-64 space-y-1 overflow-y-auto rounded-md border p-2">
+        {page.documents.map((doc) => {
+          // The path below the grant, never the mount point: it is what an
+          // admin finds the file by.
+          const folder = multiRoot
+            ? [rootName(doc.root), doc.folder].filter(Boolean).join("/")
+            : doc.folder;
+          return (
+            <li key={doc.sourcePath} className="text-sm">
+              <span className="font-medium break-all">{doc.name}</span>
+              {folder && (
+                <span className="ml-2 text-xs text-muted-foreground break-all">{folder}</span>
+              )}
+              {doc.status === "archived" && (
+                <span className="ml-2 text-xs text-muted-foreground">archived</span>
+              )}
+              {doc.reason === "awaiting_conversion" && (
+                <span className="ml-2 text-xs text-muted-foreground">
+                  waiting to be converted again
+                </span>
+              )}
+            </li>
+          );
+        })}
       </ul>
-      {hidden > 0 && (
-        <p className="text-muted-foreground text-sm">
-          Showing {result.documents.length} of {result.total}.
+      {page.total > page.documents.length && (
+        <p className="text-sm text-muted-foreground">
+          Showing {page.documents.length} of {page.total} — the download has all of them.
         </p>
       )}
     </div>

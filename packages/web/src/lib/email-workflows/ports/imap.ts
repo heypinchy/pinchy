@@ -2,6 +2,7 @@ import { ImapFlow } from "imapflow";
 import type { MessageAddressObject, MessageEnvelopeObject, MessageStructureObject } from "imapflow";
 
 import { tlsModeForPort } from "@/lib/integrations/imap-probe";
+import { pinnedImapOptions, resolveAllowedMailHost } from "@/lib/integrations/mail-host-guard";
 import { imapTestSchema } from "@/lib/schemas/imap";
 import type { EmailListItem, EmailPort, EmailReadResult } from "@/lib/email-workflows/lister";
 
@@ -108,10 +109,16 @@ export function createImapPort(credentials: unknown): EmailPort {
   /** Connect once, then select the folder only when it actually changes. */
   async function open(folder: string): Promise<ImapFlow> {
     if (!client) {
+      // Connect to the address the guard classifies now, not to a second
+      // lookup of the name (DNS rebinding between the check and the socket).
+      const target = await resolveAllowedMailHost(creds.imapHost);
       const opening = new ImapFlow({
-        host: creds.imapHost,
+        ...pinnedImapOptions(creds.imapHost, target),
         port: creds.imapPort,
         secure: tlsModeForPort(creds.imapPort, creds.security).secure,
+        // Fail rather than fall back to plaintext when STARTTLS is not offered.
+        // Never `false` (= never upgrade); undefined keeps it opportunistic.
+        doSTARTTLS: tlsModeForPort(creds.imapPort, creds.security).requireTLS ? true : undefined,
         auth: { user: creds.username, pass: creds.password },
         logger: false,
         connectionTimeout: CONNECT_TIMEOUT_MS,

@@ -147,7 +147,15 @@ these derived sites in the SAME change:
      month, and a bare `vision: true` invites the next reader to "fix" it back.
 
 6. **Handle REMOVED.** Delete the stale entry, then fix any `tsc` error it
-   surfaces in `providers/ollama-cloud.ts` (re-point the tier).
+   surfaces in `providers/ollama-cloud.ts` (re-point the tier). A retirement
+   also reaches past the catalog — the 2026-11-16 one touched all of these:
+   - `eval/candidates.ts` (the sweep-candidates guard checks it) and the
+     candidate counts in `eval/README.md`;
+   - `eval/pricing/model-pricing.ts` (parity-tested against the catalog);
+   - an upgrade note in `docs/src/content/docs/guides/upgrading.mdx` saying
+     what happens to agents still on a removed model;
+   - a grep of `docs/` for the removed ids AND their family names
+     (`llm-providers.mdx`'s provider table, `architecture.mdx`).
 
 7. **Update the drift tests.** The catalog is snapshotted in several tests —
    adding/removing a model drifts ALL of them, not just the first one:
@@ -160,8 +168,9 @@ these derived sites in the SAME change:
    - `__tests__/lib/model-vision.integration.test.ts` — `isModelVisionCapable`
      assertions (DB-backed; only `pnpm test:db` runs it, not `pnpm test`).
    - `__tests__/lib/model-capabilities/seed.integration.test.ts` — DB-backed too,
-     and it asserts a FLOOR on the built-in model count (`>= 30` until the
-     2026-07-15 wave cut the catalog to 18). A retirement trips it.
+     and it asserts a FLOOR on the built-in model count (currently `>= 15`).
+     The floor only has to exceed any single provider's count; a retirement
+     can trip it, so lower it to that rule, not to the new total.
    - `__tests__/lib/ollama-cloud-image-preference-drift.test.ts` — guards the
      image-preference list.
    - `__tests__/lib/vision-model-chain.test.ts` — its fixture simulates the LIVE
@@ -197,7 +206,7 @@ worktree:env` writes the allocation, then start one with the DB name the
 
    The union is the gate that finds references the drift tests miss — removing
    `nemotron-3-nano:30b` surfaced a stale `eval/pricing/model-pricing.ts` entry
-   that no test covers.
+   (a parity test, `eval/pricing/__tests__/model-pricing.test.ts`, covers it now).
 
 ## If you have no API key
 

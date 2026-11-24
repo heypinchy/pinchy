@@ -395,7 +395,7 @@ describe("meaningfulUploadName", () => {
   });
 });
 
-// AGENTS.md § "A Hand-Maintained List That Mirrors Code Will Be Wrong":
+// agent-rules/docs.md § "A Hand-Maintained List That Mirrors Code Will Be Wrong":
 // EXT_BY_MIME mirrors the two allowlists, and the `?? "bin"` fallback in
 // meaningfulUploadName makes a gap SILENT — a MIME added to an allowlist and
 // forgotten here stores every such upload as `upload-….bin`, with nothing red.

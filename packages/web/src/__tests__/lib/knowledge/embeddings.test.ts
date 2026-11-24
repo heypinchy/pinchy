@@ -1,5 +1,13 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { embedTexts } from "@/lib/knowledge/embeddings";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import {
+  EmbedderUnavailableError,
+  embedTexts,
+  fitTextsForEmbedding,
+  LOCAL_MODEL_RETRY_COOLDOWN_MS,
+  splitToTokenBudget,
+  type EmbeddingTokenizer,
+} from "@/lib/knowledge/embeddings";
+import { locatePassage } from "@/lib/knowledge/passage-match";
 
 global.fetch = vi.fn();
 
@@ -366,5 +374,453 @@ describe("embedTexts (provider: local, node-llama-cpp mocked)", () => {
     expect(loadModel).toHaveBeenCalledTimes(1);
     expect(createEmbeddingContext).toHaveBeenCalledTimes(1);
     expect(getEmbeddingFor).toHaveBeenCalledTimes(2);
+  });
+
+  it("concurrent first callers share one model load instead of each loading their own", async () => {
+    getEmbeddingFor.mockResolvedValue({ vector: [1, 2, 3] });
+    const cfg = { baseUrl: "unused", provider: "local", modelPath: "/models/concurrent.gguf" };
+
+    // Three parallel knowledge_search calls arriving before the model is loaded.
+    await Promise.all([embedTexts(["a"], cfg), embedTexts(["b"], cfg), embedTexts(["c"], cfg)]);
+
+    expect(loadModel).toHaveBeenCalledTimes(1);
+    expect(createEmbeddingContext).toHaveBeenCalledTimes(1);
+  });
+
+  // One Pinchy process loads src/lib twice — once for the custom server (where
+  // the KB index worker runs) and once for Next's route bundles (where the
+  // search route runs); see process-wide-cache.ts. A module-level cache gave
+  // each its own model and its own context: twice the RAM, and two evaluate
+  // locks, so a search and a reindex embedded at the same time and fought over
+  // the same cores instead of queueing behind each other.
+  it("shares one loaded model across module instances in the same process", async () => {
+    getEmbeddingFor.mockResolvedValue({ vector: [1, 2, 3] });
+    const cfg = { baseUrl: "unused", provider: "local", modelPath: "/models/two-instances.gguf" };
+
+    await embedTexts(["from the index worker"], cfg);
+    vi.resetModules();
+    const { embedTexts: embedTextsFromRouteBundle } = await import("@/lib/knowledge/embeddings");
+    await embedTextsFromRouteBundle(["from the search route"], cfg);
+
+    expect(loadModel).toHaveBeenCalledTimes(1);
+    expect(createEmbeddingContext).toHaveBeenCalledTimes(1);
+    expect(getEmbeddingFor).toHaveBeenCalledTimes(2);
+  });
+
+  it("creates the embedding context with the configured thread count", async () => {
+    getEmbeddingFor.mockResolvedValue({ vector: [1, 2, 3] });
+
+    await embedTexts(["a"], {
+      baseUrl: "unused",
+      provider: "local",
+      modelPath: "/models/threads.gguf",
+      threads: 1,
+    });
+
+    expect(createEmbeddingContext).toHaveBeenCalledWith({ threads: 1 });
+  });
+
+  describe("a failed load", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("is retried once the cooldown has passed instead of failing every search until restart", async () => {
+      vi.useFakeTimers();
+      getEmbeddingFor.mockResolvedValue({ vector: [1, 2, 3] });
+      loadModel.mockRejectedValueOnce(new Error("ENOMEM"));
+      const cfg = { baseUrl: "unused", provider: "local", modelPath: "/models/flaky-load.gguf" };
+
+      await expect(embedTexts(["a"], cfg)).rejects.toThrow("ENOMEM");
+      await vi.advanceTimersByTimeAsync(LOCAL_MODEL_RETRY_COOLDOWN_MS);
+      await expect(embedTexts(["b"], cfg)).resolves.toEqual([[1, 2, 3]]);
+      expect(loadModel).toHaveBeenCalledTimes(2);
+    });
+
+    // A persistently broken load (a corrupt GGUF, a container out of memory)
+    // must not load another ~300 MB model on every search.
+    it("is not retried within the cooldown: searches fail fast on the same error", async () => {
+      vi.useFakeTimers();
+      loadModel.mockRejectedValue(new Error("ENOMEM"));
+      const cfg = { baseUrl: "unused", provider: "local", modelPath: "/models/broken-load.gguf" };
+
+      await expect(embedTexts(["a"], cfg)).rejects.toThrow("ENOMEM");
+      await vi.advanceTimersByTimeAsync(LOCAL_MODEL_RETRY_COOLDOWN_MS - 1);
+      await expect(embedTexts(["b"], cfg)).rejects.toThrow("ENOMEM");
+      await expect(embedTexts(["c"], cfg)).rejects.toThrow("ENOMEM");
+      expect(loadModel).toHaveBeenCalledTimes(1);
+    });
+
+    it("disposes a model that loaded when its embedding context could not be created", async () => {
+      const dispose = vi.fn().mockResolvedValue(undefined);
+      loadModel.mockResolvedValueOnce({ createEmbeddingContext, dispose });
+      createEmbeddingContext.mockRejectedValueOnce(new Error("context: out of memory"));
+      const cfg = { baseUrl: "unused", provider: "local", modelPath: "/models/no-context.gguf" };
+
+      await expect(embedTexts(["a"], cfg)).rejects.toThrow("context: out of memory");
+      expect(dispose).toHaveBeenCalledTimes(1);
+    });
+
+    it("reports the context error even when disposing the model throws", async () => {
+      const dispose = vi.fn(() => {
+        throw new Error("dispose failed");
+      });
+      loadModel.mockResolvedValueOnce({ createEmbeddingContext, dispose });
+      createEmbeddingContext.mockRejectedValueOnce(new Error("context: out of memory"));
+      const cfg = { baseUrl: "unused", provider: "local", modelPath: "/models/bad-dispose.gguf" };
+
+      await expect(embedTexts(["a"], cfg)).rejects.toThrow("context: out of memory");
+    });
+  });
+});
+
+/**
+ * A tokenizer that counts very differently from the chunker's 4-chars-per-token
+ * estimate: every character is a token. A 600-character chunk — 150 tokens to
+ * the estimate, comfortably under the 512 target — is 600 tokens here, which is
+ * the shape of #1380 (a part-number table or a run of digits tokenizes far
+ * denser than prose).
+ */
+const charTokenizer: EmbeddingTokenizer = {
+  tokenize: (text) => Array.from(text),
+  detokenize: (tokens) => (tokens as string[]).join(""),
+};
+
+/**
+ * A SentencePiece-style tokenizer with byte fallback: ASCII and U+FFFD are in
+ * the vocabulary (one token each), everything else is one token per UTF-8 byte.
+ * Decoding a window that starts or ends inside a multi-byte character yields
+ * U+FFFD — the way a real GGUF vocabulary decodes a rare code point it only
+ * knows as bytes.
+ */
+const byteFallbackTokenizer: EmbeddingTokenizer = {
+  tokenize: (text) =>
+    Array.from(text).flatMap<string | number>((ch) =>
+      ch.charCodeAt(0) < 0x80 || ch === "\uFFFD" ? [ch] : Array.from(new TextEncoder().encode(ch))
+    ),
+  detokenize: (tokens) => {
+    let out = "";
+    let bytes: number[] = [];
+    const flush = () => {
+      out += new TextDecoder().decode(new Uint8Array(bytes));
+      bytes = [];
+    };
+    for (const token of tokens) {
+      if (typeof token === "number") bytes.push(token);
+      else {
+        flush();
+        out += token as string;
+      }
+    }
+    flush();
+    return out;
+  },
+};
+
+/**
+ * The invariants the citation viewer depends on (`locatePassage` matches a
+ * chunk against the page with whitespace removed): every piece is a verbatim
+ * slice of the original, in order, without overlap; only whitespace lies
+ * between them; each fits the budget; no U+FFFD the original did not have.
+ */
+function expectPiecesOfOriginal(
+  text: string,
+  pieces: string[],
+  tokenizer: EmbeddingTokenizer,
+  budget: number
+) {
+  let at = 0;
+  for (const piece of pieces) {
+    expect(piece.trim()).not.toBe("");
+    const start = text.slice(at).search(/\S/) + at;
+    expect(text.slice(at, start).trim()).toBe("");
+    expect(text.startsWith(piece, start)).toBe(true);
+    expect(tokenizer.tokenize(piece).length).toBeLessThanOrEqual(budget);
+    if (!text.includes("\uFFFD")) expect(piece).not.toContain("\uFFFD");
+    at = start + piece.length;
+  }
+  expect(text.slice(at).trim()).toBe("");
+}
+
+describe("splitToTokenBudget", () => {
+  it("leaves a text that fits alone", () => {
+    expect(splitToTokenBudget("short text", charTokenizer, 100)).toEqual(["short text"]);
+  });
+
+  it("splits a chunk the estimate accepts but the tokenizer counts far above the budget", () => {
+    const text = "4711-0815 ".repeat(60); // 600 chars: 150 "estimated" tokens, 600 real ones
+    const pieces = splitToTokenBudget(text, charTokenizer, 256);
+
+    expect(pieces.length).toBe(3);
+    // Nothing is lost: the pieces are the chunk, cut between its words.
+    expectPiecesOfOriginal(text, pieces, charTokenizer, 256);
+    expect(pieces.join(" ")).toBe(text.trim());
+  });
+
+  // Decoding a window of tokens back to text is what put U+FFFD into stored
+  // chunks: a byte-fallback character cut between its bytes. The pieces are
+  // cut from the original text instead; the tokenizer only measures.
+  it("never cuts a character between its bytes, so every piece is a substring of the original", () => {
+    // CJK Extension B: four UTF-8 bytes each, tokenized as bytes.
+    const text = Array.from({ length: 60 }, (_, i) => String.fromCodePoint(0x20000 + i * 7)).join(
+      ""
+    );
+    const pieces = splitToTokenBudget(text, byteFallbackTokenizer, 10);
+
+    expect(pieces.length).toBeGreaterThan(1);
+    expectPiecesOfOriginal(text, pieces, byteFallbackTokenizer, 10);
+    expect(pieces.join("")).toBe(text);
+  });
+
+  it("keeps every piece findable on the page it came from", () => {
+    const runs = [
+      "Prüfprotokoll 𠀀𠀇𠀎 Pumpe 7",
+      "Messwert 4711-0815 laut Datenblatt",
+      "Ventil 𠀕𠀜𠀣 geprüft und freigegeben.",
+      "Nächste Wartung in zwölf Monaten 𠀪𠀱𠀸.",
+    ];
+    const text = runs.join("\n");
+    const pieces = splitToTokenBudget(text, byteFallbackTokenizer, 40);
+
+    expect(pieces.length).toBeGreaterThan(1);
+    expectPiecesOfOriginal(text, pieces, byteFallbackTokenizer, 40);
+    for (const piece of pieces) {
+      if (piece.replace(/\s+/g, "").length >= 12) expect(locatePassage(runs, piece)).not.toBeNull();
+    }
+  });
+
+  it("prefers a paragraph break over a line break", () => {
+    const text = "a".repeat(30) + "\n\n" + "b".repeat(20) + "\n" + "c".repeat(20);
+    const pieces = splitToTokenBudget(text, charTokenizer, 60);
+    expect(pieces[0]).toBe("a".repeat(30));
+    expectPiecesOfOriginal(text, pieces, charTokenizer, 60);
+  });
+
+  // chunk.ts keeps a table line whole on purpose; a cut inside the row would
+  // separate a part number from its value.
+  it("prefers a line break over a sentence end or a space", () => {
+    const row = (n: number) => `Teil ${n}. Wert ${n * 3} Stück`;
+    const text = [row(1), row(2), row(3), row(4), row(5)].join("\n");
+    const pieces = splitToTokenBudget(text, charTokenizer, 50);
+    for (const piece of pieces) {
+      for (const line of piece.split("\n")) expect(text.split("\n")).toContain(line);
+    }
+    expectPiecesOfOriginal(text, pieces, charTokenizer, 50);
+  });
+
+  it("prefers a sentence end over a space", () => {
+    const text = "One two three four. Five six seven eight nine ten eleven";
+    const pieces = splitToTokenBudget(text, charTokenizer, 30);
+    expect(pieces[0]).toBe("One two three four.");
+    expectPiecesOfOriginal(text, pieces, charTokenizer, 30);
+  });
+
+  it("cuts a line without any space between graphemes, never inside one", () => {
+    const text = "e\u0301".repeat(40); // "é" as a base letter plus a combining accent
+    const pieces = splitToTokenBudget(text, charTokenizer, 15);
+    for (const piece of pieces) expect(piece.startsWith("\u0301")).toBe(false);
+    expectPiecesOfOriginal(text, pieces, charTokenizer, 15);
+    expect(pieces.join("")).toBe(text);
+  });
+
+  // A flag is two regional indicators. Whether a boundary between them pairs
+  // correctly depends on where segmentation starts counting, so it must start at
+  // a real boundary — not at an arbitrary offset before the limit.
+  it("never cuts a flag between its two regional indicators", () => {
+    const text = "🇩🇪🇦🇹🇨🇭🇫🇷".repeat(40);
+    for (const budget of [41, 43, 77]) {
+      const pieces = splitToTokenBudget(text, charTokenizer, budget);
+      for (const piece of pieces) {
+        expect(piece).toMatch(/^(?:🇩🇪|🇦🇹|🇨🇭|🇫🇷)+$/u);
+      }
+      expectPiecesOfOriginal(text, pieces, charTokenizer, budget);
+      expect(pieces.join("")).toBe(text);
+    }
+  });
+
+  it("cuts before a grapheme longer than the look-back, not after it", () => {
+    const text = "x".repeat(60) + "a" + "́".repeat(80) + "y".repeat(100);
+    const pieces = splitToTokenBudget(text, charTokenizer, 130);
+    expect(pieces.map((p) => Array.from(p).length)).toEqual([60, 130, 51]);
+    expect(pieces.join("")).toBe(text);
+  });
+
+  // One enormous line can be a whole page. Measuring the rest of the text for
+  // every piece would make a long chunk quadratic.
+  it("measures a bounded window per piece, not the rest of the text", () => {
+    const measured: number[] = [];
+    const counting: EmbeddingTokenizer = {
+      tokenize: (text) => {
+        measured.push(text.length);
+        return Array.from(text);
+      },
+      detokenize: (tokens) => (tokens as string[]).join(""),
+    };
+    const text = "z".repeat(200_000);
+    const pieces = splitToTokenBudget(text, counting, 100);
+
+    expect(pieces.join("")).toBe(text);
+    // The first call measures the whole text to decide whether to split at all.
+    expect(Math.max(...measured.slice(1))).toBeLessThan(10_000);
+  });
+
+  // Decoding a window and tokenizing it again is not always the same count: a
+  // merge that only forms across the seam, a token that decodes longer than it
+  // read. The piece is what gets embedded, so the piece is what must fit.
+  it("shrinks a cut whose text measures past the budget", () => {
+    // Every "x" decodes to "xx" — so the decoded window overestimates the cut twice over.
+    const inflating: EmbeddingTokenizer = {
+      tokenize: (text) => Array.from(text),
+      detokenize: (tokens) => (tokens as string[]).map((t) => (t === "x" ? "xx" : t)).join(""),
+    };
+    const text = "x".repeat(40);
+    const pieces = splitToTokenBudget(text, inflating, 10);
+    expectPiecesOfOriginal(text, pieces, inflating, 10);
+    expect(pieces.join("")).toBe(text);
+  });
+
+  it("drops a whitespace-only piece rather than embedding nothing", () => {
+    const pieces = splitToTokenBudget("a".repeat(10) + " ".repeat(10), charTokenizer, 10);
+    expect(pieces).toEqual(["a".repeat(10)]);
+  });
+});
+
+describe("fitTextsForEmbedding (provider: local, node-llama-cpp mocked)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getLlama.mockResolvedValue({ loadModel });
+  });
+
+  function modelWithContext(contextSize: number, trainContextSize = 2048) {
+    const model = {
+      trainContextSize,
+      tokenize: (text: string) => Array.from(text),
+      detokenize: (tokens: string[]) => tokens.join(""),
+      createEmbeddingContext,
+    };
+    loadModel.mockResolvedValue(model);
+    createEmbeddingContext.mockResolvedValue({ getEmbeddingFor, _llamaContext: { contextSize } });
+  }
+
+  it("splits a text the model's own tokenizer counts past the context, and leaves the rest", async () => {
+    modelWithContext(64);
+    const long = "9".repeat(150);
+    const fitted = await fitTextsForEmbedding(["fits", long], {
+      baseUrl: "unused",
+      provider: "local",
+      modelPath: "/models/fit-split.gguf",
+    });
+
+    expect(fitted[0]).toEqual(["fits"]);
+    expect(fitted[1].length).toBeGreaterThan(2);
+    // A little headroom under the context: node-llama-cpp checks the length
+    // before it adds the BOS/EOS tokens the model still needs room for.
+    for (const piece of fitted[1]) expect(piece.length).toBeLessThan(64);
+    expect(fitted[1].join("")).toBe(long);
+  });
+
+  // node-llama-cpp decodes an input longer than the batch in several calls,
+  // and the pooled vector then reflects only the last batch: the head of the
+  // piece would silently drop out of its own embedding.
+  it("splits to the context's batch size when that is smaller than the context", async () => {
+    const model = {
+      trainContextSize: 2048,
+      tokenize: (text: string) => Array.from(text),
+      detokenize: (tokens: string[]) => tokens.join(""),
+      createEmbeddingContext,
+    };
+    loadModel.mockResolvedValue(model);
+    createEmbeddingContext.mockResolvedValue({
+      getEmbeddingFor,
+      _llamaContext: { contextSize: 2048, batchSize: 40 },
+    });
+
+    const [pieces] = await fitTextsForEmbedding(["q".repeat(200)], {
+      baseUrl: "unused",
+      provider: "local",
+      modelPath: "/models/fit-batch.gguf",
+    });
+    expect(pieces.length).toBeGreaterThan(4);
+    for (const piece of pieces) expect(piece.length).toBeLessThan(40);
+  });
+
+  it("falls back to the model's training context when the context size is not readable", async () => {
+    const model = {
+      trainContextSize: 32,
+      tokenize: (text: string) => Array.from(text),
+      detokenize: (tokens: string[]) => tokens.join(""),
+      createEmbeddingContext,
+    };
+    loadModel.mockResolvedValue(model);
+    createEmbeddingContext.mockResolvedValue({ getEmbeddingFor });
+
+    const [pieces] = await fitTextsForEmbedding(["z".repeat(100)], {
+      baseUrl: "unused",
+      provider: "local",
+      modelPath: "/models/fit-train-ctx.gguf",
+    });
+    for (const piece of pieces) expect(piece.length).toBeLessThan(32);
+  });
+
+  it("splits for the Ollama path by characters, without a network call", async () => {
+    const fitted = await fitTextsForEmbedding(["a".repeat(5000)], {
+      baseUrl: "http://ollama:11434",
+    });
+    expect(fitted[0].length).toBeGreaterThan(1);
+    expect(fitted[0].join("")).toBe("a".repeat(5000));
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+// The run-stopping errors are told apart by type, not by message: an embedder
+// that cannot embed anything is one outage, an input it refuses is one file.
+describe("EmbedderUnavailableError", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getLlama.mockResolvedValue({ loadModel });
+    loadModel.mockResolvedValue({ createEmbeddingContext });
+    createEmbeddingContext.mockResolvedValue({ getEmbeddingFor });
+  });
+
+  it("is what a model that will not load throws", async () => {
+    loadModel.mockRejectedValueOnce(new Error("ENOMEM"));
+    const err = await embedTexts(["a"], {
+      baseUrl: "unused",
+      provider: "local",
+      modelPath: "/models/typed-load-failure.gguf",
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(EmbedderUnavailableError);
+    expect(err.message).toContain("ENOMEM");
+  });
+
+  it("is not what an input the context refuses throws", async () => {
+    getEmbeddingFor.mockRejectedValueOnce(
+      new Error("Input is longer than the context size. Try to increase the context size")
+    );
+    const err = await embedTexts(["a"], {
+      baseUrl: "unused",
+      provider: "local",
+      modelPath: "/models/typed-input-failure.gguf",
+    }).catch((e) => e);
+    expect(err).not.toBeInstanceOf(EmbedderUnavailableError);
+  });
+
+  it("is what an unreachable Ollama throws", async () => {
+    vi.mocked(fetch).mockRejectedValueOnce(new TypeError("fetch failed"));
+    await expect(embedTexts(["a"], { baseUrl: "http://ollama:11434" })).rejects.toBeInstanceOf(
+      EmbedderUnavailableError
+    );
+  });
+
+  it("is what a wrong vector width throws", async () => {
+    getEmbeddingFor.mockResolvedValue({ vector: [1, 2, 3] });
+    await expect(
+      embedTexts(["a"], {
+        baseUrl: "unused",
+        provider: "local",
+        modelPath: "/models/typed-width.gguf",
+        expectedDim: 768,
+      })
+    ).rejects.toBeInstanceOf(EmbedderUnavailableError);
   });
 });

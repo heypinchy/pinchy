@@ -52,3 +52,19 @@ export type UpdateAgentInput = z.input<typeof updateAgentSchema>;
 /** `PUT /api/agents/[agentId]/files/[filename]` — a workspace text file. */
 export const writeAgentFileSchema = z.object({ content: z.string() });
 export type WriteAgentFileInput = z.infer<typeof writeAgentFileSchema>;
+
+/**
+ * `POST /api/agents/admin-only/open-to-all` — the admin-only shared agents to
+ * make visible to everyone (#1278). Capped so one request stays one readable
+ * batch of audit rows.
+ */
+export const openAdminOnlyAgentsSchema = z.object({
+  agentIds: z.array(z.string().min(1)).min(1).max(200),
+});
+export type OpenAdminOnlyAgentsInput = z.infer<typeof openAdminOnlyAgentsSchema>;
+
+/** An agent identified by id, with its name snapshot. */
+export interface AgentRef {
+  id: string;
+  name: string;
+}

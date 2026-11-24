@@ -16,23 +16,29 @@ vi.mock("prismjs/components/prism-markdown", () => ({}));
 
 describe("MarkdownEditor", () => {
   it("renders with the provided value", () => {
-    render(<MarkdownEditor value="# Hello" onChange={() => {}} />);
+    render(<MarkdownEditor label="Notes" value="# Hello" onChange={() => {}} />);
 
     expect(screen.getByRole("textbox")).toHaveValue("# Hello");
   });
 
   it("calls onChange when text is entered", async () => {
     const onChange = vi.fn();
-    render(<MarkdownEditor value="" onChange={onChange} />);
+    render(<MarkdownEditor label="Notes" value="" onChange={onChange} />);
 
     await userEvent.type(screen.getByRole("textbox"), "x");
 
     expect(onChange).toHaveBeenCalledWith("x");
   });
 
+  it("gives the textarea an accessible name from its label (#1300)", () => {
+    render(<MarkdownEditor label="Your Context" value="" onChange={() => {}} />);
+
+    expect(screen.getByRole("textbox", { name: "Your Context" })).toBeInTheDocument();
+  });
+
   it("applies custom className", () => {
     const { container } = render(
-      <MarkdownEditor value="" onChange={() => {}} className="min-h-[300px]" />
+      <MarkdownEditor label="Notes" value="" onChange={() => {}} className="min-h-[300px]" />
     );
 
     expect(container.firstChild).toHaveClass("min-h-[300px]");

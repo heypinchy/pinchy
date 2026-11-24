@@ -1,4 +1,4 @@
-import { NextResponse, after } from "next/server";
+import { NextResponse } from "next/server";
 import { withAdmin } from "@/lib/api-auth";
 import { parseRequestBody } from "@/lib/api-validation";
 import { setDefaultProviderSchema } from "@/lib/schemas/provider-default";
@@ -7,7 +7,8 @@ import { getSetting, setSetting } from "@/lib/settings";
 import { listOpenAiCompatibleProviders } from "@/lib/openai-compatible-providers";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { resetCache } from "@/lib/provider-models";
-import { appendAuditLog } from "@/lib/audit";
+import { deferAuditLog } from "@/lib/audit-deferred";
+import { refusedBaseUrlReason } from "@/lib/openai-compatible-stored-url";
 
 // Explicit "Set as default" for the unified AI-Provider settings grid (#894).
 // Built-in providers only ever became `default_provider` implicitly, as a
@@ -51,6 +52,34 @@ export const PATCH = withAdmin(async (request, _ctx, session) => {
     if (!match) {
       return NextResponse.json({ error: "Provider not found." }, { status: 404 });
     }
+    // A saved base URL the SSRF guard now refuses: config emission points the
+    // provider at a reserved address and never emits it as the runtime
+    // default, so saying "Default provider updated" would change nothing an
+    // agent can use. The reason names no address. Audited because a security
+    // check turned an admin action down — unlike the "isn't configured" 400s
+    // above, which are plain input errors.
+    const refusedReason = await refusedBaseUrlReason(match.baseUrl);
+    if (refusedReason !== null) {
+      const currentDefault = await getSetting("default_provider");
+      deferAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "config.changed",
+        outcome: "failure",
+        detail: {
+          action: "default_provider_refused",
+          provider: { id: provider, name: match.displayName },
+          currentDefault,
+        },
+      });
+      return NextResponse.json(
+        {
+          error: `Its base URL is now refused, so it can't be the default. ${refusedReason} Change the URL first.`,
+          refusedReason,
+        },
+        { status: 400 }
+      );
+    }
     targetName = match.displayName;
   }
 
@@ -75,20 +104,18 @@ export const PATCH = withAdmin(async (request, _ctx, session) => {
   }
   resetCache();
 
-  after(() =>
-    appendAuditLog({
-      actorType: "user",
-      actorId: session.user.id!,
-      eventType: "config.changed",
-      outcome: "success",
-      detail: {
-        provider: { id: provider, name: targetName },
-        previousDefault,
-        newDefault: provider,
-        configRegenerated,
-      },
-    })
-  );
+  deferAuditLog({
+    actorType: "user",
+    actorId: session.user.id!,
+    eventType: "config.changed",
+    outcome: "success",
+    detail: {
+      provider: { id: provider, name: targetName },
+      previousDefault,
+      newDefault: provider,
+      configRegenerated,
+    },
+  });
 
   return NextResponse.json({
     success: true,

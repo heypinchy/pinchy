@@ -7,10 +7,12 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Form,
   FormControl,
+  FormDescription,
   FormField,
   FormItem,
   FormLabel,
@@ -19,42 +21,33 @@ import {
 import { CheckCircle2, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { PasswordInput } from "@/components/password-input";
-import { passwordSchema } from "@/lib/validate-password";
+import { PASSWORD_RULE_HINT, passwordSchema } from "@/lib/validate-password";
 import { apiPost, errorMessage } from "@/lib/api-client";
-import type { ClaimInviteInput } from "@/lib/schemas/invite";
+import { authClient } from "@/lib/auth-client";
+import { enterAccount } from "@/lib/account-switch";
+import type { ClaimInviteInput, InviteTokenInfo } from "@/lib/schemas/invite";
 
 // The /invite/[token] page serves two flows that share the same token table
 // (#436): a brand-new user claiming an invite, and an existing user resetting
 // their password. They differ in copy and — crucially — the reset flow must
 // NOT collect a display name, because submitting one used to silently
 // overwrite the user's existing name.
-type InviteType = "invite" | "reset";
+type InviteType = InviteTokenInfo["type"];
 
-const passwordRefine = {
-  check: (data: { password: string; confirmPassword: string }) =>
-    data.password === data.confirmPassword,
-  options: { message: "Passwords do not match", path: ["confirmPassword"] },
-};
+// No "Confirm password" field (#1265): the show/hide toggle catches a typo
+// better than retyping does, and the rule is stated up front.
+const inviteClaimSchema = z.object({
+  name: z.string().min(1, "Name is required"),
+  password: passwordSchema,
+});
 
-const inviteClaimSchema = z
-  .object({
-    name: z.string().min(1, "Name is required"),
-    password: passwordSchema,
-    confirmPassword: z.string(),
-  })
-  .refine(passwordRefine.check, passwordRefine.options);
-
-const resetSchema = z
-  .object({
-    password: passwordSchema,
-    confirmPassword: z.string(),
-  })
-  .refine(passwordRefine.check, passwordRefine.options);
+const resetSchema = z.object({
+  password: passwordSchema,
+});
 
 type FormValues = {
   name?: string;
   password: string;
-  confirmPassword: string;
 };
 
 const COPY: Record<
@@ -75,20 +68,26 @@ const COPY: Record<
   },
 };
 
-const SUCCESS_COPY: Record<InviteType, { title: string; description: string }> = {
-  invite: {
-    title: "Account created!",
-    description: "You can now sign in with your credentials.",
-  },
-  reset: {
-    title: "Password reset!",
-    description: "You can now sign in with your new password.",
-  },
+// Shown only when signing in right after the claim failed (see onSubmit).
+const SUCCESS_TITLE: Record<InviteType, string> = {
+  invite: "Account created!",
+  reset: "Password reset!",
 };
+
+// Naming the inviter makes an unexpected link from an admin read less like
+// phishing (#1265). There is no organisation name to show: Pinchy stores none.
+function inviteTitle(invitedBy: string | null) {
+  return invitedBy ? `${invitedBy} invited you to Pinchy` : COPY.invite.title;
+}
+
+// The user lands on /login next and has to type this address, so say it.
+function successDescription(email: string) {
+  return `You can now sign in with ${email} and your new password.`;
+}
 
 export default function InviteClaimPage() {
   const { token } = useParams();
-  const [type, setType] = useState<InviteType | null>(null);
+  const [info, setInfo] = useState<InviteTokenInfo | null>(null);
   const [loadError, setLoadError] = useState("");
 
   useEffect(() => {
@@ -102,7 +101,15 @@ export default function InviteClaimPage() {
           setLoadError(data.error || "Invalid or expired invite link");
           return;
         }
-        setType(data.type === "reset" ? "reset" : "invite");
+        if (typeof data.email !== "string" || !data.email) {
+          setLoadError("Invalid or expired invite link");
+          return;
+        }
+        setInfo({
+          type: data.type === "reset" ? "reset" : "invite",
+          email: data.email,
+          invitedBy: typeof data.invitedBy === "string" ? data.invitedBy : null,
+        });
       } catch {
         if (!cancelled) setLoadError("Something went wrong. Please try again.");
       }
@@ -125,12 +132,12 @@ export default function InviteClaimPage() {
               <CardTitle>This link can&apos;t be used</CardTitle>
               <CardDescription className="text-destructive">{loadError}</CardDescription>
             </CardHeader>
-          ) : type === null ? (
+          ) : info === null ? (
             <CardContent className="flex justify-center py-10" role="status" aria-label="Loading">
               <Loader2 className="size-6 animate-spin text-muted-foreground" aria-hidden="true" />
             </CardContent>
           ) : (
-            <ClaimForm token={String(token)} type={type} />
+            <ClaimForm token={String(token)} info={info} />
           )}
         </Card>
       </div>
@@ -138,17 +145,20 @@ export default function InviteClaimPage() {
   );
 }
 
-function ClaimForm({ token, type }: { token: string; type: InviteType }) {
+function ClaimForm({ token, info }: { token: string; info: InviteTokenInfo }) {
+  const { type, email, invitedBy } = info;
   const router = useRouter();
   const isReset = type === "reset";
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
+  // The password was set, but sign-in answered 403: the account is
+  // deactivated. Promising "you can now sign in" would send the person to a
+  // login page that refuses them.
+  const [cannotSignIn, setCannotSignIn] = useState(false);
 
   const form = useForm<FormValues>({
     resolver: zodResolver(isReset ? resetSchema : inviteClaimSchema),
-    defaultValues: isReset
-      ? { password: "", confirmPassword: "" }
-      : { name: "", password: "", confirmPassword: "" },
+    defaultValues: isReset ? { password: "" } : { name: "", password: "" },
   });
 
   async function onSubmit(values: FormValues) {
@@ -160,7 +170,6 @@ function ClaimForm({ token, type }: { token: string; type: InviteType }) {
 
     try {
       await apiPost<unknown, ClaimInviteInput>("/api/invite/claim", body);
-      setSuccess(true);
     } catch (e) {
       // Submit failures (expired link, server error) are system-level, not
       // field-correctable, so they surface as a toast per the error-display
@@ -168,27 +177,51 @@ function ClaimForm({ token, type }: { token: string; type: InviteType }) {
       toast.error(
         errorMessage(e, isReset ? "Failed to reset password" : "Failed to create account")
       );
-    } finally {
       setLoading(false);
+      return;
     }
+
+    // The account exists and the password is known, so sign in right away
+    // instead of sending the person to /login to type both again (#1265).
+    // Through the ordinary sign-in endpoint on purpose: its rate limit, the
+    // deactivation hook and the session cookie stay exactly as on /login.
+    // If it fails for any reason, the success screen still says what to
+    // sign in with, which is where this page used to stop anyway.
+    try {
+      const { data, error } = await authClient.signIn.email({ email, password: values.password });
+      if (!error && data) {
+        await enterAccount(data.user.id, "/");
+        return;
+      }
+      if (error?.status === 403) setCannotSignIn(true);
+    } catch {
+      // Fall through to the success screen.
+    }
+    setSuccess(true);
+    setLoading(false);
   }
 
   if (success) {
-    const copy = isReset ? SUCCESS_COPY.reset : SUCCESS_COPY.invite;
     return (
       <>
         <CardHeader className="text-center">
           <div className="flex justify-center mb-2">
             <CheckCircle2 className="size-12 text-primary" />
           </div>
-          <CardTitle>{copy.title}</CardTitle>
-          <CardDescription>{copy.description}</CardDescription>
+          <CardTitle>{SUCCESS_TITLE[type]}</CardTitle>
+          <CardDescription>
+            {cannotSignIn
+              ? "This account can't sign in. Please contact your administrator."
+              : successDescription(email)}
+          </CardDescription>
         </CardHeader>
-        <CardContent>
-          <Button onClick={() => router.push("/login")} className="w-full">
-            Continue to sign in
-          </Button>
-        </CardContent>
+        {!cannotSignIn && (
+          <CardContent>
+            <Button onClick={() => router.push("/login")} className="w-full">
+              Continue to sign in
+            </Button>
+          </CardContent>
+        )}
       </>
     );
   }
@@ -197,12 +230,27 @@ function ClaimForm({ token, type }: { token: string; type: InviteType }) {
   return (
     <>
       <CardHeader>
-        <CardTitle>{copy.title}</CardTitle>
+        <CardTitle>{isReset ? copy.title : inviteTitle(invitedBy)}</CardTitle>
         <CardDescription>{copy.description}</CardDescription>
       </CardHeader>
       <CardContent>
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} method="post" className="space-y-6">
+            {/* Not a form field: the invite fixes the address, and the claim
+                never sends it. `autoComplete="username"` lets a password
+                manager store the new password against it. */}
+            <div className="grid gap-2">
+              <Label htmlFor="invite-email">Email</Label>
+              <Input
+                id="invite-email"
+                type="email"
+                value={email}
+                readOnly
+                autoComplete="username"
+                className="bg-muted"
+              />
+            </div>
+
             {!isReset && (
               <FormField
                 control={form.control}
@@ -225,19 +273,8 @@ function ClaimForm({ token, type }: { token: string; type: InviteType }) {
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Password</FormLabel>
-                  <PasswordInput {...field} />
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <FormField
-              control={form.control}
-              name="confirmPassword"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Confirm password</FormLabel>
-                  <PasswordInput {...field} />
+                  <PasswordInput autoComplete="new-password" {...field} />
+                  <FormDescription>{PASSWORD_RULE_HINT}</FormDescription>
                   <FormMessage />
                 </FormItem>
               )}

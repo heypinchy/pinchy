@@ -1,6 +1,6 @@
 /**
  * Pure logic for the docs-review hook (see scripts/hooks/require-docs-review.mjs
- * for the Claude Code `PreToolUse` wrapper and AGENTS.md § "Some Docs Checks
+ * for the Claude Code `PreToolUse` wrapper and agent-rules/docs.md § "Some Docs Checks
  * Can Only Be Read, Not Run").
  *
  * The `review-docs` skill was, on arrival, exactly the thing this repo keeps

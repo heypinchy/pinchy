@@ -50,7 +50,7 @@ export const AUTOMATION_MAX_CONNECTIONS = 50;
  * Request schema for POST /api/automations — the single write path for the
  * Inbox Agent's email workflows (design §5). Both the Automations form (#139)
  * and the conversational create tool (#705) send this exact shape, so the
- * route, the client, and the tool share one contract (AGENTS.md, "Shared
+ * route, the client, and the tool share one contract (agent-rules/web-routes.md, "Shared
  * Schemas And Typed Client").
  *
  * The route always writes the workflow `pending` + `disabled` regardless of

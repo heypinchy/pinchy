@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
+import { jsonResponse } from "@/test-helpers/fetch";
 import { UsageDashboard, shouldShowDots } from "@/components/usage-dashboard";
 
 // recharts uses ResponsiveContainer which needs dimensions — mock it
@@ -74,10 +75,7 @@ describe("UsageDashboard", () => {
     vi.mocked(global.fetch).mockImplementation((url) => {
       const urlStr = String(url);
       if (urlStr.includes("/api/enterprise/status")) {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({ enterprise: enterpriseOverride ?? false }),
-        } as Response);
+        return Promise.resolve(jsonResponse({ enterprise: enterpriseOverride ?? false }));
       }
       if (urlStr.includes("/api/usage/summary")) {
         return Promise.resolve({
@@ -596,10 +594,7 @@ describe("UsageDashboard", () => {
       vi.mocked(global.fetch).mockImplementation((url) => {
         const urlStr = String(url);
         if (urlStr.includes("/api/enterprise/status")) {
-          return Promise.resolve({
-            ok: true,
-            json: async () => ({ enterprise: true }),
-          } as Response);
+          return Promise.resolve(jsonResponse({ enterprise: true }));
         }
         if (urlStr.includes("/api/usage/summary")) {
           return Promise.resolve({
@@ -677,10 +672,7 @@ describe("UsageDashboard", () => {
       vi.mocked(global.fetch).mockImplementation((url) => {
         const urlStr = String(url);
         if (urlStr.includes("/api/enterprise/status")) {
-          return Promise.resolve({
-            ok: true,
-            json: async () => ({ enterprise: true }),
-          } as Response);
+          return Promise.resolve(jsonResponse({ enterprise: true }));
         }
         if (urlStr.includes("/api/usage/summary")) {
           return Promise.resolve({
@@ -772,6 +764,37 @@ describe("UsageDashboard", () => {
 
       const exportBtn = screen.getByRole("button", { name: "Export CSV" });
       expect(exportBtn).toBeEnabled();
+    });
+
+    // The server already rendered the right answer. A status refetch that
+    // fails (restart, dropped connection) must not downgrade it to community.
+    it.each([
+      ["rejects", () => Promise.reject(new TypeError("Failed to fetch"))],
+      [
+        "answers 500",
+        () => Promise.resolve(jsonResponse({ error: "Internal Server Error" }, { status: 500 })),
+      ],
+    ])("keeps enterprise features when the status refetch %s", async (_label, statusResponse) => {
+      mockBothEndpoints(undefined, undefined, true);
+      const base = vi.mocked(global.fetch).getMockImplementation()!;
+      vi.mocked(global.fetch).mockImplementation((url, init) =>
+        String(url).includes("/api/enterprise/status") ? statusResponse() : base(url, init)
+      );
+      render(<UsageDashboard isEnterprise />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText("Smithers").length).toBeGreaterThan(0);
+      });
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith("/api/enterprise/status", expect.anything());
+      });
+      // Let the failed status response settle before asserting it changed nothing.
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 20));
+      });
+
+      expect(screen.getByRole("button", { name: "Export CSV" })).toBeEnabled();
+      expect(screen.queryByText("Enterprise feature")).not.toBeInTheDocument();
     });
 
     it("should use correct URL for export button", async () => {
@@ -1044,10 +1067,7 @@ describe("UsageDashboard", () => {
     vi.mocked(global.fetch).mockImplementation((url) => {
       const urlStr = String(url);
       if (urlStr.includes("/api/enterprise/status")) {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({ enterprise: false }),
-        } as Response);
+        return Promise.resolve(jsonResponse({ enterprise: false }));
       }
       if (urlStr.includes("/api/usage/summary")) {
         return Promise.resolve({
@@ -1089,10 +1109,7 @@ describe("UsageDashboard", () => {
     vi.mocked(global.fetch).mockImplementation((url) => {
       const urlStr = String(url);
       if (urlStr.includes("/api/enterprise/status")) {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({ enterprise: false }),
-        } as Response);
+        return Promise.resolve(jsonResponse({ enterprise: false }));
       }
       if (urlStr.includes("/api/usage/summary")) {
         callCount++;

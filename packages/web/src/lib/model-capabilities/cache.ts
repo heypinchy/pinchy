@@ -2,11 +2,22 @@ import { db } from "@/db";
 import { models } from "@/db/schema";
 import type { ModelCapability } from "@/lib/model-resolver/types";
 import type { ModelCapabilities } from "@/lib/model-capabilities/types";
+import { hasFields, processWideCache } from "@/lib/process-wide-cache";
 
 export type { ModelCapabilities } from "@/lib/model-capabilities/types";
 
-let cache: Map<string, ModelCapabilities> | null = null;
-let warnedAboutUnloadedCache = false;
+// Process-wide (see process-wide-cache.ts): a regenerate reads it (the vision
+// chain), and the module instance that reloads it after a capability upsert is
+// not always the one that runs the regenerate.
+const state = () =>
+  processWideCache<{
+    cache: Map<string, ModelCapabilities> | null;
+    warnedAboutUnloadedCache: boolean;
+  }>(
+    "__pinchyModelCapabilityCache",
+    () => ({ cache: null, warnedAboutUnloadedCache: false }),
+    hasFields("cache", "warnedAboutUnloadedCache")
+  );
 
 export async function loadModelCapabilityCache(): Promise<void> {
   const rows = await db.select().from(models);
@@ -18,8 +29,9 @@ export async function loadModelCapabilityCache(): Promise<void> {
       tools: r.tools ?? false,
     });
   }
-  cache = next;
-  warnedAboutUnloadedCache = false;
+  const s = state();
+  s.cache = next;
+  s.warnedAboutUnloadedCache = false;
 }
 
 /**
@@ -29,23 +41,25 @@ export async function loadModelCapabilityCache(): Promise<void> {
  * sequence completes, or a test setup path).
  */
 export async function ensureModelCapabilityCacheLoaded(): Promise<void> {
-  if (cache === null) {
+  if (state().cache === null) {
     await loadModelCapabilityCache();
   }
 }
 
 export function invalidateModelCapabilityCache(): void {
-  cache = null;
+  state().cache = null;
 }
 
 export function getModelCapabilities(qualifiedModelId: string): ModelCapabilities | null {
+  const s = state();
+  const cache = s.cache;
   if (cache === null) {
-    if (!warnedAboutUnloadedCache) {
+    if (!s.warnedAboutUnloadedCache) {
       console.warn(
         "[pinchy] Model capability cache queried before load — returning null. " +
           "Call ensureModelCapabilityCacheLoaded() during boot or before this check."
       );
-      warnedAboutUnloadedCache = true;
+      s.warnedAboutUnloadedCache = true;
     }
     return null;
   }

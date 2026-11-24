@@ -1,20 +1,14 @@
 import { NextResponse } from "next/server";
 import { withAuth } from "@/lib/api-auth";
-import { readFileSync } from "fs";
+import { listDataMounts } from "@/lib/data-subdirectories";
 
-const DATA_DIRECTORIES_JSON = "/openclaw-config/data-directories.json";
-
+/**
+ * GET /api/data-directories — the folders directly under `/data`, for the
+ * directory picker's top level.
+ *
+ * Read live on every request (see listDataMounts): a list cached at start-up
+ * kept offering a mount after it was renamed or deleted (#1363).
+ */
 export const GET = withAuth(async () => {
-  try {
-    const json = readFileSync(DATA_DIRECTORIES_JSON, "utf-8");
-    const data = JSON.parse(json);
-    return NextResponse.json({ directories: data.directories });
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException)?.code;
-    if (code !== "ENOENT") {
-      const message = err instanceof Error ? err.message : String(err);
-      console.warn("[data-directories]", `failed to read ${DATA_DIRECTORIES_JSON}:`, message);
-    }
-    return NextResponse.json({ directories: [] });
-  }
+  return NextResponse.json({ directories: await listDataMounts() });
 });

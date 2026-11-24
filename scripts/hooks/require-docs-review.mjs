@@ -8,7 +8,7 @@
  * arrives as an instruction the agent can act on rather than an error.
  *
  * This is the trigger the `review-docs` skill was missing. Without it the skill
- * is a sentence in AGENTS.md, and this repo has measured what those are worth.
+ * is a sentence in agent-rules/docs.md, and this repo has measured what those are worth.
  *
  * Fails OPEN. A hook that breaks must not make it impossible to open a pull
  * request — if git is unreachable or the payload is malformed, the honest

@@ -11,7 +11,7 @@
 // in ./plugin-tool-extraction and its unit tests in
 // ./plugin-tool-coverage-skips.test.ts.
 //
-// See AGENTS.md § "Tool dispatch coverage" for the developer recipe.
+// See agent-rules/plugins.md § "Tool dispatch coverage" for the developer recipe.
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -84,7 +84,7 @@ describe("plugin-tool-coverage", () => {
           `assertion never runs, so it proves nothing. Un-skip it or write one`,
           `that runs.`,
           ``,
-          `See AGENTS.md § "Tool dispatch coverage" for the full recipe.`,
+          `See agent-rules/plugins.md § "Tool dispatch coverage" for the full recipe.`,
         ].join("\n")
       ).not.toHaveLength(0);
     });

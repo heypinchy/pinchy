@@ -4,159 +4,17 @@
  */
 
 import { lookup as dnsLookup } from "node:dns/promises";
+// The address table is shared with `web_fetch`, and its canonical copy lives in
+// the pinchy-web plugin (a plugin can import nothing outside itself; web can).
+// Two lists would drift -- they did: neither knew 100.64.0.0/10. Import-free by
+// design; see ip-address.ts.
+import { classifyIpAddress, type IpAddressClass } from "../../../../plugins/pinchy-web/ip-address";
+
+import { toPinnedTarget, type PinnedTarget } from "@/lib/pinned-connection";
+
+export { classifyIpAddress, type IpAddressClass };
 
 const PRIVATE_HOSTNAMES = new Set(["localhost", "localhost.", "ip6-localhost", "ip6-loopback"]);
-
-/**
- * What an IP address can reach. The categories are split finer than
- * "private or not" because callers weigh them differently: the mail-host
- * guard (see mail-host-guard.ts) blocks loopback/link-local/unspecified
- * unconditionally but lets an operator opt into `private`, since an
- * on-premise mail server legitimately lives on an RFC-1918 range.
- */
-export type IpAddressClass = "loopback" | "unspecified" | "link-local" | "private" | "public";
-
-/**
- * Parses a dotted-quad IPv4 literal into its four octets, or null if the
- * string isn't one. Deliberately strict — decimal digits only — so legacy
- * encodings ("0x7f.0.0.1", "2130706433") are NOT silently accepted as
- * IPv4 here. Both callers normalize before this point: `URL` rewrites those
- * forms to dotted-quad, and the mail-host guard classifies the addresses
- * getaddrinfo resolved rather than the raw input.
- */
-function parseIPv4(address: string): number[] | null {
-  const parts = address.split(".");
-  if (parts.length !== 4) return null;
-
-  const octets: number[] = [];
-  for (const part of parts) {
-    if (!/^\d{1,3}$/.test(part)) return null;
-    const octet = Number(part);
-    if (octet > 255) return null;
-    octets.push(octet);
-  }
-  return octets;
-}
-
-/**
- * Parses an IPv6 literal into its eight 16-bit groups, or null if the string
- * isn't one. Handles "::" compression, an embedded IPv4 tail
- * ("::ffff:127.0.0.1"), a zone identifier ("fe80::1%eth0") and surrounding
- * brackets.
- */
-function parseIPv6(address: string): number[] | null {
-  // Strip brackets and any zone id — neither changes which host is reached.
-  const addr = address
-    .replace(/^\[|\]$/g, "")
-    .split("%")[0]
-    .toLowerCase();
-  if (!addr.includes(":")) return null;
-
-  const [head, tail, ...extra] = addr.split("::");
-  if (extra.length > 0) return null; // "::" may appear at most once
-
-  const parseGroups = (segment: string): number[] | null => {
-    if (segment === "") return [];
-    const groups: number[] = [];
-    const parts = segment.split(":");
-    for (const [index, part] of parts.entries()) {
-      // An embedded IPv4 tail is only legal as the very last part.
-      if (part.includes(".")) {
-        if (index !== parts.length - 1) return null;
-        const octets = parseIPv4(part);
-        if (!octets) return null;
-        groups.push((octets[0] << 8) | octets[1], (octets[2] << 8) | octets[3]);
-        continue;
-      }
-      if (!/^[0-9a-f]{1,4}$/.test(part)) return null;
-      groups.push(parseInt(part, 16));
-    }
-    return groups;
-  };
-
-  const headGroups = parseGroups(head);
-  if (!headGroups) return null;
-
-  if (tail === undefined) {
-    return headGroups.length === 8 ? headGroups : null;
-  }
-
-  const tailGroups = parseGroups(tail);
-  if (!tailGroups) return null;
-
-  const missing = 8 - headGroups.length - tailGroups.length;
-  if (missing < 1) return null; // "::" must stand for at least one group
-  return [...headGroups, ...Array(missing).fill(0), ...tailGroups];
-}
-
-function classifyIPv4(octets: number[]): IpAddressClass {
-  const [a, b] = octets;
-
-  // 0.0.0.0/8 — "this network"; 0.0.0.0 itself routes to the local host
-  if (a === 0) return "unspecified";
-  // 127.0.0.0/8 — loopback
-  if (a === 127) return "loopback";
-  // 169.254.0.0/16 — link-local (cloud metadata lives at 169.254.169.254)
-  if (a === 169 && b === 254) return "link-local";
-  // 10.0.0.0/8 — class A private
-  if (a === 10) return "private";
-  // 172.16.0.0/12 — class B private
-  if (a === 172 && b >= 16 && b <= 31) return "private";
-  // 192.168.0.0/16 — class C private
-  if (a === 192 && b === 168) return "private";
-
-  return "public";
-}
-
-/**
- * Rewrites an IP address literal into a single canonical spelling — dotted-quad
- * for IPv4, eight zero-padded hex groups for IPv6 — or returns null when the
- * string isn't an address. Lets callers compare against a specific address
- * ("fd00:ec2::254") without having to enumerate its spellings.
- */
-export function canonicalizeIpAddress(address: string): string | null {
-  const octets = parseIPv4(address);
-  if (octets) return octets.join(".");
-
-  const groups = parseIPv6(address);
-  if (!groups) return null;
-
-  return groups.map((group) => group.toString(16).padStart(4, "0")).join(":");
-}
-
-/**
- * Classifies an IP address literal, or returns null when the string isn't one
- * (a DNS name, a typo, an empty string). Callers that must decide about a
- * hostname have to resolve it first — this function never touches DNS.
- */
-export function classifyIpAddress(address: string): IpAddressClass | null {
-  const octets = parseIPv4(address);
-  if (octets) return classifyIPv4(octets);
-
-  const groups = parseIPv6(address);
-  if (!groups) return null;
-
-  if (groups.every((group) => group === 0)) return "unspecified";
-  if (groups.slice(0, 7).every((group) => group === 0) && groups[7] === 1) return "loopback";
-
-  // Both forms that carry an IPv4 address in the low 32 bits: IPv4-mapped
-  // (::ffff:a.b.c.d) and the deprecated IPv4-compatible (::a.b.c.d). Classify
-  // the address they name rather than the wrapper — `URL` hands the latter over
-  // as "[::7f00:1]", which reads as an ordinary public IPv6 address. Nothing
-  // public lives in ::/96 either way, so decoding the tail can only be safer.
-  const embedsIPv4 =
-    groups.slice(0, 5).every((group) => group === 0) && (groups[5] === 0xffff || groups[5] === 0);
-  if (embedsIPv4) {
-    return classifyIPv4([groups[6] >> 8, groups[6] & 0xff, groups[7] >> 8, groups[7] & 0xff]);
-  }
-
-  // fc00::/7 — unique local addresses
-  if ((groups[0] & 0xfe00) === 0xfc00) return "private";
-  // fe80::/10 — link-local (spans fe80 through febf)
-  if ((groups[0] & 0xffc0) === 0xfe80) return "link-local";
-
-  return "public";
-}
 
 /**
  * Returns true if the given URL string targets a private/internal address.
@@ -206,7 +64,14 @@ function classifyHostname(hostname: string): IpAddressClass | null {
   return classifyIpAddress(hostname);
 }
 
-type ValidationResult = { valid: true; url: string } | { valid: false; error: string };
+/**
+ * A refusal says why. `transient` marks the one kind that is not a verdict on
+ * the URL at all: the resolver itself failed (timeout, SERVFAIL, resolver
+ * unreachable), so the same URL may pass a moment later. Callers answer it as
+ * "try again", never as "blocked", and never as a security event.
+ */
+type Refusal = { valid: false; error: string; transient?: true };
+type ValidationResult = { valid: true; url: string } | Refusal;
 
 /** Resolves a hostname to all of its A/AAAA addresses. Injected in tests. */
 export type UrlHostResolver = (host: string) => Promise<string[]>;
@@ -217,15 +82,30 @@ const defaultUrlHostResolver: UrlHostResolver = async (host) => {
 };
 
 // Two messages, because the two cases deserve different advice. Loopback,
-// link-local (cloud metadata) and the unspecified address are never a real
+// link-local (cloud metadata), the unspecified address and the reserved
+// special-purpose ranges (multicast, TEST-NETs, 240/4, ...) are never a real
 // Odoo server, so there is nothing to trade off and nothing to suggest. An
-// RFC-1918 / ULA address, on the other hand, is exactly where an on-premise
+// RFC-1918 / ULA / CGNAT (Tailscale) / 198.18/15 address, on the other hand, is exactly where an on-premise
 // Odoo legitimately lives — so that one names the way to allow it. Same split
 // as `mail-host-guard.ts`; both strings keep the word "private" so a caller
 // asserting on it stays honest.
 const INTERNAL_NETWORK_ERROR =
-  "Blocked: this URL targets a loopback, link-local or cloud-metadata address, " +
-  "which is never a private Odoo server.";
+  "Blocked: this URL targets a loopback, link-local, cloud-metadata or otherwise reserved " +
+  "address, which is never a private Odoo server.";
+
+const unresolvableError = (host: string) =>
+  `Could not resolve the host name "${host}". Check the URL for a typo.`;
+
+const transientError = (host: string) =>
+  `The DNS lookup for "${host}" failed temporarily. Try again in a moment.`;
+
+/**
+ * The resolver codes that mean "this name has no answer": not found, no data,
+ * or EAI_FAIL (a non-recoverable failure — retrying will not help). Anything
+ * else `dns.lookup` yields (EAI_AGAIN, EAI_MEMORY, EAI_SYSTEM) or a code we do
+ * not know says nothing about the name and is reported as temporary.
+ */
+export const NO_ANSWER_CODES: ReadonlySet<string> = new Set(["ENOTFOUND", "ENODATA", "EAI_FAIL"]);
 
 const PRIVATE_NETWORK_ERROR =
   "Blocked: this URL targets a private network address. " +
@@ -240,11 +120,24 @@ function blockMessageFor(addressClass: IpAddressClass): string {
  * Validates a user-supplied URL for server-side requests.
  * Returns the normalized origin or an error message.
  *
- * Set env var ALLOW_PRIVATE_URLS=1 to bypass private IP checks entirely
- * (useful for Docker dev/test environments with internal service hostnames,
- * e.g. the odoo-e2e and eval stacks reaching odoo-mock on the Docker-internal
- * network). The bypass short-circuits before any check below, including DNS
- * resolution.
+ * Two tiers, the same as `mail-host-guard.ts`:
+ *
+ *   - Always refused: loopback, unspecified, link-local (cloud metadata,
+ *     including 100.100.100.200, Azure's WireServer 168.63.129.16 and the
+ *     EC2/EKS/GCP/OCI addresses inside ULA), and the reserved
+ *     special-purpose ranges. No Odoo server lives there.
+ *   - Refused unless `ALLOW_PRIVATE_URLS=1`: the `private` class — RFC-1918,
+ *     ULA, CGNAT (Tailscale), 198.18/15. That is where an on-premise Odoo lives, and also
+ *     where the odoo-e2e and eval stacks reach odoo-mock on the Docker network.
+ *
+ * The flag opens that one class and nothing else. It used to switch the whole
+ * check off, which turned "my Odoo is on the tailnet" into "an Odoo admin can
+ * reach 127.0.0.1 and the metadata services". Loopback and metadata are now
+ * closed whatever is set. The services on the compose network are not: with
+ * the flag set, `http://openclaw:18789` and `http://db:5432` resolve to bridge
+ * addresses, which are `private` like any LAN host, so they are as reachable
+ * as the on-premise Odoo the flag is for. With the flag set, a DNS name is
+ * still resolved and classified.
  *
  * A hostname that is an IP literal, or one of the well-known private names
  * (`localhost`, …), is classified from the string alone via `classifyHostname`
@@ -254,20 +147,54 @@ function blockMessageFor(addressClass: IpAddressClass): string {
  * metadata) or an RFC-1918 address can't sneak past a check that only ever
  * read the hostname string.
  *
- * What this does NOT cover is rebinding between the two lookups: the address
- * is classified here, and the eventual Odoo request resolves the name again.
- * Closing that would mean pinning the connection to the address we checked,
- * the same caveat `mail-host-guard.ts` carries for imapflow/nodemailer.
+ * What this does NOT cover is rebinding between this lookup and the request
+ * that follows: the address is classified here, and whoever connects next
+ * resolves the name again. A caller that makes the request itself uses
+ * {@link resolveExternalUrlTarget} and pins it (odoo-node included, through
+ * `withPinnedOdoo`). A caller that only stores the URL, or hands it to
+ * pinchy-odoo — which resolves the stored URL inside the OpenClaw container
+ * for every tool call — keeps the window.
  *
- * Fails open on DNS resolution failure: a name that doesn't resolve can't be
- * classified, and the far more likely cause is a typo — blocking it here
- * would misreport a config mistake as a security error, and the subsequent
- * fetch fails naturally anyway.
+ * Fails CLOSED on DNS resolution failure: a name that doesn't resolve can't be
+ * classified, and a lookup that fails here but answers for whoever connects
+ * next is a way past the check. The message names the host name, so a typo
+ * still reads as one.
  */
 export async function validateExternalUrl(
   urlString: string,
   resolver: UrlHostResolver = defaultUrlHostResolver
 ): Promise<ValidationResult> {
+  const checked = await checkExternalUrl(urlString, resolver);
+  if (!checked.valid) return checked;
+  return { valid: true, url: checked.url };
+}
+
+/**
+ * {@link validateExternalUrl} for a caller that makes the request itself: the
+ * verdict plus the addresses it classified, so the request can be pinned to
+ * them (`pinnedFetch`) instead of resolving the name a second time.
+ *
+ * Every address is returned, since every one was checked — the connector can
+ * still fall back between them.
+ */
+export async function resolveExternalUrlTarget(
+  urlString: string,
+  resolver: UrlHostResolver = defaultUrlHostResolver
+): Promise<{ valid: true; url: string; target: PinnedTarget } | Refusal> {
+  const checked = await checkExternalUrl(urlString, resolver);
+  if (!checked.valid) return checked;
+  return { valid: true, url: checked.url, target: toPinnedTarget(checked.addresses) };
+}
+
+/**
+ * The shared check: a refusal, or the origin plus every address it reaches —
+ * the literal itself or the resolver's answers. A name with no answer, and a
+ * lookup that failed, are both refusals (the second marked `transient`).
+ */
+async function checkExternalUrl(
+  urlString: string,
+  resolver: UrlHostResolver
+): Promise<{ valid: true; url: string; addresses: string[] } | Refusal> {
   let url: URL;
   try {
     url = new URL(urlString);
@@ -284,36 +211,50 @@ export async function validateExternalUrl(
   }
 
   const allowPrivate = process.env.ALLOW_PRIVATE_URLS === "1";
-  if (!allowPrivate) {
-    const hostname = url.hostname;
-    // Address literal or well-known private name: decided from the string
-    // alone, no DNS involved.
-    const hostClass = classifyHostname(hostname);
-    if (hostClass !== null) {
-      if (hostClass !== "public") {
-        return { valid: false, error: blockMessageFor(hostClass) };
+  /** The refusal for this address class, or null when it may be reached. */
+  const refusalFor = (addressClass: IpAddressClass | null): string | null => {
+    if (addressClass === null || addressClass === "public") return null;
+    if (addressClass === "private" && allowPrivate) return null;
+    return blockMessageFor(addressClass);
+  };
+
+  const hostname = url.hostname;
+  let addresses: string[];
+  // Address literal or well-known private name: decided from the string
+  // alone, no DNS involved.
+  const hostClass = classifyHostname(hostname);
+  if (hostClass !== null) {
+    const refusal = refusalFor(hostClass);
+    if (refusal !== null) return { valid: false, error: refusal };
+    // A literal is already fully classified — DNS has nothing to add. (Every
+    // well-known name is loopback and refused above, so this is a literal.)
+    addresses = [hostname];
+  } else {
+    // A genuine DNS name. The address it points at is what actually gets
+    // connected to, so resolve it and classify every answer: a name aimed at
+    // 169.254.169.254 (cloud metadata) or an RFC-1918 address must not walk
+    // past a check that only ever read the hostname string.
+    try {
+      addresses = await resolver(hostname);
+    } catch (err) {
+      const code = (err as { code?: unknown } | null)?.code;
+      if (typeof code === "string" && NO_ANSWER_CODES.has(code)) {
+        addresses = [];
+      } else {
+        return { valid: false, transient: true, error: transientError(hostname) };
       }
-      // A public literal is already fully classified — DNS has nothing to add.
-    } else {
-      // A genuine DNS name. The address it points at is what actually gets
-      // connected to, so resolve it and classify every answer: a name aimed at
-      // 169.254.169.254 (cloud metadata) or an RFC-1918 address must not walk
-      // past a check that only ever read the hostname string.
-      let addresses: string[];
-      try {
-        addresses = await resolver(hostname);
-      } catch {
-        addresses = []; // unresolvable name — fail open, see doc-comment above
-      }
-      for (const address of addresses) {
-        const addressClass = classifyIpAddress(address);
-        if (addressClass !== null && addressClass !== "public") {
-          return { valid: false, error: blockMessageFor(addressClass) };
-        }
-      }
+    }
+    // A name with no answer cannot be classified, so it is refused. Letting it
+    // through trades a typo's clearer error for a hole: whoever connects next
+    // does its own lookup, and a resolver that fails the check's and answers
+    // the connect's gets an address nobody looked at.
+    if (addresses.length === 0) return { valid: false, error: unresolvableError(hostname) };
+    for (const address of addresses) {
+      const refusal = refusalFor(classifyIpAddress(address));
+      if (refusal !== null) return { valid: false, error: refusal };
     }
   }
 
   // Return normalized origin (scheme + host + port, no path/query)
-  return { valid: true, url: url.origin };
+  return { valid: true, url: url.origin, addresses };
 }

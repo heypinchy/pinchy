@@ -23,9 +23,13 @@
 // `config.get`-based readiness gates CANNOT close this race: `config.get` reads
 // the FILE, which leads the applied runtime, so a file-based gate reports
 // "ready" while the dispatch handler still rejects. The reliable signal is OC's
-// `agents.list` RPC (openclaw-node >= 0.12.0): verified against OC 2026.5.28,
-// it reads the SAME `getRuntimeConfig()` view the dispatch handler checks, so
-// once an id appears there a dispatch will not be rejected. We therefore prefer
+// `agents.list` RPC (openclaw-node >= 0.12.0): it reads the SAME
+// `getRuntimeConfig()` view the dispatch handler checks (re-verified against OC
+// 2026.7.1). It also lists agent directories from disk while the runtime list is
+// empty, so the gate filters it to the ids dispatch accepts
+// (`dispatchableAgentIds`). And should the gate still say "ready" for a dispatch
+// that then races, the loop stops trusting it and backs off instead of
+// re-dispatching at wire speed (see `gateTrusted` below). We therefore prefer
 // a DETERMINISTIC GATE — poll `agents.list` until the agent is present (the
 // injected `awaitAgentReady` dep, backed by `agent-readiness.ts`) — and only
 // fall back to blind exponential backoff when the gate is absent or
@@ -159,7 +163,11 @@ export interface DispatchRetryDeps {
    * backoff sleep, then re-dispatches. It should resolve:
    *   - `true`  → the target agent is now present in OpenClaw's RUNTIME
    *               `agents.list` (the same view the dispatch handler checks), so
-   *               the next dispatch will land; retry immediately, no sleep.
+   *               the next dispatch should land; retry immediately, no sleep.
+   *               Trusted until contradicted: if that retry hits the agent
+   *               race again, later retries use the capped backoff whatever
+   *               the gate says. (A model race does not contradict it — the
+   *               agent was accepted.)
    *   - `false` → readiness could not be confirmed within the window (timeout,
    *               or unobservable on an older Gateway without `agents.list`); the
    *               wrapper falls back to its capped blind backoff so the bounded
@@ -171,6 +179,27 @@ export interface DispatchRetryDeps {
    * where `config.get` is not.
    */
   awaitAgentReady?: (budgetMs: number) => Promise<boolean>;
+  /**
+   * Has this run been stopped (the stop button, or deactivation) since it was
+   * dispatched? Checked between attempts only: after a race error, after the
+   * readiness gate and after every backoff — never while an attempt streams,
+   * because a run that is actually running is OpenClaw's to end.
+   *
+   * Between attempts nothing is running on OpenClaw, so the abort for this
+   * still-pending run (`abortSessionRun`, by session only) answers
+   * `aborted: false` and stops nothing. Without this check the next attempt
+   * would dispatch the very reply that was just stopped — tools included, up
+   * to `maxTotalMs` later. When it reports true the wrapper returns without
+   * calling `chat()` again and without yielding the race error: the run was
+   * ended on purpose, not by the agent failing.
+   */
+  shouldStop?: () => boolean;
+  /**
+   * Called once when the wrapper returns because `shouldStop` reported the run
+   * stopped — awaited before it returns, so the caller can record that the
+   * stop took effect.
+   */
+  onStopped?: () => Promise<void> | void;
 }
 
 /**
@@ -188,6 +217,8 @@ export interface DispatchRetryDeps {
  *   - Never retries on errors arriving AFTER model output has started, or on any
  *     error not matching a dispatch-race pattern — those are real downstream
  *     failures the caller's error path must handle.
+ *   - Stops without another dispatch, and without yielding anything, once
+ *     `shouldStop` reports the run stopped between attempts.
  *
  * Why "before model output" and not "first chunk": a client-originated message
  * carries a `clientMessageId`, so OpenClaw ACKs an accepted dispatch with a
@@ -209,7 +240,28 @@ export async function* chatWithDispatchRaceRetry(
   const delay = deps.delay ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const now = deps.now ?? Date.now;
 
+  const stopped = async (): Promise<boolean> => {
+    if (!deps.shouldStop?.()) return false;
+    await deps.onStopped?.();
+    return true;
+  };
+
   const start = now();
+  // The readiness gate earns an immediate re-dispatch only until a dispatch
+  // contradicts it. If the gate said "ready" and the very next dispatch hit the
+  // agent race again (a model race does not count: OC accepted the agent),
+  // either the gate is reading a different view than the dispatch
+  // handler (see agent-readiness.ts: OC 2026.7.1's `agents.list` lists agent
+  // directories from disk while the runtime agents.list is empty) or the
+  // runtime changed again in between (another restart or config.apply). In the
+  // first case every further "ready" would be an instant retry — CI run
+  // 41569393728 sent ~4,800 dispatches in 19 s that way. Either way, for the
+  // rest of this call the loop skips the gate and uses the capped backoff. A
+  // later genuine "ready" then costs up to `maxDelayMs` per retry instead of a
+  // 500 ms poll: bounded, and far cheaper than trusting a gate whose last
+  // answer was contradicted.
+  let gateTrusted = true;
+  let lastRetryWasGateReady = false;
   for (let attempt = 0; ; attempt++) {
     const stream = deps.chat(message, options);
     // Real model output yielded yet this attempt? Leading ack/lifecycle chunks
@@ -254,6 +306,9 @@ export async function* chatWithDispatchRaceRetry(
       deps.onDispatchRaceObserved?.({ providerError: raceError.text, attempt });
     }
 
+    // Stopped while this attempt was being turned away: nothing to wait for.
+    if (await stopped()) return;
+
     const elapsed = now() - start;
     const remaining = maxTotalMs - elapsed;
     if (remaining <= 0) {
@@ -263,8 +318,10 @@ export async function* chatWithDispatchRaceRetry(
     }
 
     // Deterministic readiness gate (preferred) — AGENT race only: poll OC's
-    // runtime agents.list (the same view the dispatch handler checks) until the
-    // agent is present, bounded by the remaining budget. On success, re-dispatch
+    // runtime agents.list (the same view the dispatch handler checks, filtered
+    // to the ids it accepts) until the agent is present, bounded by the
+    // remaining budget. Skipped for the rest of this call once a "ready" was
+    // contradicted (`gateTrusted`). On success, re-dispatch
     // immediately into a ready runtime instead of sleeping a backoff window.
     //
     // The MODEL race deliberately skips this gate: the agent is ALREADY present
@@ -272,9 +329,15 @@ export async function* chatWithDispatchRaceRetry(
     // return true and immediate-continue into a hot loop while the provider is
     // still unapplied. With no runtime-`models` introspection to gate on, the
     // model race relies on the capped backoff below.
-    if (raceKind === "agent" && deps.awaitAgentReady) {
+    if (raceKind === "agent" && lastRetryWasGateReady) gateTrusted = false;
+    lastRetryWasGateReady = false;
+    if (raceKind === "agent" && deps.awaitAgentReady && gateTrusted) {
       const ready = await deps.awaitAgentReady(remaining);
-      if (ready) continue;
+      if (await stopped()) return;
+      if (ready) {
+        lastRetryWasGateReady = true;
+        continue;
+      }
       // Not confirmed within the window (timeout, or unobservable on an older
       // Gateway). Fall through to the capped backoff so we keep making bounded
       // progress rather than hot-looping on a still-unready runtime.
@@ -290,5 +353,6 @@ export async function* chatWithDispatchRaceRetry(
     }
     const backoff = Math.min(baseDelayMs * 2 ** attempt, maxDelayMs);
     await delay(Math.min(backoff, remainingAfterGate));
+    if (await stopped()) return;
   }
 }

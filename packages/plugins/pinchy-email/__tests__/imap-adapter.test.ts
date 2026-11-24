@@ -36,6 +36,10 @@ const opts: ImapAdapterOptions = {
   username: "user@example.com",
   password: "app-pw",
   security: "tls",
+  // The addresses Pinchy checked for the two hosts (pinned-target.ts) — the
+  // adapter refuses to connect without them outside the mail-mock seam.
+  imapTarget: [{ address: "203.0.113.10", family: 4 }],
+  smtpTarget: [{ address: "203.0.113.11", family: 4 }],
 };
 
 // Shared mock ImapFlow client. Each test configures list/search/fetch return
@@ -518,6 +522,24 @@ describe("ImapAdapter mock env overrides", () => {
       })
     );
   });
+
+  it.each([
+    ["starttls", 143, true],
+    ["tls", 143, true],
+    ["none", 143, undefined],
+    ["tls", 993, undefined],
+  ] as const)(
+    "security=%s on IMAP port %i sets doSTARTTLS=%s (true = demanded, undefined = imapflow upgrades only if offered)",
+    async (security, imapPort, expected) => {
+      const adapter = new ImapAdapter({ ...opts, security, imapPort });
+      await adapter.list({});
+
+      const { ImapFlow } = await import("imapflow");
+      expect(ImapFlow).toHaveBeenLastCalledWith(
+        expect.objectContaining({ port: imapPort, doSTARTTLS: expected })
+      );
+    }
+  );
 
   it("overrides IMAP host/port and forces secure:false when IMAP_MOCK_HOST/PORT and the insecure flag are set", async () => {
     vi.stubEnv("IMAP_MOCK_HOST", "greenmail");
@@ -1203,6 +1225,67 @@ const SERVER_MAILBOXES_WITH_DRAFTS = [
   { path: "Sent Items", specialUse: "\\Sent", flags: new Set(["\\Sent"]) },
   { path: "Drafts", specialUse: "\\Drafts", flags: new Set(["\\Drafts"]) },
 ];
+
+// SKILL.md tells the model to write `Name <address>`. nodemailer is handed
+// the name and the address as an object, so it encodes the name (RFC 2047)
+// instead of re-parsing a string that is not ours to re-parse.
+describe("ImapAdapter named recipients", () => {
+  it("passes Name <address> to nodemailer as { name, address } on send", async () => {
+    const adapter = new ImapAdapter(opts);
+    await adapter.send({
+      to: "Jos\u00E9 M\u00FCller <jose@example.com>",
+      subject: "Hi",
+      body: "Hi",
+    });
+    expect(mockTransport.sendMail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: { name: "Jos\u00E9 M\u00FCller", address: "jose@example.com" },
+      })
+    );
+  });
+
+  // A quoted name with a comma is one mailbox — handed to nodemailer unquoted,
+  // as a name, so it cannot be split into two.
+  it("passes a quoted name with a comma to nodemailer as one name", async () => {
+    const adapter = new ImapAdapter(opts);
+    await adapter.send({ to: '"M\u00FCller, Hans" <hans@x.de>', subject: "Hi", body: "Hi" });
+    expect(mockTransport.sendMail).toHaveBeenCalledWith(
+      expect.objectContaining({ to: { name: "M\u00FCller, Hans", address: "hans@x.de" } })
+    );
+  });
+
+  it("writes a quoted name with a comma into a draft as one encoded mailbox", async () => {
+    mockClient.list.mockResolvedValue(SERVER_MAILBOXES_WITH_DRAFTS);
+    const adapter = new ImapAdapter(opts);
+    await adapter.draft({ to: '"M\u00FCller, Hans" <hans@x.de>', subject: "S", body: "B" });
+    const raw = mockClient.append.mock.calls[0][1];
+    const rawStr = Buffer.isBuffer(raw) ? raw.toString("utf-8") : String(raw);
+    const to = /^To: (.*)\r$/m.exec(rawStr)![1];
+    expect(to).toMatch(/^=\?UTF-8\?[BQ]\?[^\r\n]+\?= <hans@x\.de>$/);
+    expect(to.match(/@/g)).toHaveLength(1);
+  });
+
+  it("passes a bare address through unchanged", async () => {
+    const adapter = new ImapAdapter(opts);
+    await adapter.send({ to: "bob@example.com", subject: "Hi", body: "Hi" });
+    expect(mockTransport.sendMail).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "bob@example.com" })
+    );
+  });
+
+  it("writes an RFC 2047 encoded display name into a draft's To header", async () => {
+    mockClient.list.mockResolvedValue(SERVER_MAILBOXES_WITH_DRAFTS);
+    const adapter = new ImapAdapter(opts);
+    await adapter.draft({
+      to: "Jos\u00E9 M\u00FCller <jose@example.com>",
+      subject: "S",
+      body: "B",
+    });
+    const raw = mockClient.append.mock.calls[0][1];
+    const rawStr = Buffer.isBuffer(raw) ? raw.toString("utf-8") : String(raw);
+    expect(rawStr).toMatch(/^To: =\?UTF-8\?[BQ]\?[^\r\n]+\?= <jose@example\.com>\r$/m);
+  });
+});
 
 describe("ImapAdapter#draft", () => {
   it("appends a raw RFC822 message to the resolved DRAFTS path with the \\Draft flag", async () => {

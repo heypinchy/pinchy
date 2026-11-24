@@ -48,12 +48,14 @@ vi.mock("@/db", () => ({
 }));
 
 vi.mock("@/db/schema", () => ({
-  agents: { id: "id" },
+  agents: { id: "id", deletedAt: "deleted_at" },
   users: { id: "id" },
 }));
 
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((col, val) => ({ col, val })),
+  and: vi.fn((...conds) => ({ and: conds })),
+  isNull: vi.fn((col) => ({ isNull: col })),
 }));
 
 vi.mock("@/lib/budgets", () => ({
@@ -94,6 +96,24 @@ import { SessionCache } from "@/server/session-cache";
 
 interface MockWs extends WebSocket {
   sent: string[];
+}
+
+type MockWhere = { col: unknown; val: unknown } | { and: MockWhere[] } | { isNull: unknown };
+
+// Evaluates the where tree the drizzle-orm mock builds against a row, the way
+// the database would: eq compares the column, isNull needs it null, and an
+// unknown shape (e.g. an `or`) throws instead of passing silently.
+function matchesWhere(where: MockWhere, row: Record<string, unknown>): boolean {
+  if ("and" in where) return where.and.every((w) => matchesWhere(w, row));
+  if ("isNull" in where) return row[agentColumnKey(where.isNull)] == null;
+  if ("col" in where) return row[agentColumnKey(where.col)] === where.val;
+  throw new Error("unsupported where shape");
+}
+const COLUMN_KEYS: Record<string, string> = { id: "id", deleted_at: "deletedAt" };
+function agentColumnKey(col: unknown): string {
+  const key = COLUMN_KEYS[col as string];
+  if (!key) throw new Error(`unmapped column in where: ${String(col)}`);
+  return key;
 }
 
 function createMockWs(): MockWs {
@@ -169,6 +189,45 @@ describe("ClientRouter user-triggered abort (#550)", () => {
     expect(mockChatAbort).toHaveBeenCalledWith(SESSION_KEY, "run-xyz");
   });
 
+  it("still stops the caller's own run after the agent was deleted", async () => {
+    const deleted = { ...defaultAgent, deletedAt: new Date() };
+    mockFindFirst.mockImplementation(async ({ where }: { where: MockWhere }) =>
+      matchesWhere(where, deleted) ? deleted : null
+    );
+    const ws = createMockWs();
+    registerActiveRun(activeRuns, ws, "run-xyz");
+    const router = makeRouter();
+
+    await router.handleMessage(ws, { type: "abort", agentId: "agent-1" });
+
+    expect(mockChatAbort).toHaveBeenCalledWith(SESSION_KEY, "run-xyz");
+    expect(ws.sent.map((s) => JSON.parse(s))).not.toContainEqual({
+      type: "error",
+      message: "Agent not found",
+    });
+  });
+
+  it("still access-checks an abort for a deleted agent", async () => {
+    const deleted = { ...defaultAgent, deletedAt: new Date() };
+    mockFindFirst.mockImplementation(async ({ where }: { where: MockWhere }) =>
+      matchesWhere(where, deleted) ? deleted : null
+    );
+    mockAssertAgentAccess.mockImplementation(() => {
+      throw new Error("Access denied");
+    });
+    const ws = createMockWs();
+    registerActiveRun(activeRuns, ws, "run-xyz");
+    const router = makeRouter();
+
+    await router.handleMessage(ws, { type: "abort", agentId: "agent-1" });
+
+    expect(mockChatAbort).not.toHaveBeenCalled();
+    expect(ws.sent.map((s) => JSON.parse(s))).toContainEqual({
+      type: "error",
+      message: "Agent not found",
+    });
+  });
+
   it("emits a chat.run_aborted audit row (actor=user, outcome=success)", async () => {
     const ws = createMockWs();
     registerActiveRun(activeRuns, ws, "run-xyz");
@@ -186,10 +245,14 @@ describe("ClientRouter user-triggered abort (#550)", () => {
       outcome: "success",
       detail: {
         agent: { id: "agent-1", name: "Smithers" },
-        sessionKey: SESSION_KEY,
+        chatId: null,
         runId: "run-xyz",
       },
     });
+    // #824: the session key embeds the acting user's raw users.id; `detail` is
+    // stored verbatim and out of crypto-erasure's reach.
+    expect(entry.detail).not.toHaveProperty("sessionKey");
+    expect(JSON.stringify(entry.detail)).not.toContain("user-1");
   });
 
   it("still signals chatAbort when no run is registered, but writes no audit row", async () => {
@@ -267,6 +330,29 @@ describe("ClientRouter user-triggered abort (#550)", () => {
     await router.handleMessage(ws, { type: "abort", agentId: "agent-1", chatId: "abcd1234" });
 
     expect(mockChatAbort).toHaveBeenCalledWith("agent:agent-1:direct:user-1:abcd1234", undefined);
+  });
+
+  it("names a named chat by its chatId in the audit row, never by the session key (#824)", async () => {
+    const ws = createMockWs();
+    activeRuns.register({
+      runId: "run-xyz",
+      sessionKey: "agent:agent-1:direct:user-1:c-1",
+      agentId: "agent-1",
+      userId: "user-1",
+      agentName: "Smithers",
+      startedAt: 1000,
+      currentMessageId: "msg-1",
+      ws,
+    });
+    const router = makeRouter();
+
+    await router.handleMessage(ws, { type: "abort", agentId: "agent-1", chatId: "c-1" });
+
+    expect(mockAppendAuditLog).toHaveBeenCalledTimes(1);
+    const { detail } = mockAppendAuditLog.mock.calls[0]![0];
+    expect(detail.chatId).toBe("c-1");
+    expect(detail).not.toHaveProperty("sessionKey");
+    expect(JSON.stringify(detail)).not.toContain("user-1");
   });
 
   it("records outcome=failure when the OpenClaw abort throws, but still audits", async () => {

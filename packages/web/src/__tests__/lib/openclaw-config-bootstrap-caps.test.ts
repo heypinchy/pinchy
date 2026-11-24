@@ -38,7 +38,6 @@ vi.mock("fs", async (importOriginal) => {
 vi.mock("@/lib/openai-compatible-providers", () => ({
   listOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
   listProvidersWithApiKeys: vi.fn().mockResolvedValue([]),
-  getDecryptedApiKey: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock("@/db", () => ({
@@ -157,7 +156,7 @@ function mockFsReads(agentsMdByAgent: Record<string, string>) {
 function getAgentEntry(agentId: string) {
   const written = writtenOpenClawConfig(mockedWriteFileSync);
   const config = JSON.parse(written);
-  return config.agents.list.find((a: { id: string }) => a.id === agentId);
+  return config.agents.entries[agentId];
 }
 
 describe("regenerateOpenClawConfig bootstrap caps (Issue #373)", () => {

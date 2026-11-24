@@ -6,9 +6,9 @@
 // creator. Its output (`WorkflowForDispatch` + the connection's `sinceTs`) is
 // exactly what the mail lister (Brick C) and the dispatcher consume.
 //
-// The suite runs against the ephemeral integration Postgres; there is no global
-// truncate between tests, and the loader reads ALL enabled workflows, so every
-// assertion is scoped to the workflow ids the test itself seeded.
+// The suite runs against the ephemeral integration Postgres (emptied between
+// tests by the integration reset), and the loader reads ALL enabled workflows,
+// so every assertion is scoped to the workflow ids the test itself seeded.
 import { describe, it, expect } from "vitest";
 import { eq } from "drizzle-orm";
 
@@ -24,6 +24,7 @@ import {
 } from "@/db/schema";
 import type { EmailWorkflowStatus } from "@/db/enums";
 import { loadDispatchableWorkflows } from "@/lib/email-workflows/loader";
+import { loadAgentModel } from "@/server/inbox-sweep-deps";
 import { setInstancePolicy } from "@/lib/instance-policy";
 
 let userCounter = 0;
@@ -486,5 +487,29 @@ describe("email workflow loader — loadDispatchableWorkflows", () => {
 
       expect(onlyWorkflow(await loadDispatchableWorkflows(), wf.id)).toHaveLength(0);
     });
+  });
+});
+
+describe("a soft-deleted agent's leftovers", () => {
+  it("does not load an enabled workflow of a soft-deleted agent", async () => {
+    const agent = await seedAgent();
+    const wf = await seedWorkflow({ agentId: agent.id, enabled: true });
+    const conn = await seedConnection();
+    await linkConnection(wf.id, conn.id, new Date("2026-07-01T00:00:00.000Z"));
+    await db.update(agents).set({ deletedAt: new Date() }).where(eq(agents.id, agent.id));
+
+    const result = await loadDispatchableWorkflows();
+
+    expect(onlyWorkflow(result, wf.id)).toHaveLength(0);
+    expect(onlyUnrunnable(result, wf.id)).toHaveLength(0);
+  });
+
+  it("answers no model for a soft-deleted agent, so the run adapter's guard fires", async () => {
+    const agent = await seedAgent();
+    await expect(loadAgentModel(agent.id)).resolves.toBe("ollama-cloud/gemini-3-flash");
+
+    await db.update(agents).set({ deletedAt: new Date() }).where(eq(agents.id, agent.id));
+
+    await expect(loadAgentModel(agent.id)).resolves.toBeNull();
   });
 });

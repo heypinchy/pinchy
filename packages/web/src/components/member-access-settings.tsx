@@ -22,7 +22,7 @@ export function MemberAccessSettings() {
     apiGet<InstancePolicyInput>("/api/settings/governance")
       .then(setPolicy)
       // A system error, not a field the admin could correct — a toast
-      // (AGENTS.md § "Error And Notification UI"), and the card stays away.
+      // (agent-rules/ui.md § "Error And Notification UI"), and the card stays away.
       .catch((e) => toast.error(errorMessage(e, "Couldn't load member access settings")));
   }, []);
 

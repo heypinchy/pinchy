@@ -26,12 +26,16 @@ const EXTENSION_CONTENT_TYPES: Record<string, string> = {
   ".jpeg": "image/jpeg",
   ".gif": "image/gif",
   ".webp": "image/webp",
+  // A scanned TIFF's original, offered beside the converted PDF (#1409).
+  ".tif": "image/tiff",
+  ".tiff": "image/tiff",
   ".txt": "text/plain",
   ".csv": "text/csv",
   ".md": "text/markdown",
   ".json": "application/json",
   ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   ".doc": "application/msword",
+  ".docm": "application/vnd.ms-word.document.macroEnabled.12",
   // Every OFFICE_EXTENSIONS format reaches this route as an "original"
   // download once a citation offers both representations (#939), so the slide
   // formats belong here beside the Word ones. Nothing about the anti-XSS split

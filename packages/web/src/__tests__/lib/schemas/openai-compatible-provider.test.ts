@@ -10,7 +10,7 @@ import type { OpenClawModelDefinition } from "@/lib/openclaw-builtin-models";
 
 // These schemas are the single source of truth for the OpenAI-compatible
 // provider write paths, imported by BOTH the route handlers (parseRequestBody)
-// and the client components (typed bodies via z.infer). AGENTS.md "Shared
+// and the client components (typed bodies via z.infer). agent-rules/web-routes.md "Shared
 // Schemas And Typed Client".
 
 const validModel = {
@@ -118,7 +118,7 @@ describe("modelDefinitionSchema", () => {
     expect(parsed.success).toBe(false);
   });
 
-  // Compile-time parity guard (real check via tsconfig.typecheck.json, AGENTS.md
+  // Compile-time parity guard (real check via tsconfig.typecheck.json, agent-rules/testing.md
   // "Web Test Files Are Type-Checked"): the inferred model type must stay
   // structurally equal to the OpenClawModelDefinition interface this schema
   // validates. A field added to one but not the other breaks typecheck in CI
@@ -155,5 +155,30 @@ describe("deleteOpenAiCompatibleSchema", () => {
 
   it("rejects a non-uuid id", () => {
     expect(deleteOpenAiCompatibleSchema.safeParse({ id: "nope" }).success).toBe(false);
+  });
+});
+
+describe("base URL length bound", () => {
+  it("rejects a base URL longer than 2048 characters on upsert and discover, with a message on baseUrl", () => {
+    const long = `https://acme.example.com/${"a".repeat(2048)}`;
+    const upsert = upsertOpenAiCompatibleProviderSchema.safeParse({
+      displayName: "Acme",
+      baseUrl: long,
+      apiKey: "k",
+    });
+    expect(upsert.success).toBe(false);
+    if (!upsert.success) {
+      expect(upsert.error.flatten().fieldErrors.baseUrl).toEqual([
+        "The URL is too long — 2048 characters at most.",
+      ]);
+    }
+    expect(discoverSchema.safeParse({ baseUrl: long, apiKey: "k" }).success).toBe(false);
+    expect(
+      upsertOpenAiCompatibleProviderSchema.safeParse({
+        displayName: "Acme",
+        baseUrl: `https://acme.example.com/${"a".repeat(1900)}`,
+        apiKey: "k",
+      }).success
+    ).toBe(true);
   });
 });

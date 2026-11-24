@@ -36,8 +36,8 @@
 // prefers it and hands the raw string to `verifyApiKey`, which is what the docs
 // promise. That path is covered in with-api-key.test.ts, where it can fail.
 //
-// Provisioned by global-setup.ts (fresh migrated DB), truncated between tests
-// (setup.ts). audit-exempt: test-only.
+// Provisioned by global-setup.ts (fresh migrated DB), emptied between tests
+// by the integration reset (setup.ts). audit-exempt: test-only.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { eq } from "drizzle-orm";

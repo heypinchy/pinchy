@@ -11,7 +11,7 @@
  * scheduler stays a pure cadence with no knowledge of DB or Gateway, which is
  * what lets its tests run with no mocks at all.
  */
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import type { OpenClawClient } from "openclaw-node";
 
 import { db } from "@/db";
@@ -20,7 +20,7 @@ import { getExhaustedBlockingBudget } from "@/lib/budgets";
 import { createEmailPort } from "@/lib/email-workflows/port";
 import { createOpenClawRunAgent } from "@/lib/email-workflows/run-adapter";
 import type { SweepDeps } from "@/lib/email-workflows/sweep";
-import { waitForAgentInRuntime } from "@/server/agent-readiness";
+import { dispatchableAgentIds, waitForAgentInRuntime } from "@/server/agent-readiness";
 
 /** The slice of the gateway client the sweep's dependencies need. */
 export type SweepGatewayClient = Pick<
@@ -40,10 +40,10 @@ export type SweepGatewayClient = Pick<
  */
 export const DEFAULT_READINESS_DEADLINE_MS = 30_000;
 
-/** The agent's `provider/model` ref, or null if the agent is gone. */
+/** The agent's `provider/model` ref, or null if the agent is gone (soft-deleted included). */
 export async function loadAgentModel(agentId: string): Promise<string | null> {
   const agent = await db.query.agents.findFirst({
-    where: eq(agents.id, agentId),
+    where: and(eq(agents.id, agentId), isNull(agents.deletedAt)),
     columns: { model: true },
   });
   return agent?.model ?? null;
@@ -87,7 +87,7 @@ export function createAgentReadinessGate(
       agentId,
       {
         hasAgentsListRpc: () => true,
-        listRuntimeAgentIds: async () => (await client.agents.list()).agents.map((a) => a.id),
+        listRuntimeAgentIds: async () => dispatchableAgentIds(await client.agents.list()),
       },
       { deadlineMs: opts.deadlineMs ?? DEFAULT_READINESS_DEADLINE_MS }
     );

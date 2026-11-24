@@ -9,16 +9,16 @@ import type { AgentPluginConfig } from "@/db/schema";
 // Capture onChange callbacks from child sections so tests can simulate
 // the post-save cascade where a sibling section's onChange fires and
 // causes AgentSettingsPermissions to re-evaluate its dirty state.
-let capturedOdooOnChange:
-  | ((
-      v: {
-        connectionId: string;
-        permissions: Array<{ model: string; operation: string }>;
-      } | null,
-      isDirty: boolean
-    ) => void)
-  | null = null;
+type SectionOnChange = (
+  v: {
+    connectionId: string;
+    permissions: Array<{ model: string; operation: string }>;
+  } | null,
+  isDirty: boolean
+) => void;
+let capturedOdooOnChange: SectionOnChange | null = null;
 let capturedWebSearchOnChange: ((v: AgentPluginConfig["pinchy-web"]) => void) | null = null;
+let capturedEmailOnChange = null as SectionOnChange | null;
 
 vi.mock("@/lib/model-vision", () => ({
   isModelVisionCapable: vi.fn((modelId: string) => modelId.startsWith("anthropic/")),
@@ -96,6 +96,7 @@ let capturedReindexProps: {
   agentId: string;
   allowedPathCount: number;
   hasUnsavedPathChanges?: boolean;
+  savedPathsKey?: string;
 } | null = null;
 
 vi.mock("@/components/knowledge-reindex-section", () => ({
@@ -103,10 +104,19 @@ vi.mock("@/components/knowledge-reindex-section", () => ({
     agentId: string;
     allowedPathCount: number;
     hasUnsavedPathChanges?: boolean;
+    savedPathsKey?: string;
   }) => {
     capturedReindexProps = props;
     return <div data-testid="knowledge-reindex-section" />;
   },
+}));
+
+// Which saved grants still exist is the server's answer (#1363); the hook has
+// its own tests. Here it only matters that the tab asks for it and hands the
+// answer to the picker.
+const mockUseGrantedFolders = vi.fn();
+vi.mock("@/hooks/use-granted-folders", () => ({
+  useGrantedFolders: (...args: unknown[]) => mockUseGrantedFolders(...args),
 }));
 
 vi.mock("@/components/email-permission-section", () => ({
@@ -115,15 +125,18 @@ vi.mock("@/components/email-permission-section", () => ({
   }: {
     agentId: string;
     connections: unknown[];
-    onChange: (v: unknown, d: boolean) => void;
+    onChange: SectionOnChange;
   }) => {
-    void onChange;
+    capturedEmailOnChange = onChange;
     return <div data-testid="email-section">Email Section</div>;
   },
 }));
 
 beforeEach(() => {
+  mockUseGrantedFolders.mockReset();
+  mockUseGrantedFolders.mockReturnValue(undefined);
   capturedOdooOnChange = null;
+  capturedEmailOnChange = null;
   capturedWebSearchOnChange = null;
   capturedReindexProps = null;
 });
@@ -176,6 +189,88 @@ describe("AgentSettingsPermissions", () => {
     expect(screen.getByRole("heading", { name: "Knowledge Base" })).toBeInTheDocument();
     expect(screen.getByLabelText("Memory")).toBeInTheDocument();
     expect(screen.getByLabelText("Create files")).toBeInTheDocument();
+  });
+
+  it("offers subfolder browsing only with the admin flag (#1269)", () => {
+    // The subfolder listing route is admin-only. The settings page renders
+    // this tab for admins only today; the flag keeps the chevrons off should
+    // that ever change, since without it they could only ever answer 403.
+    const { rerender } = render(
+      <AgentSettingsPermissions
+        agent={defaultAgent}
+        directories={defaultDirectories}
+        connections={[]}
+        isAdmin={true}
+        onChange={vi.fn()}
+      />
+    );
+    expect(screen.getAllByRole("button", { name: /^Show subfolders of / }).length).toBe(
+      defaultDirectories.length
+    );
+
+    rerender(
+      <AgentSettingsPermissions
+        agent={defaultAgent}
+        directories={defaultDirectories}
+        connections={[]}
+        isAdmin={false}
+        onChange={vi.fn()}
+      />
+    );
+    expect(screen.queryByRole("button", { name: /^Show subfolders of / })).not.toBeInTheDocument();
+  });
+
+  it("marks a saved grant whose folder is gone, for admins (#1363)", () => {
+    mockUseGrantedFolders.mockReturnValue([
+      { path: "/data/docs", status: "available" },
+      { path: "/data/old-docs", status: "missing" },
+    ]);
+    const agent = {
+      ...defaultAgent,
+      pluginConfig: { "pinchy-files": { allowed_paths: ["/data/docs", "/data/old-docs"] } },
+    };
+    const onChange = vi.fn();
+    const { rerender } = render(
+      <AgentSettingsPermissions
+        agent={agent}
+        directories={defaultDirectories}
+        connections={[]}
+        isAdmin={true}
+        onChange={onChange}
+      />
+    );
+
+    expect(mockUseGrantedFolders).toHaveBeenLastCalledWith(
+      "agent-1",
+      "/data/docs|/data/old-docs",
+      true
+    );
+    expect(screen.getByText(/Folder not found/)).toBeInTheDocument();
+
+    // Removing it is an ordinary unsaved change: Save sends it through the
+    // agent update route, which audits the change in folder access.
+    act(() => {
+      screen.getByRole("button", { name: "Remove /data/old-docs" }).click();
+    });
+    expect(onChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ allowedPaths: ["/data/docs"] }),
+      true
+    );
+
+    rerender(
+      <AgentSettingsPermissions
+        agent={agent}
+        directories={defaultDirectories}
+        connections={[]}
+        isAdmin={false}
+        onChange={vi.fn()}
+      />
+    );
+    expect(mockUseGrantedFolders).toHaveBeenLastCalledWith(
+      "agent-1",
+      "/data/docs|/data/old-docs",
+      false
+    );
   });
 
   it("keeps the memory toggle out of the Knowledge Base section", () => {
@@ -263,7 +358,10 @@ describe("AgentSettingsPermissions", () => {
     expect(screen.getByText("Allowed Directories")).toBeInTheDocument();
   });
 
-  it("should NOT show DirectoryPicker when no directories are provided", () => {
+  // With nothing mounted, the section used to drop the picker and leave an
+  // Index block saying "grant a directory" with nothing to grant. The empty
+  // state says where directories come from instead (#1305).
+  it("explains how to make directories available when none are mounted", () => {
     render(
       <AgentSettingsPermissions
         agent={defaultAgent}
@@ -274,7 +372,9 @@ describe("AgentSettingsPermissions", () => {
       />
     );
 
-    expect(screen.queryByText("Allowed Directories")).not.toBeInTheDocument();
+    expect(screen.getByText("Allowed Directories")).toBeInTheDocument();
+    expect(screen.getByText(/mounted under/i)).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "docs" })).not.toBeInTheDocument();
   });
 
   it("should show DirectoryPicker when agent has allowed paths configured", () => {
@@ -297,6 +397,65 @@ describe("AgentSettingsPermissions", () => {
     expect(screen.getByText("Allowed Directories")).toBeInTheDocument();
   });
 
+  it("shows a grant stored with a trailing slash as checked and revokes it cleanly", async () => {
+    // The stored grant is "/data/docs/"; the directory list says "/data/docs".
+    // The admin must see the grant and be able to untick it (#1264).
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(
+      <AgentSettingsPermissions
+        agent={{
+          ...defaultAgent,
+          pluginConfig: { "pinchy-files": { allowed_paths: ["/data/docs/"] } },
+        }}
+        directories={defaultDirectories}
+        connections={[]}
+        isAdmin={true}
+        onChange={onChange}
+      />
+    );
+
+    const docs = screen.getByRole("checkbox", { name: "docs" });
+    expect(docs).toBeChecked();
+    expect(onChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ allowedPaths: ["/data/docs/"] }),
+      false
+    );
+
+    await user.click(docs);
+
+    expect(docs).not.toBeChecked();
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ allowedPaths: [] }), true);
+  });
+
+  it("does not report a re-ticked trailing-slash grant as an unsaved change", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(
+      <AgentSettingsPermissions
+        agent={{
+          ...defaultAgent,
+          pluginConfig: { "pinchy-files": { allowed_paths: ["/data/docs/"] } },
+        }}
+        directories={defaultDirectories}
+        connections={[]}
+        isAdmin={true}
+        onChange={onChange}
+      />
+    );
+
+    const docs = screen.getByRole("checkbox", { name: "docs" });
+    await user.click(docs);
+    await user.click(docs);
+
+    expect(docs).toBeChecked();
+    expect(onChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ allowedPaths: ["/data/docs"] }),
+      false
+    );
+    expect(screen.queryByText(/not saved yet/i)).not.toBeInTheDocument();
+  });
+
   it("gates the reindex section on SAVED grants, not the unsaved picker selection", async () => {
     const user = userEvent.setup();
     render(
@@ -309,20 +468,30 @@ describe("AgentSettingsPermissions", () => {
       />
     );
 
-    expect(capturedReindexProps).toMatchObject({
-      agentId: "agent-1",
-      allowedPathCount: 0,
-      hasUnsavedPathChanges: false,
-    });
+    expect(capturedReindexProps).toMatchObject({ agentId: "agent-1", allowedPathCount: 0 });
+    expect(screen.queryByText(/not saved yet/i)).not.toBeInTheDocument();
 
     // Tick a directory WITHOUT saving: the server still sees zero grants, so
-    // the reindex gate must not open — but the section learns about the dirt.
+    // the reindex gate must not open — and the picker says the change is
+    // not in effect yet, next to the checkbox that made it (#1305).
     await user.click(screen.getByRole("checkbox", { name: "docs" }));
 
+    // Reindex is held back until the change is saved, because it would run
+    // over the OLD folders — the product owner read the earlier "a reindex
+    // uses the saved grants" and could not tell what it meant.
     expect(capturedReindexProps).toMatchObject({
       allowedPathCount: 0,
       hasUnsavedPathChanges: true,
     });
+    const notice = screen.getByText(/not saved yet/i);
+    // Named, and in terms of what the agent will do, not of grants.
+    expect(notice).toHaveTextContent(/once you save, the agent starts reading docs/i);
+    expect(notice).toHaveTextContent(/next reindex/i);
+    // Between the folders and the Index block, not inside the latter.
+    const picker = screen.getByRole("group", { name: "Allowed Directories" });
+    const index = screen.getByTestId("knowledge-reindex-section");
+    expect(picker.compareDocumentPosition(notice) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(notice.compareDocumentPosition(index) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("feeds the reindex section the saved grant count for an agent with saved paths", () => {
@@ -343,8 +512,9 @@ describe("AgentSettingsPermissions", () => {
 
     expect(capturedReindexProps).toMatchObject({
       allowedPathCount: 2,
-      hasUnsavedPathChanges: false,
+      savedPathsKey: "/data/docs|/data/reports",
     });
+    expect(screen.queryByText(/not saved yet/i)).not.toBeInTheDocument();
   });
 
   it("hides the reindex section for non-admins", () => {
@@ -359,6 +529,101 @@ describe("AgentSettingsPermissions", () => {
     );
 
     expect(screen.queryByTestId("knowledge-reindex-section")).not.toBeInTheDocument();
+  });
+
+  it("says which saved directory the agent stops reading, and that nothing is deleted", async () => {
+    const user = userEvent.setup();
+    render(
+      <AgentSettingsPermissions
+        agent={{
+          ...defaultAgent,
+          pluginConfig: { "pinchy-files": { allowed_paths: ["/data/docs", "/data/reports"] } },
+        }}
+        directories={defaultDirectories}
+        connections={[]}
+        isAdmin={true}
+        onChange={vi.fn()}
+      />
+    );
+
+    await user.click(screen.getByRole("checkbox", { name: "reports" }));
+
+    const notice = screen.getByText(/not saved yet/i);
+    expect(notice).toHaveTextContent(/the agent stops reading reports/i);
+    expect(notice).toHaveTextContent(/documents from folders you untick stay in the index/i);
+    expect(notice).not.toHaveTextContent(/starts reading/i);
+  });
+
+  it("doesn't say the agent stops reading a subfolder its new parent grant covers (#1269)", async () => {
+    // Ticking a folder folds the grants below it into one: the stored list
+    // loses "/data/docs/2026/", but the agent still reads it.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ directories: [], truncated: false })))
+    );
+    const user = userEvent.setup();
+    render(
+      <AgentSettingsPermissions
+        agent={{
+          ...defaultAgent,
+          pluginConfig: { "pinchy-files": { allowed_paths: ["/data/docs/2026/"] } },
+        }}
+        directories={defaultDirectories}
+        connections={[]}
+        isAdmin={true}
+        onChange={vi.fn()}
+      />
+    );
+
+    await user.click(screen.getByRole("checkbox", { name: "docs" }));
+
+    const notice = screen.getByText(/not saved yet/i);
+    expect(notice).toHaveTextContent(/the agent starts reading docs\./i);
+    expect(notice).not.toHaveTextContent(/stops reading/i);
+    expect(notice).not.toHaveTextContent(/untick/i);
+    vi.unstubAllGlobals();
+  });
+
+  it("names both directions when folders are added and removed in one change", async () => {
+    const user = userEvent.setup();
+    render(
+      <AgentSettingsPermissions
+        agent={{
+          ...defaultAgent,
+          pluginConfig: { "pinchy-files": { allowed_paths: ["/data/reports"] } },
+        }}
+        directories={defaultDirectories}
+        connections={[]}
+        isAdmin={true}
+        onChange={vi.fn()}
+      />
+    );
+
+    await user.click(screen.getByRole("checkbox", { name: "docs" }));
+    await user.click(screen.getByRole("checkbox", { name: "reports" }));
+
+    expect(screen.getByText(/not saved yet/i)).toHaveTextContent(
+      /once you save, the agent starts reading docs, and it stops reading reports\./i
+    );
+  });
+
+  // A non-admin has no Reindex button, so the notice must not point at one.
+  it("tells a non-admin about unsaved directory changes without mentioning reindexing", async () => {
+    const user = userEvent.setup();
+    render(
+      <AgentSettingsPermissions
+        agent={defaultAgent}
+        directories={defaultDirectories}
+        connections={[]}
+        isAdmin={false}
+        onChange={vi.fn()}
+      />
+    );
+
+    await user.click(screen.getByRole("checkbox", { name: "docs" }));
+
+    const notice = screen.getByText(/not saved yet/i);
+    expect(notice).not.toHaveTextContent(/reindex/i);
   });
 
   describe("conditional integration sections", () => {
@@ -480,6 +745,76 @@ describe("AgentSettingsPermissions", () => {
 
   describe("Web Search section", () => {
     const webSearchConnection = { id: "ws-1", name: "Brave Search", type: "web-search" };
+
+    // #1297: an agent from a web template keeps its web tools on an instance
+    // without a search provider. The section must stay visible (otherwise
+    // the grant is invisible and cannot be revoked) and say what is missing.
+    it("shows the agent's web tools and a setup notice when no search provider exists", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={{ ...defaultAgent, allowedTools: ["pinchy_web_search", "pinchy_web_fetch"] }}
+          directories={defaultDirectories}
+          connections={[]}
+          isAdmin={true}
+          onChange={vi.fn()}
+        />
+      );
+
+      expect(screen.getByText("Web Search")).toBeInTheDocument();
+      expect(screen.getByLabelText("Search the web")).toBeChecked();
+      expect(screen.getByLabelText("Fetch web pages")).toBeChecked();
+      expect(screen.getByText("Web search isn't set up")).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: /set up web search/i })).toHaveAttribute(
+        "href",
+        "/settings?tab=integrations"
+      );
+    });
+
+    it("keeps the web section while the last web tool is unchecked before saving", async () => {
+      render(
+        <AgentSettingsPermissions
+          agent={{ ...defaultAgent, allowedTools: ["pinchy_web_search", "pinchy_web_fetch"] }}
+          directories={defaultDirectories}
+          connections={[]}
+          isAdmin={true}
+          onChange={vi.fn()}
+        />
+      );
+
+      await userEvent.click(screen.getByLabelText("Search the web"));
+      await userEvent.click(screen.getByLabelText("Fetch web pages"));
+
+      expect(screen.getByText("Web Search")).toBeInTheDocument();
+      expect(screen.getByLabelText("Fetch web pages")).not.toBeChecked();
+    });
+
+    it("hides the web section when there is no search provider and no web tool", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={defaultAgent}
+          directories={defaultDirectories}
+          connections={[]}
+          isAdmin={true}
+          onChange={vi.fn()}
+        />
+      );
+
+      expect(screen.queryByText("Web Search")).not.toBeInTheDocument();
+    });
+
+    it("shows no setup notice when a search provider exists", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={{ ...defaultAgent, allowedTools: ["pinchy_web_search"] }}
+          directories={defaultDirectories}
+          connections={[webSearchConnection]}
+          isAdmin={true}
+          onChange={vi.fn()}
+        />
+      );
+
+      expect(screen.queryByText("Web search isn't set up")).not.toBeInTheDocument();
+    });
 
     it("should render Web Search heading with checkboxes for web tools", () => {
       render(
@@ -671,6 +1006,7 @@ describe("AgentSettingsPermissions", () => {
           allowedTools: [],
           allowedPaths: [],
           integrations: [],
+          integrationsLoaded: true,
           webSearchConfig: {},
           confirm: {},
         },
@@ -955,6 +1291,219 @@ describe("AgentSettingsPermissions", () => {
           true
         );
       });
+    });
+  });
+
+  // #1216: a section whose load failed stays silent, so the form never learns
+  // what the agent is granted there. The next save must not read that silence
+  // as "no access": dropping the saved tools, pruning their confirmations, or
+  // letting the page DELETE every integration grant.
+  describe("integration sections that have not loaded", () => {
+    const agentWithGrants = {
+      ...defaultAgent,
+      allowedTools: ["pinchy_web_search", "odoo_read", "email_read"],
+      pluginConfig: {
+        "pinchy-approvals": { confirm: { odoo_read: "confirm", email_read: "confirm" } },
+      } as AgentPluginConfig,
+    };
+
+    it("keeps the saved integration tools and their confirmations while neither section has loaded", async () => {
+      const onChange = vi.fn();
+      render(
+        <AgentSettingsPermissions
+          agent={agentWithGrants}
+          directories={defaultDirectories}
+          connections={[odooConnection, googleConnection]}
+          isAdmin={true}
+          onChange={onChange}
+        />
+      );
+
+      await userEvent.click(screen.getByLabelText("Create files"));
+
+      await waitFor(() => {
+        const [values, dirty] = onChange.mock.calls[onChange.mock.calls.length - 1];
+        expect(dirty).toBe(true);
+        expect(values.allowedTools).toEqual(
+          expect.arrayContaining(["pinchy_write", "odoo_read", "email_read"])
+        );
+        expect(values.confirm).toEqual({ odoo_read: "confirm", email_read: "confirm" });
+        expect(values.integrations).toEqual([]);
+        expect(values.integrationsLoaded).toBe(false);
+      });
+    });
+
+    it("keeps only the unloaded section's tools when the other one has loaded", async () => {
+      const onChange = vi.fn();
+      render(
+        <AgentSettingsPermissions
+          agent={agentWithGrants}
+          directories={defaultDirectories}
+          connections={[odooConnection, googleConnection]}
+          isAdmin={true}
+          onChange={onChange}
+        />
+      );
+
+      // Odoo loads and reports that the agent has no Odoo access; email fails.
+      await waitFor(() => expect(capturedOdooOnChange).not.toBeNull());
+      act(() => capturedOdooOnChange!(null, false));
+
+      await waitFor(() => {
+        const [values] = onChange.mock.calls[onChange.mock.calls.length - 1];
+        expect(values.allowedTools).toContain("email_read");
+        expect(values.allowedTools).not.toContain("odoo_read");
+        expect(values.integrationsLoaded).toBe(false);
+      });
+    });
+
+    // After a save the page refetches the agent before the sections reload.
+    // A section's dirty flag is still the pre-save `true` in that window, so a
+    // re-emit driven only by the agent's new identity puts the Save bar back
+    // after a save that succeeded.
+    it.each([
+      ["only Odoo is on the page", [odooConnection]],
+      ["the email section has not loaded", [odooConnection, googleConnection]],
+    ])(
+      "does not re-report a saved Odoo change as unsaved when the agent is refetched (%s)",
+      async (_label, connections) => {
+        const onChange = vi.fn();
+        const agent = { ...defaultAgent, allowedTools: ["odoo_read"], pluginConfig: null };
+        const { rerender } = render(
+          <AgentSettingsPermissions
+            agent={agent}
+            directories={defaultDirectories}
+            connections={connections}
+            isAdmin={true}
+            onChange={onChange}
+          />
+        );
+
+        await waitFor(() => expect(capturedOdooOnChange).not.toBeNull());
+        act(() =>
+          capturedOdooOnChange!(
+            {
+              connectionId: "conn-odoo",
+              permissions: [
+                { model: "res.partner", operation: "read" },
+                { model: "res.partner", operation: "create" },
+              ],
+            },
+            true
+          )
+        );
+        await waitFor(() => expect(onChange).toHaveBeenLastCalledWith(expect.anything(), true));
+
+        // The save went through; the page now hands down the refetched agent.
+        onChange.mockClear();
+        rerender(
+          <AgentSettingsPermissions
+            agent={{ ...agent, allowedTools: ["odoo_read", "odoo_create"] }}
+            directories={defaultDirectories}
+            connections={connections}
+            isAdmin={true}
+            onChange={onChange}
+          />
+        );
+
+        expect(onChange.mock.calls.filter(([, dirty]) => dirty === true)).toEqual([]);
+      }
+    );
+
+    it("reports integrationsLoaded once every shown section has loaded", async () => {
+      const onChange = vi.fn();
+      render(
+        <AgentSettingsPermissions
+          agent={agentWithGrants}
+          directories={defaultDirectories}
+          connections={[odooConnection, googleConnection]}
+          isAdmin={true}
+          onChange={onChange}
+        />
+      );
+
+      await waitFor(() => expect(capturedEmailOnChange).not.toBeNull());
+      act(() => capturedOdooOnChange!(null, false));
+      act(() => capturedEmailOnChange!(null, false));
+
+      await waitFor(() => {
+        const [values] = onChange.mock.calls[onChange.mock.calls.length - 1];
+        expect(values.integrationsLoaded).toBe(true);
+        expect(values.allowedTools).not.toContain("odoo_read");
+        expect(values.allowedTools).not.toContain("email_read");
+      });
+    });
+  });
+
+  // The page could not load the connection list at all. Then it cannot
+  // know which integration sections belong on the page, so it must not read
+  // the empty list as "this agent has no integrations".
+  describe("when the connection list could not be loaded", () => {
+    const agentWithGrants = {
+      ...defaultAgent,
+      allowedTools: ["odoo_read", "email_read"],
+      pluginConfig: {
+        "pinchy-approvals": { confirm: { odoo_read: "confirm" } },
+      } as AgentPluginConfig,
+    };
+
+    it("keeps the saved integration tools and reports the integrations as not loaded", async () => {
+      const onChange = vi.fn();
+      render(
+        <AgentSettingsPermissions
+          agent={agentWithGrants}
+          directories={defaultDirectories}
+          connections={null}
+          isAdmin={true}
+          onChange={onChange}
+        />
+      );
+
+      await userEvent.click(screen.getByLabelText("Create files"));
+
+      await waitFor(() => {
+        const [values, dirty] = onChange.mock.calls[onChange.mock.calls.length - 1];
+        expect(dirty).toBe(true);
+        expect(values.allowedTools).toEqual(
+          expect.arrayContaining(["pinchy_write", "odoo_read", "email_read"])
+        );
+        expect(values.confirm).toEqual({ odoo_read: "confirm" });
+        expect(values.integrations).toEqual([]);
+        expect(values.integrationsLoaded).toBe(false);
+      });
+    });
+
+    it("says that integration access cannot be edited right now, and that it stays as saved", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={agentWithGrants}
+          directories={defaultDirectories}
+          connections={null}
+          isAdmin={true}
+          onChange={vi.fn()}
+        />
+      );
+
+      expect(screen.getByRole("alert")).toHaveTextContent(/couldn.t load your integrations/i);
+      expect(screen.getByRole("alert")).toHaveTextContent(/stays as it is/i);
+      expect(screen.queryByTestId("odoo-section")).not.toBeInTheDocument();
+    });
+
+    it("does not claim web search is unset, since nobody knows whether a key exists", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={{ ...defaultAgent, allowedTools: ["pinchy_web_search", "pinchy_web_fetch"] }}
+          directories={defaultDirectories}
+          connections={null}
+          isAdmin={true}
+          onChange={vi.fn()}
+        />
+      );
+
+      // The saved web tools stay visible and editable…
+      expect(screen.getByRole("heading", { name: "Web Search" })).toBeInTheDocument();
+      // …but "no key is set up" would be a guess from an empty list.
+      expect(screen.queryByText("Web search isn't set up")).not.toBeInTheDocument();
     });
   });
 });

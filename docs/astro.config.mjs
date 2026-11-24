@@ -171,6 +171,10 @@ export default defineConfig({
             },
             { label: "User Management", slug: "guides/user-management" },
             {
+              label: "Send Invitations by Email",
+              slug: "guides/email-delivery",
+            },
+            {
               label: "Smithers Onboarding",
               slug: "guides/smithers-onboarding",
             },
@@ -315,6 +319,10 @@ export default defineConfig({
             {
               label: "Environment Variables",
               slug: "reference/environment-variables",
+            },
+            {
+              label: "Network Address Checks",
+              slug: "reference/network-address-checks",
             },
             {
               label: "Agent Provisioning API",

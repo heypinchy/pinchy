@@ -37,7 +37,6 @@ vi.mock("fs", async (importOriginal) => {
 vi.mock("@/lib/openai-compatible-providers", () => ({
   listOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
   listProvidersWithApiKeys: vi.fn().mockResolvedValue([]),
-  getDecryptedApiKey: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock("@/db", () => ({
@@ -137,7 +136,7 @@ describe("regenerateOpenClawConfig — skills emission", () => {
     });
   });
 
-  it("emits agents.list[].skills as an explicit (possibly empty) allowlist for every agent", async () => {
+  it("emits agents.entries.<id>.skills as an explicit (possibly empty) allowlist for every agent", async () => {
     // The empty allowlist is intentional and verified by smoke-test:
     // skills: [] excludes all 58 bundled OC desktop skills (1password,
     // apple-notes, etc.). Pinchy must always emit the field so bundled
@@ -163,7 +162,7 @@ describe("regenerateOpenClawConfig — skills emission", () => {
     );
     const written = configCall?.[1] as string;
     const config = JSON.parse(written);
-    const agent = config.agents.list.find((a: { id: string }) => a.id === "no-skills-agent");
+    const agent = config.agents.entries["no-skills-agent"];
 
     expect(agent).toBeDefined();
     expect(agent.skills).toEqual([]);
@@ -191,7 +190,7 @@ describe("regenerateOpenClawConfig — skills emission", () => {
     );
     const written = configCall?.[1] as string;
     const config = JSON.parse(written);
-    const agent = config.agents.list.find((a: { id: string }) => a.id === "web-agent");
+    const agent = config.agents.entries["web-agent"];
 
     expect(agent.skills).toEqual(["web-search"]);
   });
@@ -219,7 +218,7 @@ describe("regenerateOpenClawConfig — skills emission", () => {
     );
     const written = configCall?.[1] as string;
     const config = JSON.parse(written);
-    const agent = config.agents.list.find((a: { id: string }) => a.id === "legacy-agent");
+    const agent = config.agents.entries["legacy-agent"];
 
     // Empty allowlist — bundled desktop skills are NOT a sensible default
     // for legacy enterprise agents either.
@@ -285,5 +284,60 @@ describe("regenerateOpenClawConfig — skills emission", () => {
     ]);
 
     await expect(regenerateOpenClawConfig()).rejects.toThrow(/unknown skill/i);
+  });
+
+  describe("skill index for pinchy-files", () => {
+    // OpenClaw 2026.9 renders its skills section only when the built-in `read`
+    // tool is visible, and every Pinchy agent has `read` denied. pinchy-files
+    // lists the skills instead (skills-prompt.ts) and loads a body with
+    // pinchy_read, so it needs the index and read access to the skills dir.
+    async function filesConfigFor(agent: Record<string, unknown>) {
+      mockAgents([
+        {
+          name: "A",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          createdAt: new Date(),
+          ...agent,
+        },
+      ]);
+      await regenerateOpenClawConfig();
+      const configCall = mockedWriteFileSync.mock.calls.find(
+        (c) => typeof c[0] === "string" && (c[0] as string).endsWith(".json.tmp")
+      );
+      const config = JSON.parse(configCall?.[1] as string);
+      return config.plugins.entries["pinchy-files"].config.agents[agent.id as string];
+    }
+
+    it("hands pinchy-files each skill's name, description and SKILL.md location", async () => {
+      const files = await filesConfigFor({
+        id: "web-agent",
+        allowedTools: ["pinchy_web_search"],
+        skills: ["web-search"],
+      });
+      expect(files.skills).toEqual([
+        {
+          name: "web-search",
+          description: "Test skill body for web-search.",
+          location: "/root/.openclaw/workspaces/web-agent/skills/web-search/SKILL.md",
+        },
+      ]);
+    });
+
+    it("grants the skills directory read-only, so pinchy_read can load a body", async () => {
+      const files = await filesConfigFor({
+        id: "web-agent",
+        allowedTools: ["pinchy_write", "pinchy_memory"],
+        skills: ["web-search"],
+      });
+      const skillsDir = "/root/.openclaw/workspaces/web-agent/skills";
+      expect(files.allowed_paths).toContain(skillsDir);
+      expect(files.write_paths).not.toContain(skillsDir);
+    });
+
+    it("emits neither the index nor the directory for an agent without skills", async () => {
+      const files = await filesConfigFor({ id: "plain-agent", allowedTools: [], skills: [] });
+      expect(files.skills).toBeUndefined();
+      expect(files.allowed_paths).not.toContain("/root/.openclaw/workspaces/plain-agent/skills");
+    });
   });
 });

@@ -11,7 +11,7 @@
  *     REQUIRED check, the one whose flakes actually block merges — was the one
  *     nobody came back to (#1061). Adding the ninth by hand fixes today and
  *     pins nothing: the tenth job drifts exactly the same way. That is the
- *     failure AGENTS.md § "A Hand-Maintained List That Mirrors Code Will Be
+ *     failure agent-rules/docs.md § "A Hand-Maintained List That Mirrors Code Will Be
  *     Wrong" describes, and the reason the one list with a guard
  *     (`contracts.tools`) is the one list that stayed correct.
  *

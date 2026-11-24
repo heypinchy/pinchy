@@ -73,7 +73,11 @@ export function AgentSettingsFile({
           </>
         )}
       </p>
-      <MarkdownEditor value={content} onChange={handleChange} />
+      <MarkdownEditor
+        label={filename === "SOUL.md" ? "Personality" : "Instructions"}
+        value={content}
+        onChange={handleChange}
+      />
     </div>
   );
 }

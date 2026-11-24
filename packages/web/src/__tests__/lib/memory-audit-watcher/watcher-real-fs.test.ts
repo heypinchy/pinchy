@@ -28,7 +28,7 @@ import { startMemoryAuditWatcher } from "@/lib/memory-audit-watcher";
 // `describe.skipIf(condition)` is one of the two patterns the
 // "no untracked test skips" guard explicitly allows (conditional gates
 // driven by OS / env), so no `#NNN` issue link is required here. See
-// AGENTS.md § "No Untracked Test Skips".
+// agent-rules/testing.md § "No Untracked Test Skips".
 describe.skipIf(process.platform !== "linux")(
   "startMemoryAuditWatcher (real fs, Linux smoke)",
   { timeout: 15000 },

@@ -70,3 +70,39 @@ describe("getModelPricing model-id resolution", () => {
     await expect(getModelPricing(client, "anthropic/deepseek-v4-pro")).resolves.toBeNull();
   });
 });
+
+// Regression pin, not new behaviour: getModelPricing has always returned the
+// configured `cost` object verbatim, so it already carries `tieredPricing`.
+// The prompt-length tiers of Claude Haiku 5.5 depend on that — a lookup that
+// one day picks out only input/output would silently price every long prompt
+// at the short-prompt rate, and this test is what notices.
+describe("getModelPricing tiered pricing", () => {
+  beforeEach(() => {
+    _resetPricingCacheForTest();
+  });
+
+  it("passes a model's tieredPricing through", async () => {
+    const tieredPricing = [
+      { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125, range: [0, 100001] },
+      { input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 0.625, range: [100001] },
+    ];
+    const client = makeOpenClawClient({
+      config: {
+        models: {
+          providers: {
+            anthropic: {
+              models: [
+                { id: "claude-haiku-5-5", cost: { input: 0.1, output: 0.5, tieredPricing } },
+              ],
+            },
+          },
+        },
+      },
+    });
+    await expect(getModelPricing(client, "anthropic/claude-haiku-5-5")).resolves.toEqual({
+      input: 0.1,
+      output: 0.5,
+      tieredPricing,
+    });
+  });
+});

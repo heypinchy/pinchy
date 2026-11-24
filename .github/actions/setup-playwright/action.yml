@@ -1,11 +1,29 @@
 name: "Setup Playwright with browser cache"
-description: "Caches ~/.cache/ms-playwright between runs. Installs missing browsers + system deps."
+description: "Caches ~/.cache/ms-playwright between runs. Installs missing browsers, and system deps only when the browsers cannot start without them."
 
 inputs:
   browsers:
     description: "Browsers to install (space-separated)"
     required: false
     default: "chromium"
+  system-deps:
+    description: >-
+      "auto" (default): install system packages through apt only when a browser
+      fails to launch without them. "always": run `playwright install-deps`
+      unconditionally, for jobs whose output depends on the extra fonts it
+      installs (rendered screenshots).
+    required: false
+    default: "auto"
+
+# Why "auto" exists: the hosted runner image already ships every shared
+# library Chromium needs. `playwright install-deps` only adds fonts there, yet
+# it makes every Playwright job depend on the Ubuntu apt mirrors. On
+# 2026-11-11 those mirrors stopped resolving on the hosted runners
+# ("Temporary failure resolving 'azure.archive.ubuntu.com'"), and all eleven
+# Playwright jobs in ci.yml failed inside this action for hours, before any
+# test ran. A browser that launches does not need apt; one that does not
+# launch still goes through apt, so a runner image that drops a library
+# fails here, loudly, exactly as before.
 
 runs:
   using: composite
@@ -28,16 +46,41 @@ runs:
         path: ~/.cache/ms-playwright
         key: pw-${{ runner.os }}-${{ steps.pw-version.outputs.version }}-${{ inputs.browsers }}
 
-    - name: Install Playwright browsers + deps
+    - name: Install Playwright browsers
       if: steps.pw-cache.outputs.cache-hit != 'true'
       shell: bash
       env:
         BROWSERS: ${{ inputs.browsers }}
-      run: pnpm -C packages/web exec playwright install --with-deps $BROWSERS
+      run: pnpm -C packages/web exec playwright install $BROWSERS
 
-    - name: Install Playwright system deps only (cache hit)
-      if: steps.pw-cache.outputs.cache-hit == 'true'
+    - name: Install Playwright system deps
       shell: bash
       env:
         BROWSERS: ${{ inputs.browsers }}
-      run: pnpm -C packages/web exec playwright install-deps $BROWSERS
+        SYSTEM_DEPS: ${{ inputs.system-deps }}
+      run: |
+        case "$SYSTEM_DEPS" in
+          always) ;;
+          auto)
+            # Launch each browser once. Success means every shared library it
+            # needs is already on the runner, so apt has nothing to add.
+            if (cd packages/web && node -e '
+                const pw = require("@playwright/test");
+                (async () => {
+                  for (const name of process.argv.slice(1)) {
+                    const browser = await pw[name].launch();
+                    await browser.close();
+                  }
+                })().catch((err) => { console.error(err.message); process.exit(1); });
+              ' $BROWSERS); then
+              echo "Browsers launch without extra system packages; skipping apt."
+              exit 0
+            fi
+            echo "::warning::A browser failed to launch; installing system deps through apt."
+            ;;
+          *)
+            echo "::error::setup-playwright: system-deps must be 'auto' or 'always', got '$SYSTEM_DEPS'" >&2
+            exit 1
+            ;;
+        esac
+        pnpm -C packages/web exec playwright install-deps $BROWSERS

@@ -9,8 +9,8 @@
 # Why this exists separately from docker-compose.dev.yml:
 #   docker-compose.dev.yml runs Pinchy via `Dockerfile.pinchy.dev` which
 #   skips the user demotion. CI E2E ran under that image and missed the
-#   class of bugs where Pinchy (uid 999) can't read files OpenClaw writes
-#   as root (e.g. telegram-pairing.json mode 0600). Running E2E against
+#   class of bugs where Pinchy (uid 999) can't write files OpenClaw creates
+#   as root (e.g. a workspace bootstrap file, #1095). Running E2E against
 #   the production image catches them. See docs/contributing or PR for
 #   detail.
 
@@ -30,6 +30,11 @@ services:
       # keep the rate limit enabled. `auth-config-consistency.test.ts` blocks
       # this var from being added to `docker-compose.yml` or `.dev.yml`.
       PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT: "1"
+  office-converter:
+    # The converter runs the web image it serves — here, the build under test.
+    # Left on the base file's release tag it would run a different converter
+    # than the one this PR changes (office-converter-isolation.test.ts).
+    image: ${PINCHY_IMAGE:-pinchy:e2e}
   openclaw:
     image: ${OPENCLAW_IMAGE:-pinchy-openclaw:e2e}
     build:

@@ -54,7 +54,9 @@ async function auditExpired(rows: ExpiredApproval[], sweepId: string): Promise<v
       detail: {
         request: { id: row.id },
         agent: { id: row.agentId, name: agentNames.get(row.agentId) ?? null },
-        requester: { id: row.requesterId, name: userNames.get(row.requesterId) ?? null },
+        // Name only: `detail` is immutable, so a users.id here is out of reach
+        // of crypto-erasure (#824).
+        requester: { name: userNames.get(row.requesterId) ?? null },
         toolName: row.toolName,
         argsDigest: row.argsDigest,
         sweepId,

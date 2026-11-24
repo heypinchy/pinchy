@@ -53,9 +53,9 @@ module.exports = {
     },
     messages: {
       untrackedSkip:
-        '{{call}} needs a tracking issue. Add a comment with `#<issue-number>` (or the issue URL) above the call, or remove the skip. See AGENTS.md § "No untracked test skips".',
+        '{{call}} needs a tracking issue. Add a comment with `#<issue-number>` (or the issue URL) above the call, or remove the skip. See agent-rules/testing.md § "No untracked test skips".',
       aliasedSkip:
-        '{{call}} is referenced instead of called, which hides it from both skip guards (they match the call form). For a conditional gate use `{{object}}.skipIf(<condition>)`; for a permanent skip call it directly with a `#<issue-number>` comment. See AGENTS.md § "No untracked test skips".',
+        '{{call}} is referenced instead of called, which hides it from both skip guards (they match the call form). For a conditional gate use `{{object}}.skipIf(<condition>)`; for a permanent skip call it directly with a `#<issue-number>` comment. See agent-rules/testing.md § "No untracked test skips".',
     },
     schema: [],
   },

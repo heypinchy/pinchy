@@ -9,6 +9,7 @@ import noPiiInAuditDetail from "./eslint-rules/no-pii-in-audit-detail.js";
 import noUntrackedSkips from "./eslint-rules/no-untracked-skips.js";
 import noUntrackedSleeps from "./eslint-rules/no-untracked-sleeps.js";
 import noRawFetchMutation from "./eslint-rules/no-raw-fetch-mutation.js";
+import noUnguardedEffectFetch from "./eslint-rules/no-unguarded-effect-fetch.js";
 
 const pinchyPlugin = {
   rules: {
@@ -19,6 +20,7 @@ const pinchyPlugin = {
     "no-untracked-skips": noUntrackedSkips,
     "no-untracked-sleeps": noUntrackedSleeps,
     "no-raw-fetch-mutation": noRawFetchMutation,
+    "no-unguarded-effect-fetch": noUnguardedEffectFetch,
   },
 };
 
@@ -131,18 +133,24 @@ const eslintConfig = defineConfig([
   // Pinchy custom rules — client components, hooks and client pages:
   // - no-raw-fetch-mutation: a state-changing call goes through the typed
   //   helpers in @/lib/api-client (apiPost/apiPut/apiPatch/apiDelete), never
-  //   raw `fetch(url, { method: "POST" })`. AGENTS.md § "Shared Schemas And
+  //   raw `fetch(url, { method: "POST" })`. agent-rules/web-routes.md § "Shared Schemas And
   //   Typed Client" promises that payload drift is a compile-time error rather
   //   than a runtime 400 — a promise `JSON.stringify(anything)` cannot keep —
   //   and the helper is also what surfaces the route's own error wording
   //   instead of a generic toast (#1075). The rule's own scope check lives
   //   inside the rule so it stays honest under RuleTester; this glob is the
   //   outer bound. Opt out per statement with `// raw-fetch-exempt: <reason>`.
+  // - no-unguarded-effect-fetch: a load awaited from a useEffect has a catch
+  //   around it. Nothing awaits the promise an effect starts, so without one a
+  //   failure renders as an empty result and ends a test run with an unhandled
+  //   rejection (#1216). Opt out per statement with
+  //   `// unguarded-load-exempt: <reason>`.
   {
     files: ["src/components/**/*.{ts,tsx}", "src/hooks/**/*.{ts,tsx}", "src/app/**/*.tsx"],
     plugins: { pinchy: pinchyPlugin },
     rules: {
       "pinchy/no-raw-fetch-mutation": "error",
+      "pinchy/no-unguarded-effect-fetch": "error",
     },
   },
   // Override default ignores of eslint-config-next.

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import {
@@ -160,6 +160,22 @@ test("every pnpm command in the real AGENTS.md resolves to a real script", () =>
     checkAgentsMdCommands(markdown, createWorkspaceResolver(REPO_ROOT)),
     [],
   );
+});
+
+test("every pnpm command in the real agent-rules/*.md resolves to a real script", () => {
+  // AGENTS.md's topic rules moved into agent-rules/ verbatim, bash blocks
+  // included (`pnpm worktree:env`, the format and docs gates). They are the
+  // same instructions, so they get the same check.
+  const dir = join(REPO_ROOT, "agent-rules");
+  const files = readdirSync(dir).filter((f) => f.endsWith(".md"));
+  assert.ok(files.length >= 10, `only found ${files.length} topic files`);
+  const problems = files.flatMap((f) =>
+    checkAgentsMdCommands(
+      readFileSync(join(dir, f), "utf8"),
+      createWorkspaceResolver(REPO_ROOT),
+    ).map((p) => `agent-rules/${f}: ${p}`),
+  );
+  assert.deepEqual(problems, []);
 });
 
 test("every pnpm command in the real CONTRIBUTING.md resolves to a real script", () => {

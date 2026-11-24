@@ -104,6 +104,18 @@ beforeEach(() => {
   __resetChatListCacheForTests();
 });
 
+/**
+ * The open menu once the chat list has loaded. The menu renders while the
+ * fetch is still in flight ("Loading your chats…"), so a bare
+ * `findByRole("menu")` followed by synchronous queries races the fetch and
+ * loses under load.
+ */
+async function findLoadedMenu(): Promise<HTMLElement> {
+  const menu = await screen.findByRole("menu");
+  await waitFor(() => expect(within(menu).queryByText(/Loading your chats/i)).toBeNull());
+  return menu;
+}
+
 // --- tests ----------------------------------------------------------------
 
 describe("ChatSwitcher", () => {
@@ -113,7 +125,7 @@ describe("ChatSwitcher", () => {
 
     expect(apiGet).toHaveBeenCalledWith("/api/agents/agent-1/chats");
 
-    const menu = await screen.findByRole("menu");
+    const menu = await findLoadedMenu();
     expect(within(menu).getByText("Quarterly report")).toBeInTheDocument();
     expect(within(menu).getByText("Telegram chat")).toBeInTheDocument();
 
@@ -126,7 +138,7 @@ describe("ChatSwitcher", () => {
     mockChats(allChats);
     render(<ChatSwitcher agentId="agent-1" chatId="chat-abc" agentName="Smithers" />);
 
-    const menu = await screen.findByRole("menu");
+    const menu = await findLoadedMenu();
 
     // The channel is shown as a compact icon, not the word "Telegram", so the
     // narrow row stays uncluttered. The full label lives in the chat header.
@@ -156,7 +168,7 @@ describe("ChatSwitcher", () => {
     mockChats(allChats);
     render(<ChatSwitcher agentId="agent-1" chatId="chat-abc" agentName="Smithers" />);
 
-    const menu = await screen.findByRole("menu");
+    const menu = await findLoadedMenu();
 
     const activeRow = within(menu).getByText("Quarterly report").closest("[role='menuitem']")!;
     expect(within(activeRow as HTMLElement).getByLabelText("Current chat")).toBeInTheDocument();
@@ -170,7 +182,7 @@ describe("ChatSwitcher", () => {
     mockChats(allChats);
     render(<ChatSwitcher agentId="agent-1" chatId={null} agentName="Smithers" />);
 
-    const menu = await screen.findByRole("menu");
+    const menu = await findLoadedMenu();
 
     // The legacy/default web chat (chatId null) is the active one now.
     const fallback = new Date(legacyChat.lastInteractionAt).toLocaleDateString();
@@ -190,7 +202,7 @@ describe("ChatSwitcher", () => {
     mockChats(allChats);
     render(<ChatSwitcher agentId="agent-1" chatId="chat-abc" agentName="Smithers" />);
 
-    await screen.findByRole("menu");
+    await findLoadedMenu();
     await user.click(screen.getByRole("menuitem", { name: /New chat/i }));
 
     expect(push).toHaveBeenCalledTimes(1);
@@ -207,7 +219,7 @@ describe("ChatSwitcher", () => {
     mockChats(allChats);
     render(<ChatSwitcher agentId="agent-1" chatId={null} agentName="Smithers" />);
 
-    const menu = await screen.findByRole("menu");
+    const menu = await findLoadedMenu();
     await user.click(within(menu).getByText("Quarterly report"));
 
     expect(push).toHaveBeenCalledWith("/chat/agent-1/chat-abc");
@@ -218,7 +230,7 @@ describe("ChatSwitcher", () => {
     mockChats(allChats);
     render(<ChatSwitcher agentId="agent-1" chatId="chat-abc" agentName="Smithers" />);
 
-    const menu = await screen.findByRole("menu");
+    const menu = await findLoadedMenu();
     const fallback = new Date(legacyChat.lastInteractionAt).toLocaleDateString();
     await user.click(within(menu).getByText(`Chat from ${fallback}`));
 
@@ -232,7 +244,7 @@ describe("ChatSwitcher", () => {
     mockChats(allChats);
     render(<ChatSwitcher agentId="agent-1" chatId="chat-abc" agentName="Smithers" />);
 
-    const menu = await screen.findByRole("menu");
+    const menu = await findLoadedMenu();
     await user.click(within(menu).getByText("Telegram chat"));
 
     // Telegram chats have a null chatId but must NOT collide with the default
@@ -244,7 +256,7 @@ describe("ChatSwitcher", () => {
     mockChats(allChats);
     render(<ChatSwitcher agentId="agent-1" chatId={null} agentName="Smithers" activeTelegram />);
 
-    const menu = await screen.findByRole("menu");
+    const menu = await findLoadedMenu();
 
     // On the Telegram view, the Telegram row carries the active indicator...
     const telegramRow = within(menu).getByText("Telegram chat").closest("[role='menuitem']")!;
@@ -302,7 +314,7 @@ describe("ChatSwitcher", () => {
     render(<ChatSwitcher agentId="agent-1" chatId={null} agentName="Smithers" />);
 
     // The default web chat is always visible even when the list fails to load.
-    const menu = await screen.findByRole("menu");
+    const menu = await findLoadedMenu();
     expect(optimisticRow(menu)).not.toBeNull();
   });
 
@@ -338,7 +350,7 @@ describe("ChatSwitcher", () => {
     mockChats([webChat, telegramChat, legacyChat]);
     render(<ChatSwitcher agentId="agent-1" chatId="brand-new-chat" agentName="Smithers" />);
 
-    const menu = await screen.findByRole("menu");
+    const menu = await findLoadedMenu();
 
     // A synthetic "New chat" row appears, marked active.
     const newChatRow = optimisticRow(menu)!;
@@ -364,7 +376,7 @@ describe("ChatSwitcher", () => {
     mockChats([telegramChat]);
     render(<ChatSwitcher agentId="agent-1" chatId={null} agentName="Smithers" />);
 
-    const menu = await screen.findByRole("menu");
+    const menu = await findLoadedMenu();
     const newChatRow = optimisticRow(menu)!;
     expect(newChatRow).not.toBeNull();
     expect(within(newChatRow).getByLabelText("Current chat")).toBeInTheDocument();
@@ -374,7 +386,7 @@ describe("ChatSwitcher", () => {
     mockChats(allChats);
     render(<ChatSwitcher agentId="agent-1" chatId="chat-abc" agentName="Smithers" />);
 
-    const menu = await screen.findByRole("menu");
+    const menu = await findLoadedMenu();
 
     // The current chat (chat-abc) is the server's "Quarterly report" entry — it
     // is shown as-is, with no extra synthetic "New chat" row.
@@ -389,7 +401,7 @@ describe("ChatSwitcher", () => {
     mockChats([telegramChat]);
     render(<ChatSwitcher agentId="agent-1" chatId={null} agentName="Smithers" activeTelegram />);
 
-    const menu = await screen.findByRole("menu");
+    const menu = await findLoadedMenu();
     expect(optimisticRow(menu)).toBeNull();
   });
 
@@ -400,7 +412,7 @@ describe("ChatSwitcher", () => {
     mockChats([webChat, telegramChat, legacyChat]);
     render(<ChatSwitcher agentId="agent-1" chatId="brand-new-chat" agentName="Smithers" />);
 
-    const menu = await screen.findByRole("menu");
+    const menu = await findLoadedMenu();
     const newChatRow = optimisticRow(menu)!;
     expect(newChatRow).not.toBeNull();
     expect(within(newChatRow).getByText(/Not saved yet/i)).toBeInTheDocument();
@@ -413,7 +425,7 @@ describe("ChatSwitcher", () => {
     render(<ChatSwitcher agentId="agent-1" chatId="chat-abc" agentName="Smithers" />);
 
     // Initial mount fetch.
-    await screen.findByRole("menu");
+    await findLoadedMenu();
     expect(apiGet).toHaveBeenCalledTimes(1);
 
     // Opening the dropdown triggers a fresh fetch so a just-created session
@@ -485,6 +497,7 @@ describe("ChatSwitcher", () => {
 
       render(<ChatSwitcher agentId="agent-1" chatId="chat-abc" agentName="Smithers" />);
 
+      // The fetch never settles, so this menu stays in its loading state.
       const menu = await screen.findByRole("menu");
       // agent-1's cache is empty, so the only row is the optimistic current chat.
       expect(within(menu).queryByText("Other agent chat")).not.toBeInTheDocument();

@@ -14,6 +14,9 @@ import type {
   EmailSummary,
   EmailFull,
 } from "./email-adapter.js";
+// Graph takes the display name and the address as two fields; `Name <addr>`
+// in `address` alone is not an address Graph can deliver to.
+import { splitMailbox } from "./recipient.js";
 
 // Graph's attachment-get endpoint wraps the file's base64 payload inside a
 // JSON body — GET /me/messages/{id}/attachments/{id} — so a naive
@@ -444,7 +447,7 @@ export class GraphAdapter implements EmailAdapter {
         body: JSON.stringify({
           subject: opts.subject,
           body: { contentType: "text", content: opts.body },
-          toRecipients: [{ emailAddress: { address: opts.to } }],
+          toRecipients: [{ emailAddress: splitMailbox(opts.to) }],
         }),
       });
       return { draftId: created.id };
@@ -454,7 +457,7 @@ export class GraphAdapter implements EmailAdapter {
       body: JSON.stringify({
         subject: opts.subject,
         body: { contentType: "text", content: opts.body },
-        toRecipients: [{ emailAddress: { address: opts.to } }],
+        toRecipients: [{ emailAddress: splitMailbox(opts.to) }],
       }),
     });
     const created = (await res.json()) as { id: string };
@@ -479,7 +482,7 @@ export class GraphAdapter implements EmailAdapter {
         message: {
           subject: opts.subject,
           body: { contentType: "text", content: opts.body },
-          toRecipients: [{ emailAddress: { address: opts.to } }],
+          toRecipients: [{ emailAddress: splitMailbox(opts.to) }],
         },
         saveToSentItems: true,
       }),

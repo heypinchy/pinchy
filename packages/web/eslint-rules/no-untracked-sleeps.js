@@ -12,7 +12,7 @@
 // what they were waiting for — they are the fix in almost every case.
 //
 // The exemption is deliberately the SAME contract as the skip policy (see
-// eslint-rules/no-untracked-skips.js and AGENTS.md § "No Untracked Test
+// eslint-rules/no-untracked-skips.js and agent-rules/testing.md § "No Untracked Test
 // Skips"): a sleep is allowed when an issue is on the hook for removing it.
 // The honest case is a bounded NEGATIVE window — proving that further tokens
 // never arrive, or that no error boundary engaged — for which no `waitFor`
@@ -58,7 +58,7 @@ module.exports = {
     },
     messages: {
       untrackedSleep:
-        '{{call}} is a fixed sleep: green on a fast host, flaky on a loaded runner. Wait on a real signal instead — a web-first assertion, `expect.poll(...)`, `page.waitForURL(...)`, `page.waitForResponse(...)`. If the sleep bounds a NEGATIVE window that has no signal to wait for, file an issue and put `#<issue-number>` in a comment above the call. See AGENTS.md § "No Untracked Sleeps In E2E".',
+        '{{call}} is a fixed sleep: green on a fast host, flaky on a loaded runner. Wait on a real signal instead — a web-first assertion, `expect.poll(...)`, `page.waitForURL(...)`, `page.waitForResponse(...)`. If the sleep bounds a NEGATIVE window that has no signal to wait for, file an issue and put `#<issue-number>` in a comment above the call. See agent-rules/testing.md § "No Untracked Sleeps In E2E".',
     },
     schema: [],
   },

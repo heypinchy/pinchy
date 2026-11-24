@@ -132,6 +132,7 @@ import { validateProviderKey, validateProviderUrl } from "@/lib/providers";
 import { getSetting, setSetting } from "@/lib/settings";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { appendAuditLog } from "@/lib/audit";
+import { getAuditWriteFailedCount, resetAuditWriteFailedCount } from "@/lib/audit-deferred";
 import { db } from "@/db";
 import { requireAdmin } from "@/lib/api-auth";
 import {
@@ -217,6 +218,19 @@ describe("POST /api/setup/provider", () => {
     expect(response.status).toBe(200);
     const data = await response.json();
     expect(data.success).toBe(true);
+  });
+
+  it("should still return 200 and count the failure when the audit write fails after the key is saved", async () => {
+    resetAuditWriteFailedCount();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("audit db down"));
+
+    const response = await POST(
+      makeRequest({ provider: "anthropic", apiKey: "sk-ant-valid" }) as any
+    );
+
+    expect(response.status).toBe(200);
+    expect(getAuditWriteFailedCount()).toBe(1);
   });
 
   it("should validate the API key", async () => {

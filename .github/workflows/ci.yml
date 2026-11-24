@@ -267,7 +267,7 @@ jobs:
       # formats. `quality` is ungated (it is required), so this runs on every PR,
       # including docs-only ones — which is why the old dedicated
       # `docs-format.yml` workflow is gone rather than duplicated here.
-      # See AGENTS.md § "One Format Gate, Whole-Tree, From The Root".
+      # See agent-rules/tooling.md § "One Format Gate, Whole-Tree, From The Root".
       - name: Format check (repo)
         run: pnpm format:check
 
@@ -276,8 +276,8 @@ jobs:
       #
       # PR #1063 landed a ci.yml GitHub could not parse. Nothing failed —
       # the required checks reported "Expected — Waiting for status" instead,
-      # which is the unmergeable-with-nothing-broken shape AGENTS.md already
-      # documents twice (§ "CI Path Filtering Is Job-Level" and § "Never Put
+      # which is the unmergeable-with-nothing-broken shape agent-rules/ci.md
+      # already documents twice (§ "CI Path Filtering Is Job-Level" and § "Never Put
       # A Required Check In A Matrix"), arriving here from a third direction.
       #
       # And release.yml / pre-release.yml both passed `config-inline:` to
@@ -314,7 +314,7 @@ jobs:
       # its verdict when somebody edits this file. shellcheck and pyflakes are
       # NOT: actionlint shells out to whatever the `ubuntu-latest` image
       # happens to ship, so a runner-image bump that adds one rule turns main
-      # red with no commit behind it. AGENTS.md makes exactly this call for
+      # red with no commit behind it. agent-rules/docs.md makes exactly this call for
       # the docs-freshness sweep ("a check that can go red between two
       # identical commits does not belong in front of a merge button"), and it
       # applies with more force here, because this check gates every merge.
@@ -423,7 +423,7 @@ jobs:
         # docs/dist/, so it MUST follow the build step. It lives here, in the
         # ungated `quality` job, rather than in a job of its own: a docs check
         # gated on `changes` would skip on exactly the docs-only PRs it guards —
-        # see AGENTS.md § "CI Path Filtering Is Job-Level, Never Workflow-Level".
+        # see agent-rules/ci.md § "CI Path Filtering Is Job-Level, Never Workflow-Level".
         run: cd docs && pnpm check:anchors
 
       - name: Docs rendered-table check (built output)
@@ -477,7 +477,7 @@ jobs:
           # Fail if the PR removes test cases on net — deleted test files or
           # removed it()/test() blocks — without an explicit, tracked override.
           # Closes the gap left by no-untracked-skips (which only catches
-          # .skip/.todo). See AGENTS.md § "No Untracked Test Removal".
+          # .skip/.todo). See agent-rules/testing.md § "No Untracked Test Removal".
           #
           # Fetch base + deepen HEAD so a merge-base resolves (correct PR-diff
           # semantics). The guard falls back to a tip-to-tip diff if it can't,
@@ -497,7 +497,7 @@ jobs:
           # registry, an agent template, the audit event catalogue, the settings
           # navigation, a plugin's declared tools) without touching docs/.
           # The docs-coverage guard catches a drifted LIST; this catches prose
-          # that quietly became untrue. See AGENTS.md § "A User-Visible Change
+          # that quietly became untrue. See agent-rules/docs.md § "A User-Visible Change
           # Needs A Docs Change".
           #
           # The fetches above already deepened base and HEAD for the
@@ -666,7 +666,11 @@ jobs:
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # ≥2× the slowest green run: up to 16.8 min on 2026-11-05 before the
+    # accessibility sweep (e2e/23-accessibility.spec.ts) joined; its first
+    # green run with the sweep took 9.6 min (run 42106485600). Room for the
+    # slow end of that spread plus the sweep, doubled.
+    timeout-minutes: 40
 
     services:
       postgres:
@@ -751,7 +755,9 @@ jobs:
       (needs.build-image.result == 'success' ||
        needs.build-image.result == 'skipped')
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # 2x the slowest green run (11m52 on #1293, including ~70s for
+    # reclaim-docker-disk), plus room for the fork path's two local builds.
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: read
@@ -766,13 +772,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -832,6 +840,20 @@ jobs:
             -v "$PWD/config/verify-memory-search.sh:/verify-memory-search.sh:ro" \
             --entrypoint bash \
             ghcr.io/heypinchy/pinchy-openclaw:latest /verify-memory-search.sh
+
+      - uses: ./.github/actions/setup-pnpm
+
+      - name: Office converter boundary canary (no network, no secrets)
+        # LibreOffice opens files anyone with write access to a mounted share
+        # can plant. The office-converter service is what takes its network
+        # and its secrets away; this drives the image under test through the
+        # service exactly as docker-compose.yml declares it, with every profile
+        # and preflight hardening switched OFF, and asserts a host listener
+        # hears nothing — next to a CONTROL run on a bridge network that does
+        # fetch. Needs only the image, not the stack.
+        run: pnpm -C packages/web exec vitest run src/__tests__/lib/knowledge/office-convert.sidecar.canary.test.ts
+        env:
+          KB_SIDECAR_CANARY_VERSION: latest
 
       - name: Start production stack
         run: docker compose up -d
@@ -973,23 +995,24 @@ jobs:
           docker compose exec -T openclaw ls -la /root/.openclaw/openclaw.json
           exit 1
 
-      - name: Verify Pinchy can write per-agent auth-profiles (#934)
+      - name: Verify the per-agent directory ownership repair (#934)
         run: |
-          # agents/<id>/agent is shared: Pinchy (uid 999) writes auth-profiles.json
-          # there, OpenClaw (root) derives models.json in the same directory —
-          # creating it at mode 0700 and re-asserting that mode on every write.
-          # Root ignores mode bits, so the ONLY thing keeping Pinchy able to write
-          # is OWNERSHIP, repaired by start-openclaw.sh's fix_config_permissions
-          # tick. Without that repair the next provider save fails with EACCES,
-          # regenerateOpenClawConfig never pushes openclaw.json, and every dispatch
-          # dies with `Unknown model: …` — what the user sees is the agent going
-          # silent (setup-wizard E2E, CI run 30554860337).
+          # agents/<id>/agent is shared: OpenClaw (root) derives models.json there,
+          # creating the directory at mode 0700 and re-asserting that mode on every
+          # write. Up to OpenClaw 2026.7 Pinchy (uid 999) wrote auth-profiles.json
+          # into it, and a root-owned directory made that write fail with EACCES,
+          # so regenerateOpenClawConfig never pushed openclaw.json and every
+          # dispatch died with `Unknown model: …` (setup-wizard E2E, CI run
+          # 30554860337). OpenClaw 2026.9 retired that file and Pinchy no longer
+          # writes there; start-openclaw.sh's fix_config_permissions tick keeps
+          # repairing the ownership until that is confirmed on a released install,
+          # and this step keeps the repair honest while it exists.
           #
           # This reproduces the condition rather than waiting for it. Observing
           # the live directories is not a check: the smoke wizard configures no
-          # provider, so Pinchy writes no auth-profiles.json and OpenClaw has no
-          # catalog to derive — the first version of this step found nothing to
-          # probe on every run and warned instead of verifying. So create exactly
+          # provider, so OpenClaw has no catalog to derive — the first version
+          # of this step found nothing to probe on every run and warned instead
+          # of verifying. So create exactly
           # what OpenClaw creates (root-owned, mode 0700) and assert the tick
           # hands it back.
           # Use the REAL Smithers id, never an invented one: OpenClaw's
@@ -1032,7 +1055,7 @@ jobs:
             sleep 1
           done
           if [ "$OK" != 1 ]; then
-            echo "::error::Pinchy (uid 999) cannot write /openclaw-config/agents/<id>/agent — auth-profiles.json writes will fail with EACCES: $OUT"
+            echo "::error::Pinchy (uid 999) cannot write /openclaw-config/agents/<id>/agent — the #934 ownership repair did not run: $OUT"
             docker compose exec -T openclaw sh -c 'ls -lan /root/.openclaw/agents; ls -lan /root/.openclaw/agents/*/' || true
           fi
           [ "$OK" = 1 ]
@@ -1053,6 +1076,40 @@ jobs:
             echo "::warning::Pinchy logged $ERROR_COUNT OpenClaw connection errors (expected at most 1)"
           fi
           echo "Clean startup verified (restarts=$RESTART_COUNT, connection_errors=$ERROR_COUNT)"
+
+      - name: Verify Office conversion goes through the sidecar, and only the sidecar
+        run: |
+          # The canary above proves the converter service has no network. This
+          # proves the shipped stack actually USES it: the web container stages
+          # a document in the shared spool and the sidecar converts it. Then,
+          # with the sidecar stopped, the same conversion must come back
+          # `infrastructure` — if the web container quietly converted on its
+          # own, LibreOffice would be back next to the secrets and nothing else
+          # would notice. Run as the pinchy user, like the web process: the
+          # converter (its own uid, pinchy's group) writes into the batch
+          # through the modes that user's batches carry.
+          wait_converter() {
+            for i in $(seq 1 30); do
+              [ "$(docker compose ps office-converter --format '{{.Health}}')" = "healthy" ] && return 0
+              sleep 2
+            done
+            echo "::error::office-converter did not become healthy"
+            docker compose ps
+            docker compose logs office-converter
+            return 1
+          }
+          check() {
+            docker compose exec -T --user pinchy pinchy \
+              node --import tsx scripts/check-office-converter.ts --expect "$1"
+          }
+          wait_converter
+          check converted || { docker compose logs office-converter; exit 1; }
+          docker compose stop office-converter
+          # The stopped converter leaves its socket, so the web side waits
+          # ~20 s for a restart before it books the batch.
+          check infrastructure
+          docker compose start office-converter
+          wait_converter
 
       - name: Verify plugins load + deps survive a pinchy-only restart (PR #275 regression)
         run: |
@@ -1191,6 +1248,15 @@ jobs:
         if: always()
         run: docker compose down -v
 
+      # The dev stack rebuilds both images from scratch (~16G); the production
+      # ones above are not inputs to that build and must not share the disk
+      # with it. AWS-hosted runners ran out of space here. On a fork PR
+      # the prod images were built here and their cache stays, so the dev
+      # OpenClaw build reuses it and only the dev Pinchy build adds new data.
+      - uses: ./.github/actions/reclaim-docker-disk
+        with:
+          min-free-gb: ${{ needs.build-image.result == 'skipped' && '12' || '22' }}
+
       - name: Start dev stack
         run: docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build -d
         env:
@@ -1294,13 +1360,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -1389,8 +1457,8 @@ jobs:
         run: |
           RUNNING=$(docker compose ps --format json | jq -rs '[.[] | select(.State == "running")] | length')
           echo "Running services: $RUNNING"
-          if [ "$RUNNING" -ne 3 ]; then
-            echo "::error::Expected 3 running services (pinchy, openclaw, db), got $RUNNING"
+          if [ "$RUNNING" -ne 4 ]; then
+            echo "::error::Expected 4 running services (pinchy, office-converter, openclaw, db), got $RUNNING"
             docker compose ps
             exit 1
           fi
@@ -1427,7 +1495,9 @@ jobs:
 
   end-user-upgrade:
     name: End-user upgrade simulation
-    timeout-minutes: 15
+    # ~4 min before the OpenClaw state step; that step adds ~4-5 min (two
+    # gateway boots on the old image's state, one doctor import, one restart).
+    timeout-minutes: 25
     needs: [changes, build-image]
     # See docker-smoke: build-image is skipped both on fork PRs (fall back to a
     # local build) and on docs-only PRs (build nothing) — only the changes gate
@@ -1445,13 +1515,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -1664,6 +1736,24 @@ jobs:
             exit 1
           fi
 
+      # The steps above prove Pinchy comes up; they never had an agent or a
+      # chat, and Pinchy's /api/health stays green while the OpenClaw container
+      # crash-loops. That is how v0.11.0-rc shipped a gateway that refused to
+      # start on state written by OpenClaw 2026.7 until `doctor --fix` ran.
+      # This step writes real state with the previous release's OpenClaw image
+      # (two agents, one chat each), boots this build's image on it, and checks
+      # the gateway starts, both chats read back (one agent deleted from the
+      # config in between) and openclaw.json is untouched.
+      - name: OpenClaw state from the previous release starts and stays readable
+        if: steps.prev.outputs.skip == 'false' && steps.pull-prev.outputs.skip == 'false'
+        env:
+          PREV_TAG: ${{ steps.prev.outputs.tag }}
+        run: |
+          SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-12)
+          scripts/openclaw-state-upgrade/run.sh \
+            "ghcr.io/heypinchy/pinchy-openclaw:${PREV_TAG}" \
+            "ghcr.io/heypinchy/pinchy-openclaw:test-${SHORT_SHA}"
+
       - name: Tear down
         if: always() && steps.prev.outputs.skip == 'false' && steps.pull-prev.outputs.skip == 'false'
         working-directory: ${{ steps.install-dir.outputs.path }}
@@ -1703,13 +1793,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -1828,13 +1920,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -1955,13 +2049,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -2087,13 +2183,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -2242,13 +2340,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -2371,8 +2471,8 @@ jobs:
     # docker-compose.e2e.yml using the production Dockerfile.pinchy
     # (uid 999 demotion via entrypoint.sh), matching what end users
     # actually run. Catches uid/permission mismatches between Pinchy
-    # (uid 999) and OpenClaw (root) — see e.g. PR #195's regression for
-    # the telegram-pairing.json mode 0600 case.
+    # (uid 999) and OpenClaw (root), e.g. a bootstrap file OpenClaw creates
+    # as root that Pinchy must rewrite (#1095).
     #
     # ${PINCHY_VERSION:?} on docker-compose.yml's `image:` line is
     # satisfied by any non-empty string; the build directive in
@@ -2384,13 +2484,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -2579,13 +2681,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -2748,13 +2852,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -2856,6 +2962,78 @@ jobs:
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.eval.yml down -v
 
+  # The LibreOffice suites (`pnpm test:libreoffice`): the conversion adapter
+  # against a real binary, and the canaries proving an Office file on a share
+  # cannot make the converter fetch or draw a local file into the PDF. They
+  # need a real `soffice`, which no runner has — before this job they skipped
+  # in CI and had never run there at all. So they run INSIDE the Pinchy image
+  # this pipeline built, i.e. against the LibreOffice that ships (Debian's),
+  # with `--network none` (the canaries' listener is on loopback) and
+  # KB_REQUIRE_SOFFICE=1, so a missing binary fails instead of skipping.
+  # A 24 MiB tmpfs (KB_SMALL_VOLUME) is a staging volume too small for the
+  # scratch LibreOffice unpacks a large package into while loading it: a test
+  # cannot shrink a filesystem, and that case needs a real one.
+  #
+  # The runtime image carries production dependencies only, so vitest comes
+  # from the runner: dependencies are installed there and the checkout is
+  # mounted. Not a required check, and gated like every other non-required job
+  # (scripts/lib/ci-path-filter.mjs); scripts/lib/libreoffice-suite.test.mjs
+  # pins this wiring.
+  libreoffice:
+    name: LibreOffice conversion canaries
+    needs: [changes, build-image]
+    # See docker-smoke on why the changes gate is explicit rather than inferred
+    # from build-image being skipped.
+    if: >-
+      always() &&
+      needs.changes.outputs.code == 'true' &&
+      (needs.build-image.result == 'success' ||
+       needs.build-image.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-pnpm
+
+      - name: Log in to GHCR (skip on fork PRs)
+        if: needs.build-image.result == 'success'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull pre-built CI images (skip on fork PRs)
+        if: needs.build-image.result == 'success'
+        uses: ./.github/actions/pull-ci-images
+        with:
+          pinchy-image: ${{ needs.build-image.outputs.pinchy-image }}
+          openclaw-image: ${{ needs.build-image.outputs.openclaw-image }}
+
+      - name: Name the pulled image
+        if: needs.build-image.result == 'success'
+        env:
+          PINCHY_IMAGE: ${{ needs.build-image.outputs.pinchy-image }}
+        run: docker tag "$PINCHY_IMAGE" pinchy-libreoffice
+
+      - name: Build the Pinchy image locally (fork PR fallback)
+        if: needs.build-image.result == 'skipped'
+        run: docker build -t pinchy-libreoffice -f Dockerfile.pinchy .
+
+      - name: pnpm test:libreoffice inside the image
+        run: |
+          docker run --rm --network none \
+            -e CI=true -e KB_REQUIRE_SOFFICE=1 \
+            --tmpfs /kb-small-volume:size=24m -e KB_SMALL_VOLUME=/kb-small-volume \
+            -v "$GITHUB_WORKSPACE:/repo" -w /repo \
+            --entrypoint sh pinchy-libreoffice \
+            -c 'soffice --version && pnpm test:libreoffice'
+
   ollama-integration:
     name: Ollama integration tests
     needs: changes
@@ -2869,12 +3047,22 @@ jobs:
       - uses: ./.github/actions/setup-pnpm
 
       - name: Install Ollama
-        # Retry the whole install: ollama's installer downloads a binary from a
-        # CDN that intermittently returns a transient 504, which then feeds a
-        # partial body into zstd/tar and fails the step — not a real error.
+        # Retry the whole install: ollama.com and the CDN behind its installer
+        # intermittently return a transient 504 — not a real error.
+        #
+        # Download to a file, never `curl … | sh`: without pipefail a failed
+        # download feeds sh an empty script, sh exits 0, and the loop declares
+        # success (run 42473085435). `command -v` then checks the installer
+        # really left a binary behind, so a half-finished install retries too
+        # instead of failing in the next step under the wrong name.
         run: |
+          installer="$RUNNER_TEMP/ollama-install.sh"
           for attempt in 1 2 3; do
-            if curl -fsSL https://ollama.com/install.sh | sh; then exit 0; fi
+            if curl -fsSL -o "$installer" https://ollama.com/install.sh \
+              && sh "$installer" \
+              && command -v ollama >/dev/null; then
+              exit 0
+            fi
             echo "Ollama install attempt ${attempt} failed; retrying in 10s..."
             sleep 10
           done
@@ -2940,7 +3128,7 @@ jobs:
           # site, not a file on disk, so lychee can only produce noise there.
           # Internal docs links and their #anchors are checked instead against
           # the BUILT site by the `quality` job's `pnpm check:anchors` step
-          # (#769; see AGENTS.md § "In-Page Anchors Are Checked By The Docs
+          # (#769; see agent-rules/docs.md § "In-Page Anchors Are Checked By The Docs
           # Build"). External links out of docs/ remain unchecked.
           args: "--no-progress --max-retries 3 --retry-wait-time 5 --accept '200..=299,429,500..=599' '**/*.md' '**/*.mdx' --exclude-path node_modules --exclude-path .git --exclude-path docs --exclude 'localhost' --exclude 'github\\.com/heypinchy/website' --exclude 'github\\.com/heypinchy/pinchy/stargazers' --exclude 'linkedin\\.com' --exclude 'sonner\\.emilkowal\\.dev' --exclude 'squawkhq\\.com' --exclude 'contributor-covenant\\.org' --exclude 'star-history\\.com'"
         env:

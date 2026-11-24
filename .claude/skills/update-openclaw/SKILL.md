@@ -68,17 +68,16 @@ version between current and target first.
    Packaging", and any breaking/migration language anywhere else. **Watch
    especially for new gateway-startup / config self-healing behavior** — these
    don't show up in `pnpm test`/`tsc` at all and only fail in the docker E2Es.
-   **The `agent:bootstrap` hook contract is one of these silent dependencies.**
-   `config/pinchy-hooks/bootstrap-memory-group-filter/` (the #369 leak fix)
-   assumes the event carries `context.bootstrapFiles` (array) and
-   `context.sessionKey` (string), that reassigning `context.bootstrapFiles` is
-   read back by the caller, and that internal hooks load via native `import()`.
-   If the notes touch bootstrap/hook events, session-key shape, or the internal
-   hook loader, verify against the installed dist that these still hold — the
-   hook now `console.warn`s instead of failing open, so also check the gateway
-   logs on the staging deploy for that warning. A silent contract change here
-   re-opens a P0 `eu-ai-act` memory leak. See the hook's `HOOK.md` Verification
-   section for the exact staging check.
+   **Keeping a shared agent's `MEMORY.md` out of group sessions (#369) is one
+   of these silent dependencies.** OpenClaw's own `filterBootstrapFilesForSession`
+   does it (group, channel, subagent and cron sessions);
+   `packages/web/src/__tests__/lib/openclaw-config-hooks.test.ts` runs the
+   installed function against those session keys and turns red if a bump
+   stops filtering one of them. If it does, the fix is a Pinchy-side filter
+   again — and then check the gateway log that OpenClaw actually **loaded**
+   it. The hook Pinchy shipped for this until v0.10 never ran: OpenClaw loads
+   only `handler.ts`/`handler.js`/`index.ts`/`index.js`, the hook was
+   `handler.mjs`, and its unit tests proved the filter logic, not the loading.
    Real example the 2026.6.11 bump tripped: OpenClaw 2026.6.x added startup
    config auto-restore — on a size-drop / missing-meta vs last-known-good it
    restores `openclaw.json.last-good` over `openclaw.json` at gateway start
@@ -180,6 +179,11 @@ openclaw/openclaw --json state,closedAt`). But **"issue closed" is
    - `openclaw-runtime-closure.test.ts` fails if a root override now pushes a
      dependency of the new tree outside its declared major; bound the
      override rather than accepting it.
+   - A green scan does not cover what OpenClaw **inlines** into its `dist/`
+     (zod, protobufjs, semver, qs, …): overrides cannot reach those copies.
+     Re-check the open cases in `osv-scanner.toml`'s header (zod inlined at
+     4.4.3 as of 2026.7.1-2) against the new release's `dist/` and drop a
+     note once its inlined version is fixed.
    - Check `npm view openclaw@<target> engines.node` against `.nvmrc` —
      2026.9.x requires Node >=24.16, which means a repo-wide Node bump
      (`scripts/lib/node-version-pin.mjs`) before the OpenClaw bump.
@@ -201,14 +205,22 @@ openclaw/openclaw --json state,closedAt`). But **"issue closed" is
    ```bash
    pnpm install
    pnpm -C packages/web vitest run src/__tests__/lib/openclaw-version-pin-drift.test.ts
-   node --test config/__tests__/bootstrap-memory-group-filter.test.mjs  # #369 hook contract
    pnpm test
    pnpm build
    ```
 
-   Note: the hook test above proves the filter logic, not that OpenClaw still
-   fires the hook. If the notes touched bootstrap/hook/session-key behavior,
-   run the HOOK.md staging check before shipping.
+   `openclaw-config-hooks.test.ts` (part of `pnpm test`) checks the native
+   #369 memory filter against the installed OpenClaw.
+
+   **`pinchy-knowledge`'s language note pins the version too.** Its
+   `before_prompt_build` hook adds a per-turn note to the user's message,
+   which OpenClaw does not store, so later turns replay a different prefix
+   (#1296). That's safe only while Claude Haiku 5.5, the one preserved-thinking
+   model Pinchy offers, runs with thinking off. The test "is re-checked when
+   OpenClaw is bumped" in `packages/plugins/pinchy-knowledge/index.test.ts`
+   fails on a bump. Check on staging that a Haiku 5.5 KB agent with thinking
+   answers a second turn after a non-English first one, or drop the note,
+   before updating the pinned version in that test.
 
 7. **Don't commit automatically.** Report the diff (`git status --short`,
    `git diff --stat`) and let the user decide to commit/PR — this touches a

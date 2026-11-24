@@ -1,17 +1,23 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from "vitest";
 import { render, screen, waitFor, act, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { useRouter, useSearchParams } from "next/navigation";
 import type { ReadonlyURLSearchParams } from "next/navigation";
 import { SettingsPageContent as SettingsPage } from "@/components/settings-page-content";
+import { jsonResponse } from "@/test-helpers/fetch";
 
 // useSearchParams() is typed as ReadonlyURLSearchParams; a plain URLSearchParams
 // is structurally not assignable (the readonly type drops the mutating methods)
 // but is a valid value at runtime, so the mocks cast through it.
 const readonlySearchParams = (init?: string) =>
   new URLSearchParams(init) as unknown as ReadonlyURLSearchParams;
+
+const mockToastError = vi.fn();
+vi.mock("sonner", () => ({
+  toast: { error: (...args: unknown[]) => mockToastError(...args), success: vi.fn() },
+}));
 
 let capturedProviderProps: {
   onSuccess?: () => void;
@@ -95,6 +101,10 @@ vi.mock("@/components/knowledge-index-schedule-settings", () => ({
   ),
 }));
 
+vi.mock("@/components/email-delivery-settings", () => ({
+  EmailDeliverySettings: () => <div data-testid="mock-email-delivery-settings">Email delivery</div>,
+}));
+
 vi.mock("@/components/member-access-settings", () => ({
   MemberAccessSettings: () => <div data-testid="mock-member-access-settings">Member access</div>,
 }));
@@ -103,18 +113,24 @@ vi.mock("@/components/settings-context", () => ({
   SettingsContext: ({
     userContext,
     orgContext,
+    userContextFailed,
+    orgContextFailed,
     isAdmin,
     onDirtyChange,
   }: {
-    userContext: string;
-    orgContext: string;
+    userContext: string | null;
+    orgContext: string | null;
+    userContextFailed?: boolean;
+    orgContextFailed?: boolean;
     isAdmin: boolean;
     onDirtyChange?: (isDirty: boolean) => void;
   }) => {
     capturedOnDirtyChangeContext = onDirtyChange;
     return (
       <div data-testid="mock-settings-context">
-        Context (isAdmin: {String(isAdmin)}, userContext: {userContext}, orgContext: {orgContext})
+        Context (isAdmin: {String(isAdmin)}, userContext: {userContext}, orgContext: {orgContext}
+        {userContextFailed && ", userContextFailed"}
+        {orgContextFailed && ", orgContextFailed"})
       </div>
     );
   },
@@ -165,10 +181,7 @@ describe("Settings Page", () => {
   };
 
   function mockContextFetches() {
-    return {
-      ok: true,
-      json: async () => ({ content: "" }),
-    } as Response;
+    return jsonResponse({ content: "" });
   }
 
   function setupAdminFetchMocks(providerData?: object) {
@@ -183,7 +196,7 @@ describe("Settings Page", () => {
     vi.mocked(global.fetch).mockImplementation(async (url) => {
       const path = typeof url === "string" ? url : url.toString();
       if (path === "/api/settings/providers") {
-        return { ok: true, json: async () => pd } as Response;
+        return jsonResponse(pd);
       }
       if (path === "/api/users/me/context" || path === "/api/settings/context") {
         return mockContextFetches();
@@ -209,6 +222,11 @@ describe("Settings Page", () => {
 
   afterEach(() => {
     fetchSpy.mockRestore();
+    // Tab clicks write jsdom's history for real now; the location must not
+    // carry into the next test.
+    // Through the prototype: a test's own replaceState spy is restored only
+    // after afterEach runs (onTestFinished), and would swallow this call.
+    History.prototype.replaceState.call(window.history, null, "", "/");
   });
 
   // The nightly reindex is read in the org timezone, so it lives next to it.
@@ -264,6 +282,15 @@ describe("Settings Page", () => {
 
       expect(screen.getByTestId("mock-member-access-settings")).toBeInTheDocument();
       expect(screen.getByTestId("mock-timezone-settings")).toBeInTheDocument();
+    });
+
+    it("puts Email delivery in the Organization tab (#1309)", async () => {
+      setupAdminFetchMocks();
+
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
+      await userEvent.click(await screen.findByRole("tab", { name: "Organization" }));
+
+      expect(screen.getByTestId("mock-email-delivery-settings")).toBeInTheDocument();
     });
 
     it("should render AI Provider, Users, Context, and Profile tabs", async () => {
@@ -399,10 +426,14 @@ describe("Settings Page", () => {
         expect(screen.getByTestId("mock-provider-form")).toBeInTheDocument();
       });
 
+      const providerLoads = () =>
+        vi.mocked(global.fetch).mock.calls.filter(([url]) => url === "/api/settings/providers")
+          .length;
+      const before = providerLoads();
       capturedProviderProps.onSuccess!();
 
       await waitFor(() => {
-        expect(global.fetch).toHaveBeenCalledWith("/api/settings/providers");
+        expect(providerLoads()).toBe(before + 1);
       });
     });
   });
@@ -578,6 +609,7 @@ describe("Settings Page", () => {
       render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
 
       expect(screen.queryByTestId("mock-member-access-settings")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("mock-email-delivery-settings")).not.toBeInTheDocument();
     });
 
     it("should show Context and Profile tabs but not Provider or Users", () => {
@@ -623,10 +655,13 @@ describe("Settings Page", () => {
 
       render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
 
+      // By URL: the loads pass a second argument (method, signal), and a
+      // `not.toHaveBeenCalledWith(url)` would pass for any call that has one.
+      const fetchedUrls = () => vi.mocked(global.fetch).mock.calls.map(([url]) => String(url));
       await waitFor(() => {
-        expect(global.fetch).toHaveBeenCalledWith("/api/users/me/context");
-        expect(global.fetch).not.toHaveBeenCalledWith("/api/settings/providers");
+        expect(fetchedUrls()).toContain("/api/users/me/context");
       });
+      expect(fetchedUrls()).not.toContain("/api/settings/providers");
     });
   });
 
@@ -652,6 +687,8 @@ describe("Settings Page", () => {
     });
 
     it("clears the tab param when the back control is clicked", async () => {
+      const replaceState = vi.spyOn(window.history, "replaceState").mockImplementation(() => {});
+      onTestFinished(() => replaceState.mockRestore());
       vi.mocked(useSearchParams).mockReturnValue(readonlySearchParams("tab=profile"));
       setupAdminFetchMocks();
 
@@ -660,11 +697,15 @@ describe("Settings Page", () => {
       const backButton = await screen.findByRole("button", { name: /back to settings/i });
       await userEvent.click(backButton);
 
-      const router = useRouter();
-      expect(router.replace).toHaveBeenCalledWith("/settings", { scroll: false });
+      // Native replaceState, not router.replace: a router navigation waits on
+      // a server round trip before the menu shows (#1271).
+      expect(replaceState).toHaveBeenCalledWith(null, "", "/settings");
+      expect(useRouter().replace).not.toHaveBeenCalled();
     });
 
     it("preserves unrelated query params when the back control is clicked", async () => {
+      const replaceState = vi.spyOn(window.history, "replaceState").mockImplementation(() => {});
+      onTestFinished(() => replaceState.mockRestore());
       vi.mocked(useSearchParams).mockReturnValue(readonlySearchParams("tab=profile&foo=bar"));
       setupAdminFetchMocks();
 
@@ -673,8 +714,10 @@ describe("Settings Page", () => {
       const backButton = await screen.findByRole("button", { name: /back to settings/i });
       await userEvent.click(backButton);
 
-      const router = useRouter();
-      expect(router.replace).toHaveBeenCalledWith("/settings?foo=bar", { scroll: false });
+      // Native replaceState, not router.replace: a router navigation waits on
+      // a server round trip before the menu shows (#1271).
+      expect(replaceState).toHaveBeenCalledWith(null, "", "/settings?foo=bar");
+      expect(useRouter().replace).not.toHaveBeenCalled();
     });
 
     it("keeps the active tab indicator on the sidebar variant", async () => {
@@ -706,6 +749,106 @@ describe("Settings Page", () => {
 
       expect(headerLabel).toBe(expected);
       expect(headerLabel).toBe(activeTrigger);
+    });
+  });
+
+  // Every load on this page runs from an effect that awaits nothing. Before
+  // they caught, a failed one left its card silently empty — and an empty
+  // context editor's Save replaced the stored context.
+  describe("load failure", () => {
+    function stubLoads(failing: string, response: () => Promise<Response>) {
+      vi.mocked(global.fetch).mockImplementation(async (url) => {
+        const path = String(url);
+        if (path === failing) return response();
+        if (path === "/api/settings/providers") {
+          return jsonResponse({ defaultProvider: null, providers: {} });
+        }
+        if (path === "/api/users/me/context") return jsonResponse({ content: "Mine" });
+        if (path === "/api/settings/context") return jsonResponse({ content: "Ours" });
+        // The integrations tab mounts in the background and shows its own
+        // alert for a failed list; only the load under test may fail here.
+        if (path === "/api/integrations") return jsonResponse([]);
+        return jsonResponse(undefined, { status: 404 });
+      });
+    }
+
+    const failures = [
+      ["rejects", () => Promise.reject(new TypeError("Failed to fetch"))],
+      ["answers 500", async () => jsonResponse({}, { status: 500 })],
+    ] as const;
+
+    it.each(failures)(
+      "tells the context editor the org context failed when its load %s",
+      async (_label, response) => {
+        stubLoads("/api/settings/context", response);
+        render(<SettingsPage isAdmin={true} />);
+
+        await waitFor(() => {
+          expect(screen.getByTestId("mock-settings-context")).toHaveTextContent("orgContextFailed");
+        });
+        expect(screen.getByTestId("mock-settings-context")).toHaveTextContent("userContext: Mine");
+      }
+    );
+
+    it.each(failures)(
+      "tells the context editor the user context failed when its load %s",
+      async (_label, response) => {
+        stubLoads("/api/users/me/context", response);
+        render(<SettingsPage isAdmin={false} />);
+
+        await waitFor(() => {
+          expect(screen.getByTestId("mock-settings-context")).toHaveTextContent(
+            "userContextFailed"
+          );
+        });
+      }
+    );
+
+    it.each(failures)(
+      "shows why there is no provider form when the status load %s",
+      async (_label, response) => {
+        vi.mocked(useSearchParams).mockReturnValue(readonlySearchParams("tab=provider"));
+        stubLoads("/api/settings/providers", response);
+        render(<SettingsPage isAdmin={true} />);
+
+        expect(await screen.findByRole("alert")).toHaveTextContent(/couldn't load/i);
+        expect(screen.queryByTestId("mock-provider-form")).not.toBeInTheDocument();
+      }
+    );
+
+    // The refresh after a provider save is not the first load: the form the
+    // admin just used stays, and the failure is said once in a toast.
+    it("keeps the provider form and toasts when the refresh after a save fails", async () => {
+      vi.mocked(useSearchParams).mockReturnValue(readonlySearchParams("tab=provider"));
+      stubLoads("/api/none", async () => jsonResponse({}));
+      render(<SettingsPage isAdmin={true} />);
+      await screen.findByTestId("mock-provider-form");
+
+      stubLoads("/api/settings/providers", async () => jsonResponse({}, { status: 500 }));
+      act(() => capturedProviderProps.onSuccess!());
+
+      await waitFor(() =>
+        expect(mockToastError).toHaveBeenCalledWith(
+          "We couldn't refresh your provider settings. Reload the page to see the latest."
+        )
+      );
+      expect(screen.getByTestId("mock-provider-form")).toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
+    it("cancels its loads when it unmounts mid-flight", async () => {
+      const loads = ["/api/settings/providers", "/api/users/me/context", "/api/settings/context"];
+      const signals = new Map<string, AbortSignal | undefined>();
+      vi.mocked(global.fetch).mockImplementation(async (url, init) => {
+        if (loads.includes(String(url))) signals.set(String(url), init?.signal ?? undefined);
+        return new Promise<Response>(() => {});
+      });
+      const { unmount } = render(<SettingsPage isAdmin={true} />);
+
+      await waitFor(() => expect(signals.size).toBe(3));
+      unmount();
+
+      for (const load of loads) expect(signals.get(load)?.aborted, load).toBe(true);
     });
   });
 });

@@ -3,8 +3,8 @@
  * Sources list is written by the model — nothing renders it. Three real shapes
  * were observed against the same corpus within one day:
  *
- *   - kimi-k2.6, obeying the template:  `- [2] noack/x/doc.pdf — p. 44`
- *   - kimi-k2.6, embellishing:          `[1] noack/x/doc.pdf – AOAC study, Tabelle 18 …`
+ *   - kimi-k2.6, obeying the template:  `- [2] customer/x/doc.pdf — p. 44`
+ *   - kimi-k2.6, embellishing:          `[1] customer/x/doc.pdf – AOAC study, Tabelle 18 …`
  *   - deepseek-v4-pro, its own idea:    `*Quelle: PPR document.pdf, S. 275*`
  *
  * So the transform keys off the ONE thing every shape carries — a path with a
@@ -23,9 +23,11 @@ import {
   remarkSourceLinks,
   buildSourceHref,
   buildSourceDownloads,
+  buildSourceViewerUrl,
   parseSourceHref,
+  buildPassageRequest,
 } from "@/lib/knowledge/source-links";
-import { OFFICE_EXTENSIONS } from "@/lib/knowledge/office-formats";
+import { OFFICE_EXTENSIONS, SCAN_EXTENSIONS } from "@/lib/knowledge/office-formats";
 
 /** Minimal mdast subset — the plugin only ever walks children and rewrites text nodes. */
 type Node = { type: string; value?: string; url?: string; children?: Node[] };
@@ -62,9 +64,9 @@ describe("buildSourceHref", () => {
     // carry the path the filesystem answers to. Spaces and & are both real in
     // this corpus ("PF LAB/… afnor_update_&_support.pdf") and both break a bare
     // query string, so encoding is not cosmetic either.
-    const href = buildSourceHref(AGENT, "noack/PF LAB/a & b.pdf", null);
+    const href = buildSourceHref(AGENT, "customer/PF LAB/a & b.pdf", null);
     expect(href).toBe(
-      "/api/agents/agent-1/workspace-file?path=%2Fdata%2Fnoack%2FPF%20LAB%2Fa%20%26%20b.pdf"
+      "/api/agents/agent-1/workspace-file?path=%2Fdata%2Fcustomer%2FPF%20LAB%2Fa%20%26%20b.pdf"
     );
   });
 
@@ -86,9 +88,9 @@ describe("buildSourceHref", () => {
 describe("parseSourceHref", () => {
   it("round-trips a path built by buildSourceHref, so the viewer gets a real title", () => {
     // Round-trips to the CITATION path, not the absolute one: this value is the
-    // viewer's title, and a title reading "/data/noack/…" would put the
+    // viewer's title, and a title reading "/data/customer/…" would put the
     // container path back in front of the reader that #933 took out of it.
-    const path = "noack/PF LAB/a & b.pdf";
+    const path = "customer/PF LAB/a & b.pdf";
     expect(parseSourceHref(buildSourceHref(AGENT, path, { kind: "page", page: 44 }))).toEqual({
       path,
       locator: { kind: "page", page: 44 },
@@ -132,10 +134,11 @@ describe("buildSourceDownloads", () => {
     buildSourceHref(AGENT, citationPath, { kind: "page", page: 510 });
 
   it("offers one copy of a PDF, because a PDF has only one representation", () => {
-    const downloads = buildSourceDownloads(hrefFor("noack/PPR/document.pdf"))!;
+    const downloads = buildSourceDownloads(hrefFor("customer/PPR/document.pdf"))!;
 
     expect(downloads).toHaveLength(1);
     expect(downloads[0].label).toBe("document.pdf");
+    expect(downloads[0].filename).toBe("document.pdf");
   });
 
   it("offers the original AND the converted PDF for an Office source", () => {
@@ -143,13 +146,30 @@ describe("buildSourceDownloads", () => {
     // file the reader forwards to a customer is the one that exists on their
     // drive. The original comes first — it is the document; the PDF is a
     // convenience that sometimes saves them the conversion.
-    const downloads = buildSourceDownloads(hrefFor("noack/QF_2012/Angebot.doc"))!;
+    const downloads = buildSourceDownloads(hrefFor("customer/archive-2012/Angebot.doc"))!;
 
-    expect(downloads.map((d) => d.label)).toEqual(["Angebot.doc", "Angebot.pdf"]);
+    expect(downloads.map((d) => d.filename)).toEqual(["Angebot.doc", "Angebot.pdf"]);
+  });
+
+  it("labels the pair by what each one IS, not by the document's name (#1268)", () => {
+    // Both entries carry the same name up to the extension, and the header
+    // truncates a label long before it reaches the extension — so two labels
+    // made of the filename read "Vorlage_Wartung…" twice. What tells them
+    // apart is the representation, which is what the label says now; the
+    // filename stays reachable as the entry's own field (tooltip, a11y name).
+    const downloads = buildSourceDownloads(hrefFor("customer/Vorlage_Wartung_Kundendienst.docx"))!;
+
+    expect(downloads.map((d) => d.label)).toEqual(["Original (.docx)", "PDF"]);
+  });
+
+  it("keeps the original's extension as written, so the label matches the file", () => {
+    const [original] = buildSourceDownloads(hrefFor("customer/Bericht.PPTX"))!;
+
+    expect(original.label).toBe("Original (.PPTX)");
   });
 
   it("names each representation explicitly, so the pair is not a coin flip", () => {
-    const [original, converted] = buildSourceDownloads(hrefFor("noack/Bericht.pptx"))!;
+    const [original, converted] = buildSourceDownloads(hrefFor("customer/Bericht.pptx"))!;
 
     expect(new URL(original.url, "http://localhost").searchParams.get("variant")).toBe("original");
     expect(new URL(converted.url, "http://localhost").searchParams.get("variant")).toBe(
@@ -157,16 +177,34 @@ describe("buildSourceDownloads", () => {
     );
   });
 
+  it("marks which entry is the converted PDF, so a viewer can drop it when there is none", () => {
+    // The viewer shows the converted PDF of an Office source, and that PDF may
+    // not exist: not converted yet, or a conversion that was refused. Marked
+    // on the entry rather than recognised by label, so the dialog never has to
+    // parse "PDF" back out of copy.
+    expect(buildSourceDownloads(hrefFor("customer/Bericht.docx"))!.map((d) => d.variant)).toEqual([
+      "original",
+      "converted",
+    ]);
+    expect(buildSourceDownloads(hrefFor("archive/scan.TIFF"))!.map((d) => d.variant)).toEqual([
+      "original",
+      "converted",
+    ]);
+    expect(
+      buildSourceDownloads(hrefFor("customer/PPR/document.pdf"))!.map((d) => d.variant)
+    ).toEqual(["original"]);
+  });
+
   it("asks the server for a copy, so both are audited as downloads", () => {
-    for (const download of buildSourceDownloads(hrefFor("noack/Angebot.docx"))!) {
+    for (const download of buildSourceDownloads(hrefFor("customer/Angebot.docx"))!) {
       const parsed = new URL(download.url, "http://localhost");
       expect(parsed.searchParams.get("download")).toBe("1");
-      expect(parsed.searchParams.get("path")).toBe("/data/noack/Angebot.docx");
+      expect(parsed.searchParams.get("path")).toBe("/data/customer/Angebot.docx");
     }
   });
 
   it("drops the page fragment, which means nothing to a saved file", () => {
-    for (const download of buildSourceDownloads(hrefFor("noack/Angebot.docx"))!) {
+    for (const download of buildSourceDownloads(hrefFor("customer/Angebot.docx"))!) {
       expect(download.url).not.toContain("#");
     }
   });
@@ -176,7 +214,28 @@ describe("buildSourceDownloads", () => {
     // converter a new format without teaching the renderer would leave a
     // citation whose preview works and whose download list silently does not.
     for (const ext of OFFICE_EXTENSIONS) {
-      expect(buildSourceDownloads(hrefFor(`noack/report${ext}`))).toHaveLength(2);
+      expect(buildSourceDownloads(hrefFor(`customer/report${ext}`))).toHaveLength(2);
+    }
+  });
+
+  it("offers the scan as filed AND the PDF it was read from for a TIFF (#1409)", () => {
+    // A browser renders no TIFF, so the viewer shows the PDF the ingest made
+    // of it; the original is still the file on the reader's drive.
+    const downloads = buildSourceDownloads(hrefFor("archive/Lieferschein 0815.tif"))!;
+
+    expect(downloads.map((d) => d.label)).toEqual(["Original (.tif)", "PDF"]);
+    expect(downloads.map((d) => d.filename)).toEqual([
+      "Lieferschein 0815.tif",
+      "Lieferschein 0815.pdf",
+    ]);
+    expect(new URL(downloads[1].url, "http://localhost").searchParams.get("variant")).toBe(
+      "converted"
+    );
+  });
+
+  it("offers a pair for every scan format the knowledge base converts", () => {
+    for (const ext of SCAN_EXTENSIONS) {
+      expect(buildSourceDownloads(hrefFor(`archive/scan${ext}`))).toHaveLength(2);
     }
   });
 
@@ -186,28 +245,84 @@ describe("buildSourceDownloads", () => {
   });
 });
 
+describe("buildSourceViewerUrl", () => {
+  // The browser's own PDF viewer names a document after the LAST PATH SEGMENT
+  // of its url when the file carries no title of its own — and for every
+  // citation that segment was the route, so the viewer's toolbar announced
+  // "workspace-file" (#1268). The viewer url therefore ends in the name of
+  // the bytes it shows; `path` stays the only thing that decides WHICH bytes.
+
+  it("ends the path in the document's name and keeps query and page", () => {
+    const href = buildSourceHref(AGENT, "customer/PPR/Prüfbericht Nr. 5.pdf", {
+      kind: "page",
+      page: 44,
+    });
+
+    expect(buildSourceViewerUrl(href)).toBe(
+      "/api/agents/agent-1/workspace-file/Pr%C3%BCfbericht%20Nr.%205.pdf" +
+        "?path=%2Fdata%2Fcustomer%2FPPR%2FPr%C3%BCfbericht%20Nr.%205.pdf#page=44"
+    );
+  });
+
+  it("names an Office source after the PDF the viewer is actually shown", () => {
+    // The bytes are the converted PDF. Naming the url `.docx` would title a
+    // PDF as a Word file, and a viewer that saves under the url's name would
+    // hand the reader a PDF called `.docx`.
+    const href = buildSourceHref(AGENT, "customer/Vorlage_Wartung.docx", null);
+    const url = new URL(buildSourceViewerUrl(href)!, "http://localhost");
+
+    expect(url.pathname).toBe("/api/agents/agent-1/workspace-file/Vorlage_Wartung.pdf");
+    expect(url.searchParams.get("path")).toBe("/data/customer/Vorlage_Wartung.docx");
+  });
+
+  it("names a TIFF after the PDF the viewer is shown, and keeps its page (#1409)", () => {
+    const href = buildSourceHref(AGENT, "archive/Lieferschein 0815.tiff", {
+      kind: "page",
+      page: 3,
+    });
+    const url = new URL(buildSourceViewerUrl(href)!, "http://localhost");
+
+    expect(decodeURIComponent(url.pathname.split("/").pop()!)).toBe("Lieferschein 0815.pdf");
+    expect(url.searchParams.get("path")).toBe("/data/archive/Lieferschein 0815.tiff");
+    expect(url.hash).toBe("#page=3");
+  });
+
+  it("encodes a name that would otherwise end the path segment early", () => {
+    const href = buildSourceHref(AGENT, "customer/Q&A #3?.pdf", null);
+    const url = new URL(buildSourceViewerUrl(href)!, "http://localhost");
+
+    expect(decodeURIComponent(url.pathname.split("/").pop()!)).toBe("Q&A #3?.pdf");
+    expect(url.hash).toBe("");
+  });
+
+  it("says nothing about a link that is not a citation", () => {
+    expect(buildSourceViewerUrl("/some/other/link")).toBeNull();
+    expect(buildSourceViewerUrl("https://evil.example/workspace-file?path=%2Fx.pdf")).toBeNull();
+  });
+});
+
 describe("remarkSourceLinks", () => {
   it("links a template-formatted source and keeps its page", () => {
-    const tree = run(paragraph("- [2] noack/PPR/document.pdf — p. 44"));
+    const tree = run(paragraph("- [2] customer/PPR/document.pdf — p. 44"));
     expect(links(tree)).toEqual([
       {
-        url: "/api/agents/agent-1/workspace-file?path=%2Fdata%2Fnoack%2FPPR%2Fdocument.pdf#page=44",
-        text: "noack/PPR/document.pdf",
+        url: "/api/agents/agent-1/workspace-file?path=%2Fdata%2Fcustomer%2FPPR%2Fdocument.pdf#page=44",
+        text: "customer/PPR/document.pdf",
       },
     ]);
   });
 
   it("links a source buried in prose, where the format collapsed", () => {
     const tree = run(
-      paragraph("Quellen: [1] noack/PF RAC/study.pdf – AOAC Performance Tested Method Study")
+      paragraph("Quellen: [1] customer/PF RAC/study.pdf – AOAC Performance Tested Method Study")
     );
     const found = links(tree);
     expect(found).toHaveLength(1);
-    expect(found[0].text).toBe("noack/PF RAC/study.pdf");
+    expect(found[0].text).toBe("customer/PF RAC/study.pdf");
   });
 
   it("reads a German page abbreviation", () => {
-    const tree = run(paragraph("Quelle: noack/PPR/document.pdf, S. 275"));
+    const tree = run(paragraph("Quelle: customer/PPR/document.pdf, S. 275"));
     expect(links(tree)[0].url.endsWith("#page=275")).toBe(true);
   });
 
@@ -257,16 +372,16 @@ describe("remarkSourceLinks", () => {
     // Paired with OFFICE_EXTENSIONS on purpose: the alternation in the pattern
     // and the converter's list are two spellings of one decision, and a format
     // the converter learns without the renderer learning it cites as flat text.
-    const tree = run(paragraph(`- [1] noack/QF_2012/Angebot${ext} — p. 3`));
-    expect(links(tree).map((l) => l.text)).toEqual([`noack/QF_2012/Angebot${ext}`]);
+    const tree = run(paragraph(`- [1] customer/archive-2012/Angebot${ext} — p. 3`));
+    expect(links(tree).map((l) => l.text)).toEqual([`customer/archive-2012/Angebot${ext}`]);
   });
 
   it("keeps a whole .docx rather than stopping at the .doc inside it", () => {
     // `docx?` is one alternation, and a non-greedy reading of it would cite
     // `Angebot.doc` — a document that does not exist — for every .docx in the
     // corpus.
-    const tree = run(paragraph("siehe noack/Angebot.docx hier"));
-    expect(links(tree).map((l) => l.text)).toEqual(["noack/Angebot.docx"]);
+    const tree = run(paragraph("siehe customer/Angebot.docx hier"));
+    expect(links(tree).map((l) => l.text)).toEqual(["customer/Angebot.docx"]);
   });
 
   it.each([".doc", ".docx", ".ppt", ".pptx"])(
@@ -278,16 +393,41 @@ describe("remarkSourceLinks", () => {
       // produces. Stopping at the inner extension would cite `Angebot.doc`, a
       // document that does not exist, and hand the reader a 403 on a link that
       // looked right.
-      const tree = run(paragraph(`siehe noack/Angebot${inner}.pdf hier`));
-      expect(links(tree).map((l) => l.text)).toEqual([`noack/Angebot${inner}.pdf`]);
+      const tree = run(paragraph(`siehe customer/Angebot${inner}.pdf hier`));
+      expect(links(tree).map((l) => l.text)).toEqual([`customer/Angebot${inner}.pdf`]);
     }
   );
+
+  it.each(["scan.tif", "scan.TIFF", "Lieferschein 0815.tiff"])(
+    "links the scanned TIFF %s and keeps its page (#1409)",
+    (file) => {
+      const tree = run(paragraph(`- [1] archive/${file} — S. 2`));
+
+      expect(links(tree).map((l) => l.text)).toEqual([`archive/${file}`]);
+      expect(parseSourceHref(links(tree)[0].url)).toEqual({
+        path: `archive/${file}`,
+        locator: { kind: "page", page: 2 },
+      });
+    }
+  );
+
+  it("links a whole .docm rather than stopping at the .doc inside it (#1409)", () => {
+    const tree = run(paragraph("siehe quality/Pruefplan.docm hier"));
+    expect(links(tree).map((l) => l.text)).toEqual(["quality/Pruefplan.docm"]);
+  });
+
+  it("leaves a .txt as plain text, because the viewer cannot show one", () => {
+    // Indexed (#1409), not linkable: the route serves a text file as a
+    // download, so a link would open a pane that only saves a file.
+    const tree = run(paragraph("siehe notes/Protokoll.txt hier"));
+    expect(links(tree)).toEqual([]);
+  });
 
   it("still stops at an extension followed by a full stop", () => {
     // The chained-extension rule must not swallow the sentence: `.doc.` is a
     // path ending in `.doc`, not the start of `.docx`.
-    const tree = run(paragraph("siehe noack/Angebot.doc. Und weiter"));
-    expect(links(tree).map((l) => l.text)).toEqual(["noack/Angebot.doc"]);
+    const tree = run(paragraph("siehe customer/Angebot.doc. Und weiter"));
+    expect(links(tree).map((l) => l.text)).toEqual(["customer/Angebot.doc"]);
   });
 
   it("links a spreadsheet named without any range at all", () => {
@@ -297,11 +437,11 @@ describe("remarkSourceLinks", () => {
     // reasoning: a `.xlsx` still gets no conversion, it gets a rendering of the
     // cited rows. Prose that names a workbook without naming rows opens it at
     // the top, which is what a reader following a bare mention wants anyway.
-    const tree = run(paragraph("siehe noack/Budget.xlsx hier"));
+    const tree = run(paragraph("siehe customer/Budget.xlsx hier"));
     const [link] = links(tree);
 
-    expect(link.text).toBe("noack/Budget.xlsx");
-    expect(parseSourceHref(link.url)).toEqual({ path: "noack/Budget.xlsx", locator: null });
+    expect(link.text).toBe("customer/Budget.xlsx");
+    expect(parseSourceHref(link.url)).toEqual({ path: "customer/Budget.xlsx", locator: null });
   });
 
   it("links a url-shaped path the same way, because the route decides access", () => {
@@ -463,6 +603,33 @@ describe("a spreadsheet citation", () => {
     });
   });
 
+  it("links a legacy `.xls` workbook the same way, range and all (#1373)", () => {
+    // It is indexed through its converted `.xlsx`, but the reader is cited the
+    // file they own — and that file opens in the same rows pane.
+    const tree = run(paragraph("- [1] lieferanten/Preisliste.XLS (Preise, rows 2-3)"));
+
+    expect(links(tree).map((l) => l.text)).toEqual(["lieferanten/Preisliste.XLS"]);
+    expect(parseSourceHref(links(tree)[0].url)).toEqual({
+      path: "lieferanten/Preisliste.XLS",
+      locator: { kind: "sheet", sheet: "Preise", startRow: 2, endRow: 3 },
+    });
+  });
+
+  it("offers a legacy workbook as itself, with no converted second download", () => {
+    // The converted `.xlsx` is an indexing intermediate, not a rendering a
+    // reader asked for: nothing about it is easier to open than the original.
+    const href = buildSourceHref(AGENT, "lieferanten/Preisliste.xls", null);
+
+    expect(buildSourceDownloads(href)).toEqual([
+      {
+        label: "Preisliste.xls",
+        filename: "Preisliste.xls",
+        url: expect.stringContaining("variant=original"),
+        variant: "original",
+      },
+    ]);
+  });
+
   it("leaves the range in the visible text, so the reader still sees it", () => {
     // Same contract the page hint has always had: the link opens there, the
     // sentence still says where "there" is.
@@ -500,5 +667,371 @@ describe("a locator only attaches to a document that can honour it", () => {
 
       expect(parseSourceHref(links(tree)[0].url)?.locator).toBeNull();
     }
+  });
+});
+
+/**
+ * The claim a citation supports, carried to the viewer so it can ask the index
+ * which passage on the cited page the answer drew on (#1268). It rides on the
+ * link as a hast property, never in the href: the href's shape is what the
+ * renderer trusts as a citation, and it must not widen.
+ */
+describe("the claim a citation supports", () => {
+  type Claimed = Node & { data?: { hProperties?: Record<string, string> } };
+
+  function claims(tree: Node): Array<{ text: string; claim: string | undefined }> {
+    const found: Array<{ text: string; claim: string | undefined }> = [];
+    const walk = (node: Claimed) => {
+      if (node.type === "link") {
+        found.push({
+          text: (node.children ?? []).map((c) => c.value ?? "").join(""),
+          claim: node.data?.hProperties?.dataCitedClaim,
+        });
+      }
+      (node.children ?? []).forEach((child) => walk(child as Claimed));
+    };
+    walk(tree as Claimed);
+    return found;
+  }
+
+  function answer(...blocks: Node[]): Node {
+    return { type: "root", children: blocks };
+  }
+  const p = (text: string): Node => ({
+    type: "paragraph",
+    children: [{ type: "text", value: text }],
+  });
+  const sources = (...entries: string[]): Node => ({
+    type: "list",
+    children: entries.map((entry) => ({ type: "listItem", children: [p(entry)] })),
+  });
+
+  it("gives a Sources entry the sentences that cite its number", () => {
+    const tree = run(
+      answer(
+        p(
+          "Der Auftragnehmer reagiert binnen vier Stunden [1]. Die Pauschale beträgt 1.200 € [2]. " +
+            "Nachts gilt die doppelte Frist [1]."
+        ),
+        sources("[1] quality/Wartung.pdf — p. 4", "[2] quality/Preise.pdf — p. 2")
+      )
+    );
+
+    expect(claims(tree)).toEqual([
+      {
+        text: "quality/Wartung.pdf",
+        claim: "Der Auftragnehmer reagiert binnen vier Stunden. Nachts gilt die doppelte Frist.",
+      },
+      { text: "quality/Preise.pdf", claim: "Die Pauschale beträgt 1.200 €." },
+    ]);
+  });
+
+  it("reads a number out of a combined citation", () => {
+    const tree = run(
+      answer(
+        p("Both clauses agree on the four-hour window [1, 3]. Unrelated [2]."),
+        sources("[3] quality/Wartung.pdf — p. 4")
+      )
+    );
+    expect(claims(tree)[0].claim).toBe("Both clauses agree on the four-hour window.");
+  });
+
+  it("gives an inline citation the sentence it stands in", () => {
+    const tree = run(
+      answer(p("Intro. The response time is four hours, see quality/Wartung.pdf, p. 4. Next."))
+    );
+    expect(claims(tree)[0].claim).toBe("The response time is four hours, see, p. 4.");
+  });
+
+  it("gives no claim when nothing in the answer cites the entry", () => {
+    const tree = run(
+      answer(p("No inline markers here."), sources("[4] quality/Wartung.pdf — p. 4"))
+    );
+    expect(claims(tree)[0].claim).toBeUndefined();
+  });
+
+  it("gives no claim to a Sources entry written without a number", () => {
+    // The line alone says nothing about which passage — it IS the reference.
+    const tree = run(answer(p("Four hours [1]."), sources("quality/Wartung.pdf — p. 4")));
+    expect(claims(tree)[0].claim).toBeUndefined();
+  });
+
+  it("caps the claim at three sentences", () => {
+    const many = Array.from(
+      { length: 6 },
+      (_, i) => `Sentence number ${i} says something [1].`
+    ).join(" ");
+    const tree = run(answer(p(many), sources("[1] quality/Wartung.pdf — p. 4")));
+    expect(claims(tree)[0].claim).toBe(
+      "Sentence number 0 says something. Sentence number 1 says something. Sentence number 2 says something."
+    );
+  });
+
+  it("caps the claim's length", () => {
+    const long = `${"Lorem ipsum dolor sit amet ".repeat(60)}[1].`;
+    const tree = run(answer(p(long), sources("[1] quality/Wartung.pdf — p. 4")));
+    expect(claims(tree)[0].claim!.length).toBeLessThanOrEqual(600);
+  });
+
+  it("binds a marker written after the full stop to the sentence before it", () => {
+    // "claim. [1]" is as common as "claim [1]." — the contract only says
+    // "next to the claim". Read the other way, source 1 would be given
+    // source 2's sentence: a confident highlight of the wrong passage.
+    for (const gap of [" ", ""]) {
+      const tree = run(
+        answer(
+          p(
+            `Der Auftragnehmer reagiert binnen vier Stunden.${gap}[1] Die Pauschale beträgt 1.200 Euro.${gap}[2]`
+          ),
+          sources("[1] quality/Wartung.pdf — p. 4", "[2] quality/Preise.pdf — p. 2")
+        )
+      );
+      expect(claims(tree).map((c) => c.claim)).toEqual([
+        "Der Auftragnehmer reagiert binnen vier Stunden.",
+        "Die Pauschale beträgt 1.200 Euro.",
+      ]);
+    }
+  });
+
+  it("does not bind a Sources line's own number to the body above it", () => {
+    // Sources written as plain lines with no blank line before them stay in
+    // the body's paragraph; the next line's "[1]" is the entry, not a marker.
+    const tree = run(
+      answer(
+        p(
+          "Reaktionszeit vier Stunden [1]. Die Pauschale beträgt 1.200 Euro [2].\n" +
+            "[1] quality/a.pdf — p. 4\n[2] quality/b.pdf — p. 2"
+        )
+      )
+    );
+    expect(claims(tree).map((c) => c.claim)).toEqual([
+      "Reaktionszeit vier Stunden.",
+      "Die Pauschale beträgt 1.200 Euro.",
+    ]);
+  });
+
+  it("reads a table row as one claim", () => {
+    // The marker usually sits in a cell of its own, next to the cells it backs.
+    const cell = (text: string): Node => ({
+      type: "tableCell",
+      children: [{ type: "text", value: text }],
+    });
+    const table: Node = {
+      type: "table",
+      children: [
+        { type: "tableRow", children: [cell("Reaktionszeit"), cell("vier Stunden"), cell("[1]")] },
+      ],
+    };
+    const tree = run(answer(table, sources("[1] quality/Wartung.pdf — p. 4")));
+    expect(claims(tree)[0].claim).toBe("Reaktionszeit vier Stunden");
+  });
+
+  it("falls back to the sentence when a numbered path stands inside its own claim", () => {
+    const tree = run(
+      answer(p("Der Auftragnehmer reagiert binnen vier Stunden [1]: quality/Wartung.pdf, S. 4."))
+    );
+    expect(claims(tree)[0].claim).toBe("Der Auftragnehmer reagiert binnen vier Stunden:, S. 4.");
+  });
+
+  it("stays fast on a long run of whitespace next to a citation", () => {
+    // Runs on every streamed chunk of model output about ingested documents.
+    const value = `[1]${" ".repeat(50_000)}x quality/Wartung.pdf — p. 4 and a claim [1]${" ".repeat(50_000)}.`;
+    const started = performance.now();
+    run(answer(p(value)));
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
+  it("leaves the href exactly as it was", () => {
+    const tree = run(answer(p("Four hours [1]."), sources("[1] quality/Wartung.pdf — p. 4")));
+    expect(links(tree)[0].url).toBe(
+      buildSourceHref(AGENT, "quality/Wartung.pdf", { kind: "page", page: 4 })
+    );
+  });
+});
+
+describe("buildPassageRequest", () => {
+  const pageHref = buildSourceHref(AGENT, "quality/Wartung.pdf", { kind: "page", page: 4 });
+
+  it("asks the agent's passage endpoint about the cited page of the cited file", () => {
+    expect(buildPassageRequest(pageHref, "Four hours.")).toEqual({
+      url: `/api/agents/${AGENT}/knowledge/passage`,
+      body: { path: "/data/quality/Wartung.pdf", page: 4, claim: "Four hours." },
+    });
+  });
+
+  it("leaves the claim out when there is none", () => {
+    expect(buildPassageRequest(pageHref, undefined)?.body).toEqual({
+      path: "/data/quality/Wartung.pdf",
+      page: 4,
+    });
+  });
+
+  it("asks nothing for a citation without a page", () => {
+    // No page, no candidates to choose between: the viewer opens the
+    // document as it always has.
+    expect(
+      buildPassageRequest(buildSourceHref(AGENT, "quality/Wartung.pdf", null), "x")
+    ).toBeNull();
+  });
+
+  it("asks nothing for an Office document", () => {
+    // Its passages are anchored on headings, not pages of the converted PDF.
+    const href = buildSourceHref(AGENT, "quality/Vorlage.docx", { kind: "page", page: 2 });
+    expect(buildPassageRequest(href, "x")).toBeNull();
+  });
+
+  it("asks about the cited page of a scanned TIFF, which is read page by page (#1409)", () => {
+    const href = buildSourceHref(AGENT, "archive/scan.tif", { kind: "page", page: 2 });
+    expect(buildPassageRequest(href, "x")?.body).toEqual({
+      path: "/data/archive/scan.tif",
+      page: 2,
+      claim: "x",
+    });
+  });
+
+  it("asks nothing for something that is not a citation", () => {
+    expect(buildPassageRequest("https://example.com/a.pdf#page=4", "x")).toBeNull();
+  });
+});
+
+/**
+ * An Office citation names a slide or a heading path rather than a page
+ * (`formatLocator`). The viewer needs it to find the cited passage in the
+ * converted PDF (#1268, Office addendum). Like the claim it rides on the link
+ * as a hast property, never in the href — the href a citation may have stays
+ * exactly the shape `WORKSPACE_FILE_HREF` already accepts.
+ */
+describe("the section an Office citation names", () => {
+  type Sectioned = Node & { data?: { hProperties?: Record<string, string> } };
+
+  function sections(tree: Node) {
+    const found: Array<{ url: string; slide?: string; heading?: string }> = [];
+    const walk = (node: Sectioned) => {
+      if (node.type === "link") {
+        found.push({
+          url: node.url ?? "",
+          slide: node.data?.hProperties?.dataCitedSlide,
+          heading: node.data?.hProperties?.dataCitedHeading,
+        });
+      }
+      (node.children ?? []).forEach((child) => walk(child as Sectioned));
+    };
+    walk(tree as Sectioned);
+    return found;
+  }
+
+  it("reads the slide a presentation citation names", () => {
+    for (const text of [
+      "- [1] sales/Pitch.pptx — slide 4",
+      "- [1] sales/Pitch.pptx (slide 4)",
+      "- [1] sales/Pitch.ppt, Folie 4",
+    ]) {
+      const [link] = sections(run(paragraph(text)));
+      expect(link.slide, text).toBe("4");
+      expect(link.heading, text).toBeUndefined();
+    }
+  });
+
+  it("reads the heading path a Word citation names", () => {
+    const [link] = sections(
+      run(paragraph("- [2] quality/Handbook.docx — § Quality > Incoming goods"))
+    );
+
+    expect(link.heading).toBe("Quality > Incoming goods");
+    expect(link.slide).toBeUndefined();
+  });
+
+  it("ends a heading at its closing parenthesis or a trailing full stop", () => {
+    const [inline] = sections(
+      run(paragraph("See quality/Handbook.doc (§ Safety > Zone B) for the rules."))
+    );
+    const [stopped] = sections(run(paragraph("- quality/Handbook.docx — § Safety.")));
+
+    expect(inline.heading).toBe("Safety > Zone B");
+    expect(stopped.heading).toBe("Safety");
+  });
+
+  it("keeps parentheses inside a parenthesised heading", () => {
+    // `knowledge_search` prints the parenthesised form, and real headings
+    // carry their own: "Anhang A (normativ)", "Gewährleistung (§ 5)".
+    const [link] = sections(
+      run(paragraph("- [1] q/Handbuch.docx (§ Anhang A (normativ) > Prüfung)"))
+    );
+
+    expect(link.heading).toBe("Anhang A (normativ) > Prüfung");
+  });
+
+  it("ends an unparenthesised heading before the next citation on the line", () => {
+    const [semicolon] = sections(run(paragraph("[1] q/a.docx — § Qualität; [2] q/b.pdf — p. 3")));
+    const [bracket] = sections(run(paragraph("[1] q/a.docx — § Qualität [2] q/b.pdf — p. 3")));
+
+    expect(semicolon.heading).toBe("Qualität");
+    expect(bracket.heading).toBe("Qualität");
+  });
+
+  it("leaves the href exactly as it was", () => {
+    const tree = run(paragraph("- [1] sales/Pitch.pptx — slide 4"));
+
+    expect(sections(tree)[0].url).toBe(buildSourceHref(AGENT, "sales/Pitch.pptx", null));
+  });
+
+  it("only honours a section on the format that has one", () => {
+    // A slide on a Word document or a heading on a deck names something the
+    // converted PDF does not have; a PDF has pages and needs neither.
+    for (const text of [
+      "- a/Handbook.docx — slide 4",
+      "- a/Pitch.pptx — § Quality",
+      "- a/Manual.pdf — slide 4",
+      "- a/Manual.pdf — § Quality",
+    ]) {
+      const [link] = sections(run(paragraph(text)));
+      expect(link.slide, text).toBeUndefined();
+      expect(link.heading, text).toBeUndefined();
+    }
+  });
+
+  it("attaches nothing when no section follows the path", () => {
+    const [link] = sections(run(paragraph("- a/Handbook.docx")));
+
+    expect(link).toEqual({ url: buildSourceHref(AGENT, "a/Handbook.docx", null) });
+  });
+});
+
+describe("buildPassageRequest for an Office citation", () => {
+  const deck = buildSourceHref(AGENT, "sales/Pitch.pptx", null);
+  const handbook = buildSourceHref(AGENT, "quality/Handbook.docx", null);
+
+  it("asks about the cited slide of a presentation", () => {
+    expect(buildPassageRequest(deck, "Margins grew.", { slide: "4" })).toEqual({
+      url: `/api/agents/${AGENT}/knowledge/passage`,
+      body: { path: "/data/sales/Pitch.pptx", slide: 4, claim: "Margins grew." },
+    });
+  });
+
+  it("asks about the cited heading of a Word document", () => {
+    expect(
+      buildPassageRequest(handbook, undefined, { heading: "Quality > Incoming goods" })
+    ).toEqual({
+      url: `/api/agents/${AGENT}/knowledge/passage`,
+      body: { path: "/data/quality/Handbook.docx", heading: "Quality > Incoming goods" },
+    });
+  });
+
+  it("asks nothing for a section the format does not have, or one it cannot read", () => {
+    expect(buildPassageRequest(handbook, "x", { slide: "4" })).toBeNull();
+    expect(buildPassageRequest(deck, "x", { heading: "Quality" })).toBeNull();
+    expect(buildPassageRequest(deck, "x", { slide: "0" })).toBeNull();
+    expect(buildPassageRequest(deck, "x", { slide: "4; drop" })).toBeNull();
+    expect(buildPassageRequest(handbook, "x", { heading: "   " })).toBeNull();
+    expect(buildPassageRequest(deck, "x", {})).toBeNull();
+  });
+
+  it("does not take a section on a PDF over its page", () => {
+    const pdf = buildSourceHref(AGENT, "quality/Wartung.pdf", { kind: "page", page: 4 });
+
+    expect(buildPassageRequest(pdf, undefined, { slide: "9", heading: "X" })?.body).toEqual({
+      path: "/data/quality/Wartung.pdf",
+      page: 4,
+    });
   });
 });

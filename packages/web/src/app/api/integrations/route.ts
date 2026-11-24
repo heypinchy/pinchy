@@ -9,6 +9,7 @@ import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { maskConnectionCredentials } from "@/lib/integrations/mask-credentials";
 import { parseRequestBody } from "@/lib/api-validation";
 import { createIntegrationSchema } from "@/lib/schemas/integrations";
+import { refreshPluginConfig } from "@/lib/integrations/refresh-plugin-config";
 
 export const GET = withAdmin(async () => {
   const connections = await db.select().from(integrationConnections);
@@ -70,7 +71,10 @@ export const POST = withAdmin(async (request, _ctx, session) => {
   if (parsed.data.type === "odoo") {
     const urlCheck = await validateExternalUrl(parsed.data.credentials.url);
     if (!urlCheck.valid) {
-      return NextResponse.json({ error: urlCheck.error }, { status: 400 });
+      return NextResponse.json(
+        { error: urlCheck.error },
+        { status: urlCheck.transient ? 503 : 400 }
+      );
     }
   }
 
@@ -87,6 +91,8 @@ export const POST = withAdmin(async (request, _ctx, session) => {
       data,
     })
     .returning();
+
+  await refreshPluginConfig();
 
   deferAuditLog({
     actorType: "user",

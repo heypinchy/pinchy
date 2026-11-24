@@ -17,6 +17,26 @@ const providers = [
 ];
 
 describe("ModelPicker", () => {
+  it("forwards the form control's id so a <label htmlFor> names the trigger (#1300)", () => {
+    // FormControl (shadcn) injects id/aria-* into its direct child. When the
+    // picker swallowed them, the "Model" label pointed at nothing and axe
+    // reported the trigger as a button without an accessible name.
+    render(
+      <>
+        <label htmlFor="model-control">Model</label>
+        <ModelPicker
+          id="model-control"
+          aria-describedby="model-help"
+          value="anthropic/claude-opus-4-7"
+          onChange={() => {}}
+          providers={providers}
+        />
+      </>
+    );
+    const trigger = screen.getByRole("combobox", { name: "Model" });
+    expect(trigger).toHaveAttribute("aria-describedby", "model-help");
+  });
+
   it("renders with the current selected model name visible", () => {
     render(
       <ModelPicker value="anthropic/claude-opus-4-7" onChange={() => {}} providers={providers} />

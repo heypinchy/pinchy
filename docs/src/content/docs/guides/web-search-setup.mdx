@@ -46,7 +46,7 @@ Adding a connection does not give any agent web access. You must explicitly enab
 5. Click **Save**
 
 :::note
-If no Brave Search API key is configured, you'll see an info banner in the Web Search section pointing you to Settings → Integrations.
+**Fetch web pages** works without a Brave Search API key; only **Search the web** needs one. Agents created from a web template, such as the [Market & News Monitor](/guides/create-market-monitor-agent/), get both tools either way. Until a key is configured, the create form and the agent's **Web Search** section say that web search isn't set up and link to Settings → Integrations.
 :::
 
 :::note[What the page fetcher can read]
@@ -117,11 +117,17 @@ This is a real risk in any system where an AI agent can both read private data a
 
 ### SSRF protection
 
-Pinchy's web fetch module blocks agents from directly requesting — or being redirected into — internal network addresses:
+Pinchy's web fetch module blocks agents from directly requesting — or being redirected into — any address that isn't public:
 
-- Private IP ranges (`10.x.x.x`, `192.168.x.x`, `172.16-31.x.x`)
-- Localhost (`127.0.0.1`, `::1`)
-- Link-local addresses
+- Private ranges: `10.x.x.x`, `172.16-31.x.x`, `192.168.x.x`, Tailscale's `100.x` addresses, IPv6 unique-local and site-local addresses, and the other [private ranges](/reference/network-address-checks/#private-ranges)
+- Loopback and the unspecified range (`127.0.0.1`, `::1`, `0.0.0.0/8`)
+- Link-local addresses (`169.254.x.x`, `fe80::/10`) and the cloud metadata endpoints — including the ones inside private ranges, such as `100.100.100.200` (Alibaba Cloud), and Azure's WireServer `168.63.129.16`, a public-looking address that only answers from inside an Azure VM
+- Multicast, broadcast, the documentation ranges and the other reserved ranges
+- IPv6 addresses that carry one of the above: IPv4-mapped (`::ffff:127.0.0.1`), NAT64 (`64:ff9b::/96`) and 6to4 (`2002::/16`) addresses are checked as the IPv4 address they carry; Teredo (`2001::/32`) and SIIT (`::ffff:0:0:0/96`) addresses are refused outright
+
+[Network address checks](/reference/network-address-checks/) lists every range.
+
+There's no switch to open any of these: an agent cannot fetch from your own network. The same table backs the Odoo, mail-server and model-provider checks, which do let an admin opt into the private ranges.
 
 Every redirect hop is re-resolved and re-checked, so an attacker-controlled public site cannot smuggle the agent onto a private address via a 302.
 

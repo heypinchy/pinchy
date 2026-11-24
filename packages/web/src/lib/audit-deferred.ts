@@ -55,9 +55,13 @@ export function recordAuditFailure(err: unknown, entry: AuditLogEntry): void {
  * in those contexts.
  *
  * Use only when the action's side effect cannot be rolled back if the audit
- * write fails (OAuth token persisted, integration row already created, etc.).
- * For idempotent state changes prefer `await appendAuditLog(...)` inside the
- * handler so a failure surfaces as a 500.
+ * write fails (OAuth token persisted, integration row already created, etc.),
+ * or for a refusal row whose informative response must not turn into a 500
+ * (agents POST / v1 agents POST 422).
+ * Awaiting `appendAuditLog(...)` inside the handler is only right when the
+ * audit write runs before the commit, or a retry would write the same row. A
+ * row that is a diff of already-committed state is not retry-safe (the retry
+ * sees no change), so it belongs here.
  *
  * On failure: increments the failure counter and emits a structured JSON
  * line via `recordAuditFailure()`. Never throws.

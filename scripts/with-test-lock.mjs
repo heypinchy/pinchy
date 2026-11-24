@@ -37,6 +37,8 @@ import {
   decideLockAction,
   shouldBypassLock,
   MAX_WAIT_MS,
+  POLL_MS,
+  OWNER_FILE,
 } from "./lib/test-lock.mjs";
 
 // Deliberately a fixed absolute path rather than os.tmpdir(): the whole point is
@@ -46,9 +48,7 @@ import {
 // behind (or worse, stealing from) a real suite running on the same machine.
 const LOCK_DIR =
   process.env.PINCHY_TEST_LOCK_DIR || "/tmp/pinchy-full-test-suite.lock.d";
-const OWNER_FILE = "owner";
 const OWNER_PATH = join(LOCK_DIR, OWNER_FILE);
-const POLL_MS = 2_000;
 /** Backoff for a lock that was free but lost to another create — not a wait. */
 const RETRY_MS = 50;
 /** Takeover attempts a single generation may resist before we give up on it. */

@@ -48,7 +48,7 @@ describe("pinchy-email manifest contract", () => {
     ).toBe(false);
   });
 
-  // Migration test -- see AGENTS.md "Test Migrations Against Pre-Existing
+  // Migration test -- see agent-rules/testing.md "Test Migrations Against Pre-Existing
   // Data". Pre-upgrade regenerateOpenClawConfig() wrote agent entries with
   // only connectionId+permissions (no "tools"). If an upgraded OpenClaw
   // container (new plugin manifest) loads a stale openclaw.json written by

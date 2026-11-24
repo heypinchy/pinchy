@@ -68,8 +68,12 @@ export function AccessCell({ value, onChange, label, disabled }: AccessCellProps
                   ? "bg-amber-500/15 text-amber-600 dark:text-amber-400"
                   : state === "allow"
                     ? "bg-primary/10 text-primary"
-                    : "bg-muted text-muted-foreground"
-                : "text-muted-foreground/40 hover:text-muted-foreground"
+                    : // Darker icon plus a muted-foreground outline (≥5.5:1 on
+                      // the fill in both themes): unselected icons share the
+                      // muted colour, and bg-muted alone is ~1.1:1 on white.
+                      // inset-ring, not ring-inset, keeps the focus ring outset.
+                      "bg-muted text-foreground inset-ring inset-ring-muted-foreground"
+                : "text-muted-foreground hover:text-foreground"
             )}
           >
             <Icon className="h-3.5 w-3.5" aria-hidden="true" />

@@ -1,16 +1,20 @@
 import { z } from "zod";
-import { odooCredentialsSchema, odooConnectionDataSchema } from "@/lib/integrations/odoo-schema";
+import {
+  odooCredentialsSchema,
+  odooConnectionDataSchema,
+  odooUrlSchema,
+} from "@/lib/integrations/odoo-schema";
 
 /**
  * Request schemas for the integration-connect wizard's four routes, shared
- * with `add-integration-dialog.tsx` (AGENTS.md § "Shared Schemas And Typed
+ * with `add-integration-dialog.tsx` (agent-rules/web-routes.md § "Shared Schemas And Typed
  * Client"). `@/lib/integrations/odoo-schema` imports nothing but zod, so it is
  * safe in a client bundle.
  */
 
 /** `POST /api/integrations/list-databases` — probe an Odoo host for db names. */
 export const listDatabasesSchema = z.object({
-  url: z.string().url(),
+  url: odooUrlSchema,
 });
 export type ListDatabasesInput = z.infer<typeof listDatabasesSchema>;
 
@@ -19,7 +23,7 @@ export const testCredentialsSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("odoo"),
     credentials: z.object({
-      url: z.string().url(),
+      url: odooUrlSchema,
       db: z.string().min(1),
       login: z.string().min(1),
       apiKey: z.string().min(1),
@@ -38,7 +42,7 @@ export type TestCredentialsInput = z.infer<typeof testCredentialsSchema>;
 export const syncPreviewSchema = z.object({
   type: z.literal("odoo"),
   credentials: z.object({
-    url: z.string().url(),
+    url: odooUrlSchema,
     db: z.string().min(1),
     login: z.string().min(1),
     apiKey: z.string().min(1),

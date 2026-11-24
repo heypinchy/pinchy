@@ -169,7 +169,7 @@ describe("POST /api/internal/knowledge/search", () => {
         chunkId: "chunk-9",
         documentId: "doc-9",
         text: "Incubate 24 h.",
-        sourcePath: "/data/noack/OLD/QF_2012/PrintingFiles_QF/PI_EColi.pdf",
+        sourcePath: "/data/customer/OLD/archive-2012/datasheets/product-insert.pdf",
         locator: { kind: "page" as const, page: 2 },
         score: 0.5,
       },
@@ -178,9 +178,11 @@ describe("POST /api/internal/knowledge/search", () => {
     const body = await res.json();
 
     expect(body.results[0].sourcePath).toBe(
-      "/data/noack/OLD/QF_2012/PrintingFiles_QF/PI_EColi.pdf"
+      "/data/customer/OLD/archive-2012/datasheets/product-insert.pdf"
     );
-    expect(body.results[0].citationPath).toBe("noack/OLD/QF_2012/PrintingFiles_QF/PI_EColi.pdf");
+    expect(body.results[0].citationPath).toBe(
+      "customer/OLD/archive-2012/datasheets/product-insert.pdf"
+    );
   });
 
   it("passes a null locator through instead of inventing a page for it", async () => {

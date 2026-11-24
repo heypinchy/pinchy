@@ -1,3 +1,4 @@
+import { refusingUnknownParams } from "./unknown-params.js";
 import { braveSearch, type BraveSearchConfig } from "./brave-search.js";
 import { webFetch, type WebFetchConfig } from "./web-fetch.js";
 import {
@@ -67,7 +68,8 @@ interface PluginConfig {
   /** ID of the web-search integration connection in Pinchy. The Brave
    * apiKey is fetched on-demand from Pinchy's internal credentials API
    * — never written into openclaw.json. See #209 for the bug class
-   * that prompted this pattern. */
+   * that prompted this pattern. Absent when no web-search provider is
+   * configured (#1297): fetch still works, search answers "not configured". */
   connectionId?: string;
   agents?: Record<string, AgentWebConfig>;
 }
@@ -105,13 +107,13 @@ async function fetchBraveCredentials(
   connectionId: string,
   agentId: string
 ): Promise<BraveCredentials> {
-  const data = (await requestCredentials({
+  const data = await requestCredentials({
     apiBaseUrl,
     gatewayToken,
     connectionId,
     agentId,
     label: "Brave",
-  })) as { credentials?: unknown };
+  });
   assertBraveCredentialsShape(data.credentials);
   return data.credentials;
 }
@@ -121,7 +123,9 @@ const plugin = {
   name: "Pinchy Web",
   description: "Web search and page fetching with domain filtering.",
 
-  register(api: PluginApi) {
+  register(pluginApi: PluginApi) {
+    // Every tool refuses a parameter it does not declare (unknown-params.ts).
+    const api = refusingUnknownParams(pluginApi);
     const config = api.pluginConfig;
     const apiBaseUrl = config?.apiBaseUrl ?? "";
     const gatewayToken = config?.gatewayToken ?? "";
@@ -136,9 +140,11 @@ const plugin = {
     const cache = new Map<string, { apiKey: string; expiresAt: number }>();
 
     // The Brave key is instance-wide, so an entry could serve every agent —
-    // and that would be safe here, because an agent without
-    // `pinchy_web_search` / `pinchy_web_fetch` never gets the tool registered
-    // at all (see the factories below) and so never reaches this function.
+    // and that would be safe here, because only `pinchy_web_search` reaches
+    // this function, and an agent without it never gets that tool registered
+    // (see the factories below). `pinchy_web_fetch` needs no key and never
+    // asks for one; Pinchy's credentials route refuses the key to a
+    // fetch-only agent (WEB_SEARCH_KEY_TOOLS in packages/web).
     // It is still keyed per agent and connection, for the reason pinchy-odoo
     // was (#1077): a key that omits the connection outlives a connection
     // swap by a full TTL, and "this one happens to be instance-wide" is a
@@ -162,9 +168,11 @@ const plugin = {
     }
 
     /**
-     * Both tools that reach this are reads (a Brave search, a page GET), so
-     * there is no mutation to guard against — unlike pinchy-odoo and
-     * pinchy-email, this one does not wrap the closure in `trackMutations`.
+     * Only `pinchy_web_search` reaches this — `pinchy_web_fetch` needs no key,
+     * and routing it through here would get every fetch-only agent a 403 from
+     * the credentials route. A Brave search is a read, so there is no mutation
+     * to guard against — unlike pinchy-odoo and pinchy-email, this one does
+     * not wrap the closure in `trackMutations`.
      */
     async function withAuthRetry<T>(
       agentId: string,
@@ -180,6 +188,9 @@ const plugin = {
         try {
           return await fn(fresh);
         } catch (retryErr) {
+          // Only an auth error says the fresh key is bad; a Brave outage on
+          // the retry must not flag a healthy connection.
+          if (!isAuthError(retryErr)) throw retryErr;
           const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
           await postAuthFailure({
             apiBaseUrl,

@@ -35,3 +35,20 @@ export function csvEscape(value: string): string {
   }
   return safe;
 }
+
+/**
+ * An agent's name as a download's file-name stem: ASCII letters, digits and
+ * dashes, so the Content-Disposition header never needs quoting rules or an
+ * encoded variant. "Wissensdatenbank Prüfung" becomes
+ * "wissensdatenbank-prufung"; a name with nothing usable left becomes "agent".
+ */
+export function csvFileStem(agentName: string): string {
+  const slug = agentName
+    .normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60);
+  return slug || "agent";
+}

@@ -33,6 +33,11 @@ function escapeLikePattern(value: string): string {
  * that owns it. Callers must handle an EMPTY `allowedPaths` list themselves,
  * by denying: this returns an empty fragment, which as a WHERE clause would
  * mean "no restriction".
+ *
+ * The fragment is one parenthesized predicate however many paths it names:
+ * drizzle embeds a fragment as-is, and `and()` joins with a bare ` and `, so
+ * an open OR chain beside another condition would let everything under the
+ * second path through, whatever that condition says.
  */
 export function buildPathFilter(allowedPaths: readonly string[], column: SQL): SQL {
   const conditions = allowedPaths.map((allowedPath) => {
@@ -40,5 +45,6 @@ export function buildPathFilter(allowedPaths: readonly string[], column: SQL): S
     const likePattern = `${escapeLikePattern(prefix)}%`;
     return sql`(${column} = ${allowedPath} OR ${column} LIKE ${likePattern} ESCAPE '\\')`;
   });
-  return sql.join(conditions, sql` OR `);
+  const joined = sql.join(conditions, sql` OR `);
+  return conditions.length > 1 ? sql`(${joined})` : joined;
 }

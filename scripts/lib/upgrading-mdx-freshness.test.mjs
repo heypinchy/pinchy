@@ -15,7 +15,7 @@ import { assertNoStaleUpgradeSections } from "./release-logic.mjs";
 // not a release commit, so it names a release that has NOT shipped. It is still
 // the input here, but `assertNoStaleUpgradeSections` now discards a `-dev`
 // version and lets the frozen sections answer on their own — a number that
-// leads the releases must not be mistaken for one that shipped. See AGENTS.md
+// leads the releases must not be mistaken for one that shipped. See agent-rules/release.md
 // § "Two Version Numbers, And Which Question Each Answers".
 //
 // Runs in `pnpm test:scripts` (wired into the CI `quality` job), so any future

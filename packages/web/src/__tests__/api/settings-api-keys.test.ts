@@ -52,8 +52,8 @@ vi.mock("next/headers", () => ({
   headers: vi.fn().mockResolvedValue(new Headers()),
 }));
 
-vi.mock("@/lib/audit", () => ({
-  appendAuditLog: vi.fn().mockResolvedValue(undefined),
+vi.mock("@/lib/audit-deferred", () => ({
+  deferAuditLog: vi.fn(),
 }));
 
 vi.mock("@/db", () => ({
@@ -61,7 +61,7 @@ vi.mock("@/db", () => ({
 }));
 
 import { POST, GET } from "@/app/api/settings/api-keys/route";
-import { appendAuditLog } from "@/lib/audit";
+import { deferAuditLog } from "@/lib/audit-deferred";
 import { apiKeys, users } from "@/db/schema";
 import { PINCHY_SERVICE_ACCOUNT_ID } from "@/lib/api-key-identity";
 
@@ -188,7 +188,7 @@ describe("POST /api/settings/api-keys", () => {
 
     // Exact-match: proves the detail carries ONLY {id, name, scopes,
     // expiresAt} — no `key` field could sneak in unnoticed.
-    expect(appendAuditLog).toHaveBeenCalledWith({
+    expect(deferAuditLog).toHaveBeenCalledWith({
       actorType: "user",
       actorId: "admin-1",
       eventType: "api_key.created",
@@ -198,8 +198,8 @@ describe("POST /api/settings/api-keys", () => {
     });
 
     // Defense in depth beyond the exact-match above: the plaintext secret
-    // must not appear ANYWHERE in any appendAuditLog call, ever.
-    for (const call of vi.mocked(appendAuditLog).mock.calls) {
+    // must not appear ANYWHERE in any deferAuditLog call, ever.
+    for (const call of vi.mocked(deferAuditLog).mock.calls) {
       expect(JSON.stringify(call)).not.toContain("pinchy_super_secret_value");
     }
   });
@@ -209,7 +209,7 @@ describe("POST /api/settings/api-keys", () => {
 
     expect(response.status).toBe(400);
     expect(mockCreateApiKey).not.toHaveBeenCalled();
-    expect(appendAuditLog).not.toHaveBeenCalled();
+    expect(deferAuditLog).not.toHaveBeenCalled();
   });
 
   it("returns 400 for empty scopes (default-deny: at least one scope required)", async () => {
@@ -275,7 +275,7 @@ describe("POST /api/settings/api-keys", () => {
 
     expect(response.status).toBe(403);
     expect(mockCreateApiKey).not.toHaveBeenCalled();
-    expect(appendAuditLog).not.toHaveBeenCalled();
+    expect(deferAuditLog).not.toHaveBeenCalled();
   });
 });
 
@@ -291,8 +291,9 @@ describe("GET /api/settings/api-keys", () => {
    *   1. `db.select().from(apiKeys).orderBy(...)` → `rows`.
    *   2. `db.select().from(users).where(inArray(...))` → `creatorRows`, the
    *      creator-liveness lookup. Defaults to "the fixture's creator is still
-   *      employed"; pass `[]` for a creator who is gone, or a `banned: true`
-   *      row for one who is deactivated.
+   *      employed and still an admin"; pass `[]` for a creator who is gone, a
+   *      `banned: true` row for one who is deactivated, or a non-admin `role`
+   *      for one who was demoted.
    *
    * Dispatches on the TABLE rather than call order, deliberately. Query 2 is
    * skipped entirely when no key has a recorded creator, so a call-order mock
@@ -307,7 +308,9 @@ describe("GET /api/settings/api-keys", () => {
    */
   function mockKeyRows(
     rows: unknown[],
-    creatorRows: { id: string; banned: boolean }[] = [{ id: "admin-1", banned: false }]
+    creatorRows: { id: string; banned: boolean; role: string }[] = [
+      { id: "admin-1", banned: false, role: "admin" },
+    ]
   ) {
     const orderBy = vi.fn().mockResolvedValue(rows);
     const creatorWhere = vi.fn().mockResolvedValue(creatorRows);
@@ -389,6 +392,19 @@ describe("GET /api/settings/api-keys", () => {
     // Degrade honestly rather than guess or throw: one bad row must not take
     // the whole settings page down, and "unknown" must look like unknown.
     expect(body.keys.map((k: { createdBy: unknown }) => k.createdBy)).toEqual([null, null, null]);
+  });
+
+  it.each([
+    ["banned", { id: "admin-1", banned: true, role: "admin" }],
+    ["demoted to member", { id: "admin-1", banned: false, role: "member" }],
+    ["banned and demoted", { id: "admin-1", banned: true, role: "member" }],
+  ])("flags a creator who is %s as inactive", async (_label, creatorRow) => {
+    mockKeyRows([fullKeyRow()], [creatorRow]);
+
+    const response = await GET(getRequest(), routeContext());
+    const body = await response.json();
+
+    expect(body.keys[0].createdBy).toEqual({ id: "admin-1", name: "Ada Admin", active: false });
   });
 
   it("queries the apikey table directly, org-wide — no per-admin filter", async () => {
@@ -509,7 +525,7 @@ describe("GET /api/settings/api-keys", () => {
 
     await GET(getRequest(), routeContext());
 
-    expect(appendAuditLog).not.toHaveBeenCalled();
+    expect(deferAuditLog).not.toHaveBeenCalled();
   });
 
   it("returns 403 Forbidden for a non-admin session and never queries keys", async () => {

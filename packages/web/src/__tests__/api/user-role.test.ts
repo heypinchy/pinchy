@@ -63,6 +63,7 @@ vi.mock("@/db/schema", async (importOriginal) => {
 
 import { auth } from "@/lib/auth";
 import { appendAuditLog } from "@/lib/audit";
+import { getAuditWriteFailedCount, resetAuditWriteFailedCount } from "@/lib/audit-deferred";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 
@@ -204,6 +205,29 @@ describe("PATCH /api/users/[userId]", () => {
         detail: { changes: { role: { from: "member", to: "admin" } }, userName: "Max" },
       })
     );
+  });
+
+  it("still answers success and counts the failure when the audit write fails after the commit", async () => {
+    resetAuditWriteFailedCount();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+    mockSelectWhere.mockResolvedValueOnce([{ id: "user-1", name: "Max", role: "member" }]);
+    mockUpdateReturning.mockResolvedValueOnce([{ id: "user-1", name: "Max", role: "admin" }]);
+    vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("audit db down"));
+
+    const request = new NextRequest("http://localhost:7777/api/users/user-1", {
+      method: "PATCH",
+      body: JSON.stringify({ role: "admin" }),
+    });
+    const res = await PATCH(request, { params: Promise.resolve({ userId: "user-1" }) });
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => expect(getAuditWriteFailedCount()).toBe(1));
+    // Skipping these would leave a demoted admin with access.
+    expect(regenerateOpenClawConfig).toHaveBeenCalledTimes(1);
+    expect(recalculateTelegramAllowStores).toHaveBeenCalledTimes(1);
   });
 
   it("rebuilds the OpenClaw config as well as the allow stores, because Telegram routing depends on the role", async () => {

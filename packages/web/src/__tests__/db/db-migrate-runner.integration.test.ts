@@ -23,6 +23,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import postgres from "postgres";
 import { spawnSync } from "node:child_process";
+import { createHash, createHmac, pbkdf2Sync, randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -35,9 +36,86 @@ const MIGRATIONS_DIR = join(WEB_ROOT, "drizzle");
 const OK_DB = `pinchy_db_migrate_ok_${process.pid}`;
 const FAIL_DB = `pinchy_db_migrate_fail_${process.pid}`;
 
+// The failing run connects as a role of its own, with a password nothing else
+// in the output could contain by accident. Asserting "the password is not in
+// the output" with the suite's own credentials proves nothing useful: the
+// usual throwaway setup is `pinchy`/`pinchy`, and `pinchy` is a substring of
+// FAIL_DB and of the worktree path, so the check failed on a runner that leaked
+// nothing — and a check that is red for the wrong reason gets loosened, after
+// which it would also stay green for a runner that DID leak. 32 hex chars of
+// fresh randomness can only appear in the output if the runner printed it.
+const PROBE_ROLE_PREFIX = "pinchy_db_migrate_probe_";
+const PROBE_ROLE = `${PROBE_ROLE_PREFIX}${process.pid}`;
+const PROBE_PASSWORD = randomBytes(16).toString("hex");
+// Far beyond any run of this file, short enough that a stranded role is dead
+// the same afternoon.
+const PROBE_ROLE_LIFETIME_SECONDS = 60 * 60;
+
+/**
+ * Remove probe roles that earlier runs failed to drop, together with the
+ * databases they own (a role cannot be dropped while it owns one).
+ *
+ * Stale means: past its VALID UNTIL, or with none at all (created before the
+ * role carried one), AND no session connected as it. Expiry rather than mere
+ * idleness, because a concurrent run's role is idle between its own tests —
+ * sweeping on "no session" alone would pull a live run's role out from under
+ * it. The prefix is LIKE-escaped: its `_` would otherwise match any character.
+ */
+/** Escapes LIKE's metacharacters (and the escape character itself) so `text` matches literally. */
+function escapeLike(text: string): string {
+  return text.replace(/[\\%_]/g, "\\$&");
+}
+
+async function sweepStaleProbeRoles(admin: postgres.Sql): Promise<void> {
+  const stale = await admin<{ rolname: string; oid: number }[]>`
+    SELECT r.rolname, r.oid::int AS oid
+    FROM pg_roles r
+    WHERE r.rolname LIKE ${escapeLike(PROBE_ROLE_PREFIX) + "%"}
+      AND (r.rolvaliduntil IS NULL OR r.rolvaliduntil < now())
+      AND NOT EXISTS (SELECT 1 FROM pg_stat_activity a WHERE a.usename = r.rolname)
+  `;
+  for (const { rolname, oid } of stale) {
+    const owned = await admin<{ datname: string }[]>`
+      SELECT datname FROM pg_database WHERE datdba = ${oid}
+    `;
+    for (const { datname } of owned) {
+      await admin`DROP DATABASE IF EXISTS ${admin(datname)} WITH (FORCE)`;
+    }
+    await admin`DROP ROLE IF EXISTS ${admin(rolname)}`;
+  }
+}
+
+/**
+ * The SCRAM-SHA-256 verifier Postgres would store for `password` — the
+ * `pg_authid.rolpassword` format (RFC 5802 / 7677): PBKDF2-SHA256 over a random
+ * salt, then StoredKey = SHA256(HMAC(salted, "Client Key")) and
+ * ServerKey = HMAC(salted, "Server Key"). CREATE ROLE stores a value already in
+ * this format as-is, so the server never receives the password itself and
+ * cannot log it: not as statement text, not as a bind parameter, not as the
+ * CONTEXT of a failing EXECUTE. SASLprep is skipped, which is exact for the
+ * ASCII hex passwords this file generates.
+ */
+function scramSha256Verifier(password: string): string {
+  const iterations = 4096;
+  const salt = randomBytes(16);
+  const salted = pbkdf2Sync(password, salt, iterations, 32, "sha256");
+  const storedKey = createHash("sha256")
+    .update(createHmac("sha256", salted).update("Client Key").digest())
+    .digest();
+  const serverKey = createHmac("sha256", salted).update("Server Key").digest();
+  return `SCRAM-SHA-256$${iterations}:${salt.toString("base64")}$${storedKey.toString("base64")}:${serverKey.toString("base64")}`;
+}
+
 function withDbName(url: string, name: string): string {
   const u = new URL(url);
   u.pathname = `/${name}`;
+  return u.toString();
+}
+
+function withCredentials(url: string, user: string, password: string): string {
+  const u = new URL(url);
+  u.username = user;
+  u.password = password;
   return u.toString();
 }
 
@@ -85,23 +163,70 @@ describe("db:migrate runner", () => {
 
     const admin = postgres(adminUrl, { max: 1 });
     try {
+      await sweepStaleProbeRoles(admin);
       for (const name of [OK_DB, FAIL_DB]) {
         await admin.unsafe(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
-        await admin.unsafe(`CREATE DATABASE ${name}`);
       }
+      await admin.unsafe(`DROP ROLE IF EXISTS ${PROBE_ROLE}`);
+      // SUPERUSER because migration 0054 runs `CREATE EXTENSION vector`, which
+      // pgvector does not mark trusted. All it adds over the suite's own user is
+      // a password that cannot collide with anything. A login superuser must not
+      // outlive the run, though, and afterAll is not guaranteed to run (a hook
+      // timeout, a killed process): VALID UNTIL makes a leftover unable to log
+      // in after the hour, and the sweep above removes it on the next run.
+      //
+      // The expiry is computed by the server, whose clock is the one that
+      // checks it: a host clock running an hour behind would otherwise create
+      // a role that is already dead, and the sweep could pull it out from
+      // under this very run. VALID UNTIL takes only a literal, hence the DO
+      // block. The password goes in as its SCRAM verifier, never as itself:
+      // with log_statement=all or log_min_duration_statement=0 the server logs
+      // every statement's text AND its bind parameters, so the plaintext must
+      // not reach it in any form (scramSha256Verifier). The role name and the
+      // verifier are safe inside the dollar-quoted body: neither can contain a
+      // quote or `$probe$`.
+      const verifier = scramSha256Verifier(PROBE_PASSWORD);
+      await admin.unsafe(`
+        DO $probe$ BEGIN
+          EXECUTE format(
+            'CREATE ROLE %I LOGIN SUPERUSER PASSWORD %L VALID UNTIL %L',
+            '${PROBE_ROLE}',
+            '${verifier}',
+            now() + make_interval(secs => ${PROBE_ROLE_LIFETIME_SECONDS})
+          );
+        END $probe$`);
+      await admin.unsafe(`CREATE DATABASE ${OK_DB}`);
+      await admin.unsafe(`CREATE DATABASE ${FAIL_DB} OWNER ${PROBE_ROLE}`);
     } finally {
       await admin.end();
     }
   });
 
   afterAll(async () => {
+    // Each drop in its own attempt: a database that will not go (a slow
+    // checkpoint, a lingering session) must not also strand the login role.
+    // The errors are still thrown afterwards, so a broken teardown stays red.
     const admin = postgres(adminUrl, { max: 1 });
+    const errors: unknown[] = [];
+    const attempt = async (statement: string) => {
+      try {
+        await admin.unsafe(statement);
+      } catch (err) {
+        errors.push(err);
+      }
+    };
     try {
       for (const name of [OK_DB, FAIL_DB]) {
-        await admin.unsafe(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
+        await attempt(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
       }
+      // Fails while FAIL_DB still exists (the role owns it). The role then
+      // expires on its own and the next run's sweep collects both.
+      await attempt(`DROP ROLE IF EXISTS ${PROBE_ROLE}`);
     } finally {
       await admin.end();
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(errors, `db:migrate runner teardown failed (${errors.length})`);
     }
   });
 
@@ -114,7 +239,7 @@ describe("db:migrate runner", () => {
   });
 
   it("reports the migration, the statement and the PostgresError when one fails", async () => {
-    const url = withDbName(baseUrl, FAIL_DB);
+    const url = withCredentials(withDbName(baseUrl, FAIL_DB), PROBE_ROLE, PROBE_PASSWORD);
 
     // Squat on the table 0058_sudden_jubilee creates. Migrations 0000-0057
     // then apply and 0058 aborts — the shape of a real half-upgraded database.
@@ -141,9 +266,8 @@ describe("db:migrate runner", () => {
     // investigation in a minute — but never the password that gets it there.
     // stderr from this runner lands in CI logs and container logs verbatim.
     expect(run.output).toContain(FAIL_DB);
-    const password = new URL(url).password;
-    expect(password.length).toBeGreaterThan(0);
-    expect(run.output).not.toContain(password);
+    expect(new URL(url).password).toBe(PROBE_PASSWORD); // the run really used it
+    expect(run.output).not.toContain(PROBE_PASSWORD);
 
     // The report claims nothing was applied. Prove that claim is true rather
     // than merely reassuring: drizzle wraps all pending migrations in one

@@ -26,13 +26,15 @@
  */
 
 import { describe, it, expect, afterEach } from "vitest";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
-import { sql, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
+import {
+  migrationStatements as migrationStatementsOf,
+  runMigrationFile,
+} from "@/test-helpers/run-migration-file";
 
-const MIGRATION_FILE = join(process.cwd(), "drizzle", "0069_agent_memory_grant.sql");
+const MIGRATION_FILE = "0069_agent_memory_grant.sql";
 
 const WRITER = "test-mem-grant-writer";
 const TEMPLATED = "test-mem-grant-templated";
@@ -43,29 +45,8 @@ const NO_TEMPLATE = "test-mem-grant-no-template";
 
 const ALL_IDS = [WRITER, TEMPLATED, CUSTOM, PERSONAL, ALREADY, NO_TEMPLATE];
 
-/**
- * The statements of 0069, read off disk.
- *
- * Split rather than executed in one call: drizzle sends `db.execute` through a
- * prepared statement, and Postgres' extended protocol accepts exactly one
- * command per message. Comment lines go first so a `--` line can never hide the
- * `;` that ends the statement it sits above.
- */
-function migrationStatements(): string[] {
-  return readFileSync(MIGRATION_FILE, "utf-8")
-    .split("\n")
-    .filter((line) => !line.trimStart().startsWith("--"))
-    .join("\n")
-    .split(";")
-    .map((statement) => statement.trim())
-    .filter((statement) => statement.length > 0);
-}
-
-async function runMigration() {
-  for (const statement of migrationStatements()) {
-    await db.execute(sql.raw(statement));
-  }
-}
+const migrationStatements = () => migrationStatementsOf(MIGRATION_FILE);
+const runMigration = () => runMigrationFile(MIGRATION_FILE);
 
 async function insertTestAgent(
   id: string,

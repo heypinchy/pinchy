@@ -128,12 +128,15 @@ function seatBanner(license: LicenseInfo): Banner | null {
 
 function BannerBar({ banner, onDismiss }: { banner: Banner; onDismiss: (key: string) => void }) {
   const toneClass =
-    banner.tone === "warn" ? "bg-amber-500 text-white" : "bg-muted text-foreground border-b";
+    // Dark text on amber: white on amber-500 is ~2.1:1, below WCAG AA (#1300).
+    banner.tone === "warn" ? "bg-amber-500 text-amber-950" : "bg-muted text-foreground border-b";
   return (
     <div role="alert" className={`relative px-8 py-2 text-sm text-center ${toneClass}`}>
       {banner.message}{" "}
       {banner.links.map((link, i) => (
-        <span key={link.href}>
+        // Only the first link on a phone: the message plus every link wrapped
+        // the bar to two lines (~55px) at 375px (#1300).
+        <span key={link.href} className={i > 0 ? "hidden sm:inline" : undefined}>
           {i > 0 && <span className="mx-1 opacity-60">·</span>}
           <a
             href={link.href}

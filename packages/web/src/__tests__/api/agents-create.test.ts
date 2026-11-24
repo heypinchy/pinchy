@@ -101,8 +101,8 @@ vi.mock("@/server/openclaw-client", () => ({
   getOpenClawClient: vi.fn(() => mockOpenClawClient),
 }));
 const mockWaitForAgentInRuntime = vi.fn().mockResolvedValue(true);
-vi.mock("@/lib/wait-for-agent-in-runtime", () => ({
-  waitForAgentInRuntime: (...args: unknown[]) => mockWaitForAgentInRuntime(...args),
+vi.mock("@/server/agent-readiness", () => ({
+  waitForAgentInRuntimeOnClient: (...args: unknown[]) => mockWaitForAgentInRuntime(...args),
 }));
 
 vi.mock("@/lib/path-validation", () => ({
@@ -172,6 +172,13 @@ vi.mock("@/lib/audit", () => ({
   appendAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
+const { mockQueueFirstIndex } = vi.hoisted(() => ({
+  mockQueueFirstIndex: vi.fn().mockResolvedValue({ status: "queued", jobId: "job-1" }),
+}));
+vi.mock("@/lib/knowledge/first-index", () => ({
+  queueFirstIndex: mockQueueFirstIndex,
+}));
+
 const mockValidateOdooTemplate = vi.fn();
 vi.mock("@/lib/integrations/odoo-template-validation", () => ({
   validateOdooTemplate: (...args: unknown[]) => mockValidateOdooTemplate(...args),
@@ -193,6 +200,8 @@ import {
   writeIdentityFile,
 } from "@/lib/workspace";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { appendAuditLog } from "@/lib/audit";
+import { getAuditWriteFailedCount, resetAuditWriteFailedCount } from "@/lib/audit-deferred";
 import { buildKbSweepAgentPayload } from "../../../eval/kb/sweep-agent";
 
 describe("POST /api/agents", () => {
@@ -226,6 +235,24 @@ describe("POST /api/agents", () => {
     const regenInvocations = vi.mocked(regenerateOpenClawConfig).mock.invocationCallOrder;
     const waitInvocations = mockWaitForAgentInRuntime.mock.invocationCallOrder;
     expect(waitInvocations[0]).toBeGreaterThan(regenInvocations[0]);
+  });
+
+  it("still returns 201 and counts the failure when the agent.created audit write fails", async () => {
+    resetAuditWriteFailedCount();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("audit db down"));
+
+    const response = await POST(
+      new NextRequest("http://localhost:7777/api/agents", {
+        method: "POST",
+        body: JSON.stringify({ name: "Audit Down", templateId: "custom" }),
+      }),
+      routeContext()
+    );
+
+    // The agent row is committed; a retry would create a duplicate.
+    expect(response.status).toBe(201);
+    expect(getAuditWriteFailedCount()).toBe(1);
   });
 
   it("still returns 201 with the created agent and a warning when config regeneration fails", async () => {
@@ -304,6 +331,48 @@ describe("POST /api/agents", () => {
     expect(regenerateOpenClawConfig).toHaveBeenCalled();
   });
 
+  it("starts the first index of the folders it was granted, as the admin who created it (#1280)", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "HR Knowledge Base",
+        templateId: "knowledge-base",
+        pluginConfig: { "pinchy-files": { allowed_paths: ["/data/hr-docs/"] } },
+      }),
+    });
+
+    const response = await POST(request, routeContext());
+
+    expect(response.status).toBe(201);
+    expect(mockQueueFirstIndex).toHaveBeenCalledWith(
+      "new-agent-id",
+      { actorType: "user", actorId: "1" },
+      expect.any(Function)
+    );
+    // The rows it hands back reach the audit trail.
+    const { appendAuditLog } = await import("@/lib/audit");
+    const audit = mockQueueFirstIndex.mock.calls.at(-1)![2];
+    const entry = { eventType: "knowledge.reindex", outcome: "success" };
+    audit(entry);
+    await vi.waitFor(() => expect(vi.mocked(appendAuditLog)).toHaveBeenCalledWith(entry));
+  });
+
+  it("still creates the agent when its first index cannot be queued", async () => {
+    mockQueueFirstIndex.mockRejectedValueOnce(new Error("connection reset"));
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "HR Knowledge Base",
+        templateId: "knowledge-base",
+        pluginConfig: { "pinchy-files": { allowed_paths: ["/data/hr-docs/"] } },
+      }),
+    });
+
+    const response = await POST(request, routeContext());
+
+    expect(response.status).toBe(201);
+  });
+
   it("accepts the KB Layer-3 sweep's own create payload", async () => {
     // The sweep builds this body itself; putting it through the real handler
     // is the only check that does not restate the route's rules in a test
@@ -370,18 +439,18 @@ describe("POST /api/agents", () => {
     const request = new NextRequest("http://localhost:7777/api/agents", {
       method: "POST",
       body: JSON.stringify({
-        name: "HR Knowledge Base",
-        templateId: "knowledge-base",
+        name: "Contract Review",
+        templateId: "contract-analyzer",
         pluginConfig: {
-          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
+          "pinchy-files": { allowed_paths: ["/data/contracts/"] },
         },
       }),
     });
 
     await POST(request, routeContext());
 
-    const expected = AGENT_TEMPLATES["knowledge-base"].defaultStarterPrompts;
-    expect(expected, "knowledge-base must define defaultStarterPrompts").toBeDefined();
+    const expected = AGENT_TEMPLATES["contract-analyzer"].defaultStarterPrompts;
+    expect(expected, "contract-analyzer must define defaultStarterPrompts").toBeDefined();
     expect(insertValuesMock).toHaveBeenCalledWith(
       expect.objectContaining({
         starterPrompts: expected,
@@ -393,6 +462,30 @@ describe("POST /api/agents", () => {
     const request = new NextRequest("http://localhost:7777/api/agents", {
       method: "POST",
       body: JSON.stringify({ name: "Blank", templateId: "custom" }),
+    });
+
+    await POST(request, routeContext());
+
+    expect(insertValuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        starterPrompts: [],
+      })
+    );
+  });
+
+  it("seeds no starter prompts for a knowledge-base agent (#1270)", async () => {
+    // Pinchy cannot know what an organisation's documents cover, or in which
+    // language — so a new knowledge base starts with no chips rather than
+    // generic English ones that name topics the corpus may not contain.
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "HR Knowledge Base",
+        templateId: "knowledge-base",
+        pluginConfig: {
+          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
+        },
+      }),
     });
 
     await POST(request, routeContext());

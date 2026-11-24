@@ -140,7 +140,7 @@ describe("e2e/email is partitioned between the two Playwright configs", () => {
     // agree: both derive testIgnore/testMatch from the same constants rather
     // than two lists that happen to match today. Without it, a revert to a
     // literal duplicate would pass every check above and silently reintroduce
-    // the mirror AGENTS.md's "A Hand-Maintained List That Mirrors Code Will Be
+    // the mirror agent-rules/docs.md's "A Hand-Maintained List That Mirrors Code Will Be
     // Wrong" warns about.
     //
     // Provenance is only visible in the source text: two lists that agree

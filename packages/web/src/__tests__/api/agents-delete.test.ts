@@ -42,6 +42,11 @@ vi.mock("@/lib/agents", async (importOriginal) => {
   };
 });
 
+vi.mock("@/lib/audit", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/audit")>();
+  return { ...actual, appendAuditLog: vi.fn().mockResolvedValue(undefined) };
+});
+
 vi.mock("@/lib/openclaw-config", () => ({
   regenerateOpenClawConfig: vi.fn().mockResolvedValue(undefined),
 }));
@@ -67,6 +72,8 @@ vi.mock("@/db/schema", async (importOriginal) => {
 import { auth } from "@/lib/auth";
 import { deleteAgent, updateAgent } from "@/lib/agents";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { appendAuditLog } from "@/lib/audit";
+import { getAuditWriteFailedCount, resetAuditWriteFailedCount } from "@/lib/audit-deferred";
 import { db } from "@/db";
 
 function mockAgent(agent: Record<string, unknown> | undefined) {
@@ -673,5 +680,63 @@ describe("DELETE /api/agents/[agentId]", () => {
     expect(body.success).toBe(true);
 
     expect(deleteAgent).toHaveBeenCalledWith("agent-1", expect.any(Function));
+  });
+
+  it("audits agent.deleted from the onDeleted callback", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+    mockAgent({ id: "agent-1", name: "Shared Agent", isPersonal: false });
+    vi.mocked(deleteAgent).mockImplementationOnce((async (
+      _id: unknown,
+      onDeleted?: (agent: unknown) => void
+    ) => {
+      const row = { id: "agent-1", name: "Shared Agent" };
+      onDeleted?.(row);
+      return row;
+    }) as never);
+
+    await DELETE(
+      new NextRequest("http://localhost:7777/api/agents/agent-1", { method: "DELETE" }),
+      { params: Promise.resolve({ agentId: "agent-1" }) }
+    );
+
+    expect(appendAuditLog).toHaveBeenCalledWith({
+      actorType: "user",
+      actorId: "admin-1",
+      eventType: "agent.deleted",
+      resource: "agent:agent-1",
+      detail: { name: "Shared Agent" },
+      outcome: "success",
+    });
+  });
+
+  it("still answers 200 and counts the failure when the agent.deleted audit write fails", async () => {
+    resetAuditWriteFailedCount();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+    mockAgent({ id: "agent-1", name: "Shared Agent", isPersonal: false });
+    vi.mocked(deleteAgent).mockImplementationOnce((async (
+      _id: unknown,
+      onDeleted?: (agent: unknown) => void
+    ) => {
+      const row = { id: "agent-1", name: "Shared Agent" };
+      onDeleted?.(row);
+      return row;
+    }) as never);
+    vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("audit db down"));
+
+    const response = await DELETE(
+      new NextRequest("http://localhost:7777/api/agents/agent-1", { method: "DELETE" }),
+      { params: Promise.resolve({ agentId: "agent-1" }) }
+    );
+
+    // The agent is soft-deleted; a retry would 404, so the success stands.
+    expect(response.status).toBe(200);
+    expect(getAuditWriteFailedCount()).toBe(1);
   });
 });

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
+import { useScrollEdgeFade } from "@/hooks/use-scroll-edge-fade";
 import { useTabParam, AGENT_SETTINGS_TABS, type AgentSettingsTab } from "@/hooks/use-tab-param";
 import { authClient } from "@/lib/auth-client";
 import { toast } from "sonner";
@@ -28,7 +29,7 @@ import { AgentTelegramSettings } from "@/components/agent-telegram-settings";
 import { AgentSettingsAutomations } from "@/components/agent-settings-automations";
 import { useRestart } from "@/components/restart-provider";
 import { normalizeStarterPrompts } from "@/lib/schemas/starter-prompts";
-import { apiPatch, apiPut, apiDelete, ApiError, errorMessage } from "@/lib/api-client";
+import { apiGet, apiPatch, apiPut, apiDelete, ApiError, errorMessage } from "@/lib/api-client";
 import type { UpdateAgentInput, WriteAgentFileInput } from "@/lib/schemas/agents";
 import type { SetAgentIntegrationsInput } from "@/lib/schemas/agent-integrations";
 import { takeInstructionDraft } from "@/lib/instruction-handoff";
@@ -93,6 +94,7 @@ interface PermissionsValues {
   }>;
   webSearchConfig?: AgentPluginConfig["pinchy-web"];
   confirm?: Record<string, "confirm" | "allow">;
+  integrationsLoaded: boolean;
 }
 
 interface AccessValues {
@@ -150,7 +152,7 @@ function describeSaveFailure(reason: unknown): string {
   return "Failed to save settings";
 }
 
-export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }) {
+export function AgentSettingsPageContent() {
   const params = useParams();
   const router = useRouter();
   const agentId = params.agentId as string;
@@ -193,14 +195,23 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
             (tab === "telegram" && canManageTelegram) ||
             (tab === "automations" && canManageAutomations)
         );
-  const [activeTab, setActiveTab] = useTabParam("general", visibleTabs, initialTab);
+  const [activeTab, setActiveTab] = useTabParam("general", visibleTabs);
+  const {
+    ref: tabListRef,
+    element: tabListElement,
+    style: tabListStyle,
+  } = useScrollEdgeFade<HTMLDivElement>();
 
   const [providers, setProviders] = useState<Provider[]>([]);
   const [soulContent, setSoulContent] = useState("");
   const [agentsContent, setAgentsContent] = useState("");
   const [directories, setDirectories] = useState<Directory[]>([]);
-  const [connections, setConnections] = useState<Connection[]>([]);
+  // `null` until the list loads, and for as long as it fails to: unknown is
+  // not "no integrations", and the permissions tab must not save it as such.
+  const [connections, setConnections] = useState<Connection[] | null>(null);
   const [loading, setLoading] = useState(true);
+  // Why the page has nothing to show, when its first load failed.
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   // Accumulated draft values from each tab
   const generalDraft = useRef<GeneralValues | null>(null);
@@ -224,45 +235,76 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
   const [showNavWarning, setShowNavWarning] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  const fetchData = useCallback(async () => {
-    try {
-      const [agentRes, modelsRes, soulRes, agentsRes, dirRes, connRes] = await Promise.all([
-        fetch(`/api/agents/${agentId}`),
-        fetch("/api/providers/models"),
-        fetch(`/api/agents/${agentId}/files/SOUL.md`),
-        fetch(`/api/agents/${agentId}/files/AGENTS.md`),
-        fetch("/api/data-directories"),
-        fetch("/api/integrations"),
-      ]);
-
-      if (agentRes.ok) setAgent(await agentRes.json());
-      if (modelsRes.ok) {
-        const data = await modelsRes.json();
-        setProviders(data.providers || []);
+  // The mount effect passes its signal and aborts it on cleanup. A failure
+  // there replaces the page: every tab edits something these loads supply, and
+  // an editor opened empty for a SOUL.md that failed to load would save the
+  // emptiness over the real file. The refresh after a save passes no signal;
+  // its failure leaves the page as it was and says so in a toast.
+  const fetchData = useCallback(
+    async (signal?: AbortSignal) => {
+      try {
+        const [agentData, modelsData, soulData, agentsData, dirData, connData] = await Promise.all([
+          apiGet<Agent>(`/api/agents/${agentId}`, { signal }),
+          apiGet<{ providers?: Provider[] }>("/api/providers/models", { signal }),
+          apiGet<{ content?: string }>(`/api/agents/${agentId}/files/SOUL.md`, { signal }),
+          apiGet<{ content?: string }>(`/api/agents/${agentId}/files/AGENTS.md`, { signal }),
+          apiGet<{ directories?: Directory[] }>("/api/data-directories", { signal }),
+          // Admin-only: a member's own personal agent gets a 403 here, which
+          // means "no integrations to grant". Any other failure leaves the list
+          // unknown (`null`), which the permissions tab must not save as "none";
+          // it does not fail the page.
+          apiGet<unknown>("/api/integrations", { signal }).catch((err: unknown) =>
+            err instanceof ApiError && err.status === 403 ? [] : null
+          ),
+        ]);
+        if (signal?.aborted) return;
+        setAgent(agentData);
+        setProviders(modelsData.providers || []);
+        setSoulContent(soulData.content || "");
+        setAgentsContent(agentsData.content || "");
+        setDirectories(dirData.directories || []);
+        // A refresh that loses the list keeps the one already loaded: it has
+        // not become "unknown" because a second GET failed.
+        setConnections((previous) =>
+          Array.isArray(connData) ? (connData as Connection[]) : signal ? null : previous
+        );
+        setLoadError(null);
+      } catch (err) {
+        // Classify on the signal alone: an abort's error is not reliably an
+        // AbortError (see audit-log-table.tsx).
+        if (signal?.aborted) return;
+        if (!signal) {
+          toast.error(errorMessage(err, "Failed to reload agent settings"));
+        } else if (err instanceof ApiError && err.status === 404) {
+          // Rendered as "Agent not found." below.
+          setAgent(null);
+        } else {
+          // A refusal the route explains (a 4xx such as personal agents being
+          // switched off) is not fixed by reloading: show its own reason. A
+          // 401 is: reloading is what sends an expired session to login.
+          const reload = "We couldn't load this agent's settings. Reload the page to try again.";
+          setLoadError(
+            err instanceof ApiError && err.status > 401 && err.status < 500
+              ? errorMessage(err, reload)
+              : reload
+          );
+        }
+      } finally {
+        if (!signal?.aborted) setLoading(false);
       }
-      if (soulRes.ok) {
-        const data = await soulRes.json();
-        setSoulContent(data.content || "");
-      }
-      if (agentsRes.ok) {
-        const data = await agentsRes.json();
-        setAgentsContent(data.content || "");
-      }
-      if (dirRes.ok) {
-        const data = await dirRes.json();
-        setDirectories(data.directories || []);
-      }
-      if (connRes.ok) {
-        const data = await connRes.json();
-        setConnections(Array.isArray(data) ? data : []);
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, [agentId]);
+    },
+    [agentId]
+  );
 
   useEffect(() => {
-    fetchData();
+    // Deferred past the effect body (react-hooks/set-state-in-effect), same
+    // pattern as settings-groups.tsx.
+    const controller = new AbortController();
+    const { signal } = controller;
+    void Promise.resolve().then(() => {
+      if (!signal.aborted) void fetchData(signal);
+    });
+    return () => controller.abort();
   }, [fetchData]);
 
   // Non-admins cannot edit shared agents — redirect to chat
@@ -272,6 +314,14 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
       router.replace(`/chat/${agentId}`);
     }
   }, [isPending, agent, canEdit, router, agentId]);
+
+  // Keep the active tab visible in the scrolling tab list (#1400), e.g. after a
+  // deep link to ?tab=diagnostics on a phone. "nearest" only scrolls what is
+  // needed, so the page does not jump vertically.
+  useEffect(() => {
+    const active = tabListElement?.querySelector<HTMLElement>('[role="tab"][data-state="active"]');
+    active?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [activeTab, tabListElement]);
 
   const handleGeneralChange = useCallback((values: GeneralValues, isDirty: boolean) => {
     generalDraft.current = values;
@@ -377,7 +427,10 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
           "pinchy-approvals": { confirm: permissionsDraft.current.confirm ?? {} },
         };
 
-        // Save each active integration separately, or clear all if none
+        // Save each active integration separately, or clear all if none.
+        // An empty list only means "none" once every integration section has
+        // loaded: one that has not (or whose load failed) never reported the
+        // agent's grants, and clearing them would delete what nobody saw (#1216).
         if (permissionsDraft.current.integrations.length > 0) {
           for (const integration of permissionsDraft.current.integrations) {
             integrationPromises.push(
@@ -387,8 +440,7 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
               )
             );
           }
-        } else {
-          // Clear all integration permissions when no connections are configured
+        } else if (permissionsDraft.current.integrationsLoaded) {
           integrationPromises.push(apiDelete(`/api/agents/${agentId}/integrations`));
         }
       }
@@ -465,6 +517,14 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
     return <div className="p-8 text-muted-foreground">Loading...</div>;
   }
 
+  if (loadError) {
+    return (
+      <div role="alert" className="p-8 text-red-600">
+        {loadError}
+      </div>
+    );
+  }
+
   if (!agent) {
     return <div className="p-8 text-muted-foreground">Agent not found.</div>;
   }
@@ -502,7 +562,15 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
         </div>
 
         <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList>
+          {/* The tabs are wider than a phone screen (#1400). The list scrolls on
+              its own so the page never scrolls sideways; justify-start because a
+              centred row that overflows clips its first tabs out of reach. The
+              scrollbar is hidden; an edge fade marks the side with more tabs. */}
+          <TabsList
+            ref={tabListRef}
+            style={tabListStyle}
+            className="max-w-full justify-start overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          >
             <TabsTrigger value="general">
               General {dirtyTabs.has("general") && <DirtyDot />}
             </TabsTrigger>

@@ -2,6 +2,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { GET } from "@/app/api/health/route";
 import { openClawConnectionState } from "@/server/openclaw-connection-state";
 import { recordConfigRegenSuccess, recordConfigRegenFailure } from "@/lib/openclaw-config-health";
+import { getDiskReport, type DiskReport } from "@/lib/disk-space";
+
+vi.mock("@/lib/disk-space", () => ({ getDiskReport: vi.fn() }));
+
+const DISK_OK: DiskReport = {
+  status: "ok",
+  volumes: [{ name: "system", status: "ok", freeGb: 120, totalGb: 200, freePercent: 60 }],
+};
 
 const REGEN_STATE_KEY = "__pinchyOpenClawConfigRegenState";
 
@@ -11,6 +19,7 @@ describe("GET /api/health", () => {
   beforeEach(() => {
     openClawConnectionState.connected = false;
     delete (globalThis as Record<string, unknown>)[REGEN_STATE_KEY];
+    vi.mocked(getDiskReport).mockResolvedValue(DISK_OK);
   });
 
   afterEach(() => {
@@ -137,6 +146,44 @@ describe("GET /api/health", () => {
       expect(response.status).toBe(200);
       expect(data.status).toBe("ok");
       expect(data.configRegeneration.ok).toBe(false);
+    });
+  });
+
+  // Issue #1379: an upgrade filled an install's disk and nothing had warned.
+  describe("disk space (#1379)", () => {
+    it("reports free space per location", async () => {
+      const response = await GET();
+      const data = await response.json();
+
+      expect(data.disk).toEqual(DISK_OK);
+    });
+
+    it("keeps top-level status 'ok' and HTTP 200 when disk space is low", async () => {
+      // The Docker HEALTHCHECK and every probe in the repo read the HTTP
+      // status. Low disk is an operator's job, not a reason to mark the
+      // container unhealthy — that would only add a restart to a full disk.
+      vi.mocked(getDiskReport).mockResolvedValue({
+        status: "warning",
+        volumes: [{ name: "system", status: "warning", freeGb: 4, totalGb: 38, freePercent: 10 }],
+      });
+
+      const response = await GET();
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data.status).toBe("ok");
+      expect(data.disk.status).toBe("warning");
+    });
+
+    it("still answers when the disk could not be measured at all", async () => {
+      vi.mocked(getDiskReport).mockRejectedValue(new Error("boom"));
+
+      const response = await GET();
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data.status).toBe("ok");
+      expect(data.disk).toEqual({ status: "unknown", volumes: [] });
     });
   });
 });

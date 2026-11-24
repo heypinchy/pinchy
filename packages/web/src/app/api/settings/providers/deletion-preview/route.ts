@@ -3,7 +3,13 @@ import { withAdmin } from "@/lib/api-auth";
 import { formatValidationError } from "@/lib/api-validation";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { listOpenAiCompatibleProviders } from "@/lib/openai-compatible-providers";
-import { builtInModelPrefix, previewProviderDeletion } from "@/lib/provider-deletion";
+import {
+  builtInModelPrefix,
+  previewProviderDeletion,
+  LAST_CONFIGURED_PROVIDER_ERROR,
+  noUsableTargetRefusal,
+} from "@/lib/provider-deletion";
+import { countConfiguredProviders } from "@/lib/provider-count";
 import {
   deletionPreviewQuerySchema,
   type DeletionPreviewResponse,
@@ -33,10 +39,11 @@ export const GET = withAdmin(async (request) => {
   // migrates — `ollama-local` notably namespaces its models as `ollama/`.
   const builtIn = PROVIDERS[provider as ProviderName];
   let deletedPrefix: string;
+  let custom: { slug: string; baseUrl: string } | undefined;
   if (builtIn) {
     deletedPrefix = builtInModelPrefix(provider);
   } else {
-    const custom = (await listOpenAiCompatibleProviders()).find((row) => row.slug === provider);
+    custom = (await listOpenAiCompatibleProviders()).find((row) => row.slug === provider);
     if (!custom) {
       return NextResponse.json({ error: "Provider not found." }, { status: 404 });
     }
@@ -53,6 +60,13 @@ export const GET = withAdmin(async (request) => {
     targetProviderLabel: target?.label ?? null,
     targetModel: target?.defaultModel ?? null,
     affectedAgents,
+    // The DELETE routes' two guards, in their order, with their messages.
+    refusal:
+      (await countConfiguredProviders()) <= 1
+        ? LAST_CONFIGURED_PROVIDER_ERROR
+        : target === null
+          ? (await noUsableTargetRefusal(custom)).error
+          : null,
   };
   return NextResponse.json(body);
 });

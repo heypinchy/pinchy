@@ -13,6 +13,7 @@ import {
 import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
 import { getLicenseState } from "@/lib/enterprise";
 import { getAgentAvatarSvg } from "@/lib/avatar";
+import { grantedKnowledgePaths } from "@/lib/knowledge/index-schedule";
 
 /**
  * The agent name a chat route's `generateMetadata` puts in the tab title.
@@ -94,5 +95,11 @@ export async function loadChatPageAgent(agentId: string) {
   // the UI must never offer an edit the API refuses, nor withhold one it allows.
   const canEdit = canWriteAgent(agent, userId, userRole);
 
-  return { agent, userId, userRole, avatarUrl, canEdit };
+  // Whether the chat offers "What can this agent search?" (#1386). The same
+  // test the nightly sweep uses to decide an agent's folders are worth indexing.
+  const searchesKnowledge =
+    agent.allowedTools.includes("knowledge_search") &&
+    grantedKnowledgePaths(agent.pluginConfig).length > 0;
+
+  return { agent, userId, userRole, avatarUrl, canEdit, searchesKnowledge };
 }

@@ -1,6 +1,6 @@
 import { db } from "@/db";
 import { agents, users } from "@/db/schema";
-import { eq, and } from "drizzle-orm";
+import { eq, and, isNull } from "drizzle-orm";
 import { getSetting } from "@/lib/settings";
 import { writeWorkspaceFileInternal } from "@/lib/workspace";
 
@@ -12,7 +12,7 @@ export async function syncUserContextToWorkspaces(userId: string): Promise<void>
   const context = user?.context ?? "";
 
   const personalAgents = await db.query.agents.findMany({
-    where: and(eq(agents.isPersonal, true), eq(agents.ownerId, userId)),
+    where: and(eq(agents.isPersonal, true), eq(agents.ownerId, userId), isNull(agents.deletedAt)),
   });
 
   for (const agent of personalAgents) {
@@ -24,7 +24,7 @@ export async function syncOrgContextToWorkspaces(): Promise<void> {
   const context = (await getSetting("org_context")) ?? "";
 
   const sharedAgents = await db.query.agents.findMany({
-    where: eq(agents.isPersonal, false),
+    where: and(eq(agents.isPersonal, false), isNull(agents.deletedAt)),
   });
 
   for (const agent of sharedAgents) {

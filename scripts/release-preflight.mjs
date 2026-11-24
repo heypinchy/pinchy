@@ -40,8 +40,10 @@ import {
   parseVerifiedSha,
   findSkippedReleases,
   isReleasableBranch,
+  nextDevVersion,
   stagingPinAdvice,
 } from "./lib/release-logic.mjs";
+import { newestFrozenRelease } from "./lib/version-identity.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
@@ -103,8 +105,23 @@ try {
 }
 const tag = buildTagName(version);
 
-const prevTag = tryExec("git describe --tags --abbrev=0");
-const prevVersion = prevTag.ok ? prevTag.out.replace(/^v/, "") : null;
+// Read the notes once, here: they are both the source of the previous version
+// and the thing the gate below checks. `git describe` is deliberately NOT used
+// — it answers the newest tag REACHABLE from HEAD, and a release cut from
+// release/X.Y never merges back, so on main it names a release two minors old.
+// See scripts/lib/release-prev-version.mjs.
+const upgradingMdxPath = resolve(
+  ROOT,
+  "docs/src/content/docs/guides/upgrading.mdx",
+);
+let upgradingMdx = null;
+let mdxReadError = "";
+try {
+  upgradingMdx = readFileSync(upgradingMdxPath, "utf8");
+} catch (e) {
+  mdxReadError = `cannot read upgrading.mdx (${e.message})`;
+}
+const prevVersion = upgradingMdx ? newestFrozenRelease(upgradingMdx) : null;
 
 out(
   `\nRelease preflight — ${tag}${prevVersion ? ` (from v${prevVersion})` : ""}\n`,
@@ -121,20 +138,30 @@ let upgradeNotesOk = false;
 let upgradeNotesMsg = "";
 if (prevVersion) {
   try {
-    const mdx = readFileSync(
-      resolve(ROOT, "docs/src/content/docs/guides/upgrading.mdx"),
-      "utf8",
-    );
-    assertUpgradingSectionExists(mdx, prevVersion, version);
+    assertUpgradingSectionExists(upgradingMdx, prevVersion, version);
     upgradeNotesOk = true;
   } catch (e) {
     upgradeNotesMsg = e.message.split("\n")[0];
   }
 } else {
-  upgradeNotesMsg = "no previous tag found (cannot resolve the 'from' version)";
+  upgradeNotesMsg =
+    mdxReadError ||
+    "upgrading.mdx records no frozen release section (cannot resolve the 'from' version)";
 }
 
 const onReleasableBranch = isReleasableBranch(branch.out);
+// Same derivation `pnpm release` runs before it writes anything: it refuses a
+// version that does not belong on this branch (0.11.0 from release/0.10), and
+// otherwise names the -dev version the post-release commit will open.
+let devVersion = null;
+let devVersionError = null;
+if (onReleasableBranch) {
+  try {
+    devVersion = nextDevVersion(version, branch.out);
+  } catch (e) {
+    devVersionError = e.message;
+  }
+}
 
 const ci = tryExecFile("gh", [
   "run",
@@ -156,6 +183,14 @@ out("Auto-checked (also enforced by `pnpm release`):");
 out(
   `  ${mark(onReleasableBranch)} on main or release/X.Y branch${onReleasableBranch ? ` (${branch.out})` : ` (on: ${branch.out || "?"})`}`,
 );
+if (onReleasableBranch) {
+  out(
+    `  ${mark(devVersion !== null)} ${tag} belongs on ${branch.out}` +
+      (devVersion
+        ? ` (the branch opens ${devVersion} after the cut)`
+        : ` — ${devVersionError}`),
+  );
+}
 out(`  ${mark(status.ok && status.out === "")} working tree clean`);
 out(
   `  ${mark(tags.ok && !tags.out.split("\n").includes(tag))} tag ${tag} is free`,
@@ -206,11 +241,7 @@ out("  Release-specific (from this release's upgrade notes):");
 let checklist = [];
 if (prevVersion) {
   try {
-    const mdx = readFileSync(
-      resolve(ROOT, "docs/src/content/docs/guides/upgrading.mdx"),
-      "utf8",
-    );
-    checklist = deriveStagingChecklist(mdx, prevVersion, version);
+    checklist = deriveStagingChecklist(upgradingMdx, prevVersion, version);
   } catch {
     // handled below by the empty-list branch
   }

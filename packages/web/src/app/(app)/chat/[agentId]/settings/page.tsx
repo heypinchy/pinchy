@@ -5,11 +5,6 @@ export const metadata: Metadata = {
   title: "Agent Settings",
 };
 
-export default async function AgentSettingsPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ tab?: string }>;
-}) {
-  const { tab } = await searchParams;
-  return <AgentSettingsPageContent initialTab={tab} />;
+export default function AgentSettingsPage() {
+  return <AgentSettingsPageContent />;
 }

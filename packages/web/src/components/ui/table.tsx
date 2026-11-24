@@ -4,9 +4,40 @@ import * as React from "react";
 
 import { cn } from "@/lib/utils";
 
+/**
+ * True while the container is narrower than its table. A horizontally
+ * scrolling region must take focus so a keyboard user can scroll it (axe
+ * `scrollable-region-focusable`, #1300); one that fits must not, or every
+ * table adds an empty tab stop.
+ */
+function useOverflowsX(ref: React.RefObject<HTMLDivElement | null>) {
+  const [overflows, setOverflows] = React.useState(false);
+  React.useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    // > 1, not > 0: fractional widths can round scrollWidth up by a pixel
+    // when nothing actually scrolls.
+    const measure = () => setOverflows(el.scrollWidth - el.clientWidth > 1);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    if (el.firstElementChild) observer.observe(el.firstElementChild);
+    return () => observer.disconnect();
+  }, [ref]);
+  return overflows;
+}
+
 function Table({ className, ...props }: React.ComponentProps<"table">) {
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  const overflows = useOverflowsX(containerRef);
   return (
-    <div data-slot="table-container" className="relative w-full overflow-x-auto">
+    <div
+      ref={containerRef}
+      data-slot="table-container"
+      tabIndex={overflows ? 0 : undefined}
+      className="relative w-full overflow-x-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
       <table
         data-slot="table"
         className={cn("w-full caption-bottom text-sm", className)}

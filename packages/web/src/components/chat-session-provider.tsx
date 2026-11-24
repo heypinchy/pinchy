@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useMemo, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { create, type StoreApi, useStore } from "zustand";
 import type { AssistantRuntime } from "@assistant-ui/react";
 import type { PendingUpload } from "@/hooks/use-ws-runtime";
@@ -47,6 +47,12 @@ export interface RuntimeBundle {
    * failure is already on screen inline, making the banner a true fallback.
    */
   hasInlineError?: boolean;
+  /**
+   * A message waits in the instance for the next connection (#957). Only that
+   * instance holds it, so the chat is exempt from eviction while it is set.
+   * Optional so the placeholder bundle stays valid; absent ≙ false.
+   */
+  hasQueuedMessage?: boolean;
   onRetryContinue: (reason: "orphan" | "partial_stream_failure" | "send_failure") => void;
   onRetryResend: (messageId: string) => void;
   lastError: string | null;
@@ -63,22 +69,35 @@ interface ChatSessionStoreState {
 interface ChatSessionStoreActions {
   publish: (key: string, bundle: RuntimeBundle) => void;
   remove: (key: string) => void;
+  touch: (key: string) => void;
 }
 
 type Store = StoreApi<ChatSessionStoreState & ChatSessionStoreActions>;
 
 /**
- * Maximum number of live runtime bundles kept in the store. Each bundle
- * pins an open WebSocket (via the surviving <ChatSessionInstance>) plus
- * up to 200 cached messages. Without a cap, a long-lived tab that opens
- * many agents accumulates unbounded WebSockets and memory. When this cap
- * is exceeded, the least-recently-published bundle is evicted; the
- * evicted agent reconnects fresh when the user navigates back to it.
- *
- * 20 was chosen as a generous "many agents per session" number that
- * still bounds resource usage to a few MB and a few dozen WebSockets.
+ * Target number of live runtime bundles per tab. Each bundle pins an open
+ * WebSocket, and the server allows only 10 per user across all devices and
+ * tabs, so a higher cap locks a user out of chat (#957). The idle bundle
+ * the user viewed least recently is evicted first and reconnects cold when
+ * revisited. Only opening a new chat evicts; re-publishing an existing
+ * one never does. A running bundle is never evicted, so the store can exceed
+ * this while several runs are in flight and trims when the next chat opens.
  */
-export const MAX_LIVE_BUNDLES = 20;
+export const MAX_LIVE_BUNDLES = 3;
+
+/**
+ * Whether evicting this chat loses nothing. Its instance is the only holder of
+ * a running turn, a message queued for the next connection, and files staged
+ * in its composer — nothing restores those
+ * on remount — so such a chat stays mounted whatever the cap says.
+ */
+function isEvictable(bundle: RuntimeBundle | undefined): boolean {
+  if (!bundle) return true;
+  if (bundle.isRunning) return false;
+  if (bundle.hasQueuedMessage) return false;
+  if (bundle.pendingUploads.length > 0) return false;
+  return true;
+}
 
 /** Exported for internal use by ChatSessionMounts only — not part of public API. */
 export const ChatSessionStoreContext = createContext<Store | null>(null);
@@ -88,21 +107,41 @@ function createChatSessionStore(): Store {
     bundles: {},
     publish: (key, bundle) =>
       set((s) => {
-        // Rebuild the bundles object so re-publishing an existing session
-        // moves it to the most-recently-used (insertion-order last)
-        // position. JS objects preserve string-key insertion order, so
-        // the first key after this rebuild is the LRU candidate.
+        // Insertion order is the eviction order: the first key is the chat the
+        // user viewed least recently. Re-publishing an existing key updates it
+        // in place, because a background socket reconnecting or a run
+        // finishing is not the user looking at that chat; only `touch` moves
+        // a key to the end.
+        if (s.bundles[key] !== undefined) {
+          return { bundles: { ...s.bundles, [key]: bundle } };
+        }
+        const next: Record<string, RuntimeBundle | undefined> = {};
+        for (const [k, v] of Object.entries(s.bundles)) {
+          if (v !== undefined) next[k] = v;
+        }
+        next[key] = bundle;
+        // Enforce the cap only when this publish adds a key. A new key is
+        // always the chat being opened (on screen) and is never a victim.
+        // Running bundles and chats with work only their instance holds are
+        // skipped, so the cap is a target, not a guarantee.
+        let excess = Object.keys(next).length - MAX_LIVE_BUNDLES;
+        for (const k of Object.keys(next)) {
+          if (excess <= 0) break;
+          if (k === key || !isEvictable(next[k])) continue;
+          delete next[k];
+          excess--;
+        }
+        return { bundles: next };
+      }),
+    touch: (key) =>
+      set((s) => {
+        const bundle = s.bundles[key];
+        if (bundle === undefined) return s;
         const next: Record<string, RuntimeBundle | undefined> = {};
         for (const [k, v] of Object.entries(s.bundles)) {
           if (k !== key && v !== undefined) next[k] = v;
         }
         next[key] = bundle;
-        // Enforce the cap. Worst case: overshoot by exactly one (the new
-        // entry that just pushed us over). Drop the oldest until we fit.
-        const keys = Object.keys(next);
-        for (let i = 0; keys.length - i > MAX_LIVE_BUNDLES; i++) {
-          delete next[keys[i]];
-        }
         return { bundles: next };
       }),
     remove: (key) =>
@@ -143,6 +182,20 @@ export function useChatSession(agentId: string, chatId?: string) {
     }),
     [bundle, publish, remove, key]
   );
+}
+
+/**
+ * Marks the given chat as the one the user is looking at, which makes it the
+ * last candidate for eviction under the tab's socket cap (#957). Called by
+ * <Chat>; a chat that is not mounted yet is left alone, because opening it
+ * publishes it as the newest key anyway. Non-throwing like the hooks below.
+ */
+export function useTouchChatSession(agentId: string, chatId?: string): void {
+  const store = useContext(ChatSessionStoreContext) ?? fallbackStore;
+  const key = chatSessionKey(agentId, chatId);
+  useEffect(() => {
+    store.getState().touch(key);
+  }, [store, key]);
 }
 
 // A shared empty store used as a fallback so run-state reads never throw when a

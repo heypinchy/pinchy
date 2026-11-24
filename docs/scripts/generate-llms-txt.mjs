@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
  *
  * Both files are served to AI crawlers from docs.heypinchy.com, and both used
  * to be hand-written and committed under `public/`. They rotted exactly the way
- * AGENTS.md § "A Hand-Maintained List That Mirrors Code Will Be Wrong"
+ * agent-rules/docs.md § "A Hand-Maintained List That Mirrors Code Will Be Wrong"
  * predicts: on 2026-08-04 the index listed 12 of 66 pages, the full text
  * carried 9, and what it carried described April-era Pinchy — "Auth.js" for an
  * app that moved to Better Auth, dev database port 5433 for a stack that binds

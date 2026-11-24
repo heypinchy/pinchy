@@ -131,7 +131,7 @@ export class OfficeDocumentAttachmentAdapter {
  *  2. Promotes the first `<tr>` into a `<thead>` with `<th>` cells.
  *
  * KEEP-IN-SYNC with `normalizeTableHtml` in
- * `packages/plugins/pinchy-files/docx-extract.ts`. See that file for the
+ * `packages/plugins/pinchy-files/docx-markdown.ts`. See that file for the
  * rationale for the intentional duplication.
  */
 function normalizeDocxTableHtml(html: string): string {

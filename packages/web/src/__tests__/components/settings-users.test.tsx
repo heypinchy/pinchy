@@ -6,7 +6,7 @@ import "@testing-library/jest-dom";
 import { SettingsUsers } from "@/components/settings-users";
 import { jsonResponse } from "@/test-helpers/fetch";
 
-const mockToast = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn() }));
+const mockToast = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn(), dismiss: vi.fn() }));
 vi.mock("sonner", () => ({ toast: mockToast }));
 
 // Mock window.location.origin for invite link generation
@@ -257,6 +257,71 @@ describe("SettingsUsers", () => {
     });
   });
 
+  describe("license status the client could not read", () => {
+    const memberInGroup = [
+      {
+        id: "u1",
+        name: "Max",
+        email: "max@test.com",
+        role: "member",
+        banned: false,
+        groups: [{ id: "g1", name: "Engineering" }],
+      },
+    ];
+
+    function mockWithStatus(statusResponse: () => Promise<Response>) {
+      vi.mocked(global.fetch).mockImplementation(async (url) => {
+        if (String(url) === "/api/users") return jsonResponse({ users: memberInGroup });
+        if (String(url) === "/api/users/invites") return jsonResponse({ invites: [] });
+        if (String(url) === "/api/groups") {
+          return jsonResponse([{ id: "g1", name: "Engineering", description: null }]);
+        }
+        if (String(url) === "/api/enterprise/status") return statusResponse();
+        return jsonResponse(undefined, { status: 400 });
+      });
+    }
+
+    async function openMaxSheet() {
+      const user = userEvent.setup();
+      render(<SettingsUsers currentUserId="admin-1" />);
+      await waitFor(() => {
+        expect(within(screen.getByRole("table")).getByText("Max")).toBeInTheDocument();
+      });
+      await user.click(within(screen.getByRole("table")).getByText("Max"));
+      await waitFor(() => expect(screen.getByRole("combobox")).toBeInTheDocument());
+    }
+
+    // "Couldn't ask" is not "no license": the sheet must not tell an admin
+    // that adding to groups needs a license they may well have.
+    it.each([
+      ["rejects", () => Promise.reject(new TypeError("Failed to fetch"))],
+      [
+        "answers 500",
+        async () => jsonResponse({ error: "Internal Server Error" }, { status: 500 }),
+      ],
+    ])("does not claim a missing license when the status fetch %s", async (_l, response) => {
+      mockWithStatus(response);
+      await openMaxSheet();
+
+      await waitFor(() => {
+        expect(mockToast.error).toHaveBeenCalledWith(
+          expect.stringMatching(/license status/i),
+          expect.objectContaining({
+            id: expect.any(String),
+          })
+        );
+      });
+      expect(screen.queryByText(/requires an active license/i)).not.toBeInTheDocument();
+    });
+
+    it("still says so for a real enterprise: false", async () => {
+      mockWithStatus(async () => jsonResponse({ enterprise: false, maxUsers: 0, seatsUsed: 0 }));
+      await openMaxSheet();
+
+      expect(await screen.findByText(/requires an active license/i)).toBeInTheDocument();
+    });
+  });
+
   it("should create invite and show invite link with Copy button", async () => {
     const user = userEvent.setup();
     renderWithUsersLoaded();
@@ -273,13 +338,14 @@ describe("SettingsUsers", () => {
 
     vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ token: "invite-token-abc" }));
 
+    await user.type(screen.getByLabelText("Email"), "new@example.com");
     await user.click(screen.getByRole("button", { name: "Create Invite" }));
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith("/api/users/invite", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: "", role: "member" }),
+        body: JSON.stringify({ email: "new@example.com", role: "member" }),
       });
     });
 
@@ -287,7 +353,7 @@ describe("SettingsUsers", () => {
       expect(screen.getByText("http://localhost:7777/invite/invite-token-abc")).toBeInTheDocument();
     });
 
-    expect(screen.getByRole("button", { name: "Copy" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy link" })).toBeInTheDocument();
   });
 
   it("should show copied feedback when invite link Copy button is clicked", async () => {
@@ -315,6 +381,7 @@ describe("SettingsUsers", () => {
       await waitFor(() => expect(screen.getByLabelText("Role")).toBeInTheDocument());
 
       vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ token: "invite-token-abc" }));
+      await user.type(screen.getByLabelText("Email"), "new@example.com");
       await user.click(screen.getByRole("button", { name: "Create Invite" }));
 
       await waitFor(() =>
@@ -323,10 +390,10 @@ describe("SettingsUsers", () => {
         ).toBeInTheDocument()
       );
 
-      await user.click(screen.getByRole("button", { name: "Copy" }));
+      await user.click(screen.getByRole("button", { name: "Copy link" }));
 
       await waitFor(() => {
-        expect(screen.getByRole("button", { name: "Copied!" })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Copied" })).toBeInTheDocument();
       });
       // The spy is what makes the success path deterministic, so assert it was
       // really the invite link that went to the clipboard — otherwise the spy
@@ -765,6 +832,88 @@ describe("SettingsUsers", () => {
       });
     });
 
+    it("emails the fresh invite on Resend when email delivery is on (#1309)", async () => {
+      const user = userEvent.setup();
+      mockFetchForUsers(mockUsers, [expiredInvite]);
+      render(<SettingsUsers currentUserId="user-1" />);
+      await waitFor(() => {
+        expect(screen.getAllByText("expired@example.com").length).toBeGreaterThanOrEqual(1);
+      });
+
+      vi.mocked(global.fetch).mockImplementation(async (url, init) => {
+        if (String(url) === "/api/settings/mail") {
+          return jsonResponse({
+            configured: true,
+            config: {
+              host: "smtp.example.com",
+              port: 587,
+              security: "starttls",
+              fromAddress: "pinchy@example.com",
+              hasPassword: true,
+            },
+          });
+        }
+        if (String(url) === "/api/users/invites/inv-2" && init?.method === "DELETE") {
+          return jsonResponse({ success: true });
+        }
+        if (String(url) === "/api/users/invite" && init?.method === "POST") {
+          return jsonResponse({ token: "resend-token-xyz", emailDelivery: { sent: true } });
+        }
+        if (String(url) === "/api/users") return jsonResponse({ users: mockUsers });
+        if (String(url) === "/api/users/invites") return jsonResponse({ invites: [] });
+        if (String(url) === "/api/groups") return jsonResponse([]);
+        if (String(url) === "/api/enterprise/status") return jsonResponse({ enterprise: false });
+        return jsonResponse(undefined, { status: 400 });
+      });
+
+      const table = screen.getByRole("table");
+      const inviteRow = within(table).getAllByText("expired@example.com")[0].closest("tr")!;
+      await user.click(within(inviteRow).getByRole("button", { name: "Resend" }));
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith("/api/users/invite", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: "expired@example.com", role: "member", sendEmail: true }),
+        });
+      });
+      // CopyField has its own status region, so find the line by its text.
+      expect(await screen.findByText("Invitation sent to expired@example.com.")).toHaveAttribute(
+        "role",
+        "status"
+      );
+      expect(screen.getByText("http://localhost:7777/invite/resend-token-xyz")).toBeInTheDocument();
+    });
+
+    it("offers Revoke, not Resend, for an expired invite that has no email (#1263)", async () => {
+      // Invites made before the email became required have none, and a new
+      // invite needs one, so Resend cannot work. Revoke is the one action left;
+      // without it the row would sit in the list for good.
+      const user = userEvent.setup();
+      const noEmailExpired = { ...expiredInvite, email: null };
+      mockFetchForUsers(mockUsers, [noEmailExpired]);
+      render(<SettingsUsers currentUserId="user-1" />);
+
+      await waitFor(() => {
+        expect(screen.getByRole("table")).toBeInTheDocument();
+      });
+
+      // The mobile cards and the desktop table are both rendered (CSS picks
+      // one), and each carries its own copy of the button condition.
+      expect(screen.queryAllByRole("button", { name: "Resend" })).toHaveLength(0);
+      expect(screen.getAllByRole("button", { name: "Revoke" })).toHaveLength(2);
+
+      const table = screen.getByRole("table");
+      await user.click(within(table).getByRole("button", { name: "Revoke" }));
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith("/api/users/invites/inv-2", {
+          method: "DELETE",
+        });
+      });
+      expect(global.fetch).not.toHaveBeenCalledWith("/api/users/invite", expect.anything());
+    });
+
     // The test above only proves the link is *rendered*. Its Copy button is a
     // second one, in settings-users.tsx rather than invite-dialog.tsx, and it
     // was covered by nothing: emptying its onClick left all 34 tests in this
@@ -809,14 +958,14 @@ describe("SettingsUsers", () => {
         const inviteRow = within(table).getAllByText("expired@example.com")[0].closest("tr")!;
         await user.click(within(inviteRow).getByRole("button", { name: "Resend" }));
 
-        // Scope to the link panel: the button carries the bare label "Copy",
+        // Scope to the link panel: the button carries the label "Copy link",
         // which is not unique on this screen once a dialog is open.
         const link = await screen.findByText("http://localhost:7777/invite/resend-token-xyz");
         const panel = link.closest("div")!;
-        await user.click(within(panel).getByRole("button", { name: "Copy" }));
+        await user.click(within(panel).getByRole("button", { name: "Copy link" }));
 
         await waitFor(() => {
-          expect(within(panel).getByRole("button", { name: "Copied!" })).toBeInTheDocument();
+          expect(within(panel).getByRole("button", { name: "Copied" })).toBeInTheDocument();
         });
         expect(writeText).toHaveBeenCalledWith("http://localhost:7777/invite/resend-token-xyz");
       } finally {
@@ -981,5 +1130,323 @@ describe("SettingsUsers", () => {
       expect(screen.queryByText("Loading...")).not.toBeInTheDocument();
     });
     expect(screen.queryByText(/seats used/i)).not.toBeInTheDocument();
+  });
+  describe("accounts of unknown origin", () => {
+    // Before the sign-up endpoint was closed, anyone who could reach Pinchy
+    // could register. Those accounts survive the upgrade; GET /api/users flags
+    // them (unknownOrigin) and this banner is how an admin finds them.
+    const usersWithStranger = [
+      ...mockUsers.map((u) => ({ ...u, unknownOrigin: false })),
+      {
+        id: "user-9",
+        name: "Mallory Stranger",
+        email: "mallory@elsewhere.example",
+        role: "member",
+        banned: false,
+        groups: [],
+        unknownOrigin: true,
+      },
+    ];
+
+    async function renderAndWait(users: unknown[]) {
+      mockFetchForUsers(users);
+      render(<SettingsUsers currentUserId="user-1" />);
+      await waitFor(() => {
+        expect(screen.queryByText("Loading...")).not.toBeInTheDocument();
+      });
+    }
+
+    it("lists every active account no invite or setup accounts for", async () => {
+      await renderAndWait(usersWithStranger);
+
+      const banner = screen.getByRole("region", { name: /nobody invited/i });
+      expect(within(banner).getByText("Mallory Stranger")).toBeInTheDocument();
+      expect(within(banner).getByText("mallory@elsewhere.example")).toBeInTheDocument();
+      expect(within(banner).queryByText("Bob User")).not.toBeInTheDocument();
+    });
+
+    it("shows no banner when every account is accounted for", async () => {
+      await renderAndWait(mockUsers.map((u) => ({ ...u, unknownOrigin: false })));
+
+      expect(screen.queryByRole("region", { name: /nobody invited/i })).toBeNull();
+    });
+
+    it("leaves out an unknown-origin account that is already deactivated", async () => {
+      await renderAndWait([
+        ...mockUsers.map((u) => ({ ...u, unknownOrigin: false })),
+        {
+          id: "user-9",
+          name: "Mallory Stranger",
+          email: "mallory@elsewhere.example",
+          role: "member",
+          banned: true,
+          groups: [],
+          unknownOrigin: true,
+        },
+      ]);
+
+      expect(screen.queryByRole("region", { name: /nobody invited/i })).toBeNull();
+    });
+
+    it("opens the account with its Deactivate action from the banner", async () => {
+      const user = userEvent.setup();
+      await renderAndWait(usersWithStranger);
+
+      const banner = screen.getByRole("region", { name: /nobody invited/i });
+      await user.click(within(banner).getByRole("button", { name: /review mallory stranger/i }));
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /^deactivate$/i })).toBeInTheDocument();
+      });
+    });
+
+    it("marks an account as known through the API and drops it from the banner", async () => {
+      // The rule over-reports (a demoted setup admin, an invite deleted after
+      // its claim), so an admin needs a way out that isn't Deactivate.
+      const user = userEvent.setup();
+      let acknowledged = false;
+      vi.mocked(global.fetch).mockImplementation(async (url, init) => {
+        if (String(url) === "/api/users/user-9/acknowledge-origin" && init?.method === "POST") {
+          acknowledged = true;
+          return jsonResponse({ success: true });
+        }
+        if (String(url) === "/api/users") {
+          return jsonResponse({
+            users: usersWithStranger.map((u) =>
+              u.id === "user-9" ? { ...u, unknownOrigin: !acknowledged } : u
+            ),
+          });
+        }
+        if (String(url) === "/api/users/invites") return jsonResponse({ invites: [] });
+        if (String(url) === "/api/groups") return jsonResponse([]);
+        if (String(url) === "/api/enterprise/status") return jsonResponse({ enterprise: false });
+        return jsonResponse(undefined, { status: 400 });
+      });
+      render(<SettingsUsers currentUserId="user-1" />);
+      const banner = await screen.findByRole("region", { name: /nobody invited/i });
+
+      await user.click(
+        within(banner).getByRole("button", { name: /mark mallory stranger as known/i })
+      );
+      await user.click(
+        within(await screen.findByRole("alertdialog")).getByRole("button", {
+          name: /^mark as known$/i,
+        })
+      );
+
+      await waitFor(() => {
+        expect(screen.queryByRole("region", { name: /nobody invited/i })).toBeNull();
+      });
+      const post = vi
+        .mocked(global.fetch)
+        .mock.calls.find(([url]) => String(url) === "/api/users/user-9/acknowledge-origin");
+      expect(post?.[1]).toMatchObject({ method: "POST", body: "{}" });
+      expect(mockToast.success).toHaveBeenCalledWith(expect.stringMatching(/mallory stranger/i));
+    });
+
+    it("asks before marking an account as known, and sends nothing on Cancel", async () => {
+      // One click used to vouch for an account for good: the acknowledgement
+      // is an audit row, and nothing withdraws it.
+      const user = userEvent.setup();
+      await renderAndWait(usersWithStranger);
+
+      const banner = screen.getByRole("region", { name: /nobody invited/i });
+      await user.click(
+        within(banner).getByRole("button", { name: /mark mallory stranger as known/i })
+      );
+
+      const dialog = await screen.findByRole("alertdialog", {
+        name: /mark mallory stranger as known/i,
+      });
+      expect(dialog).toHaveTextContent(/for good/i);
+      expect(dialog).toHaveTextContent(/audit trail/i);
+
+      await user.click(within(dialog).getByRole("button", { name: /cancel/i }));
+
+      await waitFor(() => {
+        expect(screen.queryByRole("alertdialog")).toBeNull();
+      });
+      expect(
+        vi
+          .mocked(global.fetch)
+          .mock.calls.some(([url]) => String(url).endsWith("/acknowledge-origin"))
+      ).toBe(false);
+      expect(screen.getByRole("region", { name: /nobody invited/i })).toBeInTheDocument();
+    });
+
+    it("offers Mark as known on the admin's own account too", async () => {
+      // A demoted-then-promoted setup admin may be the only admin left.
+      await renderAndWait([...mockUsers.map((u) => ({ ...u, unknownOrigin: u.id === "user-1" }))]);
+
+      const banner = screen.getByRole("region", { name: /nobody invited/i });
+      expect(
+        within(banner).getByRole("button", { name: /mark alice admin as known/i })
+      ).toBeEnabled();
+    });
+
+    it("says why when marking as known fails, and keeps the account listed", async () => {
+      const user = userEvent.setup();
+      vi.mocked(global.fetch).mockImplementation(async (url, init) => {
+        if (String(url) === "/api/users/user-9/acknowledge-origin" && init?.method === "POST") {
+          return jsonResponse({ error: "User not found" }, { status: 404 });
+        }
+        if (String(url) === "/api/users") return jsonResponse({ users: usersWithStranger });
+        if (String(url) === "/api/users/invites") return jsonResponse({ invites: [] });
+        if (String(url) === "/api/groups") return jsonResponse([]);
+        if (String(url) === "/api/enterprise/status") return jsonResponse({ enterprise: false });
+        return jsonResponse(undefined, { status: 400 });
+      });
+      render(<SettingsUsers currentUserId="user-1" />);
+      const banner = await screen.findByRole("region", { name: /nobody invited/i });
+
+      await user.click(
+        within(banner).getByRole("button", { name: /mark mallory stranger as known/i })
+      );
+      await user.click(
+        within(await screen.findByRole("alertdialog")).getByRole("button", {
+          name: /^mark as known$/i,
+        })
+      );
+
+      await waitFor(() => {
+        expect(mockToast.error).toHaveBeenCalledWith("User not found");
+      });
+      expect(screen.getByRole("region", { name: /nobody invited/i })).toBeInTheDocument();
+    });
+
+    it("can be dismissed for this visit", async () => {
+      const user = userEvent.setup();
+      await renderAndWait(usersWithStranger);
+
+      const banner = screen.getByRole("region", { name: /nobody invited/i });
+      await user.click(within(banner).getByRole("button", { name: /dismiss/i }));
+
+      expect(screen.queryByRole("region", { name: /nobody invited/i })).toBeNull();
+    });
+  });
+
+  // The list loads from an effect that awaits nothing. Before it caught, a
+  // network failure rendered an empty user table, and a 500 on the invites did
+  // the same to pending invites — both read as "nobody is here".
+  describe("load failure", () => {
+    function stubLoads(respond: (url: string, signal?: AbortSignal) => Promise<Response> | null) {
+      vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+        const url = String(input);
+        const custom = respond(url, init?.signal ?? undefined);
+        if (custom) return custom;
+        if (url === "/api/users") return jsonResponse({ users: mockUsers });
+        if (url === "/api/users/invites") return jsonResponse({ invites: [] });
+        if (url === "/api/groups") return jsonResponse([]);
+        return jsonResponse({ enterprise: false, maxUsers: 0, seatsUsed: 0 });
+      });
+    }
+
+    it.each([
+      [
+        "the users load rejects",
+        "/api/users",
+        () => Promise.reject(new TypeError("Failed to fetch")),
+      ],
+      ["the users load answers 500", "/api/users", async () => jsonResponse({}, { status: 500 })],
+      [
+        "the invites load answers 500",
+        "/api/users/invites",
+        async () => jsonResponse({}, { status: 500 }),
+      ],
+    ])("says the users could not be loaded when %s", async (_label, failing, response) => {
+      stubLoads((url) => (url === failing ? response() : null));
+      render(<SettingsUsers currentUserId="user-1" />);
+
+      // The tab loads in the background, so a toast is gone before anyone
+      // opens it: the failure stands where the list would be.
+      expect(await screen.findByRole("alert")).toHaveTextContent(/couldn't load the user list/i);
+      expect(screen.queryByRole("table")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Invite User" })).not.toBeInTheDocument();
+      expect(screen.queryByText(/loading/i)).not.toBeInTheDocument();
+      expect(mockToast.error).not.toHaveBeenCalledWith("Failed to load users");
+    });
+
+    // Refreshing the groups when the sheet opens must not drop the ones the
+    // list already loaded: the sheet hides its groups section when it has none.
+    it("keeps the loaded groups when the sheet's refresh of them fails", async () => {
+      const user = userEvent.setup();
+      stubLoads((url) =>
+        url === "/api/groups"
+          ? Promise.resolve(jsonResponse([{ id: "g1", name: "Engineering" }]))
+          : url === "/api/enterprise/status"
+            ? Promise.resolve(jsonResponse({ enterprise: true }))
+            : null
+      );
+      render(<SettingsUsers currentUserId="user-1" />);
+      await waitFor(() => expect(screen.getAllByText("Bob User").length).toBeGreaterThan(0));
+
+      stubLoads((url) =>
+        url === "/api/groups"
+          ? Promise.resolve(jsonResponse({}, { status: 500 }))
+          : url === "/api/enterprise/status"
+            ? Promise.resolve(jsonResponse({ enterprise: true }))
+            : null
+      );
+      await user.click(within(screen.getByRole("table")).getByText("Bob User"));
+
+      expect(await screen.findByRole("checkbox", { name: /engineering/i })).toBeInTheDocument();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(screen.getByRole("checkbox", { name: /engineering/i })).toBeInTheDocument();
+    });
+
+    // A refresh of the list (after a save in the open sheet, or a refreshKey
+    // bump) that loses the groups must not hide the sheet's group checkboxes.
+    it("keeps the loaded groups when a refresh of the list fails to load them", async () => {
+      const user = userEvent.setup();
+      stubLoads((url) =>
+        url === "/api/groups"
+          ? Promise.resolve(jsonResponse([{ id: "g1", name: "Engineering" }]))
+          : url === "/api/enterprise/status"
+            ? Promise.resolve(jsonResponse({ enterprise: true }))
+            : null
+      );
+      const { rerender } = render(<SettingsUsers currentUserId="user-1" refreshKey={0} />);
+      await waitFor(() => expect(screen.getAllByText("Bob User").length).toBeGreaterThan(0));
+      await user.click(within(screen.getByRole("table")).getByText("Bob User"));
+      expect(await screen.findByRole("checkbox", { name: /engineering/i })).toBeInTheDocument();
+
+      // The refreshed list renames Bob, so the test can see the refresh land.
+      const renamed = mockUsers.map((u) =>
+        u.name === "Bob User" ? { ...u, name: "Bob Refreshed" } : u
+      );
+      stubLoads((url) => {
+        if (url === "/api/groups") return Promise.resolve(jsonResponse({}, { status: 500 }));
+        if (url === "/api/users") return Promise.resolve(jsonResponse({ users: renamed }));
+        return url === "/api/enterprise/status"
+          ? Promise.resolve(jsonResponse({ enterprise: true }))
+          : null;
+      });
+      rerender(<SettingsUsers currentUserId="user-1" refreshKey={1} />);
+
+      // The open sheet hides the table from role queries; text queries still see it.
+      await waitFor(() => expect(screen.getAllByText("Bob Refreshed").length).toBeGreaterThan(0));
+      expect(screen.getByRole("checkbox", { name: /engineering/i })).toBeInTheDocument();
+    });
+
+    it("cancels the load and says nothing when it unmounts mid-flight", async () => {
+      const signals: (AbortSignal | undefined)[] = [];
+      stubLoads((url, signal) => {
+        if (url !== "/api/users" && url !== "/api/users/invites") return null;
+        signals.push(signal);
+        return new Promise<Response>((_resolve, reject) => {
+          signal?.addEventListener("abort", () =>
+            reject(new DOMException("The operation was aborted.", "AbortError"))
+          );
+        });
+      });
+      const { unmount } = render(<SettingsUsers currentUserId="user-1" />);
+
+      await waitFor(() => expect(signals).toHaveLength(2));
+      unmount();
+
+      expect(signals.every((signal) => signal?.aborted)).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(mockToast.error).not.toHaveBeenCalledWith("Failed to load users");
+    });
   });
 });

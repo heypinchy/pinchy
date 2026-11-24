@@ -3,7 +3,7 @@ import { NextRequest } from "next/server";
 import { makeNextRequest, routeContext } from "@/test-helpers/route";
 
 // ─────────────────────────────────────────────────────────────────────────
-// MIGRATION TEST (AGENTS.md § "Test Migrations Against Pre-Existing Data")
+// MIGRATION TEST (agent-rules/testing.md § "Test Migrations Against Pre-Existing Data")
 //
 // IMAP is a NEW connection `type` this feature introduces. Every unit test
 // elsewhere in the suite creates its imap fixtures fresh, in-process, inside
@@ -276,6 +276,13 @@ describe("Pre-existing IMAP connection — cross-route invariant (listed ⟹ rea
       }));
       vi.doMock("@/lib/integrations/oauth-settings", () => ({
         getOAuthSettings: vi.fn().mockResolvedValue(null),
+      }));
+      // The route checks the stored mail hosts before handing them out, which
+      // resolves them. Answered here: a real lookup of the fixture hosts made
+      // this section wait on the network, and under a loaded parallel suite it
+      // ran into the 20 s test timeout.
+      vi.doMock("node:dns/promises", () => ({
+        lookup: vi.fn().mockResolvedValue([{ address: "93.184.216.34", family: 4 }]),
       }));
     });
 

@@ -91,6 +91,35 @@ describe("generateFile csv", () => {
   });
 });
 
+describe("generateFile csv header row", () => {
+  it("escapes header cells exactly like data cells", async () => {
+    const headers = ["=1+1", "@SUM(A1)", "a,b", 'say "hi"', "plain"];
+    const { buffer } = await generateFile({
+      format: "csv",
+      columns: headers,
+      rows: [headers],
+    });
+    const lines = buffer.toString("utf-8").replace(/^﻿/, "").split("\r\n");
+    expect(lines[0]).toBe(`'=1+1,'@SUM(A1),"a,b","say ""hi""",plain`);
+    expect(lines[0]).toBe(lines[1]);
+  });
+});
+
+describe("generateFile xlsx header row", () => {
+  it("stores a header starting with = as a plain string, not a formula", async () => {
+    const { buffer } = await generateFile({
+      format: "xlsx",
+      columns: ["=1+1"],
+      rows: [["x"]],
+    });
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(buffer as unknown as Parameters<typeof wb.xlsx.load>[0]);
+    const cell = wb.worksheets[0].getRow(1).getCell(1);
+    expect(cell.type).toBe(ExcelJS.ValueType.String);
+    expect(cell.value).toBe("=1+1");
+  });
+});
+
 describe("generateFile xlsx", () => {
   it("renders an xlsx with numeric cells preserved and a titled sheet", async () => {
     const { buffer, mimeType, ext } = await generateFile({
@@ -125,6 +154,29 @@ describe("generateFile xlsx", () => {
     const sheetName = wb.worksheets[0].name;
     expect(sheetName).not.toMatch(/[*?:\\/[\]]/);
     expect(sheetName).toBe("Q1 Q2 Comparison");
+  });
+
+  it.each([
+    ["History", "Sheet1"],
+    ["history", "Sheet1"],
+    ["'Q3", "Q3"],
+    ["Q3'", "Q3"],
+    ["'Q3'", "Q3"],
+    ["' Q3 '", "Q3"],
+    ["''", "Sheet1"],
+    ["O'Brien", "O'Brien"],
+    // The 31-char cut itself exposes the quote, so stripping must come after the slice.
+    ["a".repeat(30) + "'x", "a".repeat(30)],
+  ])("does not crash on the sheet title %j and uses %j", async (title, expected) => {
+    const { buffer } = await generateFile({
+      format: "xlsx",
+      title,
+      columns: ["a"],
+      rows: [["1"]],
+    });
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(buffer as unknown as Parameters<typeof wb.xlsx.load>[0]);
+    expect(wb.worksheets[0].name).toBe(expected);
   });
 });
 

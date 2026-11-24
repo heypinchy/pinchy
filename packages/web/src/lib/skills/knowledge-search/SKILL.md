@@ -46,10 +46,10 @@ End every grounded answer with a Sources list. Write it as a markdown bullet lis
 
 **Sources:**
 
-- [1] <document path> — <position>
+- [1] <document path> — <position, if the passage shows one>
 ```
 
-Reproduce the path and the position **exactly** as `knowledge_search` wrote them. A bare filename cannot be found in a large document tree, two folders may hold files with the same name, and a page number invented for a document that has no pages points at nothing.
+Reproduce the path **exactly** as `knowledge_search` wrote it, and the position exactly too — but only when the passage shows one. Some passages come back with the path alone (a Word file with no headings has no stable position). For those, write the path alone, with nothing after it. Never say that a position, page or section is missing, unavailable or not given — the reader needs no announcement, and a position you invent points at nothing. A bare filename cannot be found in a large document tree, and two folders may hold files with the same name, so the full path always stays.
 
 The Sources list and your inline citations must match exactly — no more and no fewer:
 

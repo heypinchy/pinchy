@@ -9,6 +9,7 @@ import {
   bumpPackageJson,
   buildTagName,
   buildCommitMessage,
+  buildPushCommand,
   assertUpgradingSectionExists,
   extractUpgradeNotes,
   bumpEnvExample,
@@ -28,7 +29,9 @@ import {
   movingTagForRef,
   stagingImageTagForBranch,
   stagingPinAdvice,
+  nextDevVersion,
 } from "./release-logic.mjs";
+import { checkVersionIdentity } from "./version-identity.mjs";
 
 // parseAndValidateVersion
 
@@ -165,6 +168,17 @@ test("assertVersionMatchesTag rejects a malformed tag", () => {
 
 test("buildCommitMessage follows conventional commit format", () => {
   assert.equal(buildCommitMessage("0.3.0"), "chore: release v0.3.0");
+});
+
+// buildPushCommand
+
+test("buildPushCommand pushes the branch and the tag in one atomic push", () => {
+  // Two separate pushes could land the tag without the -dev commit (or the
+  // reverse) when the second one fails — a release half-published.
+  assert.equal(
+    buildPushCommand("v0.10.3"),
+    "git push --atomic origin HEAD refs/tags/v0.10.3",
+  );
 });
 
 // assertUpgradingSectionExists
@@ -1172,6 +1186,120 @@ test("release.mjs fails the release when a gate returns not-ok", () => {
       `${call} must fail() the release when not ok`,
     );
   }
+});
+
+// nextDevVersion — what the tree declares right after a release (#1372)
+//
+// Since #1044 every commit that is not a release commit must declare
+// `<next>-dev`. release.mjs used to leave both package.json files at the
+// released version in its post-release commit, so the branch it ran on stayed
+// non-dev and every backport PR after it went red until somebody bumped it by
+// hand (#1371, #1384, #1392).
+
+test("nextDevVersion opens the next patch on a release branch", () => {
+  assert.equal(nextDevVersion("0.10.2", "release/0.10"), "0.10.3-dev");
+  assert.equal(nextDevVersion("0.10.0", "release/0.10"), "0.10.1-dev");
+  assert.equal(nextDevVersion("1.2.9", "release/1.2"), "1.2.10-dev");
+});
+
+test("nextDevVersion opens the next minor on main", () => {
+  // main is trunk and becomes the next minor — patches of this minor come
+  // off a release/X.Y branch, so main never opens X.Y.(Z+1).
+  assert.equal(nextDevVersion("0.11.0", "main"), "0.12.0-dev");
+  assert.equal(nextDevVersion("0.11.3", "main"), "0.12.0-dev");
+  assert.equal(nextDevVersion("0.9.1", "main"), "0.10.0-dev");
+});
+
+test("nextDevVersion refuses a release branch of a different minor", () => {
+  // Releasing 0.11.0 from release/0.10 would tag the wrong line, and the
+  // dev version opened after it would be wrong on either reading.
+  assert.throws(
+    () => nextDevVersion("0.11.0", "release/0.10"),
+    /release\/0\.10.*0\.11\.0|0\.11\.0.*release\/0\.10/,
+  );
+  assert.throws(() => nextDevVersion("1.10.0", "release/1.1"), /release\/1\.1/);
+});
+
+test("nextDevVersion refuses a branch a release may not be cut from", () => {
+  assert.throws(() => nextDevVersion("0.10.0", "feat/x"), /feat\/x/);
+  assert.throws(() => nextDevVersion("0.10.0", ""), /branch/);
+});
+
+test("nextDevVersion refuses a target that is not a release version", () => {
+  assert.throws(() => nextDevVersion("0.10.0-dev", "main"));
+  assert.throws(() => nextDevVersion("v0.10.0", "main"));
+});
+
+test("the tree nextDevVersion leaves behind satisfies the version-identity guard", () => {
+  // Cross-check against the guard that defines "a consistent tree", so the
+  // two cannot disagree about what a post-release commit should look like.
+  const mdx =
+    "## Upgrading from v0.10.2 to %%PINCHY_VERSION%%\n\nx\n\n" +
+    "## Upgrading from v0.10.1 to v0.10.2\n\nx\n";
+  for (const branch of ["main", "release/0.10"]) {
+    const dev = nextDevVersion("0.10.2", branch);
+    assert.deepEqual(
+      checkVersionIdentity({
+        rootVersion: dev,
+        webVersion: dev,
+        envExample: "PINCHY_VERSION=v0.10.2\n",
+        readme:
+          "curl https://raw.githubusercontent.com/heypinchy/pinchy/v0.10.2/docker-compose.yml\n" +
+          'echo "PINCHY_VERSION=v0.10.2" > .env\n',
+        mdx,
+      }),
+      [],
+      `${branch} → ${dev}`,
+    );
+  }
+});
+
+test("release.mjs opens the next -dev version in its post-release commit", () => {
+  const src = RELEASE_MJS_SRC;
+  const derive = src.indexOf("nextDevVersion(");
+  const bump = src.indexOf("Bumping versions");
+  const tagAt = src.indexOf("git tag ${tag}");
+  assert.ok(derive > 0, "release.mjs must call nextDevVersion");
+  assert.ok(
+    bump > 0 && tagAt > 0,
+    "release.mjs layout changed — re-read this test",
+  );
+  // Derived before anything is written, so a branch/version mismatch aborts
+  // the release instead of surfacing after the tag is already pushed.
+  assert.ok(derive < bump, "nextDevVersion must run before the version bumps");
+
+  // Written AFTER the tag: the tagged tree must declare the release itself
+  // (assert-package-version compares package.json against the tag).
+  const afterTag = src.slice(tagAt);
+  for (const path of ["rootPkgPath", "webPkgPath"]) {
+    assert.match(
+      afterTag,
+      new RegExp(
+        `writeFileSync\\(\\s*${path},\\s*bumpPackageJson\\([^;]*devVersion`,
+      ),
+      `release.mjs must write the dev version into ${path} after tagging`,
+    );
+  }
+  assert.match(
+    afterTag,
+    /git add[^\n]*package\.json packages\/web\/package\.json/,
+    "the post-release commit must stage both package.json files",
+  );
+});
+
+test("release-preflight.mjs runs the same branch/version check before the cut", () => {
+  const preflight = readFileSync(
+    resolve(
+      dirname(fileURLToPath(import.meta.url)),
+      "../release-preflight.mjs",
+    ),
+    "utf8",
+  );
+  assert.ok(
+    preflight.includes("nextDevVersion("),
+    "release-preflight.mjs must call nextDevVersion, or a version that does not " +
+      "belong on the branch is only refused by `pnpm release` itself",
+  );
 });
 
 // isReleasableBranch

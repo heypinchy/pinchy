@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { validateGatewayToken } from "@/lib/gateway-auth";
 import { appendAuditLog, safeProviderError } from "@/lib/audit";
-import { sanitizeDetail } from "@/lib/audit-sanitize";
+import { boundIdForAudit, sanitizeDetail } from "@/lib/audit-sanitize";
 import { redactEmailToolParamsForAudit } from "@/lib/audit-tool-params";
 import { parseRequestBody } from "@/lib/api-validation";
 import { directSessionUserId } from "@/lib/session-key";
@@ -58,9 +58,11 @@ function extractAgentIdFromSessionKey(sessionKey: string | undefined): string | 
 // No throw: audit availability must not depend on this lookup succeeding.
 async function canonicalizeUserId(lowercasedUserId: string): Promise<string> {
   try {
-    return (await findUserIdIgnoringCase(lowercasedUserId)) ?? lowercasedUserId;
+    // A database id is ours and must reach appendAuditLog exactly as stored;
+    // only the caller-supplied fallback is clamped.
+    return (await findUserIdIgnoringCase(lowercasedUserId)) ?? boundIdForAudit(lowercasedUserId);
   } catch {
-    return lowercasedUserId;
+    return boundIdForAudit(lowercasedUserId);
   }
 }
 
@@ -225,7 +227,8 @@ export async function POST(request: NextRequest) {
   const rawUserId = directSessionUserId(payload.sessionKey);
   const userId = rawUserId ? await canonicalizeUserId(rawUserId) : undefined;
   const actorType = userId ? "user" : "agent";
-  const actorId = userId ?? payload.agentId;
+  const auditAgentId = boundIdForAudit(payload.agentId);
+  const actorId = userId ?? auditAgentId;
 
   const sanitizedDetail = sanitizeDetail(detail);
 
@@ -241,7 +244,7 @@ export async function POST(request: NextRequest) {
       actorId,
       // Change 2: eventType becomes tool.<toolName>
       eventType: `tool.${payload.toolName}`,
-      resource: `agent:${payload.agentId}`,
+      resource: `agent:${auditAgentId}`,
       detail: sanitizedDetail,
       outcome,
       error,

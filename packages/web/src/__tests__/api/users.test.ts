@@ -47,6 +47,10 @@ vi.mock("@/lib/telegram-allow-store", () => ({
   recalculateTelegramAllowStores: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("@/lib/user-provenance", () => ({
+  findUnknownOriginUsers: vi.fn().mockResolvedValue([]),
+}));
+
 vi.mock("@/db", () => {
   const db: Record<string, unknown> = {
     query: {
@@ -83,6 +87,8 @@ import { auth } from "@/lib/auth";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { deleteWorkspace } from "@/lib/workspace";
 import { appendAuditLog } from "@/lib/audit";
+import { getAuditWriteFailedCount, resetAuditWriteFailedCount } from "@/lib/audit-deferred";
+import { findUnknownOriginUsers } from "@/lib/user-provenance";
 import { db } from "@/db";
 import { users, sessions, agents } from "@/db/schema";
 
@@ -118,6 +124,57 @@ describe("GET /api/users", () => {
 
     const body = await response.json();
     expect(body.error).toBe("Forbidden");
+    // Provenance is admin-only information: a member must not even trigger
+    // the lookup.
+    expect(findUnknownOriginUsers).not.toHaveBeenCalled();
+  });
+
+  it("flags the accounts that neither the setup wizard nor a claimed invite created", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+    vi.mocked(db.query.users.findMany).mockResolvedValueOnce([
+      {
+        id: "admin-1",
+        name: "Bob",
+        email: "bob@test.com",
+        role: "admin",
+        banned: false,
+        userGroups: [],
+      },
+      {
+        id: "user-1",
+        name: "Alice",
+        email: "alice@test.com",
+        role: "member",
+        banned: false,
+        userGroups: [],
+      },
+      {
+        id: "user-2",
+        name: "Mallory",
+        email: "m@test.com",
+        role: "member",
+        banned: false,
+        userGroups: [],
+      },
+    ] as never);
+    vi.mocked(findUnknownOriginUsers).mockResolvedValueOnce([
+      { id: "user-2", name: "Mallory", role: "member", banned: false, createdAt: new Date() },
+    ]);
+
+    const response = await GET();
+    expect(response.status).toBe(200);
+
+    const body = await response.json();
+    expect(
+      body.users.map((u: { id: string; unknownOrigin: boolean }) => [u.id, u.unknownOrigin])
+    ).toEqual([
+      ["admin-1", false],
+      ["user-1", false],
+      ["user-2", true],
+    ]);
   });
 
   it("returns only selected user fields", async () => {
@@ -163,6 +220,7 @@ describe("GET /api/users", () => {
       "id",
       "name",
       "role",
+      "unknownOrigin",
     ]);
   });
 
@@ -403,6 +461,34 @@ describe("DELETE /api/users/[userId]", () => {
     const detail = call![0].detail as Record<string, unknown>;
     expect(detail).not.toHaveProperty("email");
     expect(JSON.stringify(detail)).not.toContain("secret@example.com");
+  });
+
+  it("still answers 200 and counts the failure when the user.deleted audit write fails", async () => {
+    resetAuditWriteFailedCount();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as never);
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([]),
+      }),
+    } as never);
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: "user-1", name: "Test User" }]),
+      }),
+    } as never);
+    vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("audit db down"));
+
+    const request = new NextRequest("http://localhost:7777/api/users/user-1", { method: "DELETE" });
+    const res = await DELETE(request, { params: Promise.resolve({ userId: "user-1" }) });
+
+    // The user is already deactivated; a retry would answer 404, so the success stands.
+    expect(res.status).toBe(200);
+    expect(getAuditWriteFailedCount()).toBe(1);
   });
 
   it("returns 404 when user not found", async () => {

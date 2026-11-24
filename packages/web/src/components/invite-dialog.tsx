@@ -1,10 +1,12 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
+import { useLicenseStatus } from "@/hooks/use-license-status";
+import { CopyField } from "@/components/copy-field";
 import { buildInviteUrl } from "@/lib/invite-url";
-import { apiPost, errorMessage } from "@/lib/api-client";
-import type { InviteUserInput } from "@/lib/schemas/users";
+import { apiGet, apiPost, errorMessage } from "@/lib/api-client";
+import type { EmailDelivery, SystemMailStatus } from "@/lib/schemas/system-mail";
+import { inviteUserSchema, type InviteUserInput } from "@/lib/schemas/users";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -35,12 +37,29 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 
-const inviteSchema = z.object({
-  email: z.email("Invalid email").optional().or(z.literal("")),
-  role: z.enum(["member", "admin"]),
+// Derived from the route's schema so the two can't drift; only the email is
+// redefined, to give the form its own messages. It is required: the invitee's
+// account is created with this address, so an invite without one could never
+// be claimed (#1263).
+const inviteSchema = inviteUserSchema.pick({ role: true }).extend({
+  email: z.string().trim().min(1, "Email is required").pipe(z.email("Invalid email")),
 });
 
 type InviteFormValues = z.infer<typeof inviteSchema>;
+
+type CreatedInvite = { url: string; email: string; expiresAt: string | null };
+
+// Rendered in the admin's time zone, and named, because they may pass the
+// deadline on to someone in another one. en-US for the same reason as
+// lib/format-date.ts: an English month name can't be misread as 4/8 vs 8/4.
+function formatExpiry(iso: string): string {
+  const date = new Date(iso);
+  const when = date.toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" });
+  const zone = new Intl.DateTimeFormat("en-US", { timeZoneName: "short" })
+    .formatToParts(date)
+    .find((part) => part.type === "timeZoneName")?.value;
+  return zone ? `${when} ${zone}` : when;
+}
 
 interface InviteDialogProps {
   open: boolean;
@@ -48,14 +67,24 @@ interface InviteDialogProps {
 }
 
 export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
-  const [inviteLink, setInviteLink] = useState<string | null>(null);
+  const [created, setCreated] = useState<CreatedInvite | null>(null);
+  const inviteLink = created?.url ?? null;
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-  const { isCopied: copied, copy: copyInviteLink } = useCopyToClipboard();
-  const [isEnterprise, setIsEnterprise] = useState<boolean | null>(null);
-  const [seatInfo, setSeatInfo] = useState<{ maxUsers: number; seatsUsed: number } | null>(null);
+  // Refetched on every open. Unknown hides the group picker, as Community does;
+  // the dialog says nothing about the license either way.
+  const { license } = useLicenseStatus({ enabled: open });
+  const isEnterprise = license?.enterprise ?? null;
+  const seatInfo =
+    typeof license?.maxUsers === "number" && typeof license?.seatsUsed === "number"
+      ? { maxUsers: license.maxUsers, seatsUsed: license.seatsUsed }
+      : null;
   const [groups, setGroups] = useState<{ id: string; name: string }[]>([]);
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
+  // With a system mailer (#1309) the dialog emails the invitation; the link
+  // is still shown either way, so copying it always works.
+  const [mailConfigured, setMailConfigured] = useState(false);
+  const [emailDelivery, setEmailDelivery] = useState<EmailDelivery | null>(null);
 
   const form = useForm<InviteFormValues>({
     resolver: zodResolver(inviteSchema),
@@ -72,23 +101,19 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
     setPrevOpen(open);
     if (!open) {
       form.reset();
-      setInviteLink(null);
+      setCreated(null);
       setError(null);
+      setEmailDelivery(null);
       setSelectedGroupIds([]);
     }
   }
 
   useEffect(() => {
     if (!open) return;
-    fetch("/api/enterprise/status")
-      .then((r) => r.json())
-      .then((d) => {
-        setIsEnterprise(d.enterprise);
-        if (typeof d.maxUsers === "number" && typeof d.seatsUsed === "number") {
-          setSeatInfo({ maxUsers: d.maxUsers, seatsUsed: d.seatsUsed });
-        }
-      })
-      .catch(() => setIsEnterprise(false));
+    apiGet<SystemMailStatus>("/api/settings/mail")
+      .then((s) => setMailConfigured(s.configured === true))
+      // Unknown means "don't promise an email": the link path always works.
+      .catch(() => setMailConfigured(false));
   }, [open]);
 
   useEffect(() => {
@@ -103,12 +128,21 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
     setError(null);
     setCreating(true);
     try {
-      const data = await apiPost<{ token: string }, InviteUserInput>("/api/users/invite", {
+      const data = await apiPost<
+        { token: string; expiresAt?: string; emailDelivery?: EmailDelivery },
+        InviteUserInput
+      >("/api/users/invite", {
         email: values.email,
         role: values.role,
         ...(selectedGroupIds.length > 0 ? { groupIds: selectedGroupIds } : {}),
+        ...(mailConfigured ? { sendEmail: true } : {}),
       });
-      setInviteLink(buildInviteUrl(window.location.origin, data.token));
+      setCreated({
+        url: buildInviteUrl(window.location.origin, data.token),
+        email: values.email,
+        expiresAt: data.expiresAt ?? null,
+      });
+      setEmailDelivery(data.emailDelivery ?? null);
     } catch (e) {
       // Seat-cap 403s carry an actionable message beside the terse headline
       // (quote path, § 5); ApiError.message already joins the two.
@@ -116,25 +150,6 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
     } finally {
       setCreating(false);
     }
-  }
-
-  const canShare =
-    typeof navigator !== "undefined" &&
-    typeof navigator.share === "function" &&
-    typeof navigator.canShare === "function";
-
-  async function handleShare() {
-    if (inviteLink && canShare) {
-      try {
-        await navigator.share({ title: "Pinchy Invite", url: inviteLink });
-      } catch {
-        // User cancelled share — ignore
-      }
-    }
-  }
-
-  function handleCopy() {
-    if (inviteLink) copyInviteLink(inviteLink);
   }
 
   function handleOpenChange(nextOpen: boolean) {
@@ -161,13 +176,40 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
 
         {inviteLink ? (
           <div className="space-y-4">
-            <p className="text-sm font-medium">Invite link created:</p>
-            <p className="text-sm break-all bg-muted p-2 rounded">{inviteLink}</p>
-            {canShare ? (
-              <Button onClick={handleShare}>Share</Button>
-            ) : (
-              <Button onClick={handleCopy}>{copied ? "Copied!" : "Copy"}</Button>
+            {emailDelivery?.sent === true && (
+              <p role="status" className="text-sm">
+                Invitation sent to {created?.email}.
+              </p>
             )}
+            {emailDelivery?.sent === false && (
+              <p role="alert" className="text-sm text-destructive">
+                We couldn&apos;t send the email ({emailDelivery.error}). Copy the link below and
+                send it yourself.
+              </p>
+            )}
+            <p className="text-sm font-medium">Invite link created:</p>
+            <CopyField
+              value={inviteLink}
+              label="Invite link"
+              copyLabel="Copy link"
+              share={{ title: "Pinchy invite" }}
+              autoFocus
+            />
+            {/* Without email delivery (#1309), an email field reads as if
+                Pinchy mails the invite. It doesn't — the admin delivers the
+                link (#1265). With a mailer, the status line above says what
+                happened instead. */}
+            <div className="space-y-1 text-sm text-muted-foreground">
+              {!emailDelivery && (
+                <p>
+                  Pinchy doesn&apos;t email this link. Copy it and send it to {created?.email}{" "}
+                  yourself.
+                </p>
+              )}
+              {created?.expiresAt && (
+                <p>The link works once and expires on {formatExpiry(created.expiresAt)}.</p>
+              )}
+            </div>
           </div>
         ) : (
           <Form {...form}>
@@ -182,7 +224,7 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
                 name="email"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Email (optional)</FormLabel>
+                    <FormLabel>Email</FormLabel>
                     <FormControl>
                       <Input type="email" placeholder="user@example.com" {...field} />
                     </FormControl>
@@ -236,7 +278,7 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
               )}
               {error && <p className="text-destructive text-sm">{error}</p>}
               <Button type="submit" disabled={creating}>
-                Create Invite
+                {mailConfigured ? "Send invitation" : "Create Invite"}
               </Button>
             </form>
           </Form>

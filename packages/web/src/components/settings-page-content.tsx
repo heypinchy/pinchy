@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
+import { toast } from "sonner";
 import { authClient } from "@/lib/auth-client";
 import { useTabParam, SETTINGS_TABS, type SettingsTab } from "@/hooks/use-tab-param";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -16,15 +17,18 @@ import { SettingsApiKeys } from "@/components/settings-api-keys";
 import { SettingsIntegrations } from "@/components/settings-integrations";
 
 import { SettingsLicense } from "@/components/settings-license";
+import type { AgentRef } from "@/lib/schemas/agents";
 import { TelegramLinkSettings } from "@/components/telegram-link-settings";
 import { SettingsSecurity } from "@/components/settings-security";
 import { TimezoneSettings } from "@/components/timezone-settings";
 import { KnowledgeIndexScheduleSettings } from "@/components/knowledge-index-schedule-settings";
 import { MemberAccessSettings } from "@/components/member-access-settings";
+import { EmailDeliverySettings } from "@/components/email-delivery-settings";
 import { SecretsProvenanceCard } from "@/components/secrets-provenance-card";
 import { SettingsSupport } from "@/components/settings-support";
 import { useIntegrationHealth } from "@/hooks/use-integration-health";
 import type { LicenseInfo } from "@/lib/enterprise";
+import { apiGet } from "@/lib/api-client";
 
 interface ProviderStatus {
   defaultProvider: string | null;
@@ -68,24 +72,23 @@ const TAB_LABELS: Record<SettingsTab, string> = {
 };
 
 export function SettingsPageContent({
-  initialTab,
   isAdmin,
   initialLicense,
+  initialAdminOnlyAgents,
   oauthError,
 }: {
-  initialTab?: string;
   isAdmin: boolean;
   initialLicense?: LicenseInfo;
+  initialAdminOnlyAgents?: AgentRef[];
   oauthError?: string;
 }) {
   const { data: session } = authClient.useSession();
   const pathname = usePathname();
-  const router = useRouter();
   const searchParams = useSearchParams();
   const visibleTabs: SettingsTab[] = isAdmin
     ? [...SETTINGS_TABS]
     : ["context", "profile", "telegram", "support"];
-  const [activeTab, setActiveTab, isTabExplicit] = useTabParam("context", visibleTabs, initialTab, {
+  const [activeTab, setActiveTab, isTabExplicit] = useTabParam("context", visibleTabs, {
     keepParamForDefault: true,
   });
   // Mark the (admin-only) Integrations tab when a connection needs attention, so
@@ -105,14 +108,23 @@ export function SettingsPageContent({
     // so the back control doesn't silently discard page state.
     const params = new URLSearchParams(searchParams.toString());
     params.delete("tab");
+    //
+    // Native replaceState rather than router.replace, for the same reason
+    // useTabParam pushes natively: a router navigation re-renders the page on
+    // the server and the tap waits for that round trip (#1271).
     const query = params.toString();
-    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
-  }, [pathname, router, searchParams]);
+    window.history.replaceState(null, "", query ? `${pathname}?${query}` : pathname);
+  }, [pathname, searchParams]);
 
   const [status, setStatus] = useState<ProviderStatus | null>(null);
   const [loading, setLoading] = useState(true);
-  const [userContext, setUserContext] = useState("");
-  const [orgContext, setOrgContext] = useState("");
+  const [statusFailed, setStatusFailed] = useState(false);
+  // `null` until loaded: the context editors wait for their content (see
+  // settings-context.tsx for why an early editor is a data-loss risk).
+  const [userContext, setUserContext] = useState<string | null>(null);
+  const [userContextFailed, setUserContextFailed] = useState(false);
+  const [orgContext, setOrgContext] = useState<string | null>(null);
+  const [orgContextFailed, setOrgContextFailed] = useState(false);
   // Bumped when the org timezone is saved, so the nightly-reindex card re-reads
   // the times it shows in that zone.
   const [timezoneVersion, setTimezoneVersion] = useState(0);
@@ -126,47 +138,62 @@ export function SettingsPageContent({
     setEnterpriseRefreshKey((k) => k + 1);
   }, []);
 
-  const fetchStatus = useCallback(async () => {
+  // Each first load reports a failure inline, where its card would be, instead
+  // of a toast: a failed one replaces the form it backs (agent-rules/ui.md, one
+  // channel per error). `signal` comes from the mount effect, which aborts it
+  // on cleanup; the refresh after a provider save passes none, and its failure
+  // is a toast over the form that is already there.
+  const fetchStatus = useCallback(async (signal?: AbortSignal) => {
     try {
-      const res = await fetch("/api/settings/providers");
-      if (res.ok) {
-        const data = await res.json();
-        setStatus(data);
-      }
+      const data = await apiGet<ProviderStatus>("/api/settings/providers", { signal });
+      if (signal?.aborted) return;
+      setStatus(data);
+      setStatusFailed(false);
+    } catch {
+      // Classify on the signal alone: an abort's error is not reliably an
+      // AbortError (see audit-log-table.tsx).
+      if (signal?.aborted) return;
+      // The refresh after a save keeps the form the admin just used.
+      if (signal) setStatusFailed(true);
+      else
+        toast.error(
+          "We couldn't refresh your provider settings. Reload the page to see the latest."
+        );
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   }, []);
 
-  const fetchContext = useCallback(async () => {
-    const userRes = await fetch("/api/users/me/context");
-    if (userRes.ok) {
-      const data = await userRes.json();
-      setUserContext(data.content || "");
+  const fetchContext = useCallback(async (signal: AbortSignal) => {
+    try {
+      const data = await apiGet<{ content?: string }>("/api/users/me/context", { signal });
+      if (!signal.aborted) setUserContext(data.content || "");
+    } catch {
+      if (!signal.aborted) setUserContextFailed(true);
     }
   }, []);
 
-  const fetchOrgContext = useCallback(async () => {
-    const orgRes = await fetch("/api/settings/context");
-    if (orgRes.ok) {
-      const data = await orgRes.json();
-      setOrgContext(data.content || "");
+  const fetchOrgContext = useCallback(async (signal: AbortSignal) => {
+    try {
+      const data = await apiGet<{ content?: string }>("/api/settings/context", { signal });
+      if (!signal.aborted) setOrgContext(data.content || "");
+    } catch {
+      if (!signal.aborted) setOrgContextFailed(true);
     }
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
+    const { signal } = controller;
     void Promise.resolve().then(() => {
-      if (cancelled) return;
+      if (signal.aborted) return;
       if (isAdmin) {
-        void fetchStatus();
-        void fetchOrgContext();
+        void fetchStatus(signal);
+        void fetchOrgContext(signal);
       }
-      void fetchContext();
+      void fetchContext(signal);
     });
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [isAdmin, fetchStatus, fetchContext, fetchOrgContext]);
 
   const handleProviderDirtyChange = useCallback((isDirty: boolean) => {
@@ -221,7 +248,7 @@ export function SettingsPageContent({
           >
             <div
               role="presentation"
-              className="text-muted-foreground/70 px-2 pt-1 pb-1 text-[0.6875rem] font-semibold tracking-[0.08em] uppercase"
+              className="text-muted-foreground px-2 pt-1 pb-1 text-[0.6875rem] font-semibold tracking-[0.08em] uppercase"
             >
               Personal
             </div>
@@ -233,7 +260,7 @@ export function SettingsPageContent({
               <>
                 <div
                   role="presentation"
-                  className="text-muted-foreground/70 px-2 pt-6 pb-1 text-[0.6875rem] font-semibold tracking-[0.08em] uppercase"
+                  className="text-muted-foreground px-2 pt-6 pb-1 text-[0.6875rem] font-semibold tracking-[0.08em] uppercase"
                 >
                   Administration
                 </div>
@@ -249,7 +276,7 @@ export function SettingsPageContent({
                 <TabsTrigger value="organization">Organization</TabsTrigger>
                 <div
                   role="presentation"
-                  className="text-muted-foreground/70 px-2 pt-6 pb-1 text-[0.6875rem] font-semibold tracking-[0.08em] uppercase"
+                  className="text-muted-foreground px-2 pt-6 pb-1 text-[0.6875rem] font-semibold tracking-[0.08em] uppercase"
                 >
                   Security &amp; Compliance
                 </div>
@@ -273,6 +300,8 @@ export function SettingsPageContent({
               <SettingsContext
                 userContext={userContext}
                 orgContext={orgContext}
+                userContextFailed={userContextFailed}
+                orgContextFailed={orgContextFailed}
                 isAdmin={isAdmin}
                 onDirtyChange={handleContextDirtyChange}
               />
@@ -303,9 +332,16 @@ export function SettingsPageContent({
                     <CardContent>
                       {loading ? (
                         <p>Loading...</p>
+                      ) : statusFailed ? (
+                        // Without the status the form cannot say which
+                        // providers are set up or which one is the default.
+                        <p role="alert" className="text-sm text-red-600">
+                          We couldn&apos;t load your provider settings. Reload the page to try
+                          again.
+                        </p>
                       ) : (
                         <ProviderKeyForm
-                          onSuccess={fetchStatus}
+                          onSuccess={() => void fetchStatus()}
                           submitLabel="Save"
                           configuredProviders={status?.providers}
                           defaultProvider={status?.defaultProvider}
@@ -352,6 +388,7 @@ export function SettingsPageContent({
                   <TimezoneSettings onSaved={() => setTimezoneVersion((v) => v + 1)} />
                   <KnowledgeIndexScheduleSettings refreshKey={timezoneVersion} />
                   <MemberAccessSettings />
+                  <EmailDeliverySettings />
                 </div>
               </TabsContent>
             )}
@@ -361,6 +398,7 @@ export function SettingsPageContent({
                 <SettingsLicense
                   onEnterpriseActivated={handleEnterpriseActivated}
                   initialLicense={initialLicense}
+                  initialAdminOnlyAgents={initialAdminOnlyAgents}
                 />
               </TabsContent>
             )}

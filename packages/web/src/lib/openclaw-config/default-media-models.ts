@@ -118,10 +118,9 @@ async function resolveVisionModelChain(preference: readonly ProviderName[]): Pro
  * that fragility.
  *
  * For `ollama-cloud`, empirical API probing showed the vision-flagged line
- * is uneven: some models (`mistral-large-3:675b`, `kimi-k2.5`/`k2.6`) accept
- * image input but occasionally misread digits, and `qwen3.5:397b` only
- * claims vision — it hallucinates image contents and is now flagged
- * vision:false (see ollama-cloud-models.ts). We pin the choice to the
+ * is uneven: some models (`kimi-k2.6`, formerly also `mistral-large-3:675b` and
+ * `kimi-k2.5`, retired 2026-11-16) accept image input but occasionally misread
+ * digits (see ollama-cloud-models.ts for each model's probe record). We pin the choice to the
  * best empirically vision-verified models (`gemini-3-flash-preview` >
  * `minimax-m3` > `kimi-k2.6` > `gemma4:31b`; qwen3-vl led this list until
  * Ollama dropped it from the cloud catalog) via the typed
@@ -208,8 +207,9 @@ export const OLLAMA_CLOUD_IMAGE_PREFERENCE: readonly OllamaCloudModelId[] = [
   // mangling nested TOOL arguments, and this slot describes images rather than
   // driving tools. Consumer (1) still applies `isBlocked`, so a tool-using turn
   // keeps skipping it down to kimi-k2.6.
-  // kimi-k2.7-code and qwen3.5:397b became vision:true on 2026-07-30 (6/6
-  // fixture reads each) and are deliberately NOT listed here. This list ranks
+  // kimi-k2.7-code (and, until Ollama retired it on 2026-11-16, qwen3.5:397b)
+  // became vision:true on 2026-07-30 (6/6 fixture reads each) and is
+  // deliberately NOT listed here. This list ranks
   // image-description QUALITY on comparative evidence — the eval sweeps cited
   // above — and "reads a 4-digit number off a test image" is a capability
   // check, not a quality ranking. Adding them would imply a ranking nobody

@@ -1,8 +1,8 @@
-import { NextResponse, after } from "next/server";
+import { NextResponse } from "next/server";
+import { deferAuditLog } from "@/lib/audit-deferred";
 import { revalidatePath } from "next/cache";
 import { withApiKey } from "@/lib/api-auth";
 import { getAgent, deleteAgent } from "@/lib/agents";
-import { appendAuditLog } from "@/lib/audit";
 
 type RouteContext = { params: Promise<{ agentId: string }> };
 
@@ -51,22 +51,20 @@ export const DELETE = withApiKey<RouteContext>(["agents:delete"], async (_req, {
   // knows who did it" is a real outcome rather than a theoretical one. Same
   // contract as the sibling POST's onCreated; see deleteAgent.
   await deleteAgent(agentId, () =>
-    after(() =>
-      appendAuditLog({
-        actorType: "api_key",
-        actorId: key.keyId,
-        eventType: "agent.deleted",
-        resource: `agent:${agentId}`,
-        // The key is the actor and its own snapshot is the attribution — no
-        // issuer/delegation field, see the POST route's docblock. `name` is
-        // read off the pre-delete lookup, so it survives the soft-delete.
-        detail: {
-          name: agent.name,
-          apiKey: { id: key.keyId, name: key.name },
-        },
-        outcome: "success",
-      })
-    )
+    deferAuditLog({
+      actorType: "api_key",
+      actorId: key.keyId,
+      eventType: "agent.deleted",
+      resource: `agent:${agentId}`,
+      // The key is the actor and its own snapshot is the attribution — no
+      // issuer/delegation field, see the POST route's docblock. `name` is
+      // read off the pre-delete lookup, so it survives the soft-delete.
+      detail: {
+        name: agent.name,
+        apiKey: { id: key.keyId, name: key.name },
+      },
+      outcome: "success",
+    })
   );
 
   revalidatePath("/", "layout");

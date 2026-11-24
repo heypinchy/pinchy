@@ -67,7 +67,9 @@ export async function POST(request: NextRequest) {
     detail: {
       request: { id: settled.id },
       agent: { id: settled.agentId, name: agent?.name ?? null },
-      requester: { id: settled.requesterId, name: requester?.name ?? null },
+      // Name only: `detail` is immutable, so a users.id here is out of reach of
+      // crypto-erasure (#824). `resource` names the request.
+      requester: { name: requester?.name ?? null },
       toolName: settled.toolName,
       argsDigest: settled.argsDigest,
       // Which of the five outcomes this was. `approval.expired` is also written

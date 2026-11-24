@@ -116,6 +116,7 @@ import { db } from "@/db";
 import { appendAuditLog } from "@/lib/audit";
 import { listOpenAiCompatibleProviders } from "@/lib/openai-compatible-providers";
 import type { OpenAiCompatibleProviderListItem } from "@/lib/openai-compatible-providers";
+import { getAuditWriteFailedCount, resetAuditWriteFailedCount } from "@/lib/audit-deferred";
 import { mockSession } from "@/test-helpers/auth";
 import { makeNextRequest, routeContext } from "@/test-helpers/route";
 
@@ -534,6 +535,25 @@ describe("DELETE /api/settings/providers", () => {
         ],
       },
     });
+  });
+
+  it("should still answer 200 and count the failure when the removal's audit write fails", async () => {
+    resetAuditWriteFailedCount();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-secret";
+      if (key === "openai_api_key") return "sk-openai-key";
+      if (key === "default_provider") return "anthropic";
+      return null;
+    });
+    vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("audit db down"));
+
+    const response = await DELETE(makeRequest({ provider: "openai" }), routeContext());
+
+    // The key is deleted and the agents migrated: a retry would 400, so the
+    // success stands and the lost row shows up in the failure counter.
+    expect(response.status).toBe(200);
+    expect(getAuditWriteFailedCount()).toBe(1);
   });
 
   it("should record the new default in the audit log when removing the default provider", async () => {

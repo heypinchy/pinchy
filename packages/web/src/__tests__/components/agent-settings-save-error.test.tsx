@@ -76,6 +76,7 @@ vi.mock("@/components/agent-settings-diagnostics", () => ({
 }));
 vi.mock("@/components/agent-telegram-settings", () => ({ AgentTelegramSettings: () => <div /> }));
 
+import { jsonResponse } from "@/test-helpers/fetch";
 import { AgentSettingsPageContent } from "@/components/agent-settings-page-content";
 
 const agent = {
@@ -105,9 +106,9 @@ function mockFetch(patchResponse: { status: number; body: unknown }) {
     }
     const path = String(url);
     if (path.includes("/api/agents/agent-1")) {
-      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(agent) });
+      return Promise.resolve(jsonResponse(agent));
     }
-    return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) });
+    return Promise.resolve(jsonResponse([]));
   });
 }
 
@@ -184,9 +185,9 @@ describe("agent settings save — surfacing why a save failed (#1095)", () => {
       }
       const path = String(url);
       if (path.includes("/api/agents/agent-1")) {
-        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(agent) });
+        return Promise.resolve(jsonResponse(agent));
       }
-      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) });
+      return Promise.resolve(jsonResponse([]));
     });
 
     render(<AgentSettingsPageContent />);

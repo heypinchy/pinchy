@@ -30,8 +30,8 @@
 // query — a test that re-implements the DELETE it claims to cover proves only
 // that Postgres deletes rows.
 //
-// Provisioned by global-setup.ts (fresh migrated DB) and truncated between
-// tests (setup.ts). Only the session and `after()` are faked; the DB, the key
+// Provisioned by global-setup.ts (fresh migrated DB) and emptied between
+// tests by the integration reset (setup.ts). Only the session and `after()` are faked; the DB, the key
 // plugin, and the audit chain all run for real.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";

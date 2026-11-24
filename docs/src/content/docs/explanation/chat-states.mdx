@@ -21,10 +21,14 @@ When an attachment is rejected, the indicator reads **Image too large** and a ba
 
 When the state is Unavailable, the indicator and status message explain why:
 
-- **Disconnected** (red): The connection dropped. Pinchy is trying to reconnect automatically.
+- **Disconnected** (red): The connection dropped. Pinchy is trying to reconnect automatically and says so, with a **Try again now** button.
+- **Offline** (red): Your device has no network. Pinchy pauses and reconnects as soon as you're back online.
+- **The agent isn't reachable** (red): Pinchy is connected, but the agent runtime behind it isn't answering. This is different from the Configuring state, which follows a change you made. If it lasts, the message adds a **Report this issue** link.
+- **Can't reach Pinchy** (red): The connection has been down for about 30 seconds. Pinchy keeps retrying in the background, and the message offers **Try again** and **Reload**.
 - **Configuring** (yellow): You recently changed agent settings. Pinchy is applying the changes and will be ready in a moment.
-- **Exhausted** (red): Reconnection attempts failed. You need to reload the page to resume.
 - **Chat didn't load** (red): Your conversation history didn't arrive within 20 seconds of opening the chat. See below.
+
+Pinchy never stops retrying while the tab is visible, so no state asks you to reload as the only way out. **Try again** closes the connection and opens a new one at once, and a message you were typing stays in the composer. If your session ended while the connection was down, Pinchy takes you to the login page instead.
 
 ## When the conversation doesn't load
 
@@ -33,6 +37,10 @@ Opening a chat starts with one request: Pinchy asks the server for your conversa
 Two things happen at once. Pinchy reconnects by itself and asks again, which fixes the common case without you doing anything. And the chat tells you what's going on, with a **Try again** button that reconnects on demand. Whichever gets there first wins: as soon as your history arrives, the message disappears and the conversation is back.
 
 You never have to reload the page to get out of this state.
+
+## Reconnecting
+
+Retries start after one second and back off to about 15 seconds, with a little jitter so many tabs don't retry together. A connection attempt that hasn't opened after 10 seconds is cut and retried. While a connection is open, Pinchy sends a small keep-alive ping about every 25 seconds, so a connection that quietly died is noticed and replaced; the pings never appear in your chat. A tab that was asleep or hidden reconnects itself when you come back to it.
 
 ## Auto-recovery
 
@@ -48,11 +56,15 @@ The live update itself carries no message content — only a small signal that t
 
 ## Brief disconnects don't lock the UI
 
-Pinchy waits 2 seconds before showing the Disconnected state. During those 2 seconds the interface stays in its previous state (Ready or Responding) so short network hiccups are absorbed silently without disrupting your flow.
+Pinchy waits 2 seconds before showing the Disconnected state. During those 2 seconds the interface stays in its previous state (Ready or Responding) so short network hiccups are absorbed silently without disrupting your flow. Your device going offline skips the wait, because Pinchy already knows the reason.
 
 ## Typing while the agent responds
 
 You can type your next message while the agent is still generating a reply. Only the **Send** button and the **Retry** button are disabled during a response — the text input stays active so you can prepare follow-up questions.
+
+## Stopping a reply
+
+**Stop** ends the turn the way you asked: the words already on screen stay, and no error appears. That holds for the message you send right after, too — it runs normally even while the stopped reply is still winding down on the agent runtime.
 
 ## Model-unavailable errors
 
@@ -60,7 +72,7 @@ When the model itself is the problem — not the connection — Pinchy shows a d
 
 The bubble shows the affected agent name, the model identifier, and a plain-English explanation. A **Switch model →** link takes you straight to the agent's model settings so you can pick a replacement without leaving the chat.
 
-See [Manage LLM Providers — Model-unavailable errors](/guides/llm-providers/#model-unavailable-errors) for step-by-step instructions and the list of removed models.
+See [Manage LLM Providers — Model-unavailable errors](/guides/llm-providers/#model-unavailable-errors) for step-by-step instructions. [Upgrading](/guides/upgrading/#eight-ollama-cloud-models-are-gone) lists the models removed most recently.
 
 ## Navigating away mid-conversation
 
@@ -76,15 +88,17 @@ Clicking an agent in the sidebar reopens the chat you last had open with that ag
 
 Some agent errors are only temporary — the model provider is rate-limiting requests, is overloaded, timed out, or is briefly unavailable. Others are lasting but fixable — the model your agent was pinned to has been retired by its provider, or the provider account needs attention (an invalid API key, depleted credit, or an exhausted quota). Either way, when one interrupts a run the chat shows an error bubble that names the actual cause (we don't label everything a "rate limit") — and for a retired model it tells you which model went away and where to choose a new one.
 
-That bubble lives in the conversation, so a reload — or a reconnect during a long tool loop — would normally lose it, leaving you unsure whether anything went wrong. Pinchy keeps it instead. The error re-surfaces as a **paused banner** above the message composer when you come back, with the same cause-specific explanation. From there you decide: **Retry** resends your last message, or **Dismiss** clears the banner once you've moved on. A lasting problem's banner stays until you fix the cause or dismiss it, and clears itself automatically as soon as a message goes through again.
+That bubble lives in the conversation, so a reload — or a reconnect during a long tool loop — would normally lose it, leaving you unsure whether anything went wrong. Pinchy keeps it instead. The error re-surfaces as a **paused banner** above the message composer when you come back, with the same cause-specific explanation. From there you decide: **Retry** resends your last message, or **Dismiss** clears the banner once you've moved on. The banner clears itself as soon as any later message in the conversation goes through — the retry, or the next question you asked instead — right away, without a reload. It also stops showing after a day: by then it no longer answers "did something go wrong while I was away?", and a lasting cause fails your next message again, which brings its own banner.
 
 The banner is scoped to you and the agent you're chatting with, so you only ever see the error that's actually yours. Dismissing it clears it for good — it won't reappear on the next reload.
 
-## Long-running responses time out
+## Replies that never start
 
-A single response can't run forever. A server-side watchdog caps each run at about 15 minutes of wall-clock time. If a reply hasn't finished by then, Pinchy aborts it and shows a **"timed out after 15m — please retry"** error bubble with a **Retry** button so you can send the same message again.
+Pinchy doesn't cap how long a reply may take: a genuinely long task is allowed to run. Once a reply is streaming, OpenClaw, the agent runtime, watches it and stops one that has gone idle or stuck.
 
-This cap is independent of the connection-state indicator above: the connection can be perfectly healthy and the agent still hit the limit on a genuinely long task. The timeout is per response, not per conversation — retrying starts a fresh run with the full 15-minute budget.
+What Pinchy does watch is the start. If OpenClaw never acknowledges a message (no first chunk within about three minutes), Pinchy stops waiting, aborts that run and shows an error bubble with a **Retry** button so you can send the same message again. The audit trail records it as `chat.run_no_first_chunk`.
+
+This is independent of the connection-state indicator above: the connection can be perfectly healthy while one message never gets picked up.
 
 ---
 

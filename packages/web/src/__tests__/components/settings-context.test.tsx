@@ -105,6 +105,40 @@ describe("SettingsContext", () => {
     });
   });
 
+  // An editor shown for a context that never loaded starts empty, and its
+  // Save replaces the stored context with that emptiness. So the editor waits
+  // for its load, and a failed load shows why there is no editor instead.
+  describe("before and after a failed load", () => {
+    it("shows no editor while a context is still loading", () => {
+      render(<SettingsContext userContext={null} orgContext={null} isAdmin={true} />);
+
+      expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /save/i })).not.toBeInTheDocument();
+      expect(screen.getAllByText("Loading...")).toHaveLength(2);
+    });
+
+    it("shows no Organization Context editor when its load failed, and says why", () => {
+      render(
+        <SettingsContext userContext="Mine" orgContext={null} orgContextFailed isAdmin={true} />
+      );
+
+      expect(screen.getByText("Organization Context")).toBeInTheDocument();
+      expect(screen.getAllByRole("textbox")).toHaveLength(1);
+      expect(screen.getByDisplayValue("Mine")).toBeInTheDocument();
+      expect(screen.getAllByRole("button", { name: /save/i })).toHaveLength(1);
+      expect(screen.getByRole("alert")).toHaveTextContent(/couldn't load/i);
+    });
+
+    it("shows no Your Context editor when its load failed", () => {
+      render(
+        <SettingsContext userContext={null} userContextFailed orgContext="" isAdmin={false} />
+      );
+
+      expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+      expect(screen.getByRole("alert")).toHaveTextContent(/couldn't load/i);
+    });
+  });
+
   describe("onDirtyChange callback", () => {
     it("should call onDirtyChange(false) on mount (initially clean)", () => {
       const onDirtyChange = vi.fn();

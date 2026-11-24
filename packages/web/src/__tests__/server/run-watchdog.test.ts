@@ -112,8 +112,13 @@ describe("runWatchdogTick", () => {
       expect(audit.outcome).toBe("failure");
       expect(audit.resource).toBe("agent:a1");
       expect(audit.detail.agent).toEqual({ id: "a1", name: "Smithers" });
-      expect(audit.detail.user).toEqual({ id: "u1" });
-      expect(audit.detail.sessionKey).toBe(basePending.sessionKey);
+      // #824: the session key and a `user.id` both carry the raw users.id, and
+      // this row's actor is the watchdog, so there is no pseudonymized column to
+      // lean on. Neither may reach the verbatim, immutable `detail`.
+      expect(audit.detail).not.toHaveProperty("user");
+      expect(audit.detail).not.toHaveProperty("sessionKey");
+      expect(JSON.stringify(audit.detail)).not.toContain("u1");
+      expect(audit.detail.chatId).toBeNull();
       expect(audit.detail.runId).toBe("provisional-1");
       expect(audit.detail.waitedMs).toBe(deps.now() - 1_000_000);
       expect(audit.detail.firstChunkTimeoutMs).toBe(NINETY_S);
@@ -199,18 +204,20 @@ describe("runWatchdogTick", () => {
     });
 
     it("continues processing other unstarted runs even if writeAudit throws for one", async () => {
-      writeAudit.mockImplementation(async (entry: { detail: { sessionKey: string } }) => {
-        if (entry.detail.sessionKey === "p1") throw new Error("audit DB down");
+      writeAudit.mockImplementation(async (entry: { detail: { runId: string } }) => {
+        if (entry.detail.runId === "p1") throw new Error("audit DB down");
       });
       runs.registerPending({
         ...basePending,
         sessionKey: "p1",
+        runId: "p1",
         submittedAt: 1_000_000,
         ws: fakeWs(),
       });
       runs.registerPending({
         ...basePending,
         sessionKey: "p2",
+        runId: "p2",
         submittedAt: 1_000_000,
         ws: fakeWs(),
       });

@@ -22,7 +22,12 @@ const mockFields = vi.fn();
 const mockCallMethod = vi.fn();
 
 vi.mock("odoo-node", () => {
-  const MockOdooClient = vi.fn(function (this: Record<string, unknown>) {
+  const MockOdooClient = vi.fn(function (
+    this: Record<string, unknown>,
+    config: { fetch?: unknown }
+  ) {
+    // Keeps the transport like odoo-node >= 0.4.0, which pinOdooClient checks.
+    this.transport = { fetch: config.fetch };
     this.searchRead = mockSearchRead;
     this.searchCount = mockSearchCount;
     this.readGroup = mockReadGroup;
@@ -43,6 +48,7 @@ const fetchMock = vi.fn(async () => ({
   statusText: "OK",
   json: async () => ({
     type: "odoo",
+    checkedAddresses: { url: ["203.0.113.10"] },
     credentials: { url: "http://odoo-test:8069", db: "testdb", uid: 2, apiKey: "k" },
   }),
 }));

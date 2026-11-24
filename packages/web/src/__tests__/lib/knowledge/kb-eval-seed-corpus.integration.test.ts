@@ -32,6 +32,7 @@ import { DEFAULT_ORG_ID } from "@/lib/knowledge/constants";
 import { statusForPath } from "@/lib/knowledge/archive-paths";
 
 import { seedSyntheticCorpus } from "../../../../eval/kb/seed-corpus";
+import { KB_SWEEP_CORPUS_ROOT } from "../../../../eval/kb/sweep-agent";
 import { fetchChunkTexts } from "../../../../eval/kb/chunk-texts";
 import { KB_EVAL_CORPUS } from "../../../../eval/kb/corpus/manifest";
 
@@ -40,7 +41,7 @@ const DB_URL = process.env.DATABASE_URL ?? "";
 const EXPECTED_CHUNKS = KB_EVAL_CORPUS.reduce((n, doc) => n + doc.chunks.length, 0);
 
 describe("seedSyntheticCorpus", () => {
-  // The integration harness TRUNCATEs every application table between tests,
+  // Every application table is emptied between tests by the integration reset,
   // so each case seeds its own corpus rather than sharing one from beforeAll.
   beforeEach(async () => {
     await seedSyntheticCorpus(DB_URL);
@@ -60,7 +61,9 @@ describe("seedSyntheticCorpus", () => {
     const docs = await db.select().from(kbDocuments);
 
     for (const doc of docs) {
-      expect(doc.status, `status for ${doc.sourcePath}`).toBe(statusForPath(doc.sourcePath));
+      expect(doc.status, `status for ${doc.sourcePath}`).toBe(
+        statusForPath(doc.sourcePath, [KB_SWEEP_CORPUS_ROOT])
+      );
     }
 
     // Discrimination: the corpus must actually contain an archived path, or
@@ -110,7 +113,7 @@ describe("seedSyntheticCorpus", () => {
     // freshness axis reads exactly that column. Since the status is derived
     // from the path, re-deriving it is never destructive.
     const archivedPath = KB_EVAL_CORPUS.map((d) => d.sourcePath).find(
-      (p) => statusForPath(p) === "archived"
+      (p) => statusForPath(p, [KB_SWEEP_CORPUS_ROOT]) === "archived"
     );
     if (!archivedPath) throw new Error("corpus has no archived path to test with");
 

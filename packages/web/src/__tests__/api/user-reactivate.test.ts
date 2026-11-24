@@ -25,6 +25,7 @@ vi.mock("@/db", () => ({
 
 import { auth } from "@/lib/auth";
 import { appendAuditLog } from "@/lib/audit";
+import { getAuditWriteFailedCount, resetAuditWriteFailedCount } from "@/lib/audit-deferred";
 import { db } from "@/db";
 import { users } from "@/db/schema";
 
@@ -84,6 +85,28 @@ describe("POST /api/users/[userId]/reactivate", () => {
         detail: { changes: { status: { from: "deactivated", to: "active" } } },
       })
     );
+  });
+
+  it("still answers success and counts the failure when the audit write fails after the commit", async () => {
+    resetAuditWriteFailedCount();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as never);
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: "u1", banned: false }]),
+      }),
+    } as never);
+    vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("audit db down"));
+
+    const req = new NextRequest("http://localhost/api/users/u1/reactivate", { method: "POST" });
+    const res = await POST(req, { params: Promise.resolve({ userId: "u1" }) });
+    // A retry would 404 (WHERE banned = true), so the row would never be written.
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => expect(getAuditWriteFailedCount()).toBe(1));
   });
 
   it("returns 404 when user not found", async () => {
