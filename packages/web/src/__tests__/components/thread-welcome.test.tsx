@@ -50,8 +50,8 @@ vi.mock("@assistant-ui/react", () => ({
     Parts: () => null,
     Error: ({ children }: any) => <div>{children}</div>,
   },
-  useMessage: () => ({}),
-  useComposerRuntime: () => null,
+  useAuiState: () => ({}),
+  useAui: () => ({}),
 }));
 
 vi.mock("@/components/assistant-ui/attachment", () => ({

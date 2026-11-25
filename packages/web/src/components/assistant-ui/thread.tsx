@@ -23,7 +23,8 @@ import {
   ErrorPrimitive,
   MessagePrimitive,
   ThreadPrimitive,
-  useMessage,
+  useAui,
+  useAuiState,
 } from "@assistant-ui/react";
 import {
   AlertCircle,
@@ -69,7 +70,6 @@ import { Progress } from "@/components/ui/progress";
 import type { PendingUpload } from "@/hooks/use-ws-runtime";
 import { RetryButton } from "@/components/chat/retry-button";
 import { GatedRetry } from "@/components/chat/gated-retry";
-import { useComposerRuntime } from "@assistant-ui/react";
 import { getDraft, saveDraft, draftKey } from "@/lib/draft-store";
 import { useShareIntake } from "@/components/share/use-share-intake";
 import { useRouter } from "next/navigation";
@@ -97,7 +97,9 @@ function formatTimestamp(iso: string): string {
 }
 
 const MessageTimestamp: FC = () => {
-  const timestamp = useMessage((s) => s.metadata?.custom?.timestamp as string | undefined);
+  const timestamp = useAuiState(
+    ({ message: s }) => s.metadata?.custom?.timestamp as string | undefined
+  );
   if (!timestamp) return null;
   return <span className="text-xs text-muted-foreground">{formatTimestamp(timestamp)}</span>;
 };
@@ -345,10 +347,12 @@ export const ThreadWelcome: FC = () => {
 export const DraftPersistence: FC = () => {
   const agentId = useContext(AgentIdContext);
   const chatId = useContext(ChatIdContext);
-  const composerRuntime = useComposerRuntime({ optional: true });
+  const aui = useAui();
+  const hasComposer = useAuiState((s) => s.optional.composer !== undefined);
 
   useEffect(() => {
-    if (!agentId || !composerRuntime) return;
+    if (!agentId || !hasComposer) return;
+    const composerRuntime = aui.composer;
     const key = draftKey(agentId, chatId);
 
     let cancelled = false;
@@ -378,7 +382,7 @@ export const DraftPersistence: FC = () => {
         }
       }
       restored = true;
-      unsubscribe = composerRuntime.subscribe(persist);
+      unsubscribe = aui.subscribe(persist);
     };
     void restore();
 
@@ -387,7 +391,7 @@ export const DraftPersistence: FC = () => {
       persist(); // flush the latest state (no-op if restore hasn't settled)
       unsubscribe?.();
     };
-  }, [agentId, chatId, composerRuntime]);
+  }, [agentId, chatId, aui, hasComposer]);
 
   return null;
 };
@@ -396,7 +400,7 @@ export const DraftPersistence: FC = () => {
  * Mounts the /share hand-off (use-share-intake.ts) inside the composer so it
  * can reach both the two-phase upload pipeline (`AddPendingUploadContext`,
  * provided higher up by chat.tsx) and the live composer runtime (`setText`,
- * only resolvable here — `useComposerRuntime` needs to be inside
+ * only resolvable here — `aui.composer` needs to be inside
  * `ComposerPrimitive.Root`, which chat.tsx sits above). Text prefill is
  * best-effort: `composerRuntime` is `null` until assistant-ui's composer
  * context mounts, in which case the shared files still attach and only the
@@ -412,7 +416,9 @@ export const DraftPersistence: FC = () => {
  */
 export const ShareIntake: FC = () => {
   const addPendingUpload = useContext(AddPendingUploadContext);
-  const composerRuntime = useComposerRuntime({ optional: true });
+  const aui = useAui();
+  const hasComposer = useAuiState((s) => s.optional.composer !== undefined);
+  const composerRuntime = hasComposer ? aui.composer : null;
 
   useShareIntake({
     addPendingUpload,
@@ -628,7 +634,7 @@ const MessageError: FC = () => {
 };
 
 const AssistantErrorOrContent: FC<{ actionSlot?: React.ReactNode }> = ({ actionSlot }) => {
-  const error = useMessage((s) => s.metadata?.custom?.error as ChatError | undefined);
+  const error = useAuiState(({ message: s }) => s.metadata?.custom?.error as ChatError | undefined);
   const agentId = useContext(AgentIdContext) ?? "";
 
   if (error) {
@@ -656,7 +662,7 @@ const AssistantErrorOrContent: FC<{ actionSlot?: React.ReactNode }> = ({ actionS
 };
 
 const AssistantFooter: FC = () => {
-  const isError = useMessage((s) => !!s.metadata?.custom?.error);
+  const isError = useAuiState(({ message: s }) => !!s.metadata?.custom?.error);
 
   if (isError) return null;
 
@@ -675,25 +681,25 @@ const AssistantFooter: FC = () => {
 };
 
 export const AssistantMessage: FC = () => {
-  const isRetryable = useMessage((s) => !!s.metadata?.custom?.retryable);
-  const hasError = useMessage((s) => !!s.metadata?.custom?.error);
-  const retryReason = useMessage(
-    (s) =>
+  const isRetryable = useAuiState(({ message: s }) => !!s.metadata?.custom?.retryable);
+  const hasError = useAuiState(({ message: s }) => !!s.metadata?.custom?.error);
+  const retryReason = useAuiState(
+    ({ message: s }) =>
       (s.metadata?.custom?.retryReason as
         "orphan" | "partial_stream_failure" | "send_failure" | undefined) ??
       "partial_stream_failure"
   );
-  const isLast = useMessage((s) => s.isLast);
+  const isLast = useAuiState(({ message: s }) => s.isLast);
   // What the error frame claimed about tool use. Provisional: the flag is
   // derived from an audit row that OpenClaw's unawaited `after_tool_call` hook
   // may not have written yet (#1013), so `false` here means "not proven", not
   // "read-only". GatedRetry re-asks the server on click, where the answer has
   // had time to settle. `true` short-circuits — the gate never re-opens.
-  const sideEffects = useMessage(
-    (s) => !!(s.metadata?.custom?.error as ChatError | undefined)?.sideEffects
+  const sideEffects = useAuiState(
+    ({ message: s }) => !!(s.metadata?.custom?.error as ChatError | undefined)?.sideEffects
   );
-  const errorAgentName = useMessage(
-    (s) => (s.metadata?.custom?.error as ChatError | undefined)?.agentName
+  const errorAgentName = useAuiState(
+    ({ message: s }) => (s.metadata?.custom?.error as ChatError | undefined)?.agentName
   );
   const onRetryContinue = useContext(RetryContinueContext);
   const retryAgentId = useContext(AgentIdContext);
@@ -729,7 +735,7 @@ export const AssistantMessage: FC = () => {
 };
 
 const AssistantActionBar: FC = () => {
-  const messageId = useMessage((s) => s.id);
+  const messageId = useAuiState(({ message: s }) => s.id);
   const agentId = useContext(AgentIdContext) ?? "";
   const agentName = useContext(AgentNameContext) ?? "Unknown";
   // Only offered to someone who may actually save it — `canWriteAgent`,
@@ -741,7 +747,7 @@ const AssistantActionBar: FC = () => {
   // for a field it only ever reads to decide whether to show a menu item. A
   // message with no text parts is a tool-call or image turn — nothing to
   // promote, which `canOfferInstructionHandoff` already treats as "don't offer".
-  const messageText = useMessage((s) =>
+  const messageText = useAuiState(({ message: s }) =>
     (s.content ?? [])
       .filter((part): part is { type: "text"; text: string } => part.type === "text")
       .map((part) => part.text)
@@ -842,9 +848,9 @@ export function sendingOpacityClass(status: string | undefined): string {
 export { AttachmentPreview as FilePart };
 
 export const UserMessage: FC = () => {
-  const status = useMessage((s) => s.metadata?.custom?.status as string | undefined);
-  const isLast = useMessage((s) => s.isLast);
-  const messageId = useMessage((s) => s.id);
+  const status = useAuiState(({ message: s }) => s.metadata?.custom?.status as string | undefined);
+  const isLast = useAuiState(({ message: s }) => s.isLast);
+  const messageId = useAuiState(({ message: s }) => s.id);
   const onRetryResend = useContext(RetryResendContext);
 
   const isFailed = status === "failed";

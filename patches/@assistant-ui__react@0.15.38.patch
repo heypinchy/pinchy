@@ -2,7 +2,7 @@ diff --git a/dist/primitives/composer/ComposerInput.js b/dist/primitives/compose
 index d63c960d7b26d7a7d13b2001238361e427bfabf2..ae977125c069fda165b4fa5615604020cf08143a 100644
 --- a/dist/primitives/composer/ComposerInput.js
 +++ b/dist/primitives/composer/ComposerInput.js
-@@ -147,10 +147,22 @@ const ComposerPrimitiveInput = forwardRef(({ autoFocus = false, asChild, render,
+@@ -172,10 +172,22 @@ const ComposerPrimitiveInput = forwardRef(({ autoFocus = false, asChild, render,
  			const nativeIsComposing = e_2.nativeEvent.isComposing === true;
  			if (compositionRef.current && !nativeIsComposing) compositionRef.current = false;
  			const isComposing = nativeIsComposing || compositionRef.current;
@@ -20,7 +20,7 @@ index d63c960d7b26d7a7d13b2001238361e427bfabf2..ae977125c069fda165b4fa5615604020
 +			// composition.
 +			if (isComposing) return;
  			flushTapSync(() => {
- 				aui.composer().setText(e_2.target.value);
+ 				aui.composer.setText(e_2.target.value, { origin: "user" });
  			});
 -			if (isComposing) return;
  			const pos = e_2.target.selectionStart ?? e_2.target.value.length;

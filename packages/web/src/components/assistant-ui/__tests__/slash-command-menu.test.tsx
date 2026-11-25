@@ -33,9 +33,22 @@ function makeFakeRuntime(initial = "") {
 
 let fakeRuntime: ReturnType<typeof makeFakeRuntime>;
 
-vi.mock("@assistant-ui/react", () => ({
-  useComposerRuntime: () => fakeRuntime,
-}));
+vi.mock("@assistant-ui/react", async () => {
+  const { useSyncExternalStore } = await import("react");
+  return {
+    useAui: () => ({ composer: fakeRuntime }),
+    // Re-renders on composer changes like the real hook: the selector sees the
+    // live composer state under `optional.composer`.
+    useAuiState: (selector: (s: unknown) => unknown) =>
+      selector({
+        optional: {
+          composer: {
+            text: useSyncExternalStore(fakeRuntime.subscribe, () => fakeRuntime.getState().text),
+          },
+        },
+      }),
+  };
+});
 
 function Harness() {
   const menu = useSlashCommandMenu();

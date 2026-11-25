@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useComposerRuntime } from "@assistant-ui/react";
+import { useAui, useAuiState } from "@assistant-ui/react";
 import { SLASH_COMMANDS } from "@/lib/slash-commands";
 import { cn } from "@/lib/utils";
 
@@ -26,16 +26,13 @@ import { cn } from "@/lib/utils";
  * reused, never duplicated here.
  */
 export function useSlashCommandMenu() {
-  const runtime = useComposerRuntime({ optional: true });
-  const [text, setText] = useState("");
+  const aui = useAui();
+  // `undefined` while no composer scope is mounted (`s.optional` never throws).
+  const composerText = useAuiState((s) => s.optional.composer?.text);
+  const runtime = composerText === undefined ? null : aui.composer;
+  const text = composerText ?? "";
   const [activeIndex, setActiveIndex] = useState(0);
   const [dismissed, setDismissed] = useState(false);
-
-  useEffect(() => {
-    if (!runtime) return;
-    setText(runtime.getState().text);
-    return runtime.subscribe(() => setText(runtime.getState().text));
-  }, [runtime]);
 
   // The query is the command token WHILE it is still being typed: a leading
   // slash followed by letters and no space yet. Once a space (an arg) or a
