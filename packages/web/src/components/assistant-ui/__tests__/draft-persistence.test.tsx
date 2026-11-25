@@ -20,10 +20,10 @@ import { useEffect, type FC } from "react";
 import {
   AssistantRuntimeProvider,
   ComposerPrimitive,
-  useComposerRuntime,
+  useAui,
   useExternalStoreRuntime,
   type ThreadMessageLike,
-  type ComposerRuntime,
+  type AssistantClient,
   type AttachmentAdapter,
   type PendingAttachment,
   type CompleteAttachment,
@@ -57,9 +57,9 @@ const testAttachmentAdapter: AttachmentAdapter = {
   async remove() {},
 };
 
-let composerApi: ComposerRuntime | null = null;
+let composerApi: AssistantClient | null = null;
 const CaptureComposer: FC = () => {
-  const composer = useComposerRuntime();
+  const composer = useAui();
   useEffect(() => {
     composerApi = composer;
   }, [composer]);
@@ -125,7 +125,7 @@ describe("DraftPersistence (per-chat composer draft)", () => {
 
     // Switch to a different chat of the SAME agent — its composer must be empty.
     render(<Harness chatId="chat-b" />);
-    expect(composerApi!.getState().text).toBe("");
+    expect(composerApi!.composer.getState().text).toBe("");
     expect(getDraft(draftKey(AGENT, "chat-b"))).toBeUndefined();
     // Chat A's draft is untouched.
     expect(getDraft(draftKey(AGENT, "chat-a"))?.text).toBe("hello from A");
@@ -137,7 +137,7 @@ describe("DraftPersistence (per-chat composer draft)", () => {
     first.unmount();
 
     render(<Harness chatId="chat-a" />);
-    expect(composerApi!.getState().text).toBe("draft to keep");
+    expect(composerApi!.composer.getState().text).toBe("draft to keep");
   });
 
   it("clears the draft when the composer is emptied (manual delete sticks)", () => {
@@ -156,10 +156,10 @@ describe("DraftPersistence (per-chat composer draft)", () => {
     expect(getDraft(draftKey(AGENT, "chat-a"))?.text).toBe("send me");
 
     await act(async () => {
-      await composerApi!.send();
+      await composerApi!.composer.send();
     });
 
-    expect(composerApi!.getState().text).toBe("");
+    expect(composerApi!.composer.getState().text).toBe("");
     expect(getDraft(draftKey(AGENT, "chat-a"))).toBeUndefined();
   });
 
@@ -171,10 +171,10 @@ describe("DraftPersistence (per-chat composer draft)", () => {
 
     // Attachment restore is async — wait for the file to land in the composer.
     await waitFor(() => {
-      expect(composerApi!.getState().attachments).toHaveLength(1);
+      expect(composerApi!.composer.getState().attachments).toHaveLength(1);
     });
-    expect(composerApi!.getState().attachments[0].name).toBe("report.pdf");
-    expect(composerApi!.getState().text).toBe("see attached");
+    expect(composerApi!.composer.getState().attachments[0].name).toBe("report.pdf");
+    expect(composerApi!.composer.getState().text).toBe("see attached");
 
     // A persist firing while attachments were still being re-added must NOT have
     // written a partial (text-only) set over the complete stored draft.

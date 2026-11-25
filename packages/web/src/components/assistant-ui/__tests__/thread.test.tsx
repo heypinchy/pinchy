@@ -4,7 +4,6 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import React from "react";
 import "@testing-library/jest-dom";
 import { sendingOpacityClass } from "@/components/assistant-ui/thread";
-import type { MessageState } from "@assistant-ui/react";
 import { holdResults } from "@/test-helpers/hold-results";
 
 // Mutable AuiIf state — lets individual tests flip thread.isRunning so we can
@@ -139,8 +138,8 @@ vi.mock("@assistant-ui/react", () => ({
       <div {...props}>{children}</div>
     ),
   },
-  useMessage: vi.fn(),
-  useComposerRuntime: vi.fn(() => null),
+  useAuiState: vi.fn(),
+  useAui: vi.fn(() => ({})),
   useMessagePartFile: vi.fn(() => ({
     type: "file" as const,
     filename: "test.pdf",
@@ -245,31 +244,19 @@ vi.mock("@/components/chat", async () => {
   };
 });
 
-type MockedUseMessage = typeof import("@assistant-ui/react").useMessage;
-type MessageSelector = (state: MessageState) => unknown;
+type MockedUseAuiState = typeof import("@assistant-ui/react").useAuiState;
 
 /**
- * Configures the mocked `useMessage` to run whatever selector `thread.tsx`
- * passes it against `fixture`. `useMessage`'s real export is a heavily
- * overloaded const (bare selector OR an `{ optional?, selector? }` options
- * object); `vi.mocked(useMessage).mockImplementation(...)` resolves the
- * required implementation type to the LAST overload only — the
- * options-object shape. Every real call site in thread.tsx uses the bare
- * selector form (`useMessage((state) => ...)`), never the options form, so
- * the union parameter below satisfies mockImplementation's type while the
- * body always dispatches as a callable selector, matching actual usage.
- * `fixture` intentionally models only the fields each test reads, not the
- * whole MessageState — hence the one boundary cast, isolated here instead of
- * scattered across every call site.
+ * Configures the mocked `useAuiState` to run whatever selector `thread.tsx`
+ * passes it against `{ message: fixture, optional: {} }` (no composer scope,
+ * so DraftPersistence/ShareIntake stay inert). `fixture` intentionally models
+ * only the message fields each test reads, not the whole message state —
+ * hence the one boundary cast, isolated here instead of scattered across every
+ * call site.
  */
-function stubUseMessage(useMessage: MockedUseMessage, fixture: Record<string, unknown>): void {
-  vi.mocked(useMessage).mockImplementation(
-    (arg: MessageSelector | { selector?: MessageSelector }) => {
-      const selector = typeof arg === "function" ? arg : arg.selector;
-      const state = fixture as MessageState;
-      return selector ? selector(state) : state;
-    }
-  );
+function stubUseMessage(useAuiState: MockedUseAuiState, fixture: Record<string, unknown>): void {
+  vi.mocked(useAuiState).mockImplementation(((selector: (state: unknown) => unknown) =>
+    selector({ message: fixture, optional: {} })) as MockedUseAuiState);
 }
 
 describe("sendingOpacityClass", () => {
@@ -292,8 +279,8 @@ describe("sendingOpacityClass", () => {
 
 describe("UserMessage component", () => {
   it("applies opacity-60 to the content wrapper when status is 'sending'", async () => {
-    const { useMessage } = await import("@assistant-ui/react");
-    stubUseMessage(useMessage, {
+    const { useAuiState } = await import("@assistant-ui/react");
+    stubUseMessage(useAuiState, {
       metadata: { custom: { status: "sending" } },
       isLast: false,
       id: "msg-1",
@@ -310,8 +297,8 @@ describe("UserMessage component", () => {
 
 describe("UserMessage failed state", () => {
   it("shows 'Couldn't deliver' and Retry button for the last failed user message", async () => {
-    const { useMessage } = await import("@assistant-ui/react");
-    stubUseMessage(useMessage, {
+    const { useAuiState } = await import("@assistant-ui/react");
+    stubUseMessage(useAuiState, {
       metadata: { custom: { status: "failed" } },
       isLast: true,
       id: "msg-1",
@@ -325,8 +312,8 @@ describe("UserMessage failed state", () => {
   });
 
   it("does NOT show Retry on a non-last failed message", async () => {
-    const { useMessage } = await import("@assistant-ui/react");
-    stubUseMessage(useMessage, {
+    const { useAuiState } = await import("@assistant-ui/react");
+    stubUseMessage(useAuiState, {
       metadata: { custom: { status: "failed" } },
       isLast: false,
       id: "msg-1",
@@ -340,8 +327,8 @@ describe("UserMessage failed state", () => {
   });
 
   it("calls onRetryResend with the message id when Retry is clicked", async () => {
-    const { useMessage } = await import("@assistant-ui/react");
-    stubUseMessage(useMessage, {
+    const { useAuiState } = await import("@assistant-ui/react");
+    stubUseMessage(useAuiState, {
       metadata: { custom: { status: "failed" } },
       isLast: true,
       id: "msg-1",
@@ -362,8 +349,8 @@ describe("UserMessage failed state", () => {
   });
 
   it("disables Retry button when ChatStatusContext is responding", async () => {
-    const { useMessage } = await import("@assistant-ui/react");
-    stubUseMessage(useMessage, {
+    const { useAuiState } = await import("@assistant-ui/react");
+    stubUseMessage(useAuiState, {
       metadata: { custom: { status: "failed" } },
       isLast: true,
       id: "msg-1",
@@ -382,8 +369,8 @@ describe("UserMessage failed state", () => {
   });
 
   it("disables Retry button and sets tooltip when ChatStatusContext is unavailable", async () => {
-    const { useMessage } = await import("@assistant-ui/react");
-    stubUseMessage(useMessage, {
+    const { useAuiState } = await import("@assistant-ui/react");
+    stubUseMessage(useAuiState, {
       metadata: { custom: { status: "failed" } },
       isLast: true,
       id: "msg-1",
@@ -496,8 +483,8 @@ describe("Thread reconciling state", () => {
 
 describe("AssistantMessage retryable error bubble", () => {
   it("shows Retry button on last assistant error bubble with retryable: true", async () => {
-    const { useMessage } = await import("@assistant-ui/react");
-    stubUseMessage(useMessage, {
+    const { useAuiState } = await import("@assistant-ui/react");
+    stubUseMessage(useAuiState, {
       metadata: { custom: { error: { disconnected: true }, retryable: true } },
       isLast: true,
       id: "msg-err-1",
@@ -510,8 +497,8 @@ describe("AssistantMessage retryable error bubble", () => {
   });
 
   it("does NOT show Retry button on non-last assistant error bubble", async () => {
-    const { useMessage } = await import("@assistant-ui/react");
-    stubUseMessage(useMessage, {
+    const { useAuiState } = await import("@assistant-ui/react");
+    stubUseMessage(useAuiState, {
       metadata: { custom: { error: { disconnected: true }, retryable: true } },
       isLast: false,
       id: "msg-err-2",
@@ -524,8 +511,8 @@ describe("AssistantMessage retryable error bubble", () => {
   });
 
   it("disables Retry button when ChatStatusContext is responding", async () => {
-    const { useMessage } = await import("@assistant-ui/react");
-    stubUseMessage(useMessage, {
+    const { useAuiState } = await import("@assistant-ui/react");
+    stubUseMessage(useAuiState, {
       metadata: { custom: { error: { disconnected: true }, retryable: true } },
       isLast: true,
       id: "msg-err-3",
@@ -543,8 +530,8 @@ describe("AssistantMessage retryable error bubble", () => {
   });
 
   it("gates the live Retry behind a duplicate-write confirm when the error has sideEffects", async () => {
-    const { useMessage } = await import("@assistant-ui/react");
-    stubUseMessage(useMessage, {
+    const { useAuiState } = await import("@assistant-ui/react");
+    stubUseMessage(useAuiState, {
       metadata: {
         custom: {
           error: { providerError: "rate limit", agentName: "Penny", sideEffects: true },
@@ -575,8 +562,8 @@ describe("AssistantMessage retryable error bubble", () => {
   });
 
   it("retries directly (no confirm) when the error has no sideEffects", async () => {
-    const { useMessage } = await import("@assistant-ui/react");
-    stubUseMessage(useMessage, {
+    const { useAuiState } = await import("@assistant-ui/react");
+    stubUseMessage(useAuiState, {
       metadata: {
         custom: {
           error: { providerError: "rate limit", agentName: "Penny" },
@@ -619,8 +606,8 @@ describe("AssistantMessage retryable error bubble", () => {
     // The failure that made this a bug: OpenClaw fires `after_tool_call`
     // without awaiting it, so the frame's flag was derived before the audit row
     // landed. The bubble says "no tool ran" and the run had already booked.
-    const { useMessage } = await import("@assistant-ui/react");
-    stubUseMessage(useMessage, {
+    const { useAuiState } = await import("@assistant-ui/react");
+    stubUseMessage(useAuiState, {
       metadata: {
         custom: {
           error: { providerError: "rate limit", agentName: "Penny", sideEffects: false },
@@ -653,8 +640,8 @@ describe("AssistantMessage retryable error bubble", () => {
 
   it("warns rather than retrying when the gate check fails (#1013)", async () => {
     // Fail closed: an unreachable gate is not evidence the run was read-only.
-    const { useMessage } = await import("@assistant-ui/react");
-    stubUseMessage(useMessage, {
+    const { useAuiState } = await import("@assistant-ui/react");
+    stubUseMessage(useAuiState, {
       metadata: {
         custom: {
           error: { providerError: "rate limit", agentName: "Penny", sideEffects: false },
@@ -686,8 +673,8 @@ describe("AssistantMessage retryable error bubble", () => {
   });
 
   it("disables Retry button and sets tooltip when ChatStatusContext is unavailable", async () => {
-    const { useMessage } = await import("@assistant-ui/react");
-    stubUseMessage(useMessage, {
+    const { useAuiState } = await import("@assistant-ui/react");
+    stubUseMessage(useAuiState, {
       metadata: { custom: { error: { disconnected: true }, retryable: true } },
       isLast: true,
       id: "msg-err-5",
@@ -708,8 +695,8 @@ describe("AssistantMessage retryable error bubble", () => {
   });
 
   it("calls onRetryContinue when Retry is clicked", async () => {
-    const { useMessage } = await import("@assistant-ui/react");
-    stubUseMessage(useMessage, {
+    const { useAuiState } = await import("@assistant-ui/react");
+    stubUseMessage(useAuiState, {
       metadata: { custom: { error: { disconnected: true }, retryable: true } },
       isLast: true,
       id: "msg-err-4",
@@ -1013,8 +1000,8 @@ describe("Composer autofocus is pointer-gated (#955)", () => {
 // messages in Chromium.
 describe("AssistantMessage footer height", () => {
   it("keeps the min-h-6 row that reserves the action bar's height", async () => {
-    const { useMessage } = await import("@assistant-ui/react");
-    stubUseMessage(useMessage, {
+    const { useAuiState } = await import("@assistant-ui/react");
+    stubUseMessage(useAuiState, {
       metadata: { custom: { timestamp: "2026-07-15T09:39:00.000Z" } },
       isLast: false,
       id: "msg-footer-1",

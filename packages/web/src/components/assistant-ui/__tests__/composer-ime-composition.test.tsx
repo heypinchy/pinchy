@@ -41,19 +41,19 @@ import { useEffect, type FC } from "react";
 import {
   AssistantRuntimeProvider,
   ComposerPrimitive,
-  useComposerRuntime,
+  useAui,
   useExternalStoreRuntime,
   type ThreadMessageLike,
-  type ComposerRuntime,
+  type AssistantClient,
 } from "@assistant-ui/react";
 
 // Capture the live composer runtime so the test can read `composer.text`,
 // which is the state that drives the controlled textarea value. If this state
 // changes during an active composition, the controlled value gets written back
 // to the DOM mid-composition — that is the freeze.
-let composerApi: ComposerRuntime | null = null;
+let composerApi: AssistantClient | null = null;
 const CaptureComposer: FC = () => {
-  const composer = useComposerRuntime();
+  const composer = useAui();
   // Assign in an effect, not during render — render must stay side-effect free.
   // Testing Library flushes effects on render(), so composerApi is set by the
   // time the test reads it.
@@ -115,7 +115,7 @@ describe("ComposerPrimitive.Input IME composition (dead-key freeze guard)", () =
     expect(composerApi).not.toBeNull();
     // Precondition: the thread composer is editable, otherwise onChange no-ops
     // and the test would pass for the wrong reason.
-    expect(composerApi!.getState().isEditing).toBe(true);
+    expect(composerApi!.composer.getState().isEditing).toBe(true);
 
     // Dead-key sequence begins: the browser starts composing "´".
     fireEvent.compositionStart(textarea);
@@ -127,7 +127,7 @@ describe("ComposerPrimitive.Input IME composition (dead-key freeze guard)", () =
     // the controlled value back into the textarea mid-composition and freeze
     // the field. This is RED on assistant-ui 0.14.x (setText runs before the
     // isComposing guard) and GREEN once the guard precedes setText.
-    expect(composerApi!.getState().text).toBe("");
+    expect(composerApi!.composer.getState().text).toBe("");
   });
 
   it("syncs the composed character to the runtime once composition ends", () => {
@@ -145,7 +145,7 @@ describe("ComposerPrimitive.Input IME composition (dead-key freeze guard)", () =
       fireEvent.compositionEnd(textarea);
     });
 
-    expect(composerApi!.getState().text).toBe("é");
+    expect(composerApi!.composer.getState().text).toBe("é");
   });
 
   it("recovers when the browser drops compositionend (stale-ref path)", () => {
@@ -166,6 +166,6 @@ describe("ComposerPrimitive.Input IME composition (dead-key freeze guard)", () =
     // nativeEvent.isComposing falsy, modelling exactly that dropped-end input.
     fireEvent.change(textarea, { target: { value: "é" } });
 
-    expect(composerApi!.getState().text).toBe("é");
+    expect(composerApi!.composer.getState().text).toBe("é");
   });
 });

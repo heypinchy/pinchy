@@ -83,8 +83,8 @@ vi.mock("@assistant-ui/react", () => ({
     ),
     Message: (props: Record<string, unknown>) => <div {...props} />,
   },
-  useMessage: vi.fn(),
-  useComposerRuntime: vi.fn(() => null),
+  useAuiState: vi.fn(),
+  useAui: vi.fn(() => ({})),
   useMessagePartFile: vi.fn(),
 }));
 
@@ -193,8 +193,8 @@ vi.mock("@/components/diagnostics-export-dialog", () => ({
 
 describe("Per-message Report issue menu entry", () => {
   beforeEach(async () => {
-    const { useMessage } = await import("@assistant-ui/react");
-    type UseMessageSelector = (state: MessageState) => unknown;
+    const { useAuiState } = await import("@assistant-ui/react");
+    type Selector = (state: unknown) => unknown;
     // Fake message state: only the fields this suite's selectors read
     // (id/isLast/metadata). `MessageState` (a `ThreadMessage` union) requires many
     // more fields than a per-message-menu test cares about, so a full literal
@@ -205,15 +205,8 @@ describe("Per-message Report issue menu entry", () => {
       content: [{ type: "text", text: "Score leads by VUE." }],
       metadata: { custom: {} },
     } as unknown as MessageState;
-    vi.mocked(useMessage).mockImplementation(
-      // `useMessage` is overloaded (plain selector fn OR `{ optional, selector }`
-      // options); production code (thread.tsx) only ever calls the plain-selector
-      // form. `Parameters<typeof useMessage>` collapses overloads to the LAST
-      // signature (the options-object form) for `mockImplementation`'s type, so the
-      // actually-exercised plain-selector implementation needs this boundary cast
-      // back to the real hook type.
-      ((selector: UseMessageSelector) => selector(fakeMessageState)) as typeof useMessage
-    );
+    vi.mocked(useAuiState).mockImplementation(((selector: Selector) =>
+      selector({ message: fakeMessageState, optional: {} })) as typeof useAuiState);
   });
 
   it("appears in the ActionBarMore menu", async () => {
@@ -253,16 +246,16 @@ describe("Per-message Report issue menu entry", () => {
 // memory — loaded by scheduled runs too.
 describe('Per-message "Save as instruction" menu entry', () => {
   beforeEach(async () => {
-    const { useMessage } = await import("@assistant-ui/react");
-    type UseMessageSelector = (state: MessageState) => unknown;
+    const { useAuiState } = await import("@assistant-ui/react");
+    type Selector = (state: unknown) => unknown;
     const fakeMessageState = {
       id: "msg-assistant-1",
       isLast: true,
       content: [{ type: "text", text: "Score leads by VUE." }],
       metadata: { custom: {} },
     } as unknown as MessageState;
-    vi.mocked(useMessage).mockImplementation(((selector: UseMessageSelector) =>
-      selector(fakeMessageState)) as typeof useMessage);
+    vi.mocked(useAuiState).mockImplementation(((selector: Selector) =>
+      selector({ message: fakeMessageState, optional: {} })) as typeof useAuiState);
     window.sessionStorage.clear();
     mockRouterPush.mockClear();
   });

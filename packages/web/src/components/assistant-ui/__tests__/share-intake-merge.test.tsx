@@ -4,7 +4,7 @@
 // text, so a shared payload arriving into a chat that already has a restored
 // draft must APPEND to it, not clobber it. The overwrite bug is invisible to
 // the hook-level use-share-intake.test.tsx (which mocks setComposerText), so
-// this file drives the real `useComposerRuntime` getState/setText path where
+// this file drives the real `aui.composer` getState/setText path where
 // the merge actually happens.
 import { render, act, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -12,10 +12,10 @@ import { useEffect, type FC } from "react";
 import {
   AssistantRuntimeProvider,
   ComposerPrimitive,
-  useComposerRuntime,
+  useAui,
   useExternalStoreRuntime,
   type ThreadMessageLike,
-  type ComposerRuntime,
+  type AssistantClient,
 } from "@assistant-ui/react";
 import { ShareIntake } from "@/components/assistant-ui/thread";
 import { AddPendingUploadContext } from "@/components/chat";
@@ -38,9 +38,9 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => new URLSearchParams("keep=&share=abc"),
 }));
 
-let composerApi: ComposerRuntime | null = null;
+let composerApi: AssistantClient | null = null;
 const CaptureComposer: FC = () => {
-  const composer = useComposerRuntime();
+  const composer = useAui();
   useEffect(() => {
     composerApi = composer;
   }, [composer]);
@@ -90,7 +90,7 @@ describe("ShareIntake text prefill (real composer)", () => {
     await waitFor(() => expect(composerApi).not.toBeNull());
 
     act(() => {
-      composerApi!.setText("my own draft");
+      composerApi!.composer.setText("my own draft");
     });
 
     await act(async () => {
@@ -99,7 +99,7 @@ describe("ShareIntake text prefill (real composer)", () => {
     });
 
     await waitFor(() => {
-      expect(composerApi!.getState().text).toBe("my own draft\nshared note");
+      expect(composerApi!.composer.getState().text).toBe("my own draft\nshared note");
     });
     expect(clearSharedPayload).toHaveBeenCalledWith("abc");
   });
@@ -110,7 +110,7 @@ describe("ShareIntake text prefill (real composer)", () => {
     render(<Harness />);
 
     await waitFor(() => {
-      expect(composerApi!.getState().text).toBe("shared note");
+      expect(composerApi!.composer.getState().text).toBe("shared note");
     });
   });
 });

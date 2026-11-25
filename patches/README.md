@@ -5,13 +5,13 @@
 build). Patches are a last resort for upstream bugs we cannot wait on; each one
 must be minimal, commented in-place, and tracked for removal.
 
-## `@assistant-ui__react@0.14.24.patch`
+## `@assistant-ui__react@0.15.38.patch`
 
 **What:** moves the `if (isComposing) return;` guard **before** the
 `setText(e.target.value)` call in `ComposerPrimitive.Input`'s `onChange`.
 
 **Why:** the composer textarea is a controlled input (`value = composer.text`).
-Upstream 0.14.x calls `setText` on every `onChange` _before_ the isComposing
+Upstream 0.14.x/0.15.x calls `setText` on every `onChange` _before_ the isComposing
 guard, so the runtime text — and therefore the controlled value — mutates while
 an IME composition is active. Writing a controlled value back into the DOM
 mid-composition aborts the browser's composition session and **freezes the chat
@@ -19,12 +19,12 @@ input**: typing an accented character via a dead-key sequence (e.g. `´` then `e
 → `é`) leaves the field stuck, refusing further input and deletion.
 
 0.12.x returned before `setText` and was safe. The regression rode in with the
-0.12.26 → 0.14.11 bump (commit `f7823d907`) and is still present in 0.14.24
-(reconfirmed during the 2026-06-30 dependency sweep — the `setText` call still
-precedes the guard, just under minifier-renamed locals). The patch keeps
+0.12.26 → 0.14.11 bump (commit `f7823d907`) and is still present in 0.15.38
+(reconfirmed when bumping to 0.15.38 — the `setText` call, now
+`aui.composer.setText(…, { origin: "user" })`, still precedes the guard). The patch keeps
 0.14's stale-ref recovery line intact, so dead keys that never emit
-`compositionend` still sync. Re-patched from `0.14.11` to `0.14.24` in that
-sweep; no other changes were needed beyond following the renamed locals.
+`compositionend` still sync. Re-patched from `0.14.24` to `0.15.38`; only the hunk offset and the renamed
+`aui.composer.setText` call changed.
 
 **Regression guard:** `packages/web/src/components/assistant-ui/__tests__/composer-ime-composition.test.tsx`
 renders the real (un-mocked) primitive and asserts the runtime text is not
