@@ -1009,6 +1009,23 @@ describe("ImapAdapter#list", () => {
     expect(mockClient.logout).toHaveBeenCalledTimes(1);
   });
 
+  it("lists a message whose Date header is unparseable with a blank date instead of throwing", async () => {
+    // imapflow passes an unparseable Date header through as its raw string.
+    // new Date(raw).toISOString() threw a RangeError and failed the whole list.
+    mockClient.search.mockResolvedValue([1, 2]);
+    mockClient.fetch.mockReturnValue(
+      asyncIterableOf([
+        envelopeMessage({ uid: 1, date: "next Tuesday-ish" }),
+        envelopeMessage({ uid: 2, date: "2026-07-14T09:00:00.000Z" }),
+      ])
+    );
+
+    const adapter = new ImapAdapter(opts);
+    const result = await adapter.list({});
+
+    expect(result.map((m) => m.date)).toEqual(["2026-07-14T09:00:00.000Z", ""]);
+  });
+
   it("maps unreadOnly to a { seen: false } search", async () => {
     const adapter = new ImapAdapter(opts);
     await adapter.list({ unreadOnly: true });

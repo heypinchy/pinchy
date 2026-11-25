@@ -185,7 +185,7 @@ describe("startMemoryAuditWatcher (chokidar wiring)", () => {
 // chokidar's native vs polling path actually behaves correctly is chokidar's
 // own contract, not Pinchy's to assert.
 describe("startMemoryAuditWatcher (usePolling option)", () => {
-  it("passes usePolling: false through to chokidar.watch", async () => {
+  it("maps usePolling: false to chokidar's native backend", async () => {
     const chokidar = (await import("chokidar")).default;
     (chokidar.watch as ReturnType<typeof vi.fn>).mockClear();
 
@@ -200,7 +200,12 @@ describe("startMemoryAuditWatcher (usePolling option)", () => {
       });
       expect(chokidar.watch).toHaveBeenCalledWith(
         expect.any(String),
-        expect.objectContaining({ usePolling: false })
+        expect.objectContaining({ backend: "auto" })
+      );
+      // chokidar 6 renamed the option; the deprecated alias must not linger
+      // beside it and silently win if the two ever disagree.
+      expect((chokidar.watch as ReturnType<typeof vi.fn>).mock.calls[0][1]).not.toHaveProperty(
+        "usePolling"
       );
       await stop();
     } finally {
@@ -208,7 +213,7 @@ describe("startMemoryAuditWatcher (usePolling option)", () => {
     }
   });
 
-  it("defaults to usePolling: true when the caller omits it (production cadence)", async () => {
+  it("defaults to the polling backend at 250 ms when the caller omits it (production cadence)", async () => {
     const chokidar = (await import("chokidar")).default;
     (chokidar.watch as ReturnType<typeof vi.fn>).mockClear();
 
@@ -222,7 +227,10 @@ describe("startMemoryAuditWatcher (usePolling option)", () => {
       });
       expect(chokidar.watch).toHaveBeenCalledWith(
         expect.any(String),
-        expect.objectContaining({ usePolling: true })
+        expect.objectContaining({ backend: "polling", pollingInterval: 250 })
+      );
+      expect((chokidar.watch as ReturnType<typeof vi.fn>).mock.calls[0][1]).not.toHaveProperty(
+        "interval"
       );
       await stop();
     } finally {

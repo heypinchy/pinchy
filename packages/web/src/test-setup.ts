@@ -1,4 +1,4 @@
-import "@testing-library/jest-dom";
+import "@testing-library/jest-dom/vitest";
 import { afterEach, vi } from "vitest";
 import { _resetProcessWideCaches } from "@/lib/process-wide-cache";
 import { _resetRegenerateQueue } from "@/lib/openclaw-config/regenerate-queue";

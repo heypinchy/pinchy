@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "engines": {
-    "node": ">=22.22.0 <23"
+    "node": ">=22.23.4 <23"
   },
   "scripts": {
     "dev": "sh scripts/inject-version.sh && astro dev; sh scripts/restore-placeholders.sh",
@@ -17,10 +17,10 @@
     "test": "node --test scripts/*.test.mjs"
   },
   "dependencies": {
-    "@astrojs/starlight": "^0.42.6",
+    "@astrojs/starlight": "^0.43.1",
     "astro": "^7.4.13",
     "astro-loader-github-releases": "^3.0.1",
-    "mermaid": "^11.16.1"
+    "mermaid": "^12.3.0"
   },
   "pnpm": {
     "overrides": {

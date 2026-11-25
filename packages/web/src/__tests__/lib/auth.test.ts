@@ -47,6 +47,11 @@ vi.mock("@/lib/audit", () => ({
 
 import { auth, getAuthRateLimitConfig } from "@/lib/auth";
 
+// betterAuth() runs once, when @/lib/auth is imported above. Vitest clears
+// every mock's call history before each test (`clearMocks` defaults to true),
+// so the import-time call is captured here, before the first test runs.
+const betterAuthImportCalls = [...vi.mocked(betterAuth).mock.calls];
+
 describe("auth configuration", () => {
   it("should export auth instance", () => {
     expect(auth).toBeDefined();
@@ -58,9 +63,8 @@ describe("auth configuration", () => {
   });
 
   it("constructs the auth instance with the result of getAuthRateLimitConfig() — guards against future refactors that wire the wrong config object into betterAuth", () => {
-    // Module-load side effect: betterAuth() was already called when @/lib/auth
-    // was imported above. The first call's first arg holds the options.
-    const calls = vi.mocked(betterAuth).mock.calls;
+    // The first import-time call's first arg holds the options.
+    const calls = betterAuthImportCalls;
     expect(calls.length).toBeGreaterThan(0);
     const options = calls[0][0] as { rateLimit?: unknown };
     expect(options.rateLimit).toBeDefined();

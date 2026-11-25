@@ -9,21 +9,21 @@
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.2.0",
-    "better-sqlite3": "^12.11.1",
+    "better-sqlite3": "^13.2.0",
     "exceljs": "^4.4.0",
     "mammoth": "^1.13.0",
     "pdfjs-dist": "^6.5.438",
-    "pdfkit": "^0.19.1",
+    "pdfkit": "^0.21.0",
     "turndown": "^7.2.5",
     "turndown-plugin-gfm": "^1.0.2"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
+    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^26.6.6",
     "@types/pdfkit": "^0.17.7",
     "@types/turndown": "^5.0.5",
     "docx": "^9.16.0",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.12"
+    "vitest": "^5.1.1"
   }
 }

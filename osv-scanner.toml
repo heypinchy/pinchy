@@ -67,42 +67,30 @@
 # reported the entries as UNUSED (it exits 1 on that), and neither package is
 # flagged any more. Re-add with a fresh reason if either comes back.
 
-# Two medium DoS advisories published 2026-10-27 whose fix exists only in a
-# major no consumer declares: glob GHSA-3g3m-2fjr-6pw4 (fixed 14.0.2) and
-# minimatch GHSA-g3hv-75wg-m249 (fixed 11.0.1). Neither is in the range
-# `pnpm audit --audit-level=high --prod` fails on, so neither needs an
-# `ignoreGhsas` mirror. Overriding past the declared range was rejected: the
-# only clean candidates are cross-major (minimatch 3 -> 11 under eslint is the
-# brace-expansion 5 failure again; rimraf@5 declares glob ^10; openclaw pins
-# glob 13.0.6 and minimatch 10.2.5 EXACTLY, which openclaw-runtime-closure
-# .test.ts refuses to see moved across a major).
+# A medium DoS advisory published 2026-10-27, fixed only in a major openclaw
+# does not declare: minimatch GHSA-g3hv-75wg-m249 (fixed 11.0.1). GitHub
+# narrowed it to >=7.0.0 on 2026-11-04, so eslint's minimatch@3 and
+# readdir-glob's @5 are outside it; the one copy in range is 10.2.6, which
+# openclaw pins EXACTLY and openclaw-runtime-closure.test.ts refuses to see
+# moved across a major. It is not in the range `pnpm audit
+# --audit-level=high --prod` fails on, so it needs no `ignoreGhsas` mirror.
 #
-# Reachability, which is the criterion (see the docs-only pair below):
-# - minimatch: the amplification is in firstPhasePreProcess() at
-#   optimizationLevel >= 2, and minimatch defaults to 1. openclaw imports
-#   minimatch (not inlined) and calls it with `{ dot: true }` / `{ nocase: true }`
-#   on tool-policy and model-id patterns, level 1; the dev-only copies (eslint's
-#   minimatch@3, typescript-estree's 10.x) match code-authored config globs.
-#   glob does pass level 2 to the minimatch it drives.
-# - glob: the bug is that an aborted walk keeps reading directories. Nothing in
-#   the tree starts a walk with an AbortSignal. openclaw's one globSync call
-#   (dist/sessions-*.js, package-manifest resource entries) passes none and
-#   walks patterns authored in installed manifests; glob@10.5.0 + minimatch@9.0.9
-#   arrive via googleapis > gaxios > rimraf@5, a declared dependency gaxios'
-#   build/ never loads. minimatch@5.1.9 is readdir-glob (exceljs > archiver),
-#   which builds its Minimatch from archiver's code-authored patterns.
-# No pattern or signal reaches either from an unauthenticated request. ignoreUntil
-# forces the question again once rimraf/readdir-glob/openclaw move.
-
-[[IgnoredVulns]]
-id = "GHSA-3g3m-2fjr-6pw4"
-ignoreUntil = 2026-12-15
-reason = "glob 10.5.0 / 13.0.6, AbortSignal cancellation does not stop the walk (medium); fixed only in 14.0.2, a major no dependent declares. Nothing here starts a walk with a signal: openclaw's single globSync (package-manifest resource entries, imported not inlined) passes none and walks patterns written in installed manifests; glob@10.5.0 is rimraf@5 under googleapis > gaxios, which gaxios never loads. A walk that cannot be aborted is not reachable from request input."
+# Its sibling, glob GHSA-3g3m-2fjr-6pw4 (>=9.0.0 <=14.0.1), was retired
+# 2026-11-24: the only copy in range was glob@10.5.0 under rimraf@5, which left
+# with gaxios 8, and the remaining glob@7.2.3 (exceljs) is below the range.
+#
+# Reachability, which is the criterion (see the docs-only entry below): the
+# amplification is in firstPhasePreProcess() at optimizationLevel >= 2, and
+# minimatch defaults to 1. openclaw imports minimatch (not inlined) and calls it
+# with `{ dot: true }` / `{ nocase: true }` on tool-policy and model-id
+# patterns, level 1, over patterns from config and code. No pattern reaches it
+# from an unauthenticated request. ignoreUntil forces the question again once
+# openclaw moves.
 
 [[IgnoredVulns]]
 id = "GHSA-g3hv-75wg-m249"
 ignoreUntil = 2026-12-15
-reason = "minimatch 3.1.5 / 5.1.9 / 9.0.9 / 10.2.5, globparts amplification in firstPhasePreProcess() at optimizationLevel >= 2 (medium); fixed only in 11.0.1, a major no dependent declares (3 -> 11 under eslint is the brace-expansion 5 breakage again). minimatch defaults to optimizationLevel 1 and the direct callers pass code- or config-authored patterns and no level: openclaw tool-policy/model-id matching; dev-only eslint routes (@eslint/config-array, @eslint/eslintrc, eslint-config-next, eslint-plugin-import, eslint-plugin-jsx-a11y, eslint-plugin-react) and typescript-estree; exceljs (archiver > readdir-glob, patterns from archiver's own calls); only glob's own Minimatch runs at 2, over manifest-authored patterns. No request-supplied pattern reaches it."
+reason = "minimatch >=7.0.0 <11.0.1 (resolved 10.2.6), globparts amplification in firstPhasePreProcess() at optimizationLevel >= 2 (medium); fixed only in 11.0.1, outside the exact version openclaw pins. openclaw is the only route: it imports minimatch and calls it at the default optimizationLevel 1 with config- and code-authored tool-policy and model-id patterns. No request-supplied pattern reaches it."
 
 # picomatch has no fixed release at all (every version <= 4.0.7 is affected),
 # so there is nothing to bump to. The ReDoS needs an attacker-chosen glob
@@ -115,15 +103,16 @@ id = "GHSA-fc5q-39xc-vjpf"
 ignoreUntil = 2026-12-15
 reason = "picomatch <=4.0.7, ReDoS through single-branch repeated extglobs (high); no patched version exists. Exploiting it requires the attacker to supply the glob pattern, and none of ours comes from request input. Our source does not import picomatch. The prod-tree copies arrive only via better-auth's optional peer vitest (vitest, vite, tinyglobby, fdir): test tooling the server never loads. Next.js' compiled copy matches patterns from next.config. Dev-only routes in pnpm-lock.yaml match repo-authored config globs: @typescript-eslint/parser, eslint-config-next, micromatch (lint-staged, fast-glob). docs/pnpm-lock.yaml routes run only at astro build time over repo-authored globs: @astrojs/internal-helpers, @astrojs/starlight, anymatch (chokidar in the dev server)."
 
-# Two docs-build-only advisories whose fix exists only in a major the consuming
+# A docs-build-only advisory whose fix exists only in a major the consuming
 # package does not declare. Overriding past the declared range was tried (#1222)
 # and rejected: it pins versions mermaid / expressive-code never tested. The
 # criterion is reachability, not the override itself: the root package.json does
 # force node-llama-cpp's simple-git past its declared ^3, because node-llama-cpp
 # ships in the Pinchy image and 4.x was verified against its call sites (#1222).
-# Both docs advisories are unreachable, so an expiring
-# acceptance is the smaller risk than an untested pin. Re-triage when mermaid declares
-# katex >=0.18.2 or expressive-code moves postcss-nested to postcss-selector-parser 7.
+# The docs advisory is unreachable, so an expiring
+# acceptance is the smaller risk than an untested pin. Re-triage when expressive-code
+# moves postcss-nested to postcss-selector-parser 7. Its katex sibling
+# (GHSA-238p-pmpm-9mq7) was retired 2026-11-24: mermaid 12 resolves katex 0.18.10.
 #
 # Related, recorded here so the next triage starts from it: docs resolves
 # http-cache-semantics 4.3.0, which is OUTSIDE GHSA-ch52-4w7c-c8xp's published
@@ -131,11 +120,6 @@ reason = "picomatch <=4.0.7, ReDoS through single-branch repeated extglobs (high
 # handling; max-stale still serves a zeroed shared Set-Cookie response. If the
 # advisory is widened to cover 4.3.0, accept it on the same grounds: astro uses
 # it for its build-time remote-image cache, a private cache with no user cookies.
-
-[[IgnoredVulns]]
-id = "GHSA-238p-pmpm-9mq7"
-ignoreUntil = 2027-01-15
-reason = "katex <0.18.2 prototype-pollution trust bypass (low), docs/pnpm-lock.yaml only, via @pasqal-io/starlight-client-mermaid > mermaid (declares katex ^0.16.45). mermaid loads katex lazily in the browser only to render $$ math in diagram labels; the docs' single Mermaid diagram has none, so katex never runs. Fix exists only in 0.18.x, outside mermaid's declared range."
 
 [[IgnoredVulns]]
 id = "GHSA-rj75-hqrm-r3gf"
