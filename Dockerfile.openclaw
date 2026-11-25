@@ -3,19 +3,21 @@
 # Multi-stage build for the Pinchy OpenClaw runtime image.
 #
 # The OpenClaw gateway + Pinchy's plugin runtime deps include native modules
-# (better-sqlite3 and @napi-rs/canvas, both in pinchy-files) that may need to
-# COMPILE from source when a prebuilt binary doesn't match the node:22-slim
-# point release. Compiling needs python3 + build-essential — ~400 MB of
-# toolchain that is pure build-time weight. The single-stage image also shipped
-# the ~300 MB npm download cache (/root/.npm) into production for no runtime
-# benefit.
+# (better-sqlite3 and @napi-rs/canvas, both in pinchy-files). Both are N-API
+# and ship their prebuilt binaries (inside the package, or in per-platform
+# optional packages), so nothing here compiles and the image carries no
+# python3 / build-essential. Through better-sqlite3 12 the install compiled
+# from source when no prebuild matched the node:22-slim point release, which
+# is why this image once had a ~400 MB toolchain; see agent-rules/dependencies.md
+# § "A Documented Fallback That Cannot Run Is Not A Fallback".
 #
-# Split it: a `builder` stage carries the toolchain and produces the compiled
-# artifacts (the lockfile-resolved openclaw install + the /opt/*-deps bundles, all with
-# their native .node binaries already built). The `runtime` stage starts from a
-# clean node:22-slim and copies ONLY those artifacts, installing just the few
-# apt packages the gateway actually uses at runtime (git, inotify-tools,
-# procps). build-essential, python3 and the npm download cache never reach
+# The split stays for a different reason: the single-stage image also shipped
+# the ~300 MB npm download cache (/root/.npm) into production for no runtime
+# benefit. A `builder` stage produces the installed artifacts (the
+# lockfile-resolved openclaw install + the /opt/*-deps bundles). The `runtime`
+# stage starts from a clean node:22-slim and copies ONLY those artifacts,
+# installing just the few apt packages the gateway actually uses at runtime
+# (git, inotify-tools, procps). The npm download cache never reaches
 # production. Sibling change: Dockerfile.pinchy (PR #561).
 #
 # Offline-first guarantee (Pinchy ships air-gapped / self-hosted): the runtime
@@ -159,30 +161,18 @@ RUN set -e; mkdir -p /tmp/llama /opt/llama-server; \
     test -x /opt/llama-server/llama-server
 
 # ---------------------------------------------------------------------------
-# Stage: builder — toolchain + lockfile-resolved openclaw + compiled plugin deps.
+# Stage: builder — lockfile-resolved openclaw + installed plugin deps.
 # ---------------------------------------------------------------------------
 # Pull node:22-slim via Google's Docker Hub mirror to avoid Docker Hub
 # anonymous-pull rate limits in CI. mirror.gcr.io is a free, no-auth
 # pull-through cache for `library/*` images on Docker Hub.
 FROM mirror.gcr.io/library/node:22-slim AS builder
 
-# python3 + build-essential are needed for native npm modules (better-sqlite3
-# in pinchy-files) to compile from source when the prebuilt binary doesn't
-# match the current node:22-slim point release. They live ONLY in this builder
-# stage and never reach the runtime image, which is the whole point of the
-# split. Without them the build fails intermittently whenever the upstream base
-# image bumps Node.js. ca-certificates is for the installs below that fetch
-# outside npm (prebuilt binaries downloaded by install scripts).
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      python3 \
-      build-essential \
-      ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install pinchy-files plugin dependencies (native modules must be built here).
+# Install pinchy-files plugin dependencies (better-sqlite3 and @napi-rs/canvas
+# arrive as prebuilt binaries; nothing is compiled).
 # These four bundles read only their own package.json, so they come BEFORE the
 # workspace-lockfile COPY below: a dependency change elsewhere in the repo must
-# not re-run them (better-sqlite3 may compile from source here).
+# not re-run them.
 # Each bundle's node_modules is copied into /opt/<plugin>-deps so the runtime
 # stage can grab a clean, fully-built tree. The npm download cache stays in this
 # builder stage (it lives in /root/.npm, which is never copied to runtime).
@@ -337,9 +327,8 @@ LABEL org.opencontainers.image.source="https://github.com/heypinchy/pinchy" \
 # Runtime-only apt deps. start-openclaw.sh uses inotifywait (inotify-tools) on
 # the secrets dir, pkill/ps (procps) to manage the gateway process, git is
 # used by OpenClaw for plugin/runtime operations, and llama-server (the
-# `llama-server` stage) links libgomp. build-essential and python3
-# are intentionally absent — the native modules were already compiled in the
-# builder stage and ship as prebuilt .node binaries.
+# `llama-server` stage) links libgomp. build-essential and python3 are
+# intentionally absent — every native module ships as a prebuilt .node binary.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git \
       inotify-tools \
@@ -371,7 +360,7 @@ COPY --from=builder /opt/openclaw/packages/openclaw-runtime/node_modules /opt/op
 RUN ln -s /opt/openclaw/packages/openclaw-runtime/node_modules/openclaw/openclaw.mjs /usr/local/bin/openclaw
 
 # Pre-built plugin runtime dependency bundles from the builder stage. These
-# carry the already-compiled native .node binaries (better-sqlite3 +
+# carry the prebuilt native .node binaries (better-sqlite3 +
 # @napi-rs/canvas in pinchy-files-deps), so no toolchain is needed here.
 # start-openclaw.sh copies them into each plugin's node_modules on boot.
 COPY --from=builder /opt/pinchy-files-deps /opt/pinchy-files-deps

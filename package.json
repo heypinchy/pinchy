@@ -86,9 +86,6 @@
       "@modelcontextprotocol/sdk@<1.31.0": ">=1.31.0 <2",
       "proxy-addr@<2.0.8": ">=2.0.8 <3"
     },
-    "onlyBuiltDependencies": [
-      "better-sqlite3"
-    ],
     "ignoredBuiltDependencies": [
       "@google/genai",
       "koffi",
